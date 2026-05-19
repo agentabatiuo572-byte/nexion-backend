@@ -1,0 +1,23 @@
+package ffdd.task.domain;
+
+import com.baomidou.mybatisplus.annotation.TableName;
+import ffdd.common.domain.BaseEntity;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+
+@Data
+@EqualsAndHashCode(callSuper = true)
+@TableName("nx_compute_receipt")
+public class ComputeReceipt extends BaseEntity {
+    private Long userId;
+    private Long userDeviceId;
+    private String receiptNo;
+    private String taskType;
+    private String clientName;
+    private BigDecimal rewardUsdt;
+    private BigDecimal rewardNex;
+    private String proofHash;
+    private LocalDateTime completedAt;
+}
