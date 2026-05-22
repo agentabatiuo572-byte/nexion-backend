@@ -15,7 +15,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-mission-service` | 8103 | check-in, quests, points, achievements |
 | `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in |
 | `nexion-wallet-service` | 8105 | wallet balances, bills, withdrawals |
-| `nexion-team-service` | 8106 | V rank, team volume, commission summary |
+| `nexion-team-service` | 8106 | OrderPaid outbox consumption, unilevel commission events, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
 | `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
@@ -46,6 +46,12 @@ Commission settlement is handled by independent trigger endpoints under `/team/c
 - `POST /team/commissions/cultivation`: one-time NEX reward when a downline promotes to V1-V5.
 - `POST /team/commissions/leadership`: weekly leadership pool, platform weekly volume * 5% by V-rank votes.
 
+The current backend baseline implements the first event-driven slice:
+
+- `POST /team/outbox/consume-order-paid`: pulls pending `OrderPaid` events from commerce outbox, creates unilevel commission events for sponsor layers, and marks the outbox event as published.
+- `GET /team/overview`: team count and commission summary for the current user.
+- `GET /team/commissions`: paged commission events for the current user.
+
 ## Local Database
 
 ```powershell
@@ -72,6 +78,19 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 The smoke script verifies:
 
 `commerce paid -> compute activate -> compute receipt -> earnings settle -> wallet post`
+
+## Team Commission Smoke Test
+
+Start the gateway chain services first. The start script now includes `nexion-team-service`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_team_commission.ps1
+```
+
+The smoke script verifies:
+
+`referred user register -> order paid -> OrderPaid outbox -> team consume -> sponsor unilevel commission`
 
 ## Gateway Chain Smoke Test
 
@@ -102,6 +121,7 @@ If `-Phone` is omitted, the script generates a unique smoke phone number for eac
 
 - Table: `nx_event_outbox`.
 - Initial producer: `nexion-commerce-service` writes an `OrderPaid` event in the same transaction that marks an order as paid.
+- Initial consumer: `nexion-team-service` consumes `OrderPaid` events and creates unilevel commission records.
 - Internal commerce endpoints:
   - `GET /commerce/outbox/pending?limit=20`: list pending or retryable events.
   - `GET /commerce/outbox/aggregates/{aggregateType}/{aggregateId}`: inspect events for one aggregate.

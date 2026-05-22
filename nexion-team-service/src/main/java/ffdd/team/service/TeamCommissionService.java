@@ -1,0 +1,308 @@
+package ffdd.team.service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.common.api.ApiResult;
+import ffdd.common.api.PageResult;
+import ffdd.common.exception.BizException;
+import ffdd.team.client.CommerceOutboxClient;
+import ffdd.team.dto.OrderPaidPayload;
+import ffdd.team.dto.OutboxMessage;
+import ffdd.team.dto.TeamCommissionConsumeResult;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class TeamCommissionService {
+    private static final String EVENT_ORDER_PAID = "OrderPaid";
+    private static final String COMMISSION_UNILEVEL = "UNILEVEL";
+    private static final String STATUS_PENDING = "PENDING";
+    private static final int MAX_DEPTH = 7;
+
+    private final CommerceOutboxClient outboxClient;
+    private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
+
+    public TeamCommissionService(
+            CommerceOutboxClient outboxClient,
+            JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper) {
+        this.outboxClient = outboxClient;
+        this.jdbcTemplate = jdbcTemplate;
+        this.objectMapper = objectMapper;
+    }
+
+    public TeamCommissionConsumeResult consumeOrderPaid(int limit) {
+        ApiResult<List<OutboxMessage>> response = outboxClient.pending(Math.max(1, Math.min(limit, 100)));
+        ensureSuccess(response);
+
+        TeamCommissionConsumeResult result = new TeamCommissionConsumeResult();
+        List<OutboxMessage> messages = response.getData() == null ? List.of() : response.getData();
+        result.setScanned(messages.size());
+
+        for (OutboxMessage message : messages) {
+            if (!EVENT_ORDER_PAID.equals(message.getEventType())) {
+                result.setSkipped(result.getSkipped() + 1);
+                continue;
+            }
+            try {
+                int created = settleOrderPaid(message);
+                outboxClient.markPublished(message.getEventId());
+                result.setProcessed(result.getProcessed() + created);
+                result.getEventIds().add(message.getEventId());
+            } catch (RuntimeException ex) {
+                result.setFailed(result.getFailed() + 1);
+                outboxClient.markFailed(message.getEventId(), Map.of("error", ex.getMessage()));
+            }
+        }
+        return result;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public int settleOrderPaid(OutboxMessage message) {
+        OrderPaidPayload payload = readPayload(message.getPayload());
+        if (payload.getOrderNo() == null || payload.getUserId() == null || payload.getAmountUsdt() == null) {
+            throw new BizException("Invalid OrderPaid payload");
+        }
+        if (hasCommissionForOrder(payload.getOrderNo())) {
+            return 0;
+        }
+
+        List<CommissionRule> rules = rules();
+        Long currentUserId = payload.getUserId();
+        int created = 0;
+        for (CommissionRule rule : rules) {
+            Sponsor sponsor = sponsorOf(currentUserId);
+            if (sponsor == null) {
+                break;
+            }
+            BigDecimal amountUsdt = payload.getAmountUsdt()
+                    .multiply(rule.usdtRate())
+                    .setScale(6, RoundingMode.HALF_UP);
+            BigDecimal amountNex = payload.getAmountUsdt()
+                    .multiply(rule.nexPerUsd())
+                    .add(rule.fixedNex())
+                    .setScale(6, RoundingMode.HALF_UP);
+            insertCommission(payload, sponsor, rule, amountUsdt, amountNex);
+            upsertTeamMember(sponsor.userId(), payload.getUserId(), rule.layerNo(), payload.getAmountUsdt());
+            currentUserId = sponsor.userId();
+            created++;
+        }
+        return created;
+    }
+
+    public Map<String, Object> overview(Long userId) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("userId", userId);
+        summary.put("directCount", countTeamMembers(userId, 1));
+        summary.put("teamCount", countTeamMembers(userId, null));
+        summary.put("commissionCount", countCommissions(userId));
+        summary.put("pendingUsdt", sumCommission(userId, "amount_usdt"));
+        summary.put("pendingNex", sumCommission(userId, "amount_nex"));
+        summary.put("recentCommissions", recentCommissions(userId, 1, 10).getRecords());
+        return summary;
+    }
+
+    public PageResult<Map<String, Object>> pageCommissions(Long userId, long pageNum, long pageSize) {
+        return recentCommissions(userId, pageNum, pageSize);
+    }
+
+    private OrderPaidPayload readPayload(String payload) {
+        try {
+            return objectMapper.readValue(payload, OrderPaidPayload.class);
+        } catch (JsonProcessingException ex) {
+            throw new BizException("Unable to read OrderPaid payload");
+        }
+    }
+
+    private List<CommissionRule> rules() {
+        return jdbcTemplate.query("""
+                SELECT layer_no, usdt_rate, nex_per_usd, fixed_nex, cooldown_days
+                  FROM nx_commission_rule
+                 WHERE commission_type = 'UNILEVEL'
+                   AND status = 1
+                   AND is_deleted = 0
+                 ORDER BY layer_no ASC
+                 LIMIT ?
+                """, (rs, rowNum) -> new CommissionRule(
+                rs.getInt("layer_no"),
+                rs.getBigDecimal("usdt_rate"),
+                rs.getBigDecimal("nex_per_usd"),
+                rs.getBigDecimal("fixed_nex"),
+                rs.getInt("cooldown_days")), MAX_DEPTH);
+    }
+
+    private Sponsor sponsorOf(Long userId) {
+        List<Sponsor> sponsors = jdbcTemplate.query("""
+                SELECT u.sponsor_user_id AS user_id, s.nickname, s.v_rank
+                  FROM nx_user u
+                  JOIN nx_user s ON s.id = u.sponsor_user_id AND s.is_deleted = 0
+                 WHERE u.id = ?
+                   AND u.is_deleted = 0
+                   AND u.sponsor_user_id IS NOT NULL
+                 LIMIT 1
+                """, (rs, rowNum) -> new Sponsor(
+                rs.getLong("user_id"),
+                rs.getString("nickname"),
+                rs.getString("v_rank")), userId);
+        return sponsors.isEmpty() ? null : sponsors.get(0);
+    }
+
+    private boolean hasCommissionForOrder(String orderNo) {
+        Integer count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM nx_commission_event
+                 WHERE commission_type = 'UNILEVEL'
+                   AND order_no = ?
+                   AND is_deleted = 0
+                """, Integer.class, orderNo);
+        return count != null && count > 0;
+    }
+
+    private void insertCommission(
+            OrderPaidPayload payload,
+            Sponsor sponsor,
+            CommissionRule rule,
+            BigDecimal amountUsdt,
+            BigDecimal amountNex) {
+        jdbcTemplate.update("""
+                INSERT INTO nx_commission_event (
+                  user_id, commission_type, source_user_id, source_user_name, layer_no,
+                  order_no, order_amount_usd, amount_usdt, amount_nex, currency,
+                  status, unlock_at, remark, created_at, updated_at, is_deleted
+                ) VALUES (?, 'UNILEVEL', ?, ?, ?, ?, ?, ?, ?, 'USDT_NEX', ?, ?, ?, NOW(), NOW(), 0)
+                """,
+                sponsor.userId(),
+                payload.getUserId(),
+                "User#" + payload.getUserId(),
+                rule.layerNo(),
+                payload.getOrderNo(),
+                payload.getAmountUsdt(),
+                amountUsdt,
+                amountNex,
+                STATUS_PENDING,
+                LocalDateTime.now().plusDays(rule.cooldownDays()),
+                "OrderPaid outbox " + payload.getOrderNo());
+    }
+
+    private void upsertTeamMember(Long sponsorUserId, Long memberUserId, int level, BigDecimal volume) {
+        jdbcTemplate.update("""
+                INSERT INTO nx_team_member (
+                  user_id, member_user_id, member_no, nickname, v_rank, level, volume,
+                  created_at, updated_at, is_deleted
+                )
+                SELECT ?, u.id, CONCAT('U', u.id), COALESCE(u.nickname, CONCAT('User#', u.id)), u.v_rank, ?, ?, NOW(), NOW(), 0
+                  FROM nx_user u
+                 WHERE u.id = ?
+                ON DUPLICATE KEY UPDATE
+                  level = LEAST(level, VALUES(level)),
+                  volume = volume + VALUES(volume),
+                  nickname = VALUES(nickname),
+                  v_rank = VALUES(v_rank),
+                  updated_at = NOW(),
+                  is_deleted = 0
+                """, sponsorUserId, level, volume, memberUserId);
+    }
+
+    private long countTeamMembers(Long userId, Integer level) {
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM nx_team_member
+                 WHERE user_id = ?
+                   AND is_deleted = 0
+                   AND (? IS NULL OR level = ?)
+                """, Long.class, userId, level, level);
+        return count == null ? 0 : count;
+    }
+
+    private long countCommissions(Long userId) {
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM nx_commission_event
+                 WHERE user_id = ?
+                   AND is_deleted = 0
+                """, Long.class, userId);
+        return count == null ? 0 : count;
+    }
+
+    private BigDecimal sumCommission(Long userId, String column) {
+        BigDecimal amount = jdbcTemplate.queryForObject("""
+                SELECT COALESCE(SUM(%s), 0)
+                  FROM nx_commission_event
+                 WHERE user_id = ?
+                   AND status = 'PENDING'
+                   AND is_deleted = 0
+                """.formatted(column), BigDecimal.class, userId);
+        return amount == null ? BigDecimal.ZERO : amount;
+    }
+
+    private PageResult<Map<String, Object>> recentCommissions(Long userId, long pageNum, long pageSize) {
+        long normalizedPageNum = pageNum < 1 ? 1 : pageNum;
+        long normalizedPageSize = pageSize < 1 ? 10 : Math.min(pageSize, 100);
+        long offset = (normalizedPageNum - 1) * normalizedPageSize;
+        Long total = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM nx_commission_event
+                 WHERE user_id = ?
+                   AND is_deleted = 0
+                """, Long.class, userId);
+        List<Map<String, Object>> records = jdbcTemplate.query("""
+                SELECT id, user_id, commission_type, source_user_id, source_user_name,
+                       layer_no, order_no, order_amount_usd, amount_usdt, amount_nex,
+                       currency, status, unlock_at, remark, created_at
+                  FROM nx_commission_event
+                 WHERE user_id = ?
+                   AND is_deleted = 0
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ? OFFSET ?
+                """, this::mapCommission, userId, normalizedPageSize, offset);
+        return new PageResult<>(total == null ? 0 : total, normalizedPageNum, normalizedPageSize, records);
+    }
+
+    private Map<String, Object> mapCommission(ResultSet rs, int rowNum) throws SQLException {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", rs.getLong("id"));
+        row.put("userId", rs.getLong("user_id"));
+        row.put("commissionType", rs.getString("commission_type"));
+        row.put("sourceUserId", rs.getLong("source_user_id"));
+        row.put("sourceUserName", rs.getString("source_user_name"));
+        row.put("layerNo", rs.getInt("layer_no"));
+        row.put("orderNo", rs.getString("order_no"));
+        row.put("orderAmountUsd", rs.getBigDecimal("order_amount_usd"));
+        row.put("amountUsdt", rs.getBigDecimal("amount_usdt"));
+        row.put("amountNex", rs.getBigDecimal("amount_nex"));
+        row.put("currency", rs.getString("currency"));
+        row.put("status", rs.getString("status"));
+        row.put("unlockAt", rs.getTimestamp("unlock_at").toLocalDateTime());
+        row.put("remark", rs.getString("remark"));
+        row.put("createdAt", rs.getTimestamp("created_at").toLocalDateTime());
+        return row;
+    }
+
+    private void ensureSuccess(ApiResult<?> result) {
+        if (result == null || result.getCode() != 0) {
+            throw new BizException(result == null ? 500 : result.getCode(),
+                    result == null ? "Empty commerce outbox response" : result.getMessage());
+        }
+    }
+
+    private record Sponsor(Long userId, String nickname, String vRank) {
+    }
+
+    private record CommissionRule(
+            int layerNo,
+            BigDecimal usdtRate,
+            BigDecimal nexPerUsd,
+            BigDecimal fixedNex,
+            int cooldownDays) {
+    }
+}

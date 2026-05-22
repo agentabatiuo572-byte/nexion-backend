@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.bff.client.CommerceClient;
 import ffdd.bff.client.ComputeClient;
 import ffdd.bff.client.EarningsClient;
+import ffdd.bff.client.TeamClient;
 import ffdd.bff.client.WalletClient;
 import ffdd.bff.dto.BffSnapshot;
 import ffdd.common.api.ApiResult;
@@ -27,6 +28,7 @@ public class BffAggregationService {
     private final ComputeClient computeClient;
     private final EarningsClient earningsClient;
     private final CommerceClient commerceClient;
+    private final TeamClient teamClient;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
@@ -61,9 +63,9 @@ public class BffAggregationService {
 
     public BffSnapshot team(Long userId) {
         return cached("team", userId, () -> Map.of(
-                "userId", userId,
-                "status", "PLACEHOLDER",
-                "message", "team aggregation waits for team-service business APIs"));
+                "overview", data(teamClient.overview(userId)),
+                "commissions", records(teamClient.commissions(userId, 1L, 20L)),
+                "commissionCount", total(teamClient.commissions(userId, 1L, 1L))));
     }
 
     private BffSnapshot cached(String view, Long userId, SnapshotLoader loader) {

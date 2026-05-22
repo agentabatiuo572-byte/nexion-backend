@@ -693,6 +693,11 @@ CREATE TABLE IF NOT EXISTS nx_commission_event (
   KEY idx_commission_order (order_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_commission_event' AND INDEX_NAME = 'uk_commission_order_user_layer') = 0,
+  'ALTER TABLE nx_commission_event ADD UNIQUE KEY uk_commission_order_user_layer (commission_type, order_no, user_id, layer_no)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_mission (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   mission_code VARCHAR(64) NOT NULL,

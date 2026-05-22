@@ -31,4 +31,5 @@ nexion:
     commerce-url: ${NEXION_COMMERCE_URL:http://localhost:8104}
     compute-url: ${NEXION_COMPUTE_URL:http://localhost:8102}
     earnings-url: ${NEXION_EARNINGS_URL:http://localhost:8108}
+    team-url: ${NEXION_TEAM_URL:http://localhost:8106}
     wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}
