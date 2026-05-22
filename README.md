@@ -8,7 +8,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 |---|---:|---|
 | `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config |
 | `nexion-gateway` | 8090 | Spring Cloud Gateway routes |
-| `nexion-bff-service` | 8100 | page aggregation and high-concurrency read cache |
+| `nexion-bff-service` | 8100 | Home/Earn/Wallet page aggregation and short TTL Redis snapshots |
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
 | `nexion-compute-service` | 8102 | device status, compute tasks, node map, Proof-of-Compute receipts |
@@ -95,6 +95,17 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 ```
 
 If `-Phone` is omitted, the script generates a unique smoke phone number for each run.
+
+## BFF Aggregation Baseline
+
+The BFF service exposes page-level view models through Gateway at `/api/bff/**` and caches short-lived snapshots in Redis.
+
+- `GET /api/bff/home`: wallet, devices, earning events, recent orders, and counts.
+- `GET /api/bff/earn`: earning summaries and recent earning events.
+- `GET /api/bff/wallet`: wallet balance and recent ledgers.
+- `GET /api/bff/team`: placeholder aggregation until team-service business APIs are implemented.
+
+Snapshot keys use `bff:{view}:{userId}` with a default TTL of 3 seconds, plus `bff:{view}:{userId}:last` for stale fallback.
 
 ## OpenAPI Baseline
 

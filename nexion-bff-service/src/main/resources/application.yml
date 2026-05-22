@@ -6,6 +6,12 @@ spring:
       - optional:nacos:nexion-common.yaml
       - optional:nacos:${spring.application.name}.yaml
   cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 2000
+            readTimeout: 4000
     nacos:
       username: ${NACOS_USERNAME:nacos}
       password: "${NACOS_PASSWORD:nacos}"
@@ -17,3 +23,12 @@ spring:
 
 server:
   port: 8100
+
+nexion:
+  bff:
+    cache-ttl-seconds: ${NEXION_BFF_CACHE_TTL_SECONDS:3}
+  services:
+    commerce-url: ${NEXION_COMMERCE_URL:http://localhost:8104}
+    compute-url: ${NEXION_COMPUTE_URL:http://localhost:8102}
+    earnings-url: ${NEXION_EARNINGS_URL:http://localhost:8108}
+    wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}

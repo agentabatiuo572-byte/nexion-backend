@@ -15,7 +15,7 @@ public class BffOverviewController {
         return ApiResult.ok(Map.of(
                 "service", "nexion-bff-service",
                 "domain", "page aggregation and high-concurrency read cache",
-                "routes", List.of("/bff/ops/overview"),
+                "routes", List.of("/bff/ops/overview", "/bff/home", "/bff/earn", "/bff/wallet", "/bff/team"),
                 "upstreamDomains", List.of("auth", "wallet", "compute", "earnings", "team", "mission", "system")));
     }
 }
