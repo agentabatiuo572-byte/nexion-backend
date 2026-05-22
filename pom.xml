@@ -20,6 +20,7 @@
         <module>nexion-mission-service</module>
         <module>nexion-commerce-service</module>
         <module>nexion-earnings-service</module>
+        <module>nexion-openapi-service</module>
         <module>nexion-team-service</module>
         <module>nexion-wallet-service</module>
         <module>nexion-notification-service</module>

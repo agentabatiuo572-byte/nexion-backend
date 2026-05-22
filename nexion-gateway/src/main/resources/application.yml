@@ -62,6 +62,12 @@ spring:
             - Path=/api/earnings/**
           filters:
             - StripPrefix=1
+        - id: openapi-service
+          uri: http://localhost:8111
+          predicates:
+            - Path=/api/openapi/**
+          filters:
+            - StripPrefix=1
         - id: compliance-service
           uri: http://localhost:8109
           predicates:

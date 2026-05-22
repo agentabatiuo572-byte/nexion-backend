@@ -28,6 +28,7 @@ public class SecurityConfig {
                                 "/auth/register",
                                 "/auth/users/login",
                                 "/auth/users/register",
+                                "/openapi/v1/**",
                                 "/actuator/**")
                         .permitAll()
                         .anyRequest().authenticated())

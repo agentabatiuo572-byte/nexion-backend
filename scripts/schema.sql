@@ -832,3 +832,66 @@ CREATE TABLE IF NOT EXISTS nx_help_article (
   UNIQUE KEY uk_help_article_code (article_code),
   KEY idx_help_article_sort (sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_openapi_app (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  owner_user_id BIGINT NOT NULL,
+  app_name VARCHAR(128) NOT NULL,
+  app_key VARCHAR(96) NOT NULL,
+  app_secret VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  remark VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_openapi_app_key (app_key),
+  KEY idx_openapi_owner (owner_user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_openapi_call_audit (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  app_id BIGINT NOT NULL,
+  app_key VARCHAR(96) NOT NULL,
+  api_path VARCHAR(255) NOT NULL,
+  http_method VARCHAR(16) NOT NULL,
+  nonce VARCHAR(128) NOT NULL,
+  request_hash VARCHAR(128) NOT NULL,
+  response_code INT NULL,
+  response_message VARCHAR(255) NULL,
+  cost_ms BIGINT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_openapi_app_nonce (app_key, nonce),
+  KEY idx_openapi_audit_app_time (app_id, created_at),
+  KEY idx_openapi_audit_path_time (api_path, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_webhook_subscription (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  app_id BIGINT NOT NULL,
+  event_type VARCHAR(96) NOT NULL,
+  callback_url VARCHAR(512) NOT NULL,
+  secret VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_webhook_app_event (app_id, event_type, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_webhook_delivery (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  subscription_id BIGINT NOT NULL,
+  app_id BIGINT NOT NULL,
+  event_type VARCHAR(96) NOT NULL,
+  payload JSON NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  retry_count INT NOT NULL DEFAULT 0,
+  last_error VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_webhook_delivery_status (status, created_at),
+  KEY idx_webhook_delivery_app_event (app_id, event_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

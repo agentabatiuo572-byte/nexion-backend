@@ -20,6 +20,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
 | `nexion-system-service` | 8110 | operation config, i18n, content, help center |
+| `nexion-openapi-service` | 8111 | API app keys, HMAC signature auth, call audit, webhook queue |
 
 User growth levels are modeled separately from the current user snapshot:
 
@@ -94,3 +95,18 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 ```
 
 If `-Phone` is omitted, the script generates a unique smoke phone number for each run.
+
+## OpenAPI Baseline
+
+The OpenAPI service is exposed through Gateway at `/api/openapi/**`.
+
+- Authenticated user APIs:
+  - `POST /api/openapi/apps`: create an app key/secret pair.
+  - `GET /api/openapi/apps`: list the current user's apps.
+  - `POST /api/openapi/webhooks`: create a webhook subscription.
+  - `GET /api/openapi/webhooks?appId=...`: list webhook subscriptions.
+- Signed partner API:
+  - `POST /api/openapi/v1/compute/receipts`: submit a compute receipt through HMAC-SHA256 signature auth.
+
+Signed requests use these headers: `X-Nexion-App-Key`, `X-Nexion-Timestamp`, `X-Nexion-Nonce`, and `X-Nexion-Signature`.
+The string to sign is `appKey + "\n" + timestamp + "\n" + nonce + "\n" + sha256(canonicalJsonBody)`.
