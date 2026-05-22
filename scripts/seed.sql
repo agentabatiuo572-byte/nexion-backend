@@ -4,6 +4,7 @@ INSERT INTO admin (id, username, password_hash, nickname, email, phone, super_ad
 VALUES
   (1, 'superadmin', '$2a$10$lRWJD2iD0uPfyaTQcv7hjuhvluxuz6nfy5bkiZm4/D4La/6jI1EVS', 'Super Admin', 'admin@nexion.ai', NULL, 1, 1)
 ON DUPLICATE KEY UPDATE
+  password_hash = VALUES(password_hash),
   nickname = VALUES(nickname),
   email = VALUES(email),
   super_admin = VALUES(super_admin),

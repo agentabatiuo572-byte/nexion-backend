@@ -71,3 +71,18 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 The smoke script verifies:
 
 `commerce paid -> compute activate -> compute receipt -> earnings settle -> wallet post`
+
+## Gateway Chain Smoke Test
+
+Start the Gateway path services first: `nexion-gateway`, `nexion-bff-service`, `nexion-auth-service`, `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, and `nexion-wallet-service`.
+
+Then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_gateway_chain.ps1
+```
+
+The gateway start script defaults to the route config committed in this repository instead of any stale Nacos gateway config. Pass `-UseNacosConfig` when you intentionally want to validate the Nacos-published gateway routes.
+
+The gateway smoke logs in as the seeded `superadmin` account, verifies anonymous business routes are rejected, checks the BFF route, and then runs the same P0 business chain through `/api/**` Gateway routes.
