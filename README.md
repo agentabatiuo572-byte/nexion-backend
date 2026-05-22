@@ -2,20 +2,24 @@
 
 Java 17 + Spring Boot/Spring Cloud Alibaba + MySQL 8 + MyBatis-Plus + Redis + MinIO.
 
-The project follows the module layout of `compute-power-leasing`:
+The project now follows the first-phase service split from the Nexion high-concurrency architecture document.
 
 | Module | Port | Responsibility |
 |---|---:|---|
 | `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config |
 | `nexion-gateway` | 8090 | Spring Cloud Gateway routes |
+| `nexion-bff-service` | 8100 | page aggregation and high-concurrency read cache |
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
-| `nexion-device-service` | 8102 | user-owned device instances, using `nx_user_device` |
-| `nexion-task-service` | 8103 | compute tasks and Proof-of-Compute receipts |
-| `nexion-store-service` | 8104 | sellable devices and orders, using `nx_device` as device/SKU table |
+| `nexion-compute-service` | 8102 | device status, compute tasks, node map, Proof-of-Compute receipts |
+| `nexion-mission-service` | 8103 | check-in, quests, points, achievements |
+| `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in |
 | `nexion-wallet-service` | 8105 | wallet balances, bills, withdrawals |
 | `nexion-team-service` | 8106 | V rank, team volume, commission summary |
-| `nexion-notice-service` | 8107 | notifications and Stella messages |
+| `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
+| `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream |
+| `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
+| `nexion-system-service` | 8110 | operation config, i18n, content, help center |
 
 User growth levels are modeled separately from the current user snapshot:
 
@@ -52,3 +56,18 @@ Commission settlement is handled by independent trigger endpoints under `/team/c
 ```powershell
 & 'D:\software\apache-maven-3.9.9\bin\mvn.cmd' -DskipTests compile
 ```
+
+## Main Chain Smoke Test
+
+Start these services first: `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, and `nexion-wallet-service`.
+
+Then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_main_chain_services.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_main_chain.ps1
+```
+
+The smoke script verifies:
+
+`commerce paid -> compute activate -> compute receipt -> earnings settle -> wallet post`

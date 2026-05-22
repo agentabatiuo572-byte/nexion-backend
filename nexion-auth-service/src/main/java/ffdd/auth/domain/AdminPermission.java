@@ -14,5 +14,5 @@ public class AdminPermission extends BaseEntity {
     private String resourceType;
     private String resourcePath;
     private String remark;
+    private Integer status;
 }
-

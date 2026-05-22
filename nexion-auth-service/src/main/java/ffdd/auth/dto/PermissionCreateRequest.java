@@ -13,5 +13,5 @@ public class PermissionCreateRequest {
     private String resourceType;
     private String resourcePath;
     private String remark;
+    private Integer status = 1;
 }
-

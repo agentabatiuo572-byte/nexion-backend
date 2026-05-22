@@ -14,13 +14,17 @@
     <modules>
         <module>nexion-common</module>
         <module>nexion-gateway</module>
+        <module>nexion-bff-service</module>
         <module>nexion-auth-service</module>
-        <module>nexion-device-service</module>
-        <module>nexion-task-service</module>
-        <module>nexion-store-service</module>
+        <module>nexion-compute-service</module>
+        <module>nexion-mission-service</module>
+        <module>nexion-commerce-service</module>
+        <module>nexion-earnings-service</module>
         <module>nexion-team-service</module>
         <module>nexion-wallet-service</module>
-        <module>nexion-notice-service</module>
+        <module>nexion-notification-service</module>
+        <module>nexion-compliance-service</module>
+        <module>nexion-system-service</module>
     </modules>
 
     <properties>

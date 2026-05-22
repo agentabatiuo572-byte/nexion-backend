@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: nexion-compliance-service
+  config:
+    import:
+      - optional:nacos:nexion-common.yaml
+      - optional:nacos:${spring.application.name}.yaml
+  cloud:
+    nacos:
+      username: ${NACOS_USERNAME:nacos}
+      password: "${NACOS_PASSWORD:nacos}"
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        file-extension: yaml
+
+server:
+  port: 8109

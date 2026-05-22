@@ -18,6 +18,7 @@ public interface AdminService {
 
     void delete(Long id);
 
+    List<Long> roleIds(Long adminId);
+
     void assignRoles(Long adminId, List<Long> roleIds);
 }
-

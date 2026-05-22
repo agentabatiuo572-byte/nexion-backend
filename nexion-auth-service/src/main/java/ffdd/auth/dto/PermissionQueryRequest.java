@@ -8,5 +8,5 @@ public class PermissionQueryRequest {
     private String permissionName;
     private String resourceType;
     private String resourcePath;
+    private Integer status;
 }
-

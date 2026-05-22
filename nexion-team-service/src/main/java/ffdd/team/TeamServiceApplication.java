@@ -11,4 +11,3 @@ public class TeamServiceApplication {
         SpringApplication.run(TeamServiceApplication.class, args);
     }
 }
-

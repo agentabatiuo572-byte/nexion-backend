@@ -11,7 +11,12 @@ import ffdd.auth.mapper.AdminMapper;
 import ffdd.auth.mapper.AdminRoleRelationMapper;
 import ffdd.auth.service.AdminService;
 import ffdd.common.exception.BizException;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -21,6 +26,8 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AdminServiceImpl implements AdminService {
+    private static final long ROOT_ADMIN_ID = 1L;
+
     private final AdminMapper adminMapper;
     private final AdminRoleRelationMapper adminRoleRelationMapper;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
@@ -52,6 +59,9 @@ public class AdminServiceImpl implements AdminService {
     @Override
     public Admin update(Long id, AdminUpdateRequest request) {
         Admin admin = detail(id);
+        if (ROOT_ADMIN_ID == id && (Integer.valueOf(0).equals(request.getSuperAdmin()) || Integer.valueOf(0).equals(request.getStatus()))) {
+            throw new BizException("Root super admin cannot be downgraded or disabled");
+        }
         BeanUtils.copyProperties(request, admin);
         adminMapper.updateById(admin);
         return detail(id);
@@ -59,22 +69,45 @@ public class AdminServiceImpl implements AdminService {
 
     @Override
     public void delete(Long id) {
+        if (ROOT_ADMIN_ID == id) {
+            throw new BizException("Root super admin cannot be deleted");
+        }
         if (adminMapper.deleteById(id) == 0) {
             throw new BizException("Admin does not exist");
         }
     }
 
     @Override
-    public void assignRoles(Long adminId, List<Long> roleIds) {
+    public List<Long> roleIds(Long adminId) {
         detail(adminId);
-        adminRoleRelationMapper.delete(new LambdaQueryWrapper<AdminRoleRelation>()
-                .eq(AdminRoleRelation::getAdminId, adminId));
-        for (Long roleId : roleIds) {
-            AdminRoleRelation relation = new AdminRoleRelation();
-            relation.setAdminId(adminId);
-            relation.setRoleId(roleId);
-            relation.setIsDeleted(0);
-            adminRoleRelationMapper.insert(relation);
+        return adminRoleRelationMapper.selectActiveRoleIdsByAdminId(adminId);
+    }
+
+    @Override
+    public void assignRoles(Long adminId, List<Long> roleIds) {
+        if (ROOT_ADMIN_ID == adminId) {
+            throw new BizException("Root super admin roles cannot be changed");
+        }
+        detail(adminId);
+        Set<Long> targetRoleIds = roleIds == null ? Set.of() : roleIds.stream()
+                .filter(roleId -> roleId != null && roleId > 0)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        List<AdminRoleRelation> existingRelations = adminRoleRelationMapper.selectAllByAdminId(adminId);
+        Map<Long, AdminRoleRelation> existingByRoleId = existingRelations.stream()
+                .collect(Collectors.toMap(AdminRoleRelation::getRoleId, Function.identity(), (left, right) -> left));
+
+        for (AdminRoleRelation relation : existingRelations) {
+            int nextDeleted = targetRoleIds.contains(relation.getRoleId()) ? 0 : 1;
+            if (!Integer.valueOf(nextDeleted).equals(relation.getIsDeleted())) {
+                adminRoleRelationMapper.updateDeletedById(relation.getId(), nextDeleted);
+            }
+        }
+
+        for (Long roleId : targetRoleIds) {
+            AdminRoleRelation existing = existingByRoleId.get(roleId);
+            if (existing == null || !Integer.valueOf(0).equals(existing.getIsDeleted())) {
+                adminRoleRelationMapper.upsertActive(adminId, roleId);
+            }
         }
     }
 
@@ -91,4 +124,3 @@ public class AdminServiceImpl implements AdminService {
                 .orderByDesc(Admin::getId);
     }
 }
-

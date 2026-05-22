@@ -9,6 +9,7 @@ import ffdd.auth.dto.AssignAdminRolesRequest;
 import ffdd.auth.service.AdminService;
 import ffdd.common.api.ApiResult;
 import jakarta.validation.Valid;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -48,6 +49,12 @@ public class AdminController {
         return ApiResult.ok(adminService.detail(id));
     }
 
+    @GetMapping("/{id}/roles")
+    @PreAuthorize("hasAuthority('PERM_ADMIN_READ')")
+    public ApiResult<List<Long>> roleIds(@PathVariable Long id) {
+        return ApiResult.ok(adminService.roleIds(id));
+    }
+
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('PERM_ADMIN_WRITE')")
     public ApiResult<Admin> update(@PathVariable Long id, @Valid @RequestBody AdminUpdateRequest request) {
@@ -68,4 +75,3 @@ public class AdminController {
         return ApiResult.ok();
     }
 }
-

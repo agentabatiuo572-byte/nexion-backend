@@ -5,4 +5,3 @@ import ffdd.wallet.domain.UserWallet;
 
 public interface UserWalletMapper extends BaseMapper<UserWallet> {
 }
-

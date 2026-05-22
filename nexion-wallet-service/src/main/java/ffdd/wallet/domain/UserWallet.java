@@ -15,5 +15,5 @@ public class UserWallet extends BaseEntity {
     private BigDecimal nexAvailable;
     private BigDecimal pendingWithdraw;
     private BigDecimal lifetimeEarned;
+    private Long version;
 }
-

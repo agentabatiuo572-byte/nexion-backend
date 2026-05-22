@@ -8,5 +8,5 @@ public class PermissionUpdateRequest {
     private String resourceType;
     private String resourcePath;
     private String remark;
+    private Integer status;
 }
-

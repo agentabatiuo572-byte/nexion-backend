@@ -1,9 +1,14 @@
 package ffdd.auth.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import ffdd.auth.domain.AdminMenu;
 import ffdd.auth.domain.AdminPermission;
 import ffdd.auth.domain.AdminRole;
+import ffdd.auth.dto.AssignRoleMenusRequest;
 import ffdd.auth.dto.AssignRolePermissionsRequest;
+import ffdd.auth.dto.MenuCreateRequest;
+import ffdd.auth.dto.MenuQueryRequest;
+import ffdd.auth.dto.MenuUpdateRequest;
 import ffdd.auth.dto.PermissionCreateRequest;
 import ffdd.auth.dto.PermissionQueryRequest;
 import ffdd.auth.dto.PermissionUpdateRequest;
@@ -13,6 +18,7 @@ import ffdd.auth.dto.RoleUpdateRequest;
 import ffdd.auth.service.AccessControlService;
 import ffdd.common.api.ApiResult;
 import jakarta.validation.Valid;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -59,10 +65,54 @@ public class AccessControlController {
         return ApiResult.ok();
     }
 
-    @PutMapping("/roles/{id}/permissions")
+    @PostMapping("/menus")
+    @PreAuthorize("hasAuthority('PERM_PERMISSION_WRITE')")
+    public ApiResult<AdminMenu> createMenu(@Valid @RequestBody MenuCreateRequest request) {
+        return ApiResult.ok(accessControlService.createMenu(request));
+    }
+
+    @GetMapping("/menus")
+    @PreAuthorize("hasAuthority('PERM_PERMISSION_READ')")
+    public ApiResult<List<AdminMenu>> menuList(@ModelAttribute MenuQueryRequest query) {
+        return ApiResult.ok(accessControlService.menuList(query));
+    }
+
+    @PutMapping("/menus/{id}")
+    @PreAuthorize("hasAuthority('PERM_PERMISSION_WRITE')")
+    public ApiResult<AdminMenu> updateMenu(@PathVariable Long id, @Valid @RequestBody MenuUpdateRequest request) {
+        return ApiResult.ok(accessControlService.updateMenu(id, request));
+    }
+
+    @DeleteMapping("/menus/{id}")
+    @PreAuthorize("hasAuthority('PERM_PERMISSION_WRITE')")
+    public ApiResult<Void> deleteMenu(@PathVariable Long id) {
+        accessControlService.deleteMenu(id);
+        return ApiResult.ok();
+    }
+
+    @GetMapping("/roles/{id}/permissions")
+    @PreAuthorize("hasAuthority('PERM_ROLE_READ')")
+    public ApiResult<List<Long>> permissionIds(@PathVariable Long id) {
+        return ApiResult.ok(accessControlService.permissionIds(id));
+    }
+
+    @GetMapping("/roles/{id}/menus")
+    @PreAuthorize("hasAuthority('PERM_ROLE_READ')")
+    public ApiResult<List<Long>> menuIds(@PathVariable Long id) {
+        return ApiResult.ok(accessControlService.menuIds(id));
+    }
+
+    @PutMapping("/roles/{id}/menus")
     @PreAuthorize("hasAuthority('PERM_ROLE_PERMISSION_ASSIGN')")
-    public ApiResult<Void> assignPermissions(@PathVariable Long id, @Valid @RequestBody AssignRolePermissionsRequest request) {
-        accessControlService.assignPermissions(id, request.getPermissionIds());
+    public ApiResult<Void> assignMenus(@PathVariable Long id, @Valid @RequestBody AssignRoleMenusRequest request) {
+        accessControlService.assignMenus(id, request.getMenuIds());
+        return ApiResult.ok();
+    }
+
+    @PutMapping("/roles/{id}/api-permissions")
+    @PreAuthorize("hasAuthority('PERM_ROLE_PERMISSION_ASSIGN')")
+    public ApiResult<Void> assignApiPermissions(@PathVariable Long id, @Valid @RequestBody AssignRolePermissionsRequest request) {
+        accessControlService.assignApiPermissions(id, request.getPermissionIds());
         return ApiResult.ok();
     }
 
@@ -94,4 +144,3 @@ public class AccessControlController {
         return ApiResult.ok();
     }
 }
-
