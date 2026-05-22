@@ -1,8 +1,9 @@
 param(
   [string]$GatewayUrl = "http://127.0.0.1:8090",
-  [string]$AdminUsername = "superadmin",
-  [string]$AdminPassword = "123456",
-  [long]$UserId = 10001,
+  [string]$CountryCode = "+1",
+  [string]$Phone = "",
+  [string]$Password = "Nexion123456",
+  [string]$ReferralCode = "NX4892",
   [int]$Quantity = 1,
   [decimal]$RewardUsdt = 0.018,
   [decimal]$RewardNex = 3.2
@@ -10,6 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:Token = $null
+$script:UserId = $null
 
 function Invoke-GatewayJson {
   param(
@@ -85,16 +87,38 @@ function First-Record {
 Assert-GatewayHealth
 Assert-Unauthorized "$GatewayUrl/api/commerce/products?pageNum=1&pageSize=1&status=ON_SALE"
 
-Write-Host "Logging in through gateway auth route..."
-$login = Invoke-GatewayJson -Method Post -Uri "$GatewayUrl/api/auth/admin/login" -Anonymous -Body @{
-  username = $AdminUsername
-  password = $AdminPassword
+if (-not $Phone) {
+  $Phone = "9$(Get-Date -Format "MMddHHmmss")$(Get-Random -Minimum 10 -Maximum 99)"
+}
+
+Write-Host "Registering a real user through gateway auth route..."
+$registered = Invoke-GatewayJson -Method Post -Uri "$GatewayUrl/api/auth/users/register" -Anonymous -Body @{
+  countryCode = $CountryCode
+  phone = $Phone
+  password = $Password
+  referralCode = $ReferralCode
+}
+if (-not $registered.token -or $registered.token.StartsWith("dev-")) {
+  throw "User register did not return a real JWT token."
+}
+$registeredUserId = [long]$registered.userId
+Write-Host "Registered user $registeredUserId / $($registered.referralCode)"
+
+Write-Host "Logging in as the real user through gateway auth route..."
+$login = Invoke-GatewayJson -Method Post -Uri "$GatewayUrl/api/auth/users/login" -Anonymous -Body @{
+  countryCode = $CountryCode
+  phone = $Phone
+  password = $Password
 }
 $script:Token = $login.token
-if (-not $script:Token) {
-  throw "Admin login did not return a token."
+$script:UserId = [long]$login.userId
+if (-not $script:Token -or $script:Token.StartsWith("dev-")) {
+  throw "User login did not return a real JWT token."
 }
-Write-Host "Gateway login OK for $($login.admin.username)"
+if ($script:UserId -ne $registeredUserId) {
+  throw "Registered userId $registeredUserId does not match login userId $($script:UserId)."
+}
+Write-Host "Gateway user login OK for userId=$($script:UserId), phone=$CountryCode $Phone"
 
 Write-Host "Checking BFF route through gateway..."
 $bff = Invoke-GatewayJson -Method Get -Uri "$GatewayUrl/api/bff/ops/overview"
@@ -109,7 +133,7 @@ Write-Host "Using product $($product.id) / $($product.productNo) / $($product.na
 
 Write-Host "Creating order through gateway..."
 $order = Invoke-GatewayJson -Method Post -Uri "$GatewayUrl/api/commerce/orders" -Body @{
-  userId = $UserId
+  userId = $script:UserId
   productId = $product.id
   quantity = $Quantity
 }
@@ -154,7 +178,7 @@ $postResult = Invoke-GatewayJson -Method Post -Uri "$GatewayUrl/api/wallet/earni
 Write-Host "Wallet post-pending requested=$($postResult.requested), posted=$($postResult.posted)"
 
 Write-Host "Loading wallet through gateway..."
-$wallet = Invoke-GatewayJson -Method Get -Uri "$GatewayUrl/api/wallet/users/$UserId"
+$wallet = Invoke-GatewayJson -Method Get -Uri "$GatewayUrl/api/wallet/users/$($script:UserId)"
 Write-Host "Wallet user=$($wallet.userId), USDT=$($wallet.usdtAvailable), NEX=$($wallet.nexAvailable), lifetime=$($wallet.lifetimeEarned)"
 
-Write-Host "Gateway smoke chain completed."
+Write-Host "Gateway real-user smoke chain completed."

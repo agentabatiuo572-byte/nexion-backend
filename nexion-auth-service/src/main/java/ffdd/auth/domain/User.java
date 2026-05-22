@@ -15,10 +15,12 @@ public class User extends BaseEntity {
     private String nickname;
     private String avatarUrl;
     private String referralCode;
+    private Long sponsorUserId;
     private String sponsorCode;
     private String kycStatus;
     private String userLevel;
     private String vRank;
     private String status;
+    private String language;
+    private String region;
 }
-

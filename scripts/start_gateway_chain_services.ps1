@@ -3,6 +3,9 @@ param(
   [string]$Maven = "D:\software\apache-maven-3.9.9\bin\mvn.cmd",
   [string]$JwtSecret = "change-me-change-me-change-me-change-me",
   [string]$GatewaySecret = "nexion-local-gateway-secret",
+  [string]$RedisHost = "127.0.0.1",
+  [int]$RedisPort = 6379,
+  [string]$RedisPassword = "A123456789Z!@#",
   [switch]$UseNacosConfig
 )
 
@@ -31,7 +34,7 @@ foreach ($service in $services) {
   $workDir = Join-Path $Root $service.Name
   $outLog = Join-Path $Root "logs\$($service.Name).out.log"
   $errLog = Join-Path $Root "logs\$($service.Name).err.log"
-  $inner = "cd /d `"$workDir`" && set `"SPRING_CLOUD_NACOS_CONFIG_ENABLED=$nacosConfigEnabled`" && set `"NEXION_JWT_SECRET=$JwtSecret`" && set `"NEXION_GATEWAY_INTERNAL_SECRET=$GatewaySecret`" && call `"$Maven`" spring-boot:run > `"$outLog`" 2> `"$errLog`""
+  $inner = "cd /d `"$workDir`" && set `"SPRING_CLOUD_NACOS_CONFIG_ENABLED=$nacosConfigEnabled`" && set `"NEXION_JWT_SECRET=$JwtSecret`" && set `"NEXION_GATEWAY_INTERNAL_SECRET=$GatewaySecret`" && set `"SPRING_DATA_REDIS_HOST=$RedisHost`" && set `"SPRING_DATA_REDIS_PORT=$RedisPort`" && set `"SPRING_DATA_REDIS_PASSWORD=$RedisPassword`" && call `"$Maven`" spring-boot:run > `"$outLog`" 2> `"$errLog`""
   & cmd.exe /c "start `"$($service.Name)`" /B cmd.exe /c `"$inner`""
   Write-Host "Started $($service.Name), logs: $outLog / $errLog"
 }

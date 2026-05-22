@@ -85,4 +85,12 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 
 The gateway start script defaults to the route config committed in this repository instead of any stale Nacos gateway config. Pass `-UseNacosConfig` when you intentionally want to validate the Nacos-published gateway routes.
 
-The gateway smoke logs in as the seeded `superadmin` account, verifies anonymous business routes are rejected, checks the BFF route, and then runs the same P0 business chain through `/api/**` Gateway routes.
+The gateway smoke verifies anonymous business routes are rejected, registers a real user, logs in with that user's JWT, checks the BFF route, and then runs the same P0 business chain through `/api/**` Gateway routes. The smoke order and wallet checks use the `userId` returned by Auth instead of a fixed seeded user.
+
+Optional user-smoke parameters:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_gateway_chain.ps1 -CountryCode "+1" -Phone "4151234567" -Password "Nexion123456" -ReferralCode "NX4892"
+```
+
+If `-Phone` is omitted, the script generates a unique smoke phone number for each run.

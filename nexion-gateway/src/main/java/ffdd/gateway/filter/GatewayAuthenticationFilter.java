@@ -25,6 +25,8 @@ public class GatewayAuthenticationFilter implements GlobalFilter, Ordered {
             "/api/auth/admin/login",
             "/api/auth/login",
             "/api/auth/register",
+            "/api/auth/users/login",
+            "/api/auth/users/register",
             "/actuator/");
 
     private final JwtTokenProvider tokenProvider;
