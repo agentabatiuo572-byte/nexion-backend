@@ -96,6 +96,20 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 
 If `-Phone` is omitted, the script generates a unique smoke phone number for each run.
 
+## Reliable Event Outbox Baseline
+
+`nexion-common` provides a JDBC-backed outbox helper for the local transaction + reliable event pattern described in the high-concurrency architecture document.
+
+- Table: `nx_event_outbox`.
+- Initial producer: `nexion-commerce-service` writes an `OrderPaid` event in the same transaction that marks an order as paid.
+- Internal commerce endpoints:
+  - `GET /commerce/outbox/pending?limit=20`: list pending or retryable events.
+  - `GET /commerce/outbox/aggregates/{aggregateType}/{aggregateId}`: inspect events for one aggregate.
+  - `POST /commerce/outbox/{eventId}/published`: mark delivery complete.
+  - `POST /commerce/outbox/{eventId}/failed`: mark delivery failed and schedule retry.
+
+`smoke_main_chain.ps1` now verifies the `OrderPaid` outbox event before continuing to compute activation and earnings settlement.
+
 ## BFF Aggregation Baseline
 
 The BFF service exposes page-level view models through Gateway at `/api/bff/**` and caches short-lived snapshots in Redis.

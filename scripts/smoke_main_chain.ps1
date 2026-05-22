@@ -93,6 +93,14 @@ $order = Invoke-NexionJson -Method Put -Uri "$CommerceUrl/commerce/orders/$($ord
 }
 Write-Host "Order activationStatus=$($order.activationStatus)"
 
+Write-Host "Checking OrderPaid outbox event..."
+$outboxEvents = Invoke-NexionJson -Method Get -Uri "$CommerceUrl/commerce/outbox/aggregates/ORDER/$($order.orderNo)?limit=5"
+$orderPaidEvent = $outboxEvents | Where-Object { $_.eventType -eq "OrderPaid" } | Select-Object -First 1
+if ($null -eq $orderPaidEvent) {
+  throw "No OrderPaid outbox event found for order $($order.orderNo)"
+}
+Write-Host "Outbox event $($orderPaidEvent.eventId) type=$($orderPaidEvent.eventType) status=$($orderPaidEvent.status)"
+
 Write-Host "Loading activated device..."
 $devices = Invoke-NexionJson -Method Get -Uri "$ComputeUrl/compute/devices?sourceOrderNo=$($order.orderNo)&pageNum=1&pageSize=1"
 $device = First-Record $devices

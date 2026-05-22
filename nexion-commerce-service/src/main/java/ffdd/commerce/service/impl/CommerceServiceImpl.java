@@ -17,9 +17,12 @@ import ffdd.commerce.service.CommerceService;
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
+import ffdd.common.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,11 +43,17 @@ public class CommerceServiceImpl implements CommerceService {
     private final ProductMapper productMapper;
     private final CommerceOrderMapper orderMapper;
     private final ComputeClient computeClient;
+    private final EventOutboxService outboxService;
 
-    public CommerceServiceImpl(ProductMapper productMapper, CommerceOrderMapper orderMapper, ComputeClient computeClient) {
+    public CommerceServiceImpl(
+            ProductMapper productMapper,
+            CommerceOrderMapper orderMapper,
+            ComputeClient computeClient,
+            EventOutboxService outboxService) {
         this.productMapper = productMapper;
         this.orderMapper = orderMapper;
         this.computeClient = computeClient;
+        this.outboxService = outboxService;
     }
 
     @Override
@@ -157,6 +166,7 @@ public class CommerceServiceImpl implements CommerceService {
         order.setOrderStatus(ORDER_PAID);
         order.setActivationStatus(ACTIVATION_PENDING);
         order.setPaidAt(patch.getPaidAt());
+        publishOrderPaidEvent(order);
         return activatePaidOrder(orderNo);
     }
 
@@ -225,6 +235,18 @@ public class CommerceServiceImpl implements CommerceService {
         request.setDailyNex(product.getDailyNex());
         request.setQuantity(order.getQuantity());
         return request;
+    }
+
+    private void publishOrderPaidEvent(CommerceOrder order) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("orderNo", order.getOrderNo());
+        payload.put("userId", order.getUserId());
+        payload.put("productId", order.getProductId());
+        payload.put("quantity", order.getQuantity());
+        payload.put("amountUsdt", order.getAmountUsdt());
+        payload.put("paymentNo", order.getPaymentNo());
+        payload.put("paidAt", order.getPaidAt());
+        outboxService.publish("ORDER", order.getOrderNo(), "OrderPaid", payload);
     }
 
     private void markActivationFailed(CommerceOrder order) {

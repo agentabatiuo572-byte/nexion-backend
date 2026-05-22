@@ -418,6 +418,27 @@ CREATE TABLE IF NOT EXISTS nx_trade_in_order (
   KEY idx_trade_in_user_time (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_event_outbox (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  event_id VARCHAR(64) NOT NULL,
+  aggregate_type VARCHAR(64) NOT NULL,
+  aggregate_id VARCHAR(128) NOT NULL,
+  event_type VARCHAR(96) NOT NULL,
+  payload JSON NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  retry_count INT NOT NULL DEFAULT 0,
+  next_retry_at DATETIME NULL,
+  published_at DATETIME NULL,
+  last_error VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_event_outbox_event_id (event_id),
+  KEY idx_event_outbox_status_next (status, next_retry_at, id),
+  KEY idx_event_outbox_aggregate (aggregate_type, aggregate_id),
+  KEY idx_event_outbox_type_time (event_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_user_device (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
