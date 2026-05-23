@@ -12,6 +12,7 @@ import ffdd.wallet.dto.LedgerQueryRequest;
 import ffdd.wallet.dto.PostEarningRequest;
 import ffdd.wallet.dto.PostEarningsResponse;
 import ffdd.wallet.dto.PostPendingEarningsRequest;
+import ffdd.wallet.dto.PostWalletCreditRequest;
 import ffdd.wallet.mapper.EarningEventMapper;
 import ffdd.wallet.mapper.UserWalletMapper;
 import ffdd.wallet.mapper.WalletLedgerMapper;
@@ -118,68 +119,89 @@ public class WalletServiceImpl implements WalletService {
         return new PostEarningsResponse(events.size(), ledgers.size(), ledgers);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public WalletLedger postCredit(PostWalletCreditRequest request) {
+        return postCredit(
+                request.getUserId(),
+                request.getBizNo(),
+                request.getBizType(),
+                request.getAsset(),
+                request.getAmount(),
+                request.getRemark());
+    }
+
     private WalletLedger postEarningEvent(EarningEvent event) {
-        validateAsset(event.getAsset());
-        WalletLedger existing = findLedger(event.getEventNo(), event.getAsset(), DIRECTION_IN);
-        if (existing != null) {
-            markEventPosted(event);
-            return existing;
-        }
-
-        getOrCreateWallet(event.getUserId());
-        WalletLedger ledger = createLedger(event);
-        try {
-            ledgerMapper.insert(ledger);
-        } catch (DuplicateKeyException ex) {
-            WalletLedger duplicate = findLedgerAny(event.getEventNo(), event.getAsset(), DIRECTION_IN);
-            if (duplicate == null || Integer.valueOf(1).equals(duplicate.getIsDeleted())) {
-                throw new BizException("Duplicate wallet ledger exists in an invalid state");
-            }
-            markEventPosted(event);
-            return duplicate;
-        }
-
-        UserWallet wallet = addBalance(event);
-        WalletLedger patch = new WalletLedger();
-        patch.setId(ledger.getId());
-        patch.setBalanceAfter(balanceAfter(wallet, event.getAsset()));
-        ledgerMapper.updateById(patch);
-        ledger.setBalanceAfter(patch.getBalanceAfter());
-
+        WalletLedger ledger = postCredit(
+                event.getUserId(),
+                event.getEventNo(),
+                BIZ_TYPE_EARNING,
+                event.getAsset(),
+                event.getAmount(),
+                "Earning receipt " + event.getReceiptNo());
         markEventPosted(event);
         return ledger;
     }
 
-    private WalletLedger createLedger(EarningEvent event) {
+    private WalletLedger postCredit(Long userId, String bizNo, String bizType, String asset, BigDecimal amount, String remark) {
+        validateCredit(userId, bizNo, bizType, asset, amount);
+        WalletLedger existing = findLedger(bizNo, asset, DIRECTION_IN);
+        if (existing != null) {
+            return existing;
+        }
+
+        getOrCreateWallet(userId);
+        WalletLedger ledger = createLedger(userId, bizNo, bizType, asset, amount, remark);
+        try {
+            ledgerMapper.insert(ledger);
+        } catch (DuplicateKeyException ex) {
+            WalletLedger duplicate = findLedgerAny(bizNo, asset, DIRECTION_IN);
+            if (duplicate == null || Integer.valueOf(1).equals(duplicate.getIsDeleted())) {
+                throw new BizException("Duplicate wallet ledger exists in an invalid state");
+            }
+            return duplicate;
+        }
+
+        UserWallet wallet = addBalance(userId, asset, amount);
+        WalletLedger patch = new WalletLedger();
+        patch.setId(ledger.getId());
+        patch.setBalanceAfter(balanceAfter(wallet, asset));
+        ledgerMapper.updateById(patch);
+        ledger.setBalanceAfter(patch.getBalanceAfter());
+
+        return ledger;
+    }
+
+    private WalletLedger createLedger(Long userId, String bizNo, String bizType, String asset, BigDecimal amount, String remark) {
         WalletLedger ledger = new WalletLedger();
-        ledger.setUserId(event.getUserId());
-        ledger.setBizNo(event.getEventNo());
-        ledger.setBizType(BIZ_TYPE_EARNING);
-        ledger.setAsset(event.getAsset());
+        ledger.setUserId(userId);
+        ledger.setBizNo(bizNo);
+        ledger.setBizType(bizType);
+        ledger.setAsset(asset);
         ledger.setDirection(DIRECTION_IN);
-        ledger.setAmount(event.getAmount());
+        ledger.setAmount(amount);
         ledger.setBalanceAfter(BigDecimal.ZERO);
         ledger.setStatus(LEDGER_SUCCESS);
-        ledger.setRemark("Earning receipt " + event.getReceiptNo());
+        ledger.setRemark(remark);
         ledger.setIsDeleted(0);
         return ledger;
     }
 
-    private UserWallet addBalance(EarningEvent event) {
-        String amount = event.getAmount().toPlainString();
+    private UserWallet addBalance(Long userId, String asset, BigDecimal creditAmount) {
+        String amount = creditAmount.toPlainString();
         LambdaUpdateWrapper<UserWallet> wrapper = new LambdaUpdateWrapper<UserWallet>()
-                .eq(UserWallet::getUserId, event.getUserId())
+                .eq(UserWallet::getUserId, userId)
                 .eq(UserWallet::getIsDeleted, 0)
-                .setSql(assetColumn(event.getAsset()) + " = " + assetColumn(event.getAsset()) + " + " + amount)
+                .setSql(assetColumn(asset) + " = " + assetColumn(asset) + " + " + amount)
                 .setSql("version = version + 1");
-        if (ASSET_USDT.equals(event.getAsset())) {
+        if (ASSET_USDT.equals(asset)) {
             wrapper.setSql("lifetime_earned = lifetime_earned + " + amount);
         }
         int updated = walletMapper.update(null, wrapper);
         if (updated == 0) {
             throw new BizException("Wallet update failed");
         }
-        return findWallet(event.getUserId());
+        return findWallet(userId);
     }
 
     private void markEventPosted(EarningEvent event) {
@@ -219,6 +241,22 @@ public class WalletServiceImpl implements WalletService {
     private void validateAsset(String asset) {
         if (!ASSET_USDT.equals(asset) && !ASSET_NEX.equals(asset)) {
             throw new BizException("Unsupported asset: " + asset);
+        }
+    }
+
+    private void validateCredit(Long userId, String bizNo, String bizType, String asset, BigDecimal amount) {
+        if (userId == null) {
+            throw new BizException("User id is required");
+        }
+        if (!StringUtils.hasText(bizNo)) {
+            throw new BizException("Biz no is required");
+        }
+        if (!StringUtils.hasText(bizType)) {
+            throw new BizException("Biz type is required");
+        }
+        validateAsset(asset);
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BizException("Credit amount must be positive");
         }
     }
 

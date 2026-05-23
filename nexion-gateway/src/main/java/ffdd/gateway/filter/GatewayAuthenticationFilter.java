@@ -66,7 +66,7 @@ public class GatewayAuthenticationFilter implements GlobalFilter, Ordered {
 
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE;
+        return Ordered.HIGHEST_PRECEDENCE + 100;
     }
 
     private boolean isPublicPath(String path) {

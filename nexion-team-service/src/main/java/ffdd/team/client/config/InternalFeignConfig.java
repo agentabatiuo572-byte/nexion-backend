@@ -16,7 +16,7 @@ public class InternalFeignConfig {
             template.header(AuthHeaders.SUBJECT_ID, "0");
             template.header(AuthHeaders.SUBJECT_TYPE, "SERVICE");
             template.header(AuthHeaders.USERNAME, "nexion-team-service");
-            template.header(AuthHeaders.AUTHORITIES, "PERM_TEAM_READ,PERM_TEAM_WRITE,PERM_COMMERCE_READ");
+            template.header(AuthHeaders.AUTHORITIES, "PERM_TEAM_READ,PERM_TEAM_WRITE,PERM_COMMERCE_READ,PERM_WALLET_WRITE");
         };
     }
 }

@@ -91,3 +91,11 @@ spring:
 
 server:
   port: 8090
+
+nexion:
+  gateway:
+    rate-limit:
+      enabled: ${NEXION_GATEWAY_RATE_LIMIT_ENABLED:true}
+      anonymous-permits-per-minute: ${NEXION_GATEWAY_RATE_LIMIT_ANONYMOUS_PER_MINUTE:20}
+      user-permits-per-minute: ${NEXION_GATEWAY_RATE_LIMIT_USER_PER_MINUTE:120}
+      window-seconds: ${NEXION_GATEWAY_RATE_LIMIT_WINDOW_SECONDS:60}

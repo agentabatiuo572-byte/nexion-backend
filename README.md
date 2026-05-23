@@ -7,15 +7,15 @@ The project now follows the first-phase service split from the Nexion high-concu
 | Module | Port | Responsibility |
 |---|---:|---|
 | `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config |
-| `nexion-gateway` | 8090 | Spring Cloud Gateway routes |
+| `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, local rate-limit baseline |
 | `nexion-bff-service` | 8100 | Home/Earn/Wallet page aggregation and short TTL Redis snapshots |
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
 | `nexion-compute-service` | 8102 | device status, compute tasks, node map, Proof-of-Compute receipts |
 | `nexion-mission-service` | 8103 | check-in, quests, points, achievements |
 | `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in |
-| `nexion-wallet-service` | 8105 | wallet balances, bills, withdrawals |
-| `nexion-team-service` | 8106 | OrderPaid outbox consumption, unilevel commission events, team overview |
+| `nexion-wallet-service` | 8105 | wallet balances, bills, idempotent earning/team commission credits, withdrawals |
+| `nexion-team-service` | 8106 | OrderPaid outbox worker, unilevel commission events, commission unlock, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
 | `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
@@ -49,6 +49,8 @@ Commission settlement is handled by independent trigger endpoints under `/team/c
 The current backend baseline implements the first event-driven slice:
 
 - `POST /team/outbox/consume-order-paid`: pulls pending `OrderPaid` events from commerce outbox, creates unilevel commission events for sponsor layers, and marks the outbox event as published.
+- `TeamOutboxWorker`: automatically polls due commerce outbox events and runs the same idempotent `OrderPaid` commission consumer.
+- `POST /team/commissions/unlock`: scans due `PENDING` commission events, posts USDT/NEX credits to wallet, and marks commissions as `POSTED`.
 - `GET /team/overview`: team count and commission summary for the current user.
 - `GET /team/commissions`: paged commission events for the current user.
 
@@ -90,7 +92,9 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 
 The smoke script verifies:
 
-`referred user register -> order paid -> OrderPaid outbox -> team consume -> sponsor unilevel commission`
+`referred user register -> order paid -> OrderPaid outbox -> team consume -> sponsor unilevel commission -> commission unlock -> wallet post`
+
+Pass `-RequireWorker` to require the scheduled Team outbox worker to consume the event without using the manual fallback endpoint.
 
 ## Gateway Chain Smoke Test
 
@@ -115,6 +119,36 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 
 If `-Phone` is omitted, the script generates a unique smoke phone number for each run.
 
+Pass `-CheckRateLimit` to also verify that anonymous `/api/commerce/**` traffic is rejected with `429` after the configured anonymous burst.
+
+## Gateway Rate Limit Baseline
+
+Gateway has a local fixed-window limiter for `/api/**` routes. Keys are scoped by identity and route group:
+
+- Anonymous key: client IP + first segment after `/api/`.
+- Authenticated key: Bearer token hash + first segment after `/api/`.
+- Default anonymous limit: 20 requests per 60 seconds.
+- Default user limit: 120 requests per 60 seconds.
+
+Local startup parameters:
+
+- `-GatewayRateLimitEnabled true`
+- `-GatewayAnonymousRateLimit 20`
+- `-GatewayUserRateLimit 120`
+- `-GatewayRateLimitWindowSeconds 60`
+
+This is the first Gateway protection baseline; a future distributed limiter can replace it with Redis/Sentinel without changing downstream services.
+
+## Wallet Credit Baseline
+
+Wallet owns balance mutation and ledger idempotency. Internal services can post credits through:
+
+- `POST /wallet/credits/post`: protected by `PERM_WALLET_WRITE`.
+- Required fields: `userId`, `bizNo`, `bizType`, `asset`, and positive `amount`.
+- Idempotency key: `(biz_no, asset, direction)`.
+
+Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION-{commissionId}` for both USDT and NEX ledger entries.
+
 ## Reliable Event Outbox Baseline
 
 `nexion-common` provides a JDBC-backed outbox helper for the local transaction + reliable event pattern described in the high-concurrency architecture document.
@@ -123,10 +157,18 @@ If `-Phone` is omitted, the script generates a unique smoke phone number for eac
 - Initial producer: `nexion-commerce-service` writes an `OrderPaid` event in the same transaction that marks an order as paid.
 - Initial consumer: `nexion-team-service` consumes `OrderPaid` events and creates unilevel commission records.
 - Internal commerce endpoints:
-  - `GET /commerce/outbox/pending?limit=20`: list pending or retryable events.
-  - `GET /commerce/outbox/aggregates/{aggregateType}/{aggregateId}`: inspect events for one aggregate.
-  - `POST /commerce/outbox/{eventId}/published`: mark delivery complete.
-  - `POST /commerce/outbox/{eventId}/failed`: mark delivery failed and schedule retry.
+- `GET /commerce/outbox/pending?limit=20`: list pending or retryable events.
+- `GET /commerce/outbox/dead?limit=20`: list dead-letter events.
+- `GET /commerce/outbox/aggregates/{aggregateType}/{aggregateId}`: inspect events for one aggregate.
+- `POST /commerce/outbox/{eventId}/published`: mark delivery complete.
+- `POST /commerce/outbox/{eventId}/failed`: mark delivery failed, schedule exponential retry, and move to `DEAD` after `nexion.outbox.max-retries`.
+
+Team outbox worker defaults:
+
+- `NEXION_TEAM_OUTBOX_WORKER_ENABLED=true`
+- `NEXION_TEAM_OUTBOX_WORKER_BATCH_SIZE=50`
+- `NEXION_TEAM_OUTBOX_WORKER_INITIAL_DELAY_MS=5000`
+- `NEXION_TEAM_OUTBOX_WORKER_FIXED_DELAY_MS=5000`
 
 `smoke_main_chain.ps1` now verifies the `OrderPaid` outbox event before continuing to compute activation and earnings settlement.
 
@@ -137,7 +179,7 @@ The BFF service exposes page-level view models through Gateway at `/api/bff/**` 
 - `GET /api/bff/home`: wallet, devices, earning events, recent orders, and counts.
 - `GET /api/bff/earn`: earning summaries and recent earning events.
 - `GET /api/bff/wallet`: wallet balance and recent ledgers.
-- `GET /api/bff/team`: placeholder aggregation until team-service business APIs are implemented.
+- `GET /api/bff/team`: team overview and recent commission aggregation from team-service.
 
 Snapshot keys use `bff:{view}:{userId}` with a default TTL of 3 seconds, plus `bff:{view}:{userId}:last` for stale fallback.
 

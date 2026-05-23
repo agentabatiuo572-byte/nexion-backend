@@ -6,7 +6,9 @@ param(
   [string]$ReferralCode = "NX4892",
   [int]$Quantity = 1,
   [decimal]$RewardUsdt = 0.018,
-  [decimal]$RewardNex = 3.2
+  [decimal]$RewardNex = 3.2,
+  [switch]$CheckRateLimit,
+  [int]$RateLimitBurst = 25
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +78,38 @@ function Assert-Unauthorized {
   throw "Expected 401 from $Uri, but the request succeeded."
 }
 
+function Assert-RateLimited {
+  param(
+    [Parameter(Mandatory = $true)][string]$Uri,
+    [int]$Attempts = 25
+  )
+
+  $unauthorized = 0
+  $rateLimitIp = "203.0.113.$(Get-Random -Minimum 1 -Maximum 254)"
+  $headers = @{ "X-Forwarded-For" = $rateLimitIp }
+  for ($i = 1; $i -le $Attempts; $i++) {
+    try {
+      Invoke-RestMethod -Method Get -Uri "$Uri&rateSmoke=$i" -Headers $headers -TimeoutSec 8 | Out-Null
+    } catch {
+      $statusCode = $null
+      if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+        $statusCode = [int]$_.Exception.Response.StatusCode
+      }
+      if ($statusCode -eq 429) {
+        Write-Host "OK gateway rate limited anonymous route -> 429 after $i attempts"
+        return
+      }
+      if ($statusCode -eq 401) {
+        $unauthorized++
+        continue
+      }
+      throw "Expected 401 or 429 from rate-limit route, got $statusCode. $($_.Exception.Message)"
+    }
+  }
+
+  throw "Expected gateway rate limit 429 within $Attempts attempts, saw $unauthorized unauthorized responses."
+}
+
 function First-Record {
   param([object]$Page)
   if ($null -eq $Page -or $null -eq $Page.records -or $Page.records.Count -lt 1) {
@@ -86,6 +120,9 @@ function First-Record {
 
 Assert-GatewayHealth
 Assert-Unauthorized "$GatewayUrl/api/commerce/products?pageNum=1&pageSize=1&status=ON_SALE"
+if ($CheckRateLimit) {
+  Assert-RateLimited "$GatewayUrl/api/commerce/products?pageNum=1&pageSize=1&status=ON_SALE" $RateLimitBurst
+}
 
 if (-not $Phone) {
   $Phone = "9$(Get-Date -Format "MMddHHmmss")$(Get-Random -Minimum 10 -Maximum 99)"

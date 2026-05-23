@@ -2,12 +2,15 @@ param(
   [string]$AuthUrl = "http://127.0.0.1:8101",
   [string]$CommerceUrl = "http://127.0.0.1:8104",
   [string]$TeamUrl = "http://127.0.0.1:8106",
+  [string]$WalletUrl = "http://127.0.0.1:8105",
   [string]$GatewaySecret = "nexion-local-gateway-secret",
   [string]$CountryCode = "+1",
   [string]$Phone = "",
   [string]$Password = "Nexion123456",
   [string]$ReferralCode = "NX4892",
-  [long]$SponsorUserId = 10001
+  [long]$SponsorUserId = 10001,
+  [string]$UnlockBefore = "2099-01-01T00:00:00",
+  [switch]$RequireWorker
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,7 +20,7 @@ $InternalHeaders = @{
   "X-Nexion-Subject-Id" = "0"
   "X-Nexion-Subject-Type" = "SERVICE"
   "X-Nexion-Username" = "smoke-team-commission"
-  "X-Nexion-Authorities" = "PERM_COMMERCE_WRITE,PERM_COMMERCE_READ,PERM_TEAM_READ,PERM_TEAM_WRITE"
+  "X-Nexion-Authorities" = "PERM_COMMERCE_WRITE,PERM_COMMERCE_READ,PERM_TEAM_READ,PERM_TEAM_WRITE,PERM_WALLET_READ,PERM_WALLET_WRITE"
 }
 
 function Invoke-NexionJson {
@@ -68,9 +71,41 @@ function First-Record {
   return $Page.records[0]
 }
 
+function Find-CommissionForOrder {
+  param(
+    [Parameter(Mandatory = $true)][string]$OrderNo,
+    [Parameter(Mandatory = $true)][long]$UserId
+  )
+
+  $page = Invoke-NexionJson -Method Get -Uri "$TeamUrl/team/commissions?userId=$UserId&pageNum=1&pageSize=50"
+  if ($null -eq $page -or $null -eq $page.records) {
+    return $null
+  }
+  return $page.records | Where-Object { $_.orderNo -eq $OrderNo } | Select-Object -First 1
+}
+
+function Wait-CommissionForOrder {
+  param(
+    [Parameter(Mandatory = $true)][string]$OrderNo,
+    [Parameter(Mandatory = $true)][long]$UserId,
+    [int]$TimeoutSeconds = 30
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $commission = Find-CommissionForOrder -OrderNo $OrderNo -UserId $UserId
+    if ($null -ne $commission) {
+      return $commission
+    }
+    Start-Sleep -Seconds 2
+  } while ((Get-Date) -lt $deadline)
+  return $null
+}
+
 Assert-ServiceHealth "auth" $AuthUrl
 Assert-ServiceHealth "commerce" $CommerceUrl
 Assert-ServiceHealth "team" $TeamUrl
+Assert-ServiceHealth "wallet" $WalletUrl
 
 if (-not $Phone) {
   $Phone = "8$(Get-Date -Format "MMddHHmmss")$(Get-Random -Minimum 10 -Maximum 99)"
@@ -105,11 +140,21 @@ $order = Invoke-NexionJson -Method Put -Uri "$CommerceUrl/commerce/orders/$($ord
 }
 Write-Host "Order activationStatus=$($order.activationStatus)"
 
-Write-Host "Consuming OrderPaid outbox event in team-service..."
-$consume = Invoke-NexionJson -Method Post -Uri "$TeamUrl/team/outbox/consume-order-paid?limit=50"
-Write-Host "Consume scanned=$($consume.scanned), processed=$($consume.processed), failed=$($consume.failed)"
-if ($consume.processed -lt 1) {
-  throw "Expected at least one commission event to be created."
+Write-Host "Waiting for team outbox worker to consume OrderPaid..."
+$commission = Wait-CommissionForOrder -OrderNo $order.orderNo -UserId $SponsorUserId -TimeoutSeconds 30
+if ($null -eq $commission) {
+  if ($RequireWorker) {
+    throw "Expected team outbox worker to create commission for order $($order.orderNo)."
+  }
+  Write-Host "Worker did not consume within timeout; falling back to manual consume endpoint..."
+  $consume = Invoke-NexionJson -Method Post -Uri "$TeamUrl/team/outbox/consume-order-paid?limit=50"
+  Write-Host "Consume scanned=$($consume.scanned), processed=$($consume.processed), failed=$($consume.failed)"
+  $commission = Wait-CommissionForOrder -OrderNo $order.orderNo -UserId $SponsorUserId -TimeoutSeconds 10
+  if ($null -eq $commission) {
+    throw "Expected at least one commission event to be created."
+  }
+} else {
+  Write-Host "Worker created commission id=$($commission.id), status=$($commission.status)"
 }
 
 Write-Host "Loading sponsor team overview..."
@@ -119,4 +164,27 @@ if ($overview.commissionCount -lt 1) {
   throw "Expected sponsor commissionCount to be greater than zero."
 }
 
-Write-Host "Team commission smoke completed."
+Write-Host "Loading sponsor wallet before commission unlock..."
+$walletBefore = Invoke-NexionJson -Method Get -Uri "$WalletUrl/wallet/users/$SponsorUserId"
+Write-Host "Before wallet USDT=$($walletBefore.usdtAvailable), NEX=$($walletBefore.nexAvailable)"
+
+$encodedOrderNo = [uri]::EscapeDataString($order.orderNo)
+$encodedUnlockBefore = [uri]::EscapeDataString($UnlockBefore)
+Write-Host "Unlocking due team commissions for order $($order.orderNo)..."
+$unlock = Invoke-NexionJson -Method Post -Uri "$TeamUrl/team/commissions/unlock?limit=20&orderNo=$encodedOrderNo&unlockBefore=$encodedUnlockBefore"
+Write-Host "Unlock scanned=$($unlock.scanned), posted=$($unlock.posted), failed=$($unlock.failed), walletPosts=$($unlock.walletPosts)"
+if ($unlock.posted -lt 1 -or $unlock.failed -gt 0) {
+  throw "Expected at least one commission to be unlocked and no unlock failures."
+}
+
+Write-Host "Loading sponsor wallet after commission unlock..."
+$walletAfter = Invoke-NexionJson -Method Get -Uri "$WalletUrl/wallet/users/$SponsorUserId"
+Write-Host "After wallet USDT=$($walletAfter.usdtAvailable), NEX=$($walletAfter.nexAvailable)"
+if ([decimal]$walletAfter.usdtAvailable -le [decimal]$walletBefore.usdtAvailable) {
+  throw "Expected sponsor USDT wallet balance to increase after commission unlock."
+}
+if ([decimal]$walletAfter.nexAvailable -le [decimal]$walletBefore.nexAvailable) {
+  throw "Expected sponsor NEX wallet balance to increase after commission unlock."
+}
+
+Write-Host "Team commission unlock smoke completed."

@@ -6,37 +6,50 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
 import ffdd.team.client.CommerceOutboxClient;
+import ffdd.team.client.WalletClient;
 import ffdd.team.dto.OrderPaidPayload;
 import ffdd.team.dto.OutboxMessage;
 import ffdd.team.dto.TeamCommissionConsumeResult;
+import ffdd.team.dto.TeamCommissionUnlockResult;
+import ffdd.team.dto.WalletCreditRequest;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Service
 public class TeamCommissionService {
     private static final String EVENT_ORDER_PAID = "OrderPaid";
     private static final String COMMISSION_UNILEVEL = "UNILEVEL";
     private static final String STATUS_PENDING = "PENDING";
+    private static final String STATUS_POSTED = "POSTED";
+    private static final String ASSET_USDT = "USDT";
+    private static final String ASSET_NEX = "NEX";
+    private static final String BIZ_TYPE_TEAM_COMMISSION = "TEAM_COMMISSION";
+    private static final String BIZ_NO_TEAM_COMMISSION_PREFIX = "TEAM-COMMISSION-";
     private static final int MAX_DEPTH = 7;
 
     private final CommerceOutboxClient outboxClient;
+    private final WalletClient walletClient;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
     public TeamCommissionService(
             CommerceOutboxClient outboxClient,
+            WalletClient walletClient,
             JdbcTemplate jdbcTemplate,
             ObjectMapper objectMapper) {
         this.outboxClient = outboxClient;
+        this.walletClient = walletClient;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
     }
@@ -62,6 +75,37 @@ public class TeamCommissionService {
             } catch (RuntimeException ex) {
                 result.setFailed(result.getFailed() + 1);
                 outboxClient.markFailed(message.getEventId(), Map.of("error", ex.getMessage()));
+            }
+        }
+        return result;
+    }
+
+    public TeamCommissionUnlockResult unlockDueCommissions(int limit, LocalDateTime unlockBefore, String orderNo) {
+        int normalizedLimit = Math.max(1, Math.min(limit, 500));
+        LocalDateTime cutoff = unlockBefore == null ? LocalDateTime.now() : unlockBefore;
+        TeamCommissionUnlockResult result = new TeamCommissionUnlockResult();
+        List<CommissionCandidate> candidates = dueCommissions(normalizedLimit, cutoff, orderNo);
+        result.setScanned(candidates.size());
+
+        for (CommissionCandidate candidate : candidates) {
+            try {
+                int walletPosts = 0;
+                walletPosts += postCommissionAsset(candidate, ASSET_USDT, candidate.amountUsdt());
+                walletPosts += postCommissionAsset(candidate, ASSET_NEX, candidate.amountNex());
+                if (walletPosts == 0) {
+                    result.setSkipped(result.getSkipped() + 1);
+                    continue;
+                }
+                int updated = markCommissionPosted(candidate.id());
+                result.setWalletPosts(result.getWalletPosts() + walletPosts);
+                if (updated > 0) {
+                    result.setPosted(result.getPosted() + 1);
+                    result.getCommissionIds().add(candidate.id());
+                } else {
+                    result.setSkipped(result.getSkipped() + 1);
+                }
+            } catch (RuntimeException ex) {
+                result.setFailed(result.getFailed() + 1);
             }
         }
         return result;
@@ -139,6 +183,65 @@ public class TeamCommissionService {
                 rs.getBigDecimal("nex_per_usd"),
                 rs.getBigDecimal("fixed_nex"),
                 rs.getInt("cooldown_days")), MAX_DEPTH);
+    }
+
+    private List<CommissionCandidate> dueCommissions(int limit, LocalDateTime cutoff, String orderNo) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, user_id, commission_type, layer_no, order_no, amount_usdt, amount_nex
+                  FROM nx_commission_event
+                 WHERE status = ?
+                   AND is_deleted = 0
+                   AND unlock_at <= ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(STATUS_PENDING);
+        args.add(cutoff);
+        if (StringUtils.hasText(orderNo)) {
+            sql.append("   AND order_no = ?\n");
+            args.add(orderNo);
+        }
+        sql.append(" ORDER BY unlock_at ASC, id ASC LIMIT ?");
+        args.add(limit);
+        return jdbcTemplate.query(sql.toString(), this::mapCommissionCandidate, args.toArray());
+    }
+
+    private CommissionCandidate mapCommissionCandidate(ResultSet rs, int rowNum) throws SQLException {
+        return new CommissionCandidate(
+                rs.getLong("id"),
+                rs.getLong("user_id"),
+                rs.getString("commission_type"),
+                rs.getInt("layer_no"),
+                rs.getString("order_no"),
+                rs.getBigDecimal("amount_usdt"),
+                rs.getBigDecimal("amount_nex"));
+    }
+
+    private int postCommissionAsset(CommissionCandidate candidate, String asset, BigDecimal amount) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return 0;
+        }
+        WalletCreditRequest request = new WalletCreditRequest();
+        request.setUserId(candidate.userId());
+        request.setBizNo(BIZ_NO_TEAM_COMMISSION_PREFIX + candidate.id());
+        request.setBizType(BIZ_TYPE_TEAM_COMMISSION);
+        request.setAsset(asset);
+        request.setAmount(amount);
+        request.setRemark("Team commission " + candidate.commissionType()
+                + " order " + candidate.orderNo()
+                + " layer " + candidate.layerNo());
+        ensureSuccess(walletClient.postCredit(request));
+        return 1;
+    }
+
+    private int markCommissionPosted(Long id) {
+        return jdbcTemplate.update("""
+                UPDATE nx_commission_event
+                   SET status = ?,
+                       updated_at = NOW()
+                 WHERE id = ?
+                   AND status = ?
+                   AND is_deleted = 0
+                """, STATUS_POSTED, id, STATUS_PENDING);
     }
 
     private Sponsor sponsorOf(Long userId) {
@@ -291,7 +394,7 @@ public class TeamCommissionService {
     private void ensureSuccess(ApiResult<?> result) {
         if (result == null || result.getCode() != 0) {
             throw new BizException(result == null ? 500 : result.getCode(),
-                    result == null ? "Empty commerce outbox response" : result.getMessage());
+                    result == null ? "Empty service response" : result.getMessage());
         }
     }
 
@@ -304,5 +407,15 @@ public class TeamCommissionService {
             BigDecimal nexPerUsd,
             BigDecimal fixedNex,
             int cooldownDays) {
+    }
+
+    private record CommissionCandidate(
+            Long id,
+            Long userId,
+            String commissionType,
+            int layerNo,
+            String orderNo,
+            BigDecimal amountUsdt,
+            BigDecimal amountNex) {
     }
 }

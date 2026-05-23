@@ -2,16 +2,20 @@ package ffdd.team.controller;
 
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
+import ffdd.common.security.AuthHeaders;
 import ffdd.team.dto.TeamCommissionConsumeResult;
+import ffdd.team.dto.TeamCommissionUnlockResult;
 import ffdd.team.service.TeamCommissionService;
+import java.time.LocalDateTime;
 import java.util.Map;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import ffdd.common.security.AuthHeaders;
 
 @RestController
 @RequestMapping("/team")
@@ -25,6 +29,15 @@ public class TeamCommissionController {
     @PostMapping("/outbox/consume-order-paid")
     public ApiResult<TeamCommissionConsumeResult> consumeOrderPaid(@RequestParam(defaultValue = "20") int limit) {
         return ApiResult.ok(commissionService.consumeOrderPaid(limit));
+    }
+
+    @PostMapping("/commissions/unlock")
+    @PreAuthorize("hasAuthority('PERM_TEAM_WRITE')")
+    public ApiResult<TeamCommissionUnlockResult> unlockCommissions(
+            @RequestParam(defaultValue = "100") int limit,
+            @RequestParam(required = false) String orderNo,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime unlockBefore) {
+        return ApiResult.ok(commissionService.unlockDueCommissions(limit, unlockBefore, orderNo));
     }
 
     @GetMapping("/overview")

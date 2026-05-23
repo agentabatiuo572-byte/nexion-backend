@@ -27,6 +27,11 @@ public class CommerceOutboxController {
         return ApiResult.ok(outboxService.listPending(limit));
     }
 
+    @GetMapping("/dead")
+    public ApiResult<List<EventOutboxMessage>> dead(@RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(outboxService.listDead(limit));
+    }
+
     @GetMapping("/aggregates/{aggregateType}/{aggregateId}")
     public ApiResult<List<EventOutboxMessage>> byAggregate(
             @PathVariable String aggregateType,
