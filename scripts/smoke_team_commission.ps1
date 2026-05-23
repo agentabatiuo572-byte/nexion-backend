@@ -140,13 +140,13 @@ $order = Invoke-NexionJson -Method Put -Uri "$CommerceUrl/commerce/orders/$($ord
 }
 Write-Host "Order activationStatus=$($order.activationStatus)"
 
-Write-Host "Waiting for team outbox worker to consume OrderPaid..."
+Write-Host "Waiting for team outbox worker/listener to consume OrderPaid..."
 $commission = Wait-CommissionForOrder -OrderNo $order.orderNo -UserId $SponsorUserId -TimeoutSeconds 30
 if ($null -eq $commission) {
   if ($RequireWorker) {
-    throw "Expected team outbox worker to create commission for order $($order.orderNo)."
+    throw "Expected team outbox worker/listener to create commission for order $($order.orderNo)."
   }
-  Write-Host "Worker did not consume within timeout; falling back to manual consume endpoint..."
+  Write-Host "Worker/listener did not consume within timeout; falling back to manual consume endpoint..."
   $consume = Invoke-NexionJson -Method Post -Uri "$TeamUrl/team/outbox/consume-order-paid?limit=50"
   Write-Host "Consume scanned=$($consume.scanned), processed=$($consume.processed), failed=$($consume.failed)"
   $commission = Wait-CommissionForOrder -OrderNo $order.orderNo -UserId $SponsorUserId -TimeoutSeconds 10
@@ -154,7 +154,7 @@ if ($null -eq $commission) {
     throw "Expected at least one commission event to be created."
   }
 } else {
-  Write-Host "Worker created commission id=$($commission.id), status=$($commission.status)"
+  Write-Host "Worker/listener created commission id=$($commission.id), status=$($commission.status)"
 }
 
 Write-Host "Loading sponsor team overview..."

@@ -1,6 +1,6 @@
 # Nexion Backend
 
-Java 17 + Spring Boot/Spring Cloud Alibaba + MySQL 8 + MyBatis-Plus + Redis + MinIO.
+Java 17 + Spring Boot/Spring Cloud Alibaba + MySQL 8 + MyBatis-Plus + Redis + MinIO + optional RocketMQ.
 
 The project now follows the first-phase service split from the Nexion high-concurrency architecture document.
 
@@ -13,9 +13,9 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
 | `nexion-compute-service` | 8102 | device status, compute tasks, node map, Proof-of-Compute receipts |
 | `nexion-mission-service` | 8103 | check-in, quests, points, achievements |
-| `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in |
+| `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in, outbox broker publisher |
 | `nexion-wallet-service` | 8105 | wallet balances, bills, idempotent earning/team commission credits, withdrawals |
-| `nexion-team-service` | 8106 | OrderPaid outbox worker, unilevel commission events, commission unlock, team overview |
+| `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel commission events, commission unlock, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
 | `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
@@ -50,6 +50,7 @@ The current backend baseline implements the first event-driven slice:
 
 - `POST /team/outbox/consume-order-paid`: pulls pending `OrderPaid` events from commerce outbox, creates unilevel commission events for sponsor layers, and marks the outbox event as published.
 - `TeamOutboxWorker`: automatically polls due commerce outbox events and runs the same idempotent `OrderPaid` commission consumer.
+- `CommerceOutboxRocketPublisher` / `TeamOrderPaidRocketListener`: optional RocketMQ path for publishing `OrderPaid` outbox events to a broker and consuming them from Team.
 - `POST /team/commissions/unlock`: scans due `PENDING` commission events, posts USDT/NEX credits to wallet, and marks commissions as `POSTED`.
 - `GET /team/overview`: team count and commission summary for the current user.
 - `GET /team/commissions`: paged commission events for the current user.
@@ -94,7 +95,7 @@ The smoke script verifies:
 
 `referred user register -> order paid -> OrderPaid outbox -> team consume -> sponsor unilevel commission -> commission unlock -> wallet post`
 
-Pass `-RequireWorker` to require the scheduled Team outbox worker to consume the event without using the manual fallback endpoint.
+Pass `-RequireWorker` to require the scheduled Team outbox worker or RocketMQ listener to consume the event without using the manual fallback endpoint.
 
 ## Gateway Chain Smoke Test
 
@@ -162,6 +163,22 @@ Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION
 - `GET /commerce/outbox/aggregates/{aggregateType}/{aggregateId}`: inspect events for one aggregate.
 - `POST /commerce/outbox/{eventId}/published`: mark delivery complete.
 - `POST /commerce/outbox/{eventId}/failed`: mark delivery failed, schedule exponential retry, and move to `DEAD` after `nexion.outbox.max-retries`.
+- `POST /commerce/outbox/broker/publish?limit=20`: manually trigger one broker publish batch when the broker publisher is enabled.
+
+RocketMQ broker delivery is optional and disabled by default so local smoke scripts keep using the HTTP polling worker. To switch the OrderPaid path to RocketMQ delivery, start commerce/team with:
+
+- `NEXION_OUTBOX_ROCKETMQ_ENABLED=true`
+- `ROCKETMQ_NAME_SERVER=127.0.0.1:9876`
+- `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=nexion-order-paid`
+- `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=nexion-team-order-paid`
+
+For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling.
+
+Gateway chain startup supports the same switch:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1 -OutboxRocketMqEnabled true -RocketMqNameServer "127.0.0.1:9876" -TeamOutboxWorkerEnabled false
+```
 
 Team outbox worker defaults:
 

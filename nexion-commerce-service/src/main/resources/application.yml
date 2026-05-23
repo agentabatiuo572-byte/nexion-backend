@@ -26,3 +26,13 @@ server:
 nexion:
   services:
     compute-url: ${NEXION_COMPUTE_URL:http://localhost:8102}
+  outbox:
+    rocketmq:
+      enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
+      name-server: ${NEXION_OUTBOX_ROCKETMQ_NAME_SERVER:${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}}
+      order-paid-topic: ${NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC:nexion-order-paid}
+      producer-group: ${NEXION_OUTBOX_ROCKETMQ_PRODUCER_GROUP:nexion-commerce-outbox}
+      publisher:
+        batch-size: ${NEXION_OUTBOX_ROCKETMQ_PUBLISHER_BATCH_SIZE:50}
+        initial-delay-ms: ${NEXION_OUTBOX_ROCKETMQ_PUBLISHER_INITIAL_DELAY_MS:5000}
+        fixed-delay-ms: ${NEXION_OUTBOX_ROCKETMQ_PUBLISHER_FIXED_DELAY_MS:5000}

@@ -5,10 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
+import ffdd.common.outbox.EventOutboxMessage;
 import ffdd.team.client.CommerceOutboxClient;
 import ffdd.team.client.WalletClient;
 import ffdd.team.dto.OrderPaidPayload;
-import ffdd.team.dto.OutboxMessage;
 import ffdd.team.dto.TeamCommissionConsumeResult;
 import ffdd.team.dto.TeamCommissionUnlockResult;
 import ffdd.team.dto.WalletCreditRequest;
@@ -55,14 +55,14 @@ public class TeamCommissionService {
     }
 
     public TeamCommissionConsumeResult consumeOrderPaid(int limit) {
-        ApiResult<List<OutboxMessage>> response = outboxClient.pending(Math.max(1, Math.min(limit, 100)));
+        ApiResult<List<EventOutboxMessage>> response = outboxClient.pending(Math.max(1, Math.min(limit, 100)));
         ensureSuccess(response);
 
         TeamCommissionConsumeResult result = new TeamCommissionConsumeResult();
-        List<OutboxMessage> messages = response.getData() == null ? List.of() : response.getData();
+        List<EventOutboxMessage> messages = response.getData() == null ? List.of() : response.getData();
         result.setScanned(messages.size());
 
-        for (OutboxMessage message : messages) {
+        for (EventOutboxMessage message : messages) {
             if (!EVENT_ORDER_PAID.equals(message.getEventType())) {
                 result.setSkipped(result.getSkipped() + 1);
                 continue;
@@ -78,6 +78,16 @@ public class TeamCommissionService {
             }
         }
         return result;
+    }
+
+    public int consumeBrokerOrderPaid(EventOutboxMessage message) {
+        if (message == null || message.getEventId() == null) {
+            throw new BizException("Invalid outbox message");
+        }
+        if (!EVENT_ORDER_PAID.equals(message.getEventType())) {
+            return 0;
+        }
+        return settleOrderPaid(message);
     }
 
     public TeamCommissionUnlockResult unlockDueCommissions(int limit, LocalDateTime unlockBefore, String orderNo) {
@@ -112,7 +122,7 @@ public class TeamCommissionService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public int settleOrderPaid(OutboxMessage message) {
+    public int settleOrderPaid(EventOutboxMessage message) {
         OrderPaidPayload payload = readPayload(message.getPayload());
         if (payload.getOrderNo() == null || payload.getUserId() == null || payload.getAmountUsdt() == null) {
             throw new BizException("Invalid OrderPaid payload");

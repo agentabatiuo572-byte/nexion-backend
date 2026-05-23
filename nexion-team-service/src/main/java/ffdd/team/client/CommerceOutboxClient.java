@@ -1,8 +1,8 @@
 package ffdd.team.client;
 
 import ffdd.common.api.ApiResult;
+import ffdd.common.outbox.EventOutboxMessage;
 import ffdd.team.client.config.InternalFeignConfig;
-import ffdd.team.dto.OutboxMessage;
 import java.util.List;
 import java.util.Map;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
         configuration = InternalFeignConfig.class)
 public interface CommerceOutboxClient {
     @GetMapping("/commerce/outbox/pending")
-    ApiResult<List<OutboxMessage>> pending(@RequestParam("limit") int limit);
+    ApiResult<List<EventOutboxMessage>> pending(@RequestParam("limit") int limit);
 
     @PostMapping("/commerce/outbox/{eventId}/published")
     ApiResult<Map<String, Object>> markPublished(@PathVariable("eventId") String eventId);
