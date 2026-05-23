@@ -295,10 +295,11 @@ ON DUPLICATE KEY UPDATE
   reward_points = VALUES(reward_points),
   status = VALUES(status);
 
-INSERT INTO nx_notification (id, user_id, type, title, body, read_flag, push_status)
+INSERT INTO nx_notification (id, biz_no, user_id, type, title, body, read_flag, push_status)
 VALUES
-  (1, 10001, 'EARNING', 'Overnight compute completed', '+0.018 USDT and +3.2 NEX are ready.', 0, 'PENDING')
+  (1, 'seed:EARN-20260522-USDT-0001', 10001, 'EARNING', 'Overnight compute completed', '+0.018 USDT and +3.2 NEX are ready.', 0, 'PENDING')
 ON DUPLICATE KEY UPDATE
+  biz_no = VALUES(biz_no),
   type = VALUES(type),
   title = VALUES(title),
   body = VALUES(body),

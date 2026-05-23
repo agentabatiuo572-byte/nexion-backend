@@ -238,10 +238,16 @@ public class CommerceServiceImpl implements CommerceService {
     }
 
     private void publishOrderPaidEvent(CommerceOrder order) {
+        Product product = getProduct(order.getProductId());
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("orderNo", order.getOrderNo());
         payload.put("userId", order.getUserId());
         payload.put("productId", order.getProductId());
+        payload.put("productName", product.getName());
+        payload.put("deviceType", product.getProductType());
+        payload.put("hashrate", product.getHashrate());
+        payload.put("dailyUsdt", product.getEstimatedDailyUsdt());
+        payload.put("dailyNex", product.getDailyNex());
         payload.put("quantity", order.getQuantity());
         payload.put("amountUsdt", order.getAmountUsdt());
         payload.put("paymentNo", order.getPaymentNo());

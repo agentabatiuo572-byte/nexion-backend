@@ -26,5 +26,16 @@ server:
 nexion:
   compute:
     auto-settle-earnings: ${NEXION_COMPUTE_AUTO_SETTLE_EARNINGS:true}
+    task-completed-outbox-enabled: ${NEXION_COMPUTE_TASK_COMPLETED_OUTBOX_ENABLED:true}
+  outbox:
+    rocketmq:
+      enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
+      name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+      order-paid-topic: ${NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC:nexion-order-paid}
+      compute-consumer-group: ${NEXION_OUTBOX_ROCKETMQ_COMPUTE_GROUP:nexion-compute-order-paid}
+      compute-task-completed-topic: ${NEXION_OUTBOX_ROCKETMQ_COMPUTE_TASK_COMPLETED_TOPIC:nexion-compute-task-completed}
+      compute-producer-group: ${NEXION_OUTBOX_ROCKETMQ_COMPUTE_PRODUCER_GROUP:nexion-compute-outbox}
+      consumer:
+        max-retries: ${NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES:5}
   services:
     earnings-url: ${NEXION_EARNINGS_URL:http://localhost:8108}

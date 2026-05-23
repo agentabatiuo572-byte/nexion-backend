@@ -22,3 +22,13 @@ spring:
 
 server:
   port: 8105
+
+nexion:
+  outbox:
+    rocketmq:
+      enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
+      name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+      earning-generated-topic: ${NEXION_OUTBOX_ROCKETMQ_EARNING_GENERATED_TOPIC:nexion-earning-generated}
+      wallet-consumer-group: ${NEXION_OUTBOX_ROCKETMQ_WALLET_GROUP:nexion-wallet-earning-generated}
+      consumer:
+        max-retries: ${NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES:5}

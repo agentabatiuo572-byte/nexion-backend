@@ -1,6 +1,11 @@
 spring:
   application:
     name: nexion-gateway
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:127.0.0.1}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: "${SPRING_DATA_REDIS_PASSWORD:}"
   config:
     import:
       - optional:nacos:nexion-common.yaml
@@ -88,6 +93,11 @@ spring:
       config:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
         file-extension: yaml
+    sentinel:
+      enabled: ${NEXION_SENTINEL_ENABLED:true}
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
+        port: ${SENTINEL_TRANSPORT_PORT:8719}
 
 server:
   port: 8090
@@ -99,3 +109,38 @@ nexion:
       anonymous-permits-per-minute: ${NEXION_GATEWAY_RATE_LIMIT_ANONYMOUS_PER_MINUTE:20}
       user-permits-per-minute: ${NEXION_GATEWAY_RATE_LIMIT_USER_PER_MINUTE:120}
       window-seconds: ${NEXION_GATEWAY_RATE_LIMIT_WINDOW_SECONDS:60}
+      redis:
+        enabled: ${NEXION_GATEWAY_RATE_LIMIT_REDIS_ENABLED:true}
+        timeout-ms: ${NEXION_GATEWAY_RATE_LIMIT_REDIS_TIMEOUT_MS:50}
+    sentinel:
+      enabled: ${NEXION_GATEWAY_SENTINEL_ENABLED:true}
+      default-flow-qps: ${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}
+      default-slow-rt-ms: ${NEXION_GATEWAY_SENTINEL_DEFAULT_SLOW_RT_MS:1500}
+      default-slow-request-amount: ${NEXION_GATEWAY_SENTINEL_DEFAULT_SLOW_REQUEST_AMOUNT:20}
+      default-degrade-time-window-seconds: ${NEXION_GATEWAY_SENTINEL_DEFAULT_DEGRADE_TIME_WINDOW_SECONDS:5}
+      default-stat-interval-ms: ${NEXION_GATEWAY_SENTINEL_DEFAULT_STAT_INTERVAL_MS:10000}
+      routes:
+        bff:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_BFF_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        auth:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_AUTH_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        commerce:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_COMMERCE_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        compute:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_COMPUTE_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        earnings:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_EARNINGS_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        wallet:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_WALLET_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        team:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_TEAM_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        openapi:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_OPENAPI_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        notifications:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_NOTIFICATIONS_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        compliance:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_COMPLIANCE_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        system:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_SYSTEM_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        missions:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_MISSIONS_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}

@@ -60,7 +60,7 @@ public class CommerceOutboxRocketPublisher {
 
     public OutboxPublishResult publishPending(int limit) {
         int normalizedLimit = Math.max(1, Math.min(limit, 100));
-        List<EventOutboxMessage> messages = outboxService.listPending(normalizedLimit);
+        List<EventOutboxMessage> messages = outboxService.listPendingByEventType(EVENT_ORDER_PAID, normalizedLimit);
         OutboxPublishResult result = new OutboxPublishResult();
         result.setScanned(messages.size());
 

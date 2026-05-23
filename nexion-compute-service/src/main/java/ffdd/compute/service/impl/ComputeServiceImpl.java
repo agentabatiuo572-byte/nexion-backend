@@ -4,10 +4,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
+import ffdd.common.outbox.EventOutboxService;
 import ffdd.compute.client.EarningsClient;
 import ffdd.compute.client.dto.EarningsReceiptSettleRequest;
 import ffdd.compute.domain.ComputeReceipt;
 import ffdd.compute.domain.ComputeTask;
+import ffdd.compute.dto.ComputeTaskCompletedPayload;
 import ffdd.compute.domain.UserDevice;
 import ffdd.compute.dto.DeviceActivateRequest;
 import ffdd.compute.dto.DeviceQueryRequest;
@@ -17,6 +19,8 @@ import ffdd.compute.mapper.ComputeReceiptMapper;
 import ffdd.compute.mapper.ComputeTaskMapper;
 import ffdd.compute.mapper.UserDeviceMapper;
 import ffdd.compute.service.ComputeService;
+import ffdd.compute.service.ComputeTaskCompletedEventFactory;
+import ffdd.compute.worker.ComputeOutboxRocketPublisher;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -44,24 +48,34 @@ public class ComputeServiceImpl implements ComputeService {
     private static final String EARNING_PENDING = "PENDING";
     private static final String EARNING_SETTLED = "SETTLED";
     private static final String EARNING_FAILED = "FAILED";
+    private static final String AGGREGATE_COMPUTE_RECEIPT = "COMPUTE_RECEIPT";
 
     private final UserDeviceMapper userDeviceMapper;
     private final ComputeTaskMapper taskMapper;
     private final ComputeReceiptMapper receiptMapper;
     private final EarningsClient earningsClient;
+    private final EventOutboxService outboxService;
+    private final ComputeTaskCompletedEventFactory eventFactory;
     private final boolean autoSettleEarnings;
+    private final boolean taskCompletedOutboxEnabled;
 
     public ComputeServiceImpl(
             UserDeviceMapper userDeviceMapper,
             ComputeTaskMapper taskMapper,
             ComputeReceiptMapper receiptMapper,
             EarningsClient earningsClient,
-            @Value("${nexion.compute.auto-settle-earnings:true}") boolean autoSettleEarnings) {
+            EventOutboxService outboxService,
+            ComputeTaskCompletedEventFactory eventFactory,
+            @Value("${nexion.compute.auto-settle-earnings:true}") boolean autoSettleEarnings,
+            @Value("${nexion.compute.task-completed-outbox-enabled:true}") boolean taskCompletedOutboxEnabled) {
         this.userDeviceMapper = userDeviceMapper;
         this.taskMapper = taskMapper;
         this.receiptMapper = receiptMapper;
         this.earningsClient = earningsClient;
+        this.outboxService = outboxService;
+        this.eventFactory = eventFactory;
         this.autoSettleEarnings = autoSettleEarnings;
+        this.taskCompletedOutboxEnabled = taskCompletedOutboxEnabled;
     }
 
     @Override
@@ -160,6 +174,7 @@ public class ComputeServiceImpl implements ComputeService {
         receipt.setCompletedAt(now);
         receipt.setIsDeleted(0);
         receiptMapper.insert(receipt);
+        publishTaskCompletedEvent(receipt);
         registerEarningSettlementAfterCommit(receipt);
         return receipt;
     }
@@ -247,6 +262,18 @@ public class ComputeServiceImpl implements ComputeService {
                 settleEarnings(receipt);
             }
         });
+    }
+
+    private void publishTaskCompletedEvent(ComputeReceipt receipt) {
+        if (!taskCompletedOutboxEnabled) {
+            return;
+        }
+        ComputeTaskCompletedPayload payload = eventFactory.fromReceipt(receipt);
+        outboxService.publish(
+                AGGREGATE_COMPUTE_RECEIPT,
+                receipt.getReceiptNo(),
+                ComputeOutboxRocketPublisher.EVENT_COMPUTE_TASK_COMPLETED,
+                payload);
     }
 
     private void settleEarnings(ComputeReceipt receipt) {

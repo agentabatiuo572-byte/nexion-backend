@@ -7,13 +7,23 @@ param(
   [int]$RedisPort = 6379,
   [string]$RedisPassword = "A123456789Z!@#",
   [string]$GatewayRateLimitEnabled = "true",
+  [string]$GatewayRedisRateLimitEnabled = "true",
+  [int]$GatewayRedisRateLimitTimeoutMs = 50,
+  [string]$GatewaySentinelEnabled = "true",
+  [string]$SentinelDashboard = "127.0.0.1:8858",
+  [int]$SentinelTransportPort = 8719,
+  [int]$GatewaySentinelDefaultFlowQps = 1000,
+  [int]$GatewaySentinelCommerceQps = 1000,
   [int]$GatewayAnonymousRateLimit = 20,
   [int]$GatewayUserRateLimit = 120,
   [int]$GatewayRateLimitWindowSeconds = 60,
   [string]$OutboxRocketMqEnabled = "false",
   [string]$RocketMqNameServer = "127.0.0.1:9876",
   [string]$OutboxRocketMqOrderPaidTopic = "nexion-order-paid",
+  [string]$OutboxRocketMqComputeTaskCompletedTopic = "nexion-compute-task-completed",
   [string]$OutboxRocketMqOrderPaidGroup = "nexion-team-order-paid",
+  [string]$OutboxRocketMqComputeGroup = "nexion-compute-order-paid",
+  [string]$OutboxRocketMqEarningsGroup = "nexion-earnings-compute-task-completed",
   [int]$OutboxRocketMqConsumerMaxRetries = 5,
   [string]$TeamOutboxWorkerEnabled = "true",
   [switch]$UseNacosConfig
@@ -46,7 +56,7 @@ foreach ($service in $services) {
   $workDir = Join-Path $Root $service.Name
   $outLog = Join-Path $Root "logs\$($service.Name).out.log"
   $errLog = Join-Path $Root "logs\$($service.Name).err.log"
-  $inner = "cd /d `"$workDir`" && set `"SPRING_CLOUD_NACOS_CONFIG_ENABLED=$nacosConfigEnabled`" && set `"NEXION_JWT_SECRET=$JwtSecret`" && set `"NEXION_GATEWAY_INTERNAL_SECRET=$GatewaySecret`" && set `"SPRING_DATA_REDIS_HOST=$RedisHost`" && set `"SPRING_DATA_REDIS_PORT=$RedisPort`" && set `"SPRING_DATA_REDIS_PASSWORD=$RedisPassword`" && set `"NEXION_GATEWAY_RATE_LIMIT_ENABLED=$GatewayRateLimitEnabled`" && set `"NEXION_GATEWAY_RATE_LIMIT_ANONYMOUS_PER_MINUTE=$GatewayAnonymousRateLimit`" && set `"NEXION_GATEWAY_RATE_LIMIT_USER_PER_MINUTE=$GatewayUserRateLimit`" && set `"NEXION_GATEWAY_RATE_LIMIT_WINDOW_SECONDS=$GatewayRateLimitWindowSeconds`" && set `"NEXION_OUTBOX_ROCKETMQ_ENABLED=$OutboxRocketMqEnabled`" && set `"ROCKETMQ_NAME_SERVER=$RocketMqNameServer`" && set `"NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=$OutboxRocketMqOrderPaidTopic`" && set `"NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=$OutboxRocketMqOrderPaidGroup`" && set `"NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES=$OutboxRocketMqConsumerMaxRetries`" && set `"NEXION_TEAM_OUTBOX_WORKER_ENABLED=$TeamOutboxWorkerEnabled`" && call `"$Maven`" spring-boot:run > `"$outLog`" 2> `"$errLog`""
+  $inner = "cd /d `"$workDir`" && set `"SPRING_CLOUD_NACOS_CONFIG_ENABLED=$nacosConfigEnabled`" && set `"NEXION_JWT_SECRET=$JwtSecret`" && set `"NEXION_GATEWAY_INTERNAL_SECRET=$GatewaySecret`" && set `"SPRING_DATA_REDIS_HOST=$RedisHost`" && set `"SPRING_DATA_REDIS_PORT=$RedisPort`" && set `"SPRING_DATA_REDIS_PASSWORD=$RedisPassword`" && set `"NEXION_SENTINEL_ENABLED=$GatewaySentinelEnabled`" && set `"NEXION_GATEWAY_SENTINEL_ENABLED=$GatewaySentinelEnabled`" && set `"SENTINEL_DASHBOARD=$SentinelDashboard`" && set `"SENTINEL_TRANSPORT_PORT=$SentinelTransportPort`" && set `"NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS=$GatewaySentinelDefaultFlowQps`" && set `"NEXION_GATEWAY_SENTINEL_COMMERCE_QPS=$GatewaySentinelCommerceQps`" && set `"NEXION_GATEWAY_RATE_LIMIT_ENABLED=$GatewayRateLimitEnabled`" && set `"NEXION_GATEWAY_RATE_LIMIT_REDIS_ENABLED=$GatewayRedisRateLimitEnabled`" && set `"NEXION_GATEWAY_RATE_LIMIT_REDIS_TIMEOUT_MS=$GatewayRedisRateLimitTimeoutMs`" && set `"NEXION_GATEWAY_RATE_LIMIT_ANONYMOUS_PER_MINUTE=$GatewayAnonymousRateLimit`" && set `"NEXION_GATEWAY_RATE_LIMIT_USER_PER_MINUTE=$GatewayUserRateLimit`" && set `"NEXION_GATEWAY_RATE_LIMIT_WINDOW_SECONDS=$GatewayRateLimitWindowSeconds`" && set `"NEXION_OUTBOX_ROCKETMQ_ENABLED=$OutboxRocketMqEnabled`" && set `"ROCKETMQ_NAME_SERVER=$RocketMqNameServer`" && set `"NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=$OutboxRocketMqOrderPaidTopic`" && set `"NEXION_OUTBOX_ROCKETMQ_COMPUTE_TASK_COMPLETED_TOPIC=$OutboxRocketMqComputeTaskCompletedTopic`" && set `"NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=$OutboxRocketMqOrderPaidGroup`" && set `"NEXION_OUTBOX_ROCKETMQ_COMPUTE_GROUP=$OutboxRocketMqComputeGroup`" && set `"NEXION_OUTBOX_ROCKETMQ_EARNINGS_GROUP=$OutboxRocketMqEarningsGroup`" && set `"NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES=$OutboxRocketMqConsumerMaxRetries`" && set `"NEXION_TEAM_OUTBOX_WORKER_ENABLED=$TeamOutboxWorkerEnabled`" && call `"$Maven`" spring-boot:run > `"$outLog`" 2> `"$errLog`""
   & cmd.exe /c "start `"$($service.Name)`" /B cmd.exe /c `"$inner`""
   Write-Host "Started $($service.Name), logs: $outLog / $errLog"
 }

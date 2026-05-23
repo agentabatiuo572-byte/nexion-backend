@@ -4,8 +4,10 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.security.AuthHeaders;
 import ffdd.team.dto.EventConsumerDelivery;
+import ffdd.team.dto.RocketMqBrokerMonitor;
 import ffdd.team.dto.TeamCommissionConsumeResult;
 import ffdd.team.dto.TeamCommissionUnlockResult;
+import ffdd.team.service.RocketMqBrokerMonitorService;
 import ffdd.team.service.TeamCommissionService;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -24,9 +26,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/team")
 public class TeamCommissionController {
     private final TeamCommissionService commissionService;
+    private final RocketMqBrokerMonitorService brokerMonitorService;
 
-    public TeamCommissionController(TeamCommissionService commissionService) {
+    public TeamCommissionController(
+            TeamCommissionService commissionService,
+            RocketMqBrokerMonitorService brokerMonitorService) {
         this.commissionService = commissionService;
+        this.brokerMonitorService = brokerMonitorService;
     }
 
     @PostMapping("/outbox/consume-order-paid")
@@ -60,6 +66,14 @@ public class TeamCommissionController {
     public ApiResult<List<Map<String, Object>>> consumerSummary(
             @RequestParam(required = false) String consumerGroup) {
         return ApiResult.ok(commissionService.consumerDeliverySummary(consumerGroup));
+    }
+
+    @GetMapping("/outbox/broker/consumer/status")
+    public ApiResult<RocketMqBrokerMonitor> brokerConsumerStatus(
+            @RequestParam(required = false) String topic,
+            @RequestParam(required = false) String consumerGroup,
+            @RequestParam(defaultValue = "true") boolean includeDlq) {
+        return ApiResult.ok(brokerMonitorService.inspectConsumer(topic, consumerGroup, includeDlq));
     }
 
     @PostMapping("/commissions/unlock")

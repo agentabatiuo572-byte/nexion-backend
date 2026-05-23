@@ -767,6 +767,7 @@ CREATE TABLE IF NOT EXISTS nx_points_ledger (
 
 CREATE TABLE IF NOT EXISTS nx_notification (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  biz_no VARCHAR(128) NULL,
   user_id BIGINT NOT NULL,
   type VARCHAR(32) NOT NULL,
   title VARCHAR(128) NOT NULL,
@@ -776,12 +777,23 @@ CREATE TABLE IF NOT EXISTS nx_notification (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_notification_biz (biz_no),
   KEY idx_notification_user_time (user_id, created_at),
   KEY idx_notification_push (push_status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'biz_no') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN biz_no VARCHAR(128) NULL AFTER id',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'push_status') = 0,
   'ALTER TABLE nx_notification ADD COLUMN push_status VARCHAR(32) NOT NULL DEFAULT ''PENDING'' AFTER read_flag',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND INDEX_NAME = 'uk_notification_biz') = 0,
+  'ALTER TABLE nx_notification ADD UNIQUE KEY uk_notification_biz (biz_no)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

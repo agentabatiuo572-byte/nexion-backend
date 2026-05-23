@@ -10,7 +10,8 @@ param(
   [string]$ReferralCode = "NX4892",
   [long]$SponsorUserId = 10001,
   [string]$UnlockBefore = "2099-01-01T00:00:00",
-  [switch]$RequireWorker
+  [switch]$RequireWorker,
+  [switch]$CheckBrokerMonitor
 )
 
 $ErrorActionPreference = "Stop"
@@ -167,6 +168,21 @@ if ($null -eq $consumerDelivery) {
 Write-Host "Consumer delivery group=$($consumerDelivery.consumerGroup), status=$($consumerDelivery.status), attempts=$($consumerDelivery.attemptCount), deadAt=$($consumerDelivery.deadAt)"
 if ($consumerDelivery.status -ne "SUCCESS") {
   throw "Expected Team consumer delivery status SUCCESS, got $($consumerDelivery.status)."
+}
+
+if ($CheckBrokerMonitor) {
+  Write-Host "Checking RocketMQ broker consumer status..."
+  $brokerStatus = Invoke-NexionJson -Method Get -Uri "$TeamUrl/team/outbox/broker/consumer/status?includeDlq=true"
+  Write-Host "Broker monitor ok=$($brokerStatus.ok), topic=$($brokerStatus.topic), group=$($brokerStatus.consumerGroup), lag=$($brokerStatus.totalLag), dlqMessages=$($brokerStatus.dlqMessages)"
+  if (-not $brokerStatus.ok) {
+    throw "Expected RocketMQ broker monitor to be ok, errors=$($brokerStatus.errors -join '; ')"
+  }
+  if ($brokerStatus.totalLag -lt 0) {
+    throw "Expected RocketMQ consumer lag to be zero or greater."
+  }
+  if ($brokerStatus.dlqMessages -gt 0) {
+    throw "Expected RocketMQ broker DLQ to be empty, got $($brokerStatus.dlqMessages)."
+  }
 }
 
 Write-Host "Loading sponsor team overview..."

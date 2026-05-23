@@ -5,9 +5,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
+import ffdd.gateway.ratelimit.GatewayRateLimitDecision;
+import ffdd.gateway.ratelimit.GatewayRateLimitKey;
+import ffdd.gateway.ratelimit.GatewayRateLimiter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
@@ -28,18 +28,19 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
     private static final long MIN_WINDOW_SECONDS = 1;
     private static final long MAX_WINDOW_SECONDS = 3600;
 
-    private final Map<String, WindowCounter> counters = new ConcurrentHashMap<>();
-    private final AtomicLong nextCleanupAt = new AtomicLong(0);
+    private final GatewayRateLimiter rateLimiter;
     private final boolean enabled;
     private final int anonymousPermits;
     private final int userPermits;
     private final long windowMillis;
 
     public GatewayRateLimitFilter(
+            GatewayRateLimiter rateLimiter,
             @Value("${nexion.gateway.rate-limit.enabled:true}") boolean enabled,
             @Value("${nexion.gateway.rate-limit.anonymous-permits-per-minute:20}") int anonymousPermits,
             @Value("${nexion.gateway.rate-limit.user-permits-per-minute:120}") int userPermits,
             @Value("${nexion.gateway.rate-limit.window-seconds:60}") long windowSeconds) {
+        this.rateLimiter = rateLimiter;
         this.enabled = enabled;
         this.anonymousPermits = Math.max(1, anonymousPermits);
         this.userPermits = Math.max(1, userPermits);
@@ -55,12 +56,16 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
         }
 
         RateKey rateKey = rateKey(exchange.getRequest(), path);
-        LimitDecision decision = tryAcquire(rateKey);
-        addLimitHeaders(exchange, decision);
-        if (!decision.allowed()) {
-            return tooManyRequests(exchange, decision);
-        }
-        return chain.filter(exchange);
+        GatewayRateLimitKey limiterKey = new GatewayRateLimitKey(
+                rateKey.identity(), rateKey.routeGroup(), rateKey.permits(), windowMillis);
+        return rateLimiter.tryAcquire(limiterKey)
+                .flatMap(decision -> {
+                    addLimitHeaders(exchange, decision);
+                    if (!decision.allowed()) {
+                        return tooManyRequests(exchange, decision);
+                    }
+                    return chain.filter(exchange);
+                });
     }
 
     @Override
@@ -95,42 +100,16 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
         return remoteAddress.getAddress().getHostAddress();
     }
 
-    private LimitDecision tryAcquire(RateKey rateKey) {
-        long now = System.currentTimeMillis();
-        long windowStart = (now / windowMillis) * windowMillis;
-        String key = rateKey.identity() + ":" + rateKey.routeGroup();
-        WindowCounter counter = counters.compute(key, (ignored, current) -> {
-            if (current == null || current.windowStart() != windowStart) {
-                return new WindowCounter(windowStart, 1);
-            }
-            current.increment();
-            return current;
-        });
-        cleanupIfDue(now, windowStart);
-        int count = counter.count();
-        int remaining = Math.max(0, rateKey.permits() - count);
-        long retryAfterSeconds = Math.max(1, ((windowStart + windowMillis) - now + 999) / 1000);
-        return new LimitDecision(count <= rateKey.permits(), rateKey.permits(), remaining, retryAfterSeconds);
-    }
-
-    private void cleanupIfDue(long now, long currentWindowStart) {
-        long cleanupAt = nextCleanupAt.get();
-        if (now < cleanupAt || !nextCleanupAt.compareAndSet(cleanupAt, now + windowMillis)) {
-            return;
-        }
-        long oldestWindowToKeep = currentWindowStart - windowMillis;
-        counters.entrySet().removeIf(entry -> entry.getValue().windowStart() < oldestWindowToKeep);
-    }
-
-    private void addLimitHeaders(ServerWebExchange exchange, LimitDecision decision) {
+    private void addLimitHeaders(ServerWebExchange exchange, GatewayRateLimitDecision decision) {
         exchange.getResponse().getHeaders().set("X-RateLimit-Limit", Integer.toString(decision.limit()));
         exchange.getResponse().getHeaders().set("X-RateLimit-Remaining", Integer.toString(decision.remaining()));
+        exchange.getResponse().getHeaders().set("X-RateLimit-Backend", decision.backend());
         if (!decision.allowed()) {
             exchange.getResponse().getHeaders().set(HttpHeaders.RETRY_AFTER, Long.toString(decision.retryAfterSeconds()));
         }
     }
 
-    private Mono<Void> tooManyRequests(ServerWebExchange exchange, LimitDecision decision) {
+    private Mono<Void> tooManyRequests(ServerWebExchange exchange, GatewayRateLimitDecision decision) {
         byte[] body = "{\"code\":429,\"message\":\"too many requests\",\"data\":null}"
                 .getBytes(StandardCharsets.UTF_8);
         exchange.getResponse().setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
@@ -152,30 +131,5 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
     }
 
     private record RateKey(String identity, String routeGroup, int permits) {
-    }
-
-    private record LimitDecision(boolean allowed, int limit, int remaining, long retryAfterSeconds) {
-    }
-
-    private static final class WindowCounter {
-        private final long windowStart;
-        private int count;
-
-        private WindowCounter(long windowStart, int count) {
-            this.windowStart = windowStart;
-            this.count = count;
-        }
-
-        private long windowStart() {
-            return windowStart;
-        }
-
-        private int count() {
-            return count;
-        }
-
-        private void increment() {
-            count++;
-        }
     }
 }

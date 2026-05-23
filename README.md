@@ -7,7 +7,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | Module | Port | Responsibility |
 |---|---:|---|
 | `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config |
-| `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, local rate-limit baseline |
+| `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, Redis distributed rate-limit baseline with local fallback |
 | `nexion-bff-service` | 8100 | Home/Earn/Wallet page aggregation and short TTL Redis snapshots |
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
@@ -50,7 +50,7 @@ The current backend baseline implements the first event-driven slice:
 
 - `POST /team/outbox/consume-order-paid`: pulls pending `OrderPaid` events from commerce outbox, creates unilevel commission events for sponsor layers, and marks the outbox event as published.
 - `TeamOutboxWorker`: automatically polls due commerce outbox events and runs the same idempotent `OrderPaid` commission consumer.
-- `CommerceOutboxRocketPublisher` / `TeamOrderPaidRocketListener`: optional RocketMQ path for publishing `OrderPaid` outbox events to a broker and consuming them from Team.
+- `CommerceOutboxRocketPublisher` / `TeamOrderPaidRocketListener` / `ComputeOrderPaidRocketListener`: optional RocketMQ path for publishing `OrderPaid` outbox events to a broker and consuming them from Team and Compute.
 - `POST /team/commissions/unlock`: scans due `PENDING` commission events, posts USDT/NEX credits to wallet, and marks commissions as `POSTED`.
 - `GET /team/overview`: team count and commission summary for the current user.
 - `GET /team/commissions`: paged commission events for the current user.
@@ -110,6 +110,12 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 
 The gateway start script defaults to the route config committed in this repository instead of any stale Nacos gateway config. Pass `-UseNacosConfig` when you intentionally want to validate the Nacos-published gateway routes.
 
+Publish the current Gateway route config to Nacos before using `-UseNacosConfig`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\publish_nacos_gateway_config.ps1
+```
+
 The gateway smoke verifies anonymous business routes are rejected, registers a real user, logs in with that user's JWT, checks the BFF route, and then runs the same P0 business chain through `/api/**` Gateway routes. The smoke order and wallet checks use the `userId` returned by Auth instead of a fixed seeded user.
 
 Optional user-smoke parameters:
@@ -124,7 +130,7 @@ Pass `-CheckRateLimit` to also verify that anonymous `/api/commerce/**` traffic 
 
 ## Gateway Rate Limit Baseline
 
-Gateway has a local fixed-window limiter for `/api/**` routes. Keys are scoped by identity and route group:
+Gateway has a Redis fixed-window limiter for `/api/**` routes, with an in-process fixed-window fallback when Redis is unavailable. Keys are scoped by identity and route group:
 
 - Anonymous key: client IP + first segment after `/api/`.
 - Authenticated key: Bearer token hash + first segment after `/api/`.
@@ -134,11 +140,18 @@ Gateway has a local fixed-window limiter for `/api/**` routes. Keys are scoped b
 Local startup parameters:
 
 - `-GatewayRateLimitEnabled true`
+- `-GatewayRedisRateLimitEnabled true`
+- `-GatewayRedisRateLimitTimeoutMs 50`
+- `-GatewaySentinelEnabled true`
+- `-SentinelDashboard 127.0.0.1:8858`
+- `-SentinelTransportPort 8719`
+- `-GatewaySentinelDefaultFlowQps 1000`
+- `-GatewaySentinelCommerceQps 1000`
 - `-GatewayAnonymousRateLimit 20`
 - `-GatewayUserRateLimit 120`
 - `-GatewayRateLimitWindowSeconds 60`
 
-This is the first Gateway protection baseline; a future distributed limiter can replace it with Redis/Sentinel without changing downstream services.
+Gateway responses include `X-RateLimit-Backend` with `redis`, `local`, or `local-fallback`, which makes Redis outages visible during smoke and log checks. Gateway also includes the Spring Cloud Alibaba Sentinel starter and a route-group Sentinel filter. Sentinel resources use `gateway:{routeGroup}` names such as `gateway:commerce`; blocked requests return unified JSON with `X-Sentinel-Block: true`.
 
 ## Wallet Credit Baseline
 
@@ -168,6 +181,7 @@ Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION
 - `GET /team/outbox/consumer/dead?consumerGroup=nexion-team-order-paid&limit=20`: inspect Team consumer local DLQ rows.
 - `GET /team/outbox/consumer/events/{eventId}`: inspect one Team consumer delivery row.
 - `GET /team/outbox/consumer/aggregates/{aggregateType}/{aggregateId}`: inspect Team consumer delivery rows for one aggregate.
+- `GET /team/outbox/broker/consumer/status?includeDlq=true`: inspect RocketMQ broker-side consumer offset lag, active consumer connections, and `%DLQ%{consumerGroup}` queue depth.
 
 RocketMQ broker delivery is optional and disabled by default. To switch the OrderPaid path to RocketMQ delivery, start commerce/team with:
 
@@ -175,9 +189,10 @@ RocketMQ broker delivery is optional and disabled by default. To switch the Orde
 - `ROCKETMQ_NAME_SERVER=127.0.0.1:9876`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=nexion-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=nexion-team-order-paid`
+- `NEXION_OUTBOX_ROCKETMQ_COMPUTE_GROUP=nexion-compute-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES=5`
 
-For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Team consumer delivery is tracked in `nx_event_consumer_delivery`; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, and poison messages move to local `DEAD` after the configured max retry count.
+For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Team consumer delivery is tracked in `nx_event_consumer_delivery`; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, and poison messages move to local `DEAD` after the configured max retry count. Compute also subscribes with its own consumer group and idempotently activates devices by `sourceOrderNo`, so duplicate broker deliveries do not create duplicate devices. Broker-side lag and DLQ depth are available from `/team/outbox/broker/consumer/status`.
 
 Gateway chain startup supports the same switch:
 
@@ -192,7 +207,7 @@ Team outbox worker defaults:
 - `NEXION_TEAM_OUTBOX_WORKER_INITIAL_DELAY_MS=5000`
 - `NEXION_TEAM_OUTBOX_WORKER_FIXED_DELAY_MS=5000`
 
-`smoke_main_chain.ps1` verifies the `OrderPaid` outbox event before continuing to compute activation and earnings settlement. `smoke_team_commission.ps1` also checks Team consumer delivery state and expects the OrderPaid delivery to reach `SUCCESS`.
+`smoke_main_chain.ps1` verifies the `OrderPaid` outbox event before continuing to compute activation and earnings settlement. `smoke_team_commission.ps1` also checks Team consumer delivery state and expects the OrderPaid delivery to reach `SUCCESS`; pass `-CheckBrokerMonitor` to also assert broker-side lag and DLQ depth.
 
 ## BFF Aggregation Baseline
 

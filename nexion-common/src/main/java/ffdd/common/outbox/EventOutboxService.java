@@ -62,6 +62,21 @@ public class EventOutboxService {
                 """, this::mapMessage, normalizedLimit);
     }
 
+    public List<EventOutboxMessage> listPendingByEventType(String eventType, int limit) {
+        int normalizedLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
+        return jdbcTemplate.query("""
+                SELECT id, event_id, aggregate_type, aggregate_id, event_type, payload, status,
+                       retry_count, next_retry_at, published_at, last_error, created_at, updated_at
+                  FROM nx_event_outbox
+                 WHERE is_deleted = 0
+                   AND event_type = ?
+                   AND status IN ('PENDING', 'FAILED')
+                   AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+                 ORDER BY id ASC
+                 LIMIT ?
+                """, this::mapMessage, eventType, normalizedLimit);
+    }
+
     public List<EventOutboxMessage> listByAggregate(String aggregateType, String aggregateId, int limit) {
         int normalizedLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
         return jdbcTemplate.query("""

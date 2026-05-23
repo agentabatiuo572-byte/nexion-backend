@@ -4,17 +4,21 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.common.api.PageResult;
+import ffdd.common.outbox.EventOutboxService;
 import ffdd.earnings.client.WalletClient;
 import ffdd.earnings.client.dto.WalletPostEarningRequest;
 import ffdd.earnings.domain.EarningEvent;
 import ffdd.earnings.domain.EarningSummary;
+import ffdd.earnings.dto.EarningGeneratedPayload;
 import ffdd.earnings.dto.EarningEventQueryRequest;
 import ffdd.earnings.dto.EarningSummaryQueryRequest;
 import ffdd.earnings.dto.ReceiptSettleRequest;
 import ffdd.earnings.dto.ReceiptSettleResponse;
 import ffdd.earnings.mapper.EarningEventMapper;
 import ffdd.earnings.mapper.EarningSummaryMapper;
+import ffdd.earnings.service.EarningGeneratedEventFactory;
 import ffdd.earnings.service.EarningsService;
+import ffdd.earnings.worker.EarningsOutboxRocketPublisher;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -36,21 +40,32 @@ public class EarningsServiceImpl implements EarningsService {
     private static final String ASSET_USDT = "USDT";
     private static final String ASSET_NEX = "NEX";
     private static final String STATUS_PENDING_WALLET = "PENDING_WALLET";
+    private static final String AGGREGATE_EARNING_EVENT = "EARNING_EVENT";
 
     private final EarningEventMapper eventMapper;
     private final EarningSummaryMapper summaryMapper;
     private final WalletClient walletClient;
+    private final EventOutboxService outboxService;
+    private final EarningGeneratedEventFactory eventFactory;
     private final boolean autoPostWallet;
+    private final boolean earningGeneratedOutboxEnabled;
 
     public EarningsServiceImpl(
             EarningEventMapper eventMapper,
             EarningSummaryMapper summaryMapper,
             WalletClient walletClient,
-            @Value("${nexion.earnings.auto-post-wallet:true}") boolean autoPostWallet) {
+            EventOutboxService outboxService,
+            EarningGeneratedEventFactory eventFactory,
+            @Value("${nexion.earnings.auto-post-wallet:true}") boolean autoPostWallet,
+            @Value("${nexion.earnings.earning-generated-outbox-enabled:true}")
+                    boolean earningGeneratedOutboxEnabled) {
         this.eventMapper = eventMapper;
         this.summaryMapper = summaryMapper;
         this.walletClient = walletClient;
+        this.outboxService = outboxService;
+        this.eventFactory = eventFactory;
         this.autoPostWallet = autoPostWallet;
+        this.earningGeneratedOutboxEnabled = earningGeneratedOutboxEnabled;
     }
 
     @Override
@@ -58,6 +73,7 @@ public class EarningsServiceImpl implements EarningsService {
     public ReceiptSettleResponse settleReceipt(ReceiptSettleRequest request) {
         LocalDate summaryDate = resolveSummaryDate(request.getCompletedAt());
         List<EarningEvent> events = new ArrayList<>();
+        List<EarningEvent> insertedEvents = new ArrayList<>();
         BigDecimal newUsdtAmount = BigDecimal.ZERO;
         BigDecimal newNexAmount = BigDecimal.ZERO;
 
@@ -66,6 +82,7 @@ public class EarningsServiceImpl implements EarningsService {
             events.add(usdtResult.event());
         }
         if (usdtResult.inserted()) {
+            insertedEvents.add(usdtResult.event());
             newUsdtAmount = usdtResult.event().getAmount();
         }
 
@@ -74,9 +91,11 @@ public class EarningsServiceImpl implements EarningsService {
             events.add(nexResult.event());
         }
         if (nexResult.inserted()) {
+            insertedEvents.add(nexResult.event());
             newNexAmount = nexResult.event().getAmount();
         }
 
+        publishEarningGeneratedEvents(insertedEvents);
         EarningSummary summary = upsertSummary(request.getUserId(), summaryDate, newUsdtAmount, newNexAmount);
         registerWalletPostingAfterCommit(events);
         return new ReceiptSettleResponse(events, summary);
@@ -205,6 +224,20 @@ public class EarningsServiceImpl implements EarningsService {
             normalized = normalized.substring(normalized.length() - 72);
         }
         return "EARN-" + normalized + "-" + asset;
+    }
+
+    private void publishEarningGeneratedEvents(List<EarningEvent> events) {
+        if (!earningGeneratedOutboxEnabled || events.isEmpty()) {
+            return;
+        }
+        for (EarningEvent event : events) {
+            EarningGeneratedPayload payload = eventFactory.fromEvent(event);
+            outboxService.publish(
+                    AGGREGATE_EARNING_EVENT,
+                    event.getEventNo(),
+                    EarningsOutboxRocketPublisher.EVENT_EARNING_GENERATED,
+                    payload);
+        }
     }
 
     private void registerWalletPostingAfterCommit(List<EarningEvent> events) {
