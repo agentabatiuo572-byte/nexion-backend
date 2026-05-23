@@ -42,3 +42,6 @@ nexion:
       name-server: ${NEXION_OUTBOX_ROCKETMQ_NAME_SERVER:${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}}
       order-paid-topic: ${NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC:nexion-order-paid}
       consumer-group: ${NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP:nexion-team-order-paid}
+      consumer:
+        max-retries: ${NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES:5}
+        processing-timeout-seconds: ${NEXION_OUTBOX_ROCKETMQ_CONSUMER_PROCESSING_TIMEOUT_SECONDS:300}

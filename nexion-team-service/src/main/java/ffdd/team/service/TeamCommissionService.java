@@ -8,6 +8,7 @@ import ffdd.common.exception.BizException;
 import ffdd.common.outbox.EventOutboxMessage;
 import ffdd.team.client.CommerceOutboxClient;
 import ffdd.team.client.WalletClient;
+import ffdd.team.dto.EventConsumerDelivery;
 import ffdd.team.dto.OrderPaidPayload;
 import ffdd.team.dto.TeamCommissionConsumeResult;
 import ffdd.team.dto.TeamCommissionUnlockResult;
@@ -36,20 +37,25 @@ public class TeamCommissionService {
     private static final String ASSET_NEX = "NEX";
     private static final String BIZ_TYPE_TEAM_COMMISSION = "TEAM_COMMISSION";
     private static final String BIZ_NO_TEAM_COMMISSION_PREFIX = "TEAM-COMMISSION-";
+    private static final String HTTP_OUTBOX_CONSUMER_GROUP = "nexion-team-http-outbox";
+    private static final String HTTP_OUTBOX_TOPIC = "commerce-outbox-http";
     private static final int MAX_DEPTH = 7;
 
     private final CommerceOutboxClient outboxClient;
     private final WalletClient walletClient;
+    private final EventConsumerDeliveryService consumerDeliveryService;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
     public TeamCommissionService(
             CommerceOutboxClient outboxClient,
             WalletClient walletClient,
+            EventConsumerDeliveryService consumerDeliveryService,
             JdbcTemplate jdbcTemplate,
             ObjectMapper objectMapper) {
         this.outboxClient = outboxClient;
         this.walletClient = walletClient;
+        this.consumerDeliveryService = consumerDeliveryService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
     }
@@ -63,31 +69,94 @@ public class TeamCommissionService {
         result.setScanned(messages.size());
 
         for (EventOutboxMessage message : messages) {
+            EventConsumerDeliveryService.ConsumerClaim claim = consumerDeliveryService.claim(
+                    message, HTTP_OUTBOX_CONSUMER_GROUP, HTTP_OUTBOX_TOPIC, null, 0);
+            if (!claim.claimed()) {
+                result.setSkipped(result.getSkipped() + 1);
+                continue;
+            }
             if (!EVENT_ORDER_PAID.equals(message.getEventType())) {
+                consumerDeliveryService.markSkipped(
+                        HTTP_OUTBOX_CONSUMER_GROUP, claim.eventId(), "Unsupported event type " + message.getEventType());
                 result.setSkipped(result.getSkipped() + 1);
                 continue;
             }
             try {
                 int created = settleOrderPaid(message);
-                outboxClient.markPublished(message.getEventId());
+                ensureSuccess(outboxClient.markPublished(message.getEventId()));
+                consumerDeliveryService.markSuccess(HTTP_OUTBOX_CONSUMER_GROUP, claim.eventId(), created);
                 result.setProcessed(result.getProcessed() + created);
                 result.getEventIds().add(message.getEventId());
             } catch (RuntimeException ex) {
                 result.setFailed(result.getFailed() + 1);
-                outboxClient.markFailed(message.getEventId(), Map.of("error", ex.getMessage()));
+                String errorMessage = errorMessage(ex);
+                consumerDeliveryService.markFailure(HTTP_OUTBOX_CONSUMER_GROUP, claim.eventId(), 0, errorMessage);
+                ensureSuccess(outboxClient.markFailed(message.getEventId(), Map.of("error", errorMessage)));
             }
         }
         return result;
     }
 
     public int consumeBrokerOrderPaid(EventOutboxMessage message) {
-        if (message == null || message.getEventId() == null) {
-            throw new BizException("Invalid outbox message");
+        return consumeBrokerOrderPaid(message, "nexion-team-order-paid", "nexion-order-paid", null, 0).created();
+    }
+
+    public BrokerConsumeDecision consumeBrokerOrderPaid(
+            EventOutboxMessage message,
+            String consumerGroup,
+            String topic,
+            String msgId,
+            int rocketmqReconsumeTimes) {
+        EventOutboxMessage normalized = normalizeBrokerMessage(message, msgId);
+        EventConsumerDeliveryService.ConsumerClaim claim = consumerDeliveryService.claim(
+                normalized, consumerGroup, topic, msgId, rocketmqReconsumeTimes);
+        if (!claim.claimed()) {
+            return new BrokerConsumeDecision(
+                    true, false, true, false, 0, claim.eventId(), claim.status(), claim.attemptCount());
         }
-        if (!EVENT_ORDER_PAID.equals(message.getEventType())) {
-            return 0;
+        if (!EVENT_ORDER_PAID.equals(normalized.getEventType())) {
+            consumerDeliveryService.markSkipped(
+                    consumerGroup, claim.eventId(), "Unsupported event type " + normalized.getEventType());
+            return new BrokerConsumeDecision(
+                    true, false, false, false, 0, claim.eventId(), "SKIPPED", claim.attemptCount());
         }
-        return settleOrderPaid(message);
+        try {
+            int created = settleOrderPaid(normalized);
+            consumerDeliveryService.markSuccess(consumerGroup, claim.eventId(), created);
+            return new BrokerConsumeDecision(
+                    true, false, false, false, created, claim.eventId(), "SUCCESS", claim.attemptCount());
+        } catch (RuntimeException ex) {
+            EventConsumerDeliveryService.ConsumerFailure failure = consumerDeliveryService.markFailure(
+                    consumerGroup, claim.eventId(), rocketmqReconsumeTimes, errorMessage(ex));
+            return new BrokerConsumeDecision(
+                    false, !failure.dead(), false, failure.dead(), 0,
+                    failure.eventId(), failure.status(), failure.attemptCount());
+        }
+    }
+
+    public BrokerConsumeDecision recordBrokerOrderPaidFailure(
+            String eventId,
+            String consumerGroup,
+            String topic,
+            String msgId,
+            int rocketmqReconsumeTimes,
+            String errorMessage) {
+        EventOutboxMessage message = new EventOutboxMessage();
+        message.setEventId(StringUtils.hasText(eventId) ? eventId : msgId);
+        message.setEventType("UNKNOWN");
+        message.setAggregateType("ROCKETMQ");
+        message.setAggregateId(msgId);
+        EventConsumerDeliveryService.ConsumerClaim claim = consumerDeliveryService.claim(
+                message, consumerGroup, topic, msgId, rocketmqReconsumeTimes);
+        if (!claim.claimed()) {
+            return new BrokerConsumeDecision(
+                    true, false, true, false, 0, claim.eventId(), claim.status(), claim.attemptCount());
+        }
+        EventConsumerDeliveryService.ConsumerFailure failure = consumerDeliveryService.markFailure(
+                consumerGroup, claim.eventId(), rocketmqReconsumeTimes, errorMessage);
+        return new BrokerConsumeDecision(
+                false, !failure.dead(), false, failure.dead(), 0,
+                failure.eventId(), failure.status(), failure.attemptCount());
     }
 
     public TeamCommissionUnlockResult unlockDueCommissions(int limit, LocalDateTime unlockBefore, String orderNo) {
@@ -170,12 +239,46 @@ public class TeamCommissionService {
         return recentCommissions(userId, pageNum, pageSize);
     }
 
+    public List<EventConsumerDelivery> listConsumerDead(String consumerGroup, int limit) {
+        return consumerDeliveryService.listByStatus(consumerGroup, "DEAD", limit);
+    }
+
+    public EventConsumerDelivery getConsumerDelivery(String consumerGroup, String eventId) {
+        return consumerDeliveryService.getByEvent(consumerGroup, eventId);
+    }
+
+    public List<EventConsumerDelivery> listConsumerDeliveriesByAggregate(
+            String aggregateType, String aggregateId, int limit) {
+        return consumerDeliveryService.listByAggregate(aggregateType, aggregateId, limit);
+    }
+
+    public List<Map<String, Object>> consumerDeliverySummary(String consumerGroup) {
+        return consumerDeliveryService.summary(consumerGroup);
+    }
+
     private OrderPaidPayload readPayload(String payload) {
         try {
             return objectMapper.readValue(payload, OrderPaidPayload.class);
         } catch (JsonProcessingException ex) {
             throw new BizException("Unable to read OrderPaid payload");
         }
+    }
+
+    private EventOutboxMessage normalizeBrokerMessage(EventOutboxMessage message, String msgId) {
+        if (message == null) {
+            throw new BizException("Invalid outbox message");
+        }
+        if (!StringUtils.hasText(message.getEventId())) {
+            message.setEventId(msgId);
+        }
+        if (!StringUtils.hasText(message.getEventId())) {
+            throw new BizException("Invalid outbox message");
+        }
+        return message;
+    }
+
+    private String errorMessage(RuntimeException ex) {
+        return StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : ex.getClass().getSimpleName();
     }
 
     private List<CommissionRule> rules() {
@@ -427,5 +530,16 @@ public class TeamCommissionService {
             String orderNo,
             BigDecimal amountUsdt,
             BigDecimal amountNex) {
+    }
+
+    public record BrokerConsumeDecision(
+            boolean success,
+            boolean retry,
+            boolean duplicate,
+            boolean dead,
+            int created,
+            String eventId,
+            String status,
+            int attemptCount) {
     }
 }

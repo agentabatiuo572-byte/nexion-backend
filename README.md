@@ -164,20 +164,25 @@ Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION
 - `POST /commerce/outbox/{eventId}/published`: mark delivery complete.
 - `POST /commerce/outbox/{eventId}/failed`: mark delivery failed, schedule exponential retry, and move to `DEAD` after `nexion.outbox.max-retries`.
 - `POST /commerce/outbox/broker/publish?limit=20`: manually trigger one broker publish batch when the broker publisher is enabled.
+- `GET /team/outbox/consumer/summary`: summarize consumer delivery status by group/topic/status.
+- `GET /team/outbox/consumer/dead?consumerGroup=nexion-team-order-paid&limit=20`: inspect Team consumer local DLQ rows.
+- `GET /team/outbox/consumer/events/{eventId}`: inspect one Team consumer delivery row.
+- `GET /team/outbox/consumer/aggregates/{aggregateType}/{aggregateId}`: inspect Team consumer delivery rows for one aggregate.
 
-RocketMQ broker delivery is optional and disabled by default so local smoke scripts keep using the HTTP polling worker. To switch the OrderPaid path to RocketMQ delivery, start commerce/team with:
+RocketMQ broker delivery is optional and disabled by default. To switch the OrderPaid path to RocketMQ delivery, start commerce/team with:
 
 - `NEXION_OUTBOX_ROCKETMQ_ENABLED=true`
 - `ROCKETMQ_NAME_SERVER=127.0.0.1:9876`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=nexion-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=nexion-team-order-paid`
+- `NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES=5`
 
-For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling.
+For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Team consumer delivery is tracked in `nx_event_consumer_delivery`; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, and poison messages move to local `DEAD` after the configured max retry count.
 
 Gateway chain startup supports the same switch:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1 -OutboxRocketMqEnabled true -RocketMqNameServer "127.0.0.1:9876" -TeamOutboxWorkerEnabled false
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1 -OutboxRocketMqEnabled true -RocketMqNameServer "127.0.0.1:9876" -TeamOutboxWorkerEnabled false -OutboxRocketMqConsumerMaxRetries 5
 ```
 
 Team outbox worker defaults:
@@ -187,7 +192,7 @@ Team outbox worker defaults:
 - `NEXION_TEAM_OUTBOX_WORKER_INITIAL_DELAY_MS=5000`
 - `NEXION_TEAM_OUTBOX_WORKER_FIXED_DELAY_MS=5000`
 
-`smoke_main_chain.ps1` now verifies the `OrderPaid` outbox event before continuing to compute activation and earnings settlement.
+`smoke_main_chain.ps1` verifies the `OrderPaid` outbox event before continuing to compute activation and earnings settlement. `smoke_team_commission.ps1` also checks Team consumer delivery state and expects the OrderPaid delivery to reach `SUCCESS`.
 
 ## BFF Aggregation Baseline
 

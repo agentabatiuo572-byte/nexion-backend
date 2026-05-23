@@ -157,6 +157,18 @@ if ($null -eq $commission) {
   Write-Host "Worker/listener created commission id=$($commission.id), status=$($commission.status)"
 }
 
+$encodedOrderNo = [uri]::EscapeDataString($order.orderNo)
+Write-Host "Checking Team consumer delivery state for order $($order.orderNo)..."
+$consumerDeliveries = @(Invoke-NexionJson -Method Get -Uri "$TeamUrl/team/outbox/consumer/aggregates/ORDER/${encodedOrderNo}?limit=5")
+$consumerDelivery = $consumerDeliveries | Where-Object { $_.eventType -eq "OrderPaid" } | Select-Object -First 1
+if ($null -eq $consumerDelivery) {
+  throw "Expected Team consumer delivery state for OrderPaid order $($order.orderNo)."
+}
+Write-Host "Consumer delivery group=$($consumerDelivery.consumerGroup), status=$($consumerDelivery.status), attempts=$($consumerDelivery.attemptCount), deadAt=$($consumerDelivery.deadAt)"
+if ($consumerDelivery.status -ne "SUCCESS") {
+  throw "Expected Team consumer delivery status SUCCESS, got $($consumerDelivery.status)."
+}
+
 Write-Host "Loading sponsor team overview..."
 $overview = Invoke-NexionJson -Method Get -Uri "$TeamUrl/team/overview?userId=$SponsorUserId"
 Write-Host "Sponsor directCount=$($overview.directCount), commissionCount=$($overview.commissionCount), pendingUsdt=$($overview.pendingUsdt), pendingNex=$($overview.pendingNex)"
@@ -168,7 +180,6 @@ Write-Host "Loading sponsor wallet before commission unlock..."
 $walletBefore = Invoke-NexionJson -Method Get -Uri "$WalletUrl/wallet/users/$SponsorUserId"
 Write-Host "Before wallet USDT=$($walletBefore.usdtAvailable), NEX=$($walletBefore.nexAvailable)"
 
-$encodedOrderNo = [uri]::EscapeDataString($order.orderNo)
 $encodedUnlockBefore = [uri]::EscapeDataString($UnlockBefore)
 Write-Host "Unlocking due team commissions for order $($order.orderNo)..."
 $unlock = Invoke-NexionJson -Method Post -Uri "$TeamUrl/team/commissions/unlock?limit=20&orderNo=$encodedOrderNo&unlockBefore=$encodedUnlockBefore"

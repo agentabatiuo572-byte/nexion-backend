@@ -439,6 +439,34 @@ CREATE TABLE IF NOT EXISTS nx_event_outbox (
   KEY idx_event_outbox_type_time (event_type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_event_consumer_delivery (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  event_id VARCHAR(64) NOT NULL,
+  consumer_group VARCHAR(128) NOT NULL,
+  topic VARCHAR(128) NOT NULL,
+  msg_id VARCHAR(128) NULL,
+  event_type VARCHAR(96) NOT NULL DEFAULT 'UNKNOWN',
+  aggregate_type VARCHAR(64) NULL,
+  aggregate_id VARCHAR(128) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+  attempt_count INT NOT NULL DEFAULT 0,
+  rocketmq_reconsume_times INT NOT NULL DEFAULT 0,
+  next_retry_at DATETIME NULL,
+  processed_at DATETIME NULL,
+  dead_at DATETIME NULL,
+  created_commissions INT NOT NULL DEFAULT 0,
+  last_error VARCHAR(512) NULL,
+  first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_event_consumer_event_group (event_id, consumer_group),
+  KEY idx_event_consumer_status_time (consumer_group, status, updated_at),
+  KEY idx_event_consumer_topic_status (topic, status, updated_at),
+  KEY idx_event_consumer_aggregate (aggregate_type, aggregate_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_user_device (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
