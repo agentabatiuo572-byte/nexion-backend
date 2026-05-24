@@ -17,7 +17,7 @@ $InternalHeaders = @{
   "X-Nexion-Subject-Id" = "0"
   "X-Nexion-Subject-Type" = "SERVICE"
   "X-Nexion-Username" = "smoke-main-chain"
-  "X-Nexion-Authorities" = "PERM_COMMERCE_WRITE,PERM_COMPUTE_READ,PERM_EARNINGS_READ,PERM_WALLET_READ"
+  "X-Nexion-Authorities" = "PERM_COMMERCE_WRITE,PERM_COMPUTE_READ,PERM_COMPUTE_WRITE,PERM_EARNINGS_READ,PERM_WALLET_READ"
 }
 
 function Invoke-NexionJson {
@@ -106,13 +106,22 @@ $devices = Invoke-NexionJson -Method Get -Uri "$ComputeUrl/compute/devices?sourc
 $device = First-Record $devices
 Write-Host "Activated device $($device.id) / $($device.instanceNo)"
 
-Write-Host "Creating compute receipt; compute should settle earnings after commit..."
-$receipt = Invoke-NexionJson -Method Post -Uri "$ComputeUrl/compute/receipts" -Body @{
-  userDeviceId = $device.id
+Write-Host "Leasing a real compute task to the worker for the activated device..."
+$task = Invoke-NexionJson -Method Post -Uri "$ComputeUrl/compute/tasks/worker/lease" -Body @{
+  preferredDeviceId = $device.id
   taskType = "SMOKE_INFERENCE"
   clientName = "smoke-main-chain"
+}
+if ($task.status -ne "RUNNING" -or $task.userDeviceId -ne $device.id -or -not $task.workerAckAt -or -not $task.leaseExpiresAt) {
+  throw "Expected RUNNING task on device $($device.id), got task=$($task.taskNo), status=$($task.status), userDeviceId=$($task.userDeviceId)"
+}
+Write-Host "Leased task $($task.taskNo), leaseExpiresAt=$($task.leaseExpiresAt)"
+
+Write-Host "Completing compute task; compute should emit receipt and settle earnings after commit..."
+$receipt = Invoke-NexionJson -Method Post -Uri "$ComputeUrl/compute/tasks/$($task.taskNo)/complete" -Body @{
   rewardUsdt = $RewardUsdt
   rewardNex = $RewardNex
+  clientName = "smoke-main-chain"
 }
 Write-Host "Created receipt $($receipt.receiptNo), earningStatus=$($receipt.earningStatus)"
 

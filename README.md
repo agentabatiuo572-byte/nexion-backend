@@ -7,7 +7,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | Module | Port | Responsibility |
 |---|---:|---|
 | `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config |
-| `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, Redis distributed rate limits, Sentinel flow/degrade protection |
+| `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, Redis distributed rate limits, canary routing, Sentinel flow/degrade protection |
 | `nexion-bff-service` | 8100 | Home/Earn/Wallet page aggregation and short TTL Redis snapshots |
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
@@ -82,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 
 The smoke script verifies:
 
-`commerce paid -> compute activate -> compute receipt -> earnings settle -> wallet post`
+`commerce paid -> compute activate -> worker lease task -> task completion receipt -> earnings settle -> wallet post`
 
 ## Team Commission Smoke Test
 
@@ -123,7 +123,7 @@ Publish the current Gateway route config to Nacos before using `-UseNacosConfig`
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\publish_nacos_gateway_config.ps1
 ```
 
-`NacosGatewayConfigParityTest` verifies that `scripts/nacos/nexion-gateway.yaml` stays aligned with `nexion-gateway/src/main/resources/application.yml` for Gateway routes, Redis settings, rate-limit settings, and Sentinel settings.
+`NacosGatewayConfigParityTest` verifies that `scripts/nacos/nexion-gateway.yaml` stays aligned with `nexion-gateway/src/main/resources/application.yml` for Gateway routes, Redis settings, rate-limit settings, canary settings, and Sentinel settings.
 
 The gateway smoke verifies anonymous business routes are rejected, registers a real user, logs in with that user's JWT, checks the BFF route, and then runs the same P0 business chain through `/api/**` Gateway routes. The smoke order and wallet checks use the `userId` returned by Auth instead of a fixed seeded user.
 
@@ -162,6 +162,63 @@ Local startup parameters:
 - `-GatewayRateLimitWindowSeconds 60`
 
 Gateway responses include `X-RateLimit-Backend` with `redis`, `local`, or `local-fallback`, which makes Redis outages visible during smoke and log checks. Gateway also includes the Spring Cloud Alibaba Sentinel starter and a route-group Sentinel filter. Sentinel resources use `gateway:{routeGroup}` names such as `gateway:commerce`; flow-control blocks return `429` with `X-Sentinel-Block-Type: flow`, and degrade/circuit blocks return `503` with `X-Sentinel-Block-Type: degrade`.
+
+## Compute Device State Baseline
+
+Compute now keeps high-frequency device state in Redis instead of writing every heartbeat to MySQL.
+
+- `PATCH /compute/devices/{id}/status`: reports transient status and telemetry into `compute:device:state:{deviceId}` with TTL; requires `PERM_COMPUTE_WRITE`.
+- `GET /compute/devices/{id}/status`: reads Redis first and falls back to the device row when cache is empty or unavailable.
+- `GET /compute/devices/node-map?limit=100`: reads cached device states and returns node-map points plus online/busy/degraded/offline counts; if Redis is unavailable it falls back to database device metadata.
+- Redis index key: `compute:device:state:index`.
+- TTL config: `NEXION_COMPUTE_DEVICE_STATE_TTL_SECONDS`, default `30`.
+
+Run the direct Compute smoke after applying `scripts/seed.sql` or `scripts/patch_business_api_permissions.sql` so admin/service tokens can include `PERM_COMPUTE_WRITE`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_compute_device_status.ps1
+```
+
+## Compute Task Scheduling Baseline
+
+Compute now has a minimal real task lifecycle instead of only accepting already-completed receipt submissions.
+
+- `POST /compute/tasks/dispatch`: ops/scheduler entrypoint that atomically claims one `ONLINE` device with a conditional MySQL update, creates a `RUNNING` task with a lease and attempt counter, marks the device `BUSY`, and writes best-effort Redis lifecycle state.
+- `POST /compute/tasks/worker/lease`: worker-facing lease endpoint. It returns a compact task + device assignment, renews an existing unexpired `RUNNING` task for the same `clientName + taskType` without creating a duplicate, or atomically dispatches a new task and records `workerAckAt` immediately.
+- `POST /compute/tasks/{taskNo}/ack`: worker acknowledgement/heartbeat for a `RUNNING` task; records `workerAckAt` and renews `leaseExpiresAt`.
+- `POST /compute/tasks/{taskNo}/complete`: completes a `RUNNING` task, creates the Proof-of-Compute receipt, publishes the existing `ComputeTaskCompleted` outbox event, triggers the existing earnings settlement path, and releases the device to `ONLINE`.
+- `POST /compute/tasks/{taskNo}/fail`: marks a `RUNNING` task `FAILED` and releases the device to `ONLINE`.
+- `POST /compute/tasks/maintenance/timeouts?limit=20`: scans expired `RUNNING` leases, releases devices, and moves tasks to `RETRYING` or terminal `FAILED` when attempts are exhausted.
+- `POST /compute/tasks/maintenance/retries?limit=20`: scans due `RETRYING` tasks, atomically claims a new `ONLINE` device, and moves the same task back to `RUNNING`.
+- `GET /compute/tasks?status=&userId=&userDeviceId=&taskType=`: paged task inspection for ops.
+- Task write endpoints require `PERM_COMPUTE_WRITE`; task reads require `PERM_COMPUTE_READ`.
+- `nx_compute_receipt.task_no` is unique so repeated completion can return the existing receipt instead of double-settling rewards.
+- Maintenance worker is disabled by default (`NEXION_COMPUTE_TASK_MAINTENANCE_ENABLED=false`). Enable it to run timeout and retry scans on a fixed delay. Key knobs: `NEXION_COMPUTE_TASK_DEFAULT_LEASE_SECONDS`, `NEXION_COMPUTE_TASK_DEFAULT_MAX_ATTEMPTS`, `NEXION_COMPUTE_TASK_RETRY_INITIAL_BACKOFF_SECONDS`, and `NEXION_COMPUTE_TASK_MAINTENANCE_BATCH_SIZE`.
+
+Run the direct Compute task smoke after applying `scripts/schema.sql` and `scripts/seed.sql`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_compute_task_dispatch.ps1
+```
+
+## Gateway Canary Baseline
+
+Gateway canary routing is disabled by default and only rewrites the downstream target URI when a configured route rule matches. The first committed route template is `commerce`:
+
+- Global switch: `NEXION_GATEWAY_CANARY_ENABLED=false`.
+- Route switch: `NEXION_GATEWAY_CANARY_COMMERCE_ENABLED=false`.
+- Canary target: `NEXION_GATEWAY_CANARY_COMMERCE_URI=http://localhost:18104`.
+- Forced canary header: `X-Nexion-Canary: true`.
+- App-version header: `X-App-Version`, matched by `NEXION_GATEWAY_CANARY_COMMERCE_VERSIONS`.
+- Percent rollout: `NEXION_GATEWAY_CANARY_COMMERCE_PERCENT`, using a stable user-id hash when authenticated and client IP otherwise.
+
+When a request is routed to canary, Gateway adds `X-Nexion-Canary: true`, `X-Nexion-Canary-Route`, and `X-Nexion-Canary-Reason` response headers. With canary disabled or unmatched, existing stable routes are unchanged.
+
+Local startup example for forcing `/api/commerce/**` requests with the canary header to `localhost:18104`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1 -GatewayCanaryEnabled true -GatewayCanaryCommerceEnabled true -GatewayCanaryCommerceUri "http://localhost:18104"
+```
 
 ## Wallet Balance Mutation Baseline
 

@@ -127,3 +127,14 @@ nexion:
       anonymous-permits-per-minute: ${NEXION_GATEWAY_RATE_LIMIT_ANONYMOUS_PER_MINUTE:20}
       user-permits-per-minute: ${NEXION_GATEWAY_RATE_LIMIT_USER_PER_MINUTE:120}
       window-seconds: ${NEXION_GATEWAY_RATE_LIMIT_WINDOW_SECONDS:60}
+    canary:
+      enabled: ${NEXION_GATEWAY_CANARY_ENABLED:false}
+      force-header-name: ${NEXION_GATEWAY_CANARY_FORCE_HEADER_NAME:X-Nexion-Canary}
+      force-header-value: ${NEXION_GATEWAY_CANARY_FORCE_HEADER_VALUE:true}
+      version-header-name: ${NEXION_GATEWAY_CANARY_VERSION_HEADER_NAME:X-App-Version}
+      routes:
+        commerce:
+          enabled: ${NEXION_GATEWAY_CANARY_COMMERCE_ENABLED:false}
+          canary-uri: ${NEXION_GATEWAY_CANARY_COMMERCE_URI:http://localhost:18104}
+          percent: ${NEXION_GATEWAY_CANARY_COMMERCE_PERCENT:0}
+          versions: ${NEXION_GATEWAY_CANARY_COMMERCE_VERSIONS:}

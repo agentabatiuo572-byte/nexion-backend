@@ -17,5 +17,11 @@ public class ComputeTask extends BaseEntity {
     private String clientName;
     private String status;
     private LocalDateTime startedAt;
+    private LocalDateTime workerAckAt;
+    private LocalDateTime leaseExpiresAt;
+    private Integer attemptCount;
+    private Integer maxAttempts;
+    private LocalDateTime nextRetryAt;
+    private String lastError;
     private LocalDateTime completedAt;
 }

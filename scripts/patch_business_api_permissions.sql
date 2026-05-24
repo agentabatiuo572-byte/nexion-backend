@@ -19,6 +19,7 @@ INSERT INTO admin_permission (id, permission_code, permission_name, resource_typ
 VALUES
   (101, 'PERM_BFF_READ', 'Read BFF aggregation', 'API', '/bff/**', NULL, 1),
   (102, 'PERM_COMPUTE_READ', 'Read compute operations', 'API', '/compute/**', NULL, 1),
+  (117, 'PERM_COMPUTE_WRITE', 'Write compute task and device status', 'API', '/compute/tasks/**,/compute/devices/*/status', NULL, 1),
   (103, 'PERM_COMMERCE_READ', 'Read commerce operations', 'API', '/commerce/**', NULL, 1),
   (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**', NULL, 1),
   (105, 'PERM_WALLET_READ', 'Read wallet operations', 'API', '/wallet/**', NULL, 1),
@@ -49,6 +50,7 @@ FROM admin_permission
 WHERE permission_code IN (
   'PERM_BFF_READ',
   'PERM_COMPUTE_READ',
+  'PERM_COMPUTE_WRITE',
   'PERM_COMMERCE_READ',
   'PERM_COMMERCE_WRITE',
   'PERM_WALLET_READ',

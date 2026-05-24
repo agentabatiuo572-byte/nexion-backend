@@ -675,14 +675,68 @@ CREATE TABLE IF NOT EXISTS nx_compute_task (
   client_name VARCHAR(128) NOT NULL,
   status VARCHAR(32) NOT NULL,
   started_at DATETIME NULL,
+  worker_ack_at DATETIME NULL,
+  lease_expires_at DATETIME NULL,
+  attempt_count INT NOT NULL DEFAULT 1,
+  max_attempts INT NOT NULL DEFAULT 3,
+  next_retry_at DATETIME NULL,
+  last_error VARCHAR(512) NULL,
   completed_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_compute_task_no (task_no),
   KEY idx_compute_task_device_time (user_device_id, created_at),
+  KEY idx_compute_task_user_status (user_id, status, created_at),
+  KEY idx_compute_task_lease (status, lease_expires_at, created_at),
+  KEY idx_compute_task_retry (status, next_retry_at, created_at),
   KEY idx_compute_task_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND COLUMN_NAME = 'worker_ack_at') = 0,
+  'ALTER TABLE nx_compute_task ADD COLUMN worker_ack_at DATETIME NULL AFTER started_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND COLUMN_NAME = 'lease_expires_at') = 0,
+  'ALTER TABLE nx_compute_task ADD COLUMN lease_expires_at DATETIME NULL AFTER worker_ack_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND COLUMN_NAME = 'attempt_count') = 0,
+  'ALTER TABLE nx_compute_task ADD COLUMN attempt_count INT NOT NULL DEFAULT 1 AFTER lease_expires_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND COLUMN_NAME = 'max_attempts') = 0,
+  'ALTER TABLE nx_compute_task ADD COLUMN max_attempts INT NOT NULL DEFAULT 3 AFTER attempt_count',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND COLUMN_NAME = 'next_retry_at') = 0,
+  'ALTER TABLE nx_compute_task ADD COLUMN next_retry_at DATETIME NULL AFTER max_attempts',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND COLUMN_NAME = 'last_error') = 0,
+  'ALTER TABLE nx_compute_task ADD COLUMN last_error VARCHAR(512) NULL AFTER next_retry_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND INDEX_NAME = 'idx_compute_task_user_status') = 0,
+  'ALTER TABLE nx_compute_task ADD INDEX idx_compute_task_user_status (user_id, status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND INDEX_NAME = 'idx_compute_task_lease') = 0,
+  'ALTER TABLE nx_compute_task ADD INDEX idx_compute_task_lease (status, lease_expires_at, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_task' AND INDEX_NAME = 'idx_compute_task_retry') = 0,
+  'ALTER TABLE nx_compute_task ADD INDEX idx_compute_task_retry (status, next_retry_at, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_compute_receipt (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -701,6 +755,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_receipt (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_receipt_no (receipt_no),
+  UNIQUE KEY uk_receipt_task_no (task_no),
   KEY idx_receipt_user_time (user_id, completed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -716,6 +771,11 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_receipt' AND COLUMN_NAME = 'earning_status') = 0,
   'ALTER TABLE nx_compute_receipt ADD COLUMN earning_status VARCHAR(32) NOT NULL DEFAULT ''PENDING'' AFTER reward_nex',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_receipt' AND INDEX_NAME = 'uk_receipt_task_no') = 0,
+  'ALTER TABLE nx_compute_receipt ADD UNIQUE KEY uk_receipt_task_no (task_no)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

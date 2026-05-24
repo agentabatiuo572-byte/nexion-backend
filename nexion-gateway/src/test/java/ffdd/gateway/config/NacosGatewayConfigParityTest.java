@@ -25,6 +25,10 @@ class NacosGatewayConfigParityTest {
             "nexion.gateway.rate-limit.window-seconds",
             "nexion.gateway.rate-limit.redis.enabled",
             "nexion.gateway.rate-limit.redis.timeout-ms",
+            "nexion.gateway.canary.enabled",
+            "nexion.gateway.canary.force-header-name",
+            "nexion.gateway.canary.force-header-value",
+            "nexion.gateway.canary.version-header-name",
             "nexion.gateway.sentinel.enabled",
             "nexion.gateway.sentinel.default-flow-qps",
             "nexion.gateway.sentinel.default-slow-rt-ms",
@@ -51,7 +55,8 @@ class NacosGatewayConfigParityTest {
                     .isEqualTo(local.getProperty(key));
         }
 
-        assertSentinelRoutes(nacos, local);
+        assertConfigPrefix(nacos, local, "nexion.gateway.sentinel.routes.");
+        assertConfigPrefix(nacos, local, "nexion.gateway.canary.routes.");
     }
 
     private void assertRouteProperty(Properties nacos, Properties local, int index, List<String> fields) {
@@ -63,12 +68,11 @@ class NacosGatewayConfigParityTest {
         }
     }
 
-    private void assertSentinelRoutes(Properties nacos, Properties local) {
-        String prefix = "nexion.gateway.sentinel.routes.";
+    private void assertConfigPrefix(Properties nacos, Properties local, String prefix) {
         local.stringPropertyNames().stream()
                 .filter(key -> key.startsWith(prefix))
                 .forEach(key -> assertThat(nacos.getProperty(key))
-                        .as("Nacos sentinel route config %s should match local application.yml", key)
+                        .as("Nacos config %s should match local application.yml", key)
                         .isEqualTo(local.getProperty(key)));
     }
 

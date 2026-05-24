@@ -27,6 +27,18 @@ nexion:
   compute:
     auto-settle-earnings: ${NEXION_COMPUTE_AUTO_SETTLE_EARNINGS:true}
     task-completed-outbox-enabled: ${NEXION_COMPUTE_TASK_COMPLETED_OUTBOX_ENABLED:true}
+    task:
+      default-lease-seconds: ${NEXION_COMPUTE_TASK_DEFAULT_LEASE_SECONDS:300}
+      default-max-attempts: ${NEXION_COMPUTE_TASK_DEFAULT_MAX_ATTEMPTS:3}
+      retry:
+        initial-backoff-seconds: ${NEXION_COMPUTE_TASK_RETRY_INITIAL_BACKOFF_SECONDS:30}
+      maintenance:
+        enabled: ${NEXION_COMPUTE_TASK_MAINTENANCE_ENABLED:false}
+        batch-size: ${NEXION_COMPUTE_TASK_MAINTENANCE_BATCH_SIZE:20}
+        initial-delay-ms: ${NEXION_COMPUTE_TASK_MAINTENANCE_INITIAL_DELAY_MS:10000}
+        fixed-delay-ms: ${NEXION_COMPUTE_TASK_MAINTENANCE_FIXED_DELAY_MS:10000}
+    device-state:
+      ttl-seconds: ${NEXION_COMPUTE_DEVICE_STATE_TTL_SECONDS:30}
   outbox:
     rocketmq:
       enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
