@@ -52,6 +52,7 @@ VALUES
   (110, 'PERM_COMPLIANCE_READ', 'Read compliance operations', 'API', '/compliance/**', NULL, 1),
   (113, 'PERM_COMPLIANCE_WRITE', 'Write compliance operations', 'API', '/compliance/**', NULL, 1),
   (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1),
+  (115, 'PERM_SYSTEM_WRITE', 'Write system operation configs', 'API', '/system/configs/**', NULL, 1),
   (114, 'PERM_OPENAPI_ADMIN', 'Admin OpenAPI apps, quotas, audits, and webhook delivery', 'API', '/openapi/ops/**,/openapi/webhooks/deliveries/**', NULL, 1)
 ON DUPLICATE KEY UPDATE
   permission_code = VALUES(permission_code),
@@ -106,6 +107,7 @@ WHERE permission_code IN (
   'PERM_EARNINGS_READ',
   'PERM_MISSION_READ',
   'PERM_SYSTEM_READ',
+  'PERM_SYSTEM_WRITE',
   'PERM_OPENAPI_ADMIN'
 );
 
@@ -321,7 +323,12 @@ INSERT INTO nx_config_item (id, config_key, config_value, value_type, remark, st
 VALUES
   (1, 'product.phase', 'MVP', 'STRING', 'Current product phase.', 1),
   (2, 'withdrawal.min_usdt', '10', 'NUMBER', 'Minimum USDT withdrawal amount.', 1),
-  (3, 'risk.withdrawal.kyc_required', 'true', 'BOOLEAN', 'Require KYC before withdrawal.', 1)
+  (3, 'risk.withdrawal.kyc_required', 'true', 'BOOLEAN', 'Require KYC before withdrawal.', 1),
+  (4, 'openapi.default_qps_limit', '20', 'NUMBER', 'Default OpenAPI per-app QPS quota.', 1),
+  (5, 'openapi.default_daily_limit', '10000', 'NUMBER', 'Default OpenAPI per-app daily quota.', 1),
+  (6, 'risk.withdrawal.review_amount', '1000', 'NUMBER', 'Withdrawal amount that triggers manual review.', 1),
+  (7, 'risk.exchange.review_amount', '5000', 'NUMBER', 'Exchange amount that triggers manual review.', 1),
+  (8, 'feature.genesis.enabled', 'false', 'BOOLEAN', 'Genesis feature launch switch.', 1)
 ON DUPLICATE KEY UPDATE
   config_value = VALUES(config_value),
   value_type = VALUES(value_type),

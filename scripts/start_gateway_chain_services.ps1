@@ -40,6 +40,7 @@ $services = @(
   @{ Name = "nexion-wallet-service"; Port = 8105 },
   @{ Name = "nexion-team-service"; Port = 8106 },
   @{ Name = "nexion-earnings-service"; Port = 8108 },
+  @{ Name = "nexion-system-service"; Port = 8110 },
   @{ Name = "nexion-openapi-service"; Port = 8111 },
   @{ Name = "nexion-gateway"; Port = 8090 }
 )

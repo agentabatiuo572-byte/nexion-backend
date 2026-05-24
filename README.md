@@ -246,6 +246,28 @@ The BFF service exposes page-level view models through Gateway at `/api/bff/**` 
 
 Snapshot keys use `bff:{view}:{userId}` with a default TTL of 3 seconds, plus `bff:{view}:{userId}:last` for stale fallback.
 
+## System Config Baseline
+
+The System service exposes operational configuration through Gateway at `/api/system/**`.
+
+- `GET /api/system/configs?query=&status=&limit=20`: query config items for operations screens.
+- `GET /api/system/configs/{configKey}`: read one active config item by key.
+- `POST /api/system/configs/batch-query`: read active config items by key list.
+- `POST /api/system/configs`: create a config item.
+- `PATCH /api/system/configs/{id}`: update value, value type, remark, or status.
+- Read endpoints require `PERM_SYSTEM_READ`; create/update endpoints require `PERM_SYSTEM_WRITE`.
+
+Supported value types are `STRING`, `NUMBER`, `BOOLEAN`, and `JSON`. Do not store credentials, private keys, or long-lived secrets in `nx_config_item`; use environment variables or a secret manager for those values.
+
+Seeded operational keys include product phase, withdrawal minimums, OpenAPI default quotas, risk review thresholds, and feature switches. Run the System config smoke after applying `scripts/seed.sql` or `scripts/patch_business_api_permissions.sql` so admin tokens include `PERM_SYSTEM_READ` and `PERM_SYSTEM_WRITE`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_system_config.ps1 -AdminPassword "<admin-password>"
+```
+
+The smoke verifies anonymous rejection, normal-user permission denial, admin config create/list/get/batch/update, and disabled-config active lookup rejection. Pass `-AdminToken` or set `NEXION_SMOKE_ADMIN_PASSWORD` when you do not want to pass the admin password on the command line.
+
 ## OpenAPI Baseline
 
 The OpenAPI service is exposed through Gateway at `/api/openapi/**`.
