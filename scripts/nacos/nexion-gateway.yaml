@@ -1,4 +1,9 @@
 spring:
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:127.0.0.1}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: "${SPRING_DATA_REDIS_PASSWORD:}"
   cloud:
     gateway:
       routes:
@@ -74,6 +79,11 @@ spring:
             - Path=/api/system/**
           filters:
             - StripPrefix=1
+    sentinel:
+      enabled: ${NEXION_SENTINEL_ENABLED:true}
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
+        port: ${SENTINEL_TRANSPORT_PORT:8719}
 
 nexion:
   gateway:

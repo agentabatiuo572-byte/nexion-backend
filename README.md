@@ -116,6 +116,8 @@ Publish the current Gateway route config to Nacos before using `-UseNacosConfig`
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\publish_nacos_gateway_config.ps1
 ```
 
+`NacosGatewayConfigParityTest` verifies that `scripts/nacos/nexion-gateway.yaml` stays aligned with `nexion-gateway/src/main/resources/application.yml` for Gateway routes, Redis settings, rate-limit settings, and Sentinel settings.
+
 The gateway smoke verifies anonymous business routes are rejected, registers a real user, logs in with that user's JWT, checks the BFF route, and then runs the same P0 business chain through `/api/**` Gateway routes. The smoke order and wallet checks use the `userId` returned by Auth instead of a fixed seeded user.
 
 Optional user-smoke parameters:
