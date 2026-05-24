@@ -1,5 +1,6 @@
 package ffdd.gateway.filter;
 
+import ffdd.common.security.JwtTokenProvider;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -8,6 +9,7 @@ import java.util.HexFormat;
 import ffdd.gateway.ratelimit.GatewayRateLimitDecision;
 import ffdd.gateway.ratelimit.GatewayRateLimitKey;
 import ffdd.gateway.ratelimit.GatewayRateLimiter;
+import io.jsonwebtoken.Claims;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
@@ -29,6 +31,7 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
     private static final long MAX_WINDOW_SECONDS = 3600;
 
     private final GatewayRateLimiter rateLimiter;
+    private final JwtTokenProvider tokenProvider;
     private final boolean enabled;
     private final int anonymousPermits;
     private final int userPermits;
@@ -36,11 +39,13 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
 
     public GatewayRateLimitFilter(
             GatewayRateLimiter rateLimiter,
+            JwtTokenProvider tokenProvider,
             @Value("${nexion.gateway.rate-limit.enabled:true}") boolean enabled,
             @Value("${nexion.gateway.rate-limit.anonymous-permits-per-minute:20}") int anonymousPermits,
             @Value("${nexion.gateway.rate-limit.user-permits-per-minute:120}") int userPermits,
             @Value("${nexion.gateway.rate-limit.window-seconds:60}") long windowSeconds) {
         this.rateLimiter = rateLimiter;
+        this.tokenProvider = tokenProvider;
         this.enabled = enabled;
         this.anonymousPermits = Math.max(1, anonymousPermits);
         this.userPermits = Math.max(1, userPermits);
@@ -76,7 +81,11 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
     private RateKey rateKey(ServerHttpRequest request, String path) {
         String authorization = request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (StringUtils.hasText(authorization) && authorization.startsWith(BEARER_PREFIX)) {
-            return new RateKey("user:" + hash(authorization.substring(BEARER_PREFIX.length())), routeGroup(path), userPermits);
+            String token = authorization.substring(BEARER_PREFIX.length());
+            String userIdentity = authenticatedUserIdentity(token);
+            if (userIdentity != null) {
+                return new RateKey(userIdentity, routeGroup(path), userPermits);
+            }
         }
         return new RateKey("anon:" + clientIp(request), routeGroup(path), anonymousPermits);
     }
@@ -84,20 +93,34 @@ public class GatewayRateLimitFilter implements GlobalFilter, Ordered {
     private String routeGroup(String path) {
         String remaining = path.substring(API_PREFIX.length());
         int slash = remaining.indexOf('/');
-        return slash < 0 ? remaining : remaining.substring(0, slash);
+        String routeGroup = slash < 0 ? remaining : remaining.substring(0, slash);
+        return StringUtils.hasText(routeGroup) ? routeGroup : "unknown";
     }
 
     private String clientIp(ServerHttpRequest request) {
         String forwardedFor = request.getHeaders().getFirst("X-Forwarded-For");
         if (StringUtils.hasText(forwardedFor)) {
             int comma = forwardedFor.indexOf(',');
-            return comma < 0 ? forwardedFor.trim() : forwardedFor.substring(0, comma).trim();
+            String clientIp = comma < 0 ? forwardedFor.trim() : forwardedFor.substring(0, comma).trim();
+            return StringUtils.hasText(clientIp) ? clientIp : "unknown";
         }
         InetSocketAddress remoteAddress = request.getRemoteAddress();
         if (remoteAddress == null || remoteAddress.getAddress() == null) {
             return "unknown";
         }
         return remoteAddress.getAddress().getHostAddress();
+    }
+
+    private String authenticatedUserIdentity(String token) {
+        try {
+            Claims claims = tokenProvider.parse(token);
+            if (!StringUtils.hasText(claims.getSubject())) {
+                return null;
+            }
+            return "user:" + hash(claims.getSubject());
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     private void addLimitHeaders(ServerWebExchange exchange, GatewayRateLimitDecision decision) {

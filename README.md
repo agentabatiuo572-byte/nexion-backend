@@ -7,7 +7,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | Module | Port | Responsibility |
 |---|---:|---|
 | `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config |
-| `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, Redis distributed rate-limit baseline with local fallback |
+| `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, Redis distributed rate limits, Sentinel flow/degrade protection |
 | `nexion-bff-service` | 8100 | Home/Earn/Wallet page aggregation and short TTL Redis snapshots |
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
@@ -133,7 +133,8 @@ Pass `-CheckRateLimit` to also verify that anonymous `/api/commerce/**` traffic 
 Gateway has a Redis fixed-window limiter for `/api/**` routes, with an in-process fixed-window fallback when Redis is unavailable. Keys are scoped by identity and route group:
 
 - Anonymous key: client IP + first segment after `/api/`.
-- Authenticated key: Bearer token hash + first segment after `/api/`.
+- Authenticated key: validated JWT subject hash + first segment after `/api/`.
+- Forged or expired Bearer tokens stay on anonymous IP quota and cannot claim user-level limits.
 - Default anonymous limit: 20 requests per 60 seconds.
 - Default user limit: 120 requests per 60 seconds.
 
@@ -151,7 +152,7 @@ Local startup parameters:
 - `-GatewayUserRateLimit 120`
 - `-GatewayRateLimitWindowSeconds 60`
 
-Gateway responses include `X-RateLimit-Backend` with `redis`, `local`, or `local-fallback`, which makes Redis outages visible during smoke and log checks. Gateway also includes the Spring Cloud Alibaba Sentinel starter and a route-group Sentinel filter. Sentinel resources use `gateway:{routeGroup}` names such as `gateway:commerce`; blocked requests return unified JSON with `X-Sentinel-Block: true`.
+Gateway responses include `X-RateLimit-Backend` with `redis`, `local`, or `local-fallback`, which makes Redis outages visible during smoke and log checks. Gateway also includes the Spring Cloud Alibaba Sentinel starter and a route-group Sentinel filter. Sentinel resources use `gateway:{routeGroup}` names such as `gateway:commerce`; flow-control blocks return `429` with `X-Sentinel-Block-Type: flow`, and degrade/circuit blocks return `503` with `X-Sentinel-Block-Type: degrade`.
 
 ## Wallet Balance Mutation Baseline
 

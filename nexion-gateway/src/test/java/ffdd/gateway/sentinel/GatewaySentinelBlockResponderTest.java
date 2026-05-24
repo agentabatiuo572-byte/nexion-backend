@@ -2,6 +2,7 @@ package ffdd.gateway.sentinel;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.alibaba.csp.sentinel.slots.block.degrade.DegradeException;
 import com.alibaba.csp.sentinel.slots.block.flow.FlowException;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -13,7 +14,7 @@ class GatewaySentinelBlockResponderTest {
     private final GatewaySentinelBlockResponder responder = new GatewaySentinelBlockResponder();
 
     @Test
-    void writesUniformJsonBlockResponse() {
+    void writesUniformJsonFlowBlockResponse() {
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.get("/api/commerce/products").build());
 
@@ -22,8 +23,25 @@ class GatewaySentinelBlockResponderTest {
 
         assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
         assertThat(exchange.getResponse().getHeaders().getFirst("X-Sentinel-Block")).isEqualTo("true");
+        assertThat(exchange.getResponse().getHeaders().getFirst("X-Sentinel-Block-Type")).isEqualTo("flow");
         assertThat(exchange.getResponse().getBodyAsString().block())
                 .contains("\"code\":429")
-                .contains("\"sentinel block\"");
+                .contains("\"sentinel flow control\"");
+    }
+
+    @Test
+    void writesUniformJsonDegradeResponse() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/commerce/products").build());
+
+        StepVerifier.create(responder.block(exchange, "gateway:commerce", new DegradeException("gateway:commerce")))
+                .verifyComplete();
+
+        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(exchange.getResponse().getHeaders().getFirst("X-Sentinel-Block")).isEqualTo("true");
+        assertThat(exchange.getResponse().getHeaders().getFirst("X-Sentinel-Block-Type")).isEqualTo("degrade");
+        assertThat(exchange.getResponse().getBodyAsString().block())
+                .contains("\"code\":503")
+                .contains("\"sentinel degraded\"");
     }
 }
