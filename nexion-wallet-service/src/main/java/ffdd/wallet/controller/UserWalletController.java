@@ -2,11 +2,13 @@ package ffdd.wallet.controller;
 
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
+import ffdd.wallet.domain.DepositOrder;
 import ffdd.wallet.domain.ExchangeOrder;
 import ffdd.wallet.domain.UserWallet;
 import ffdd.wallet.domain.WalletLedger;
 import ffdd.wallet.domain.WithdrawalOrder;
 import ffdd.wallet.dto.ApplyRiskDecisionRequest;
+import ffdd.wallet.dto.ConfirmDepositRequest;
 import ffdd.wallet.dto.CreateExchangeRequest;
 import ffdd.wallet.dto.CreateWithdrawalRequest;
 import ffdd.wallet.dto.FailWithdrawalRequest;
@@ -19,6 +21,7 @@ import ffdd.wallet.dto.PostWalletDebitRequest;
 import ffdd.wallet.dto.RiskDecisionApplyResult;
 import ffdd.wallet.dto.SubmitWithdrawalChainRequest;
 import ffdd.wallet.dto.SucceedWithdrawalRequest;
+import ffdd.wallet.service.DepositPostingService;
 import ffdd.wallet.service.WalletService;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -33,9 +36,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/wallet")
 public class UserWalletController {
     private final WalletService walletService;
+    private final DepositPostingService depositPostingService;
 
-    public UserWalletController(WalletService walletService) {
+    public UserWalletController(WalletService walletService, DepositPostingService depositPostingService) {
         this.walletService = walletService;
+        this.depositPostingService = depositPostingService;
     }
 
     @GetMapping("/users/{userId}")
@@ -68,6 +73,12 @@ public class UserWalletController {
     @PreAuthorize("hasAuthority('PERM_WALLET_WRITE')")
     public ApiResult<WalletLedger> postDebit(@Valid @RequestBody PostWalletDebitRequest request) {
         return ApiResult.ok(walletService.postDebit(request));
+    }
+
+    @PostMapping("/deposits/confirmed")
+    @PreAuthorize("hasAuthority('PERM_WALLET_WRITE')")
+    public ApiResult<DepositOrder> confirmDeposit(@Valid @RequestBody ConfirmDepositRequest request) {
+        return ApiResult.ok(depositPostingService.confirm(request));
     }
 
     @PostMapping("/withdrawals")

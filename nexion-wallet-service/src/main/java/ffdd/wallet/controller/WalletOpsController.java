@@ -3,12 +3,15 @@ package ffdd.wallet.controller;
 import ffdd.common.api.ApiResult;
 import ffdd.common.outbox.EventConsumerDelivery;
 import ffdd.common.outbox.EventConsumerDeliveryService;
+import ffdd.wallet.domain.DepositOrder;
 import ffdd.wallet.domain.WithdrawalOrder;
+import ffdd.wallet.service.DepositPostingService;
 import ffdd.wallet.service.WithdrawalBroadcastResponse;
 import ffdd.wallet.service.WithdrawalBroadcastService;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,15 +24,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class WalletOpsController {
     private final EventConsumerDeliveryService deliveryService;
     private final WithdrawalBroadcastService withdrawalBroadcastService;
+    private final DepositPostingService depositPostingService;
     private final String defaultConsumerGroup;
 
     public WalletOpsController(
             EventConsumerDeliveryService deliveryService,
             WithdrawalBroadcastService withdrawalBroadcastService,
+            DepositPostingService depositPostingService,
             @Value("${nexion.outbox.rocketmq.wallet-consumer-group:nexion-wallet-earning-generated}")
                     String defaultConsumerGroup) {
         this.deliveryService = deliveryService;
         this.withdrawalBroadcastService = withdrawalBroadcastService;
+        this.depositPostingService = depositPostingService;
         this.defaultConsumerGroup = defaultConsumerGroup;
     }
 
@@ -91,5 +97,31 @@ public class WalletOpsController {
     @GetMapping("/withdrawals/broadcast/summary")
     public ApiResult<Map<String, Object>> withdrawalBroadcastSummary() {
         return ApiResult.ok(withdrawalBroadcastService.summary());
+    }
+
+    @GetMapping("/deposits/pending")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<List<DepositOrder>> depositPending(@RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(depositPostingService.listByStatus("PENDING", limit));
+    }
+
+    @GetMapping("/deposits/success")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<List<DepositOrder>> depositSuccess(@RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(depositPostingService.listByStatus("SUCCESS", limit));
+    }
+
+    @GetMapping("/deposits/dead")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<List<DepositOrder>> depositDead(@RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(depositPostingService.listByStatus("DEAD", limit));
+    }
+
+    @GetMapping("/deposits/records")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<List<DepositOrder>> depositRecords(
+            @RequestParam(required = false) String chainTxHash,
+            @RequestParam(required = false) String asset) {
+        return ApiResult.ok(depositPostingService.findRecords(chainTxHash, asset));
     }
 }

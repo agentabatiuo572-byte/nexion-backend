@@ -275,6 +275,46 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE C
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+CREATE TABLE IF NOT EXISTS nx_deposit_order (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  deposit_no VARCHAR(96) NOT NULL,
+  chain_name VARCHAR(32) NOT NULL,
+  chain_tx_hash VARCHAR(128) NOT NULL,
+  asset VARCHAR(16) NOT NULL,
+  amount DECIMAL(18,6) NOT NULL,
+  confirmations INT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL,
+  ledger_id BIGINT NULL,
+  confirmed_at DATETIME NULL,
+  credited_at DATETIME NULL,
+  failed_at DATETIME NULL,
+  failure_reason VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_deposit_no (deposit_no),
+  UNIQUE KEY uk_deposit_chain_tx_asset (chain_tx_hash, asset),
+  KEY idx_deposit_user_time (user_id, created_at),
+  KEY idx_deposit_status_time (status, created_at),
+  CONSTRAINT chk_deposit_positive_amount CHECK (amount > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_deposit_order' AND INDEX_NAME = 'uk_deposit_chain_tx_asset') = 0,
+  'ALTER TABLE nx_deposit_order ADD UNIQUE KEY uk_deposit_chain_tx_asset (chain_tx_hash, asset)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_deposit_order' AND INDEX_NAME = 'idx_deposit_status_time') = 0,
+  'ALTER TABLE nx_deposit_order ADD INDEX idx_deposit_status_time (status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_deposit_positive_amount') = 0,
+  'ALTER TABLE nx_deposit_order ADD CONSTRAINT chk_deposit_positive_amount CHECK (amount > 0)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_withdrawal_order (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,

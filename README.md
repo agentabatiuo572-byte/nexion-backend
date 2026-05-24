@@ -159,6 +159,9 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 
 - `POST /wallet/credits/post`: protected by `PERM_WALLET_WRITE`.
 - `POST /wallet/debits/post`: protected by `PERM_WALLET_WRITE`.
+- `POST /wallet/deposits/confirmed`: protected by `PERM_WALLET_WRITE`; records an idempotent deposit order by `(chainTxHash, asset)` and credits available balance through the wallet ledger.
+- `GET /wallet/deposits/pending|success|dead`: protected by `PERM_WALLET_READ`; inspect deposit order states.
+- `GET /wallet/deposits/records?chainTxHash={tx}&asset={asset}`: protected by `PERM_WALLET_READ`; inspect deposit confirmation records.
 - `POST /wallet/withdrawals`: creates an idempotent USDT withdrawal order, checks Compliance, and moves available balance into `pending_withdraw` when approved. Compliance `REVIEW` leaves the order in `REVIEWING` without mutating balances.
 - `POST /wallet/withdrawals/{withdrawalNo}/chain-submitted`: records chain tx hash and moves the order to `CHAIN_SUBMITTED`.
 - `POST /wallet/withdrawals/{withdrawalNo}/succeeded`: finalizes an approved/submitted withdrawal and releases `pending_withdraw`.
