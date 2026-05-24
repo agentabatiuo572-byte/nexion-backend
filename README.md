@@ -276,3 +276,12 @@ If Redis ACL is enabled, set `SPRING_DATA_REDIS_USERNAME` and `SPRING_DATA_REDIS
 See `docs/openapi-integration.md` for JavaScript signing, curl, webhook verification, and ops/admin examples.
 
 Webhook delivery is disabled by default (`NEXION_OPENAPI_WEBHOOK_DELIVERY_ENABLED=false`). It sends JSON payloads to the subscription callback URL with `X-Nexion-Webhook-Id`, `X-Nexion-Event-Type`, `X-Nexion-Timestamp`, and `X-Nexion-Signature`, then retries with exponential backoff before moving poison deliveries to `DEAD`. Private callback URLs are rejected by default; set `NEXION_OPENAPI_WEBHOOK_ALLOW_PRIVATE_CALLBACKS=true` only for local integration tests.
+
+Run the OpenAPI smoke after applying `scripts/seed.sql` or `scripts/patch_business_api_permissions.sql` so admin tokens include `PERM_OPENAPI_ADMIN`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_openapi.ps1 -AdminPassword "<admin-password>"
+```
+
+The smoke verifies owner app creation, HMAC signing, nonce replay rejection, daily quota rejection, app disable rejection, call audit query, and webhook queue query. Pass `-AdminToken` or set `NEXION_SMOKE_ADMIN_PASSWORD` when you do not want to pass the admin password on the command line.

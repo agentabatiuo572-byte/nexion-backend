@@ -108,6 +108,16 @@ Quota update body:
 
 App list responses never return `appSecret`.
 
+## Smoke Validation
+
+After the Gateway chain services are running and `scripts/seed.sql` or `scripts/patch_business_api_permissions.sql` has been applied, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_openapi.ps1 -AdminPassword "<admin-password>"
+```
+
+The script registers a real owner user, prepares a compute device through Commerce, creates an OpenAPI app and webhook subscription, submits a signed compute receipt, verifies nonce replay rejection, clamps daily quota to verify `429`, disables the app to verify `403`, and checks call audit plus webhook delivery queue records. Use `-AdminToken` or `NEXION_SMOKE_ADMIN_PASSWORD` if you do not want to pass the admin password on the command line.
+
 ## Webhook Verification
 
 Webhook deliveries are signed with the webhook subscription secret returned when the subscription is created.

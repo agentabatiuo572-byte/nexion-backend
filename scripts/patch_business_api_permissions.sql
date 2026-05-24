@@ -29,7 +29,8 @@ VALUES
   (109, 'PERM_MISSION_READ', 'Read mission operations', 'API', '/missions/**', NULL, 1),
   (110, 'PERM_COMPLIANCE_READ', 'Read compliance operations', 'API', '/compliance/**', NULL, 1),
   (113, 'PERM_COMPLIANCE_WRITE', 'Write compliance operations', 'API', '/compliance/**', NULL, 1),
-  (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1)
+  (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1),
+  (114, 'PERM_OPENAPI_ADMIN', 'Admin OpenAPI apps, quotas, audits, and webhook delivery', 'API', '/openapi/ops/**,/openapi/webhooks/deliveries/**', NULL, 1)
 ON DUPLICATE KEY UPDATE
   permission_code = VALUES(permission_code),
   permission_name = VALUES(permission_name),
@@ -56,5 +57,6 @@ WHERE permission_code IN (
   'PERM_MISSION_READ',
   'PERM_COMPLIANCE_READ',
   'PERM_COMPLIANCE_WRITE',
-  'PERM_SYSTEM_READ'
+  'PERM_SYSTEM_READ',
+  'PERM_OPENAPI_ADMIN'
 );

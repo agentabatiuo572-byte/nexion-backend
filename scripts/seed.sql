@@ -2,7 +2,7 @@ USE nexion;
 
 INSERT INTO admin (id, username, password_hash, nickname, email, phone, super_admin, status)
 VALUES
-  (1, 'superadmin', '$2a$10$lRWJD2iD0uPfyaTQcv7hjuhvluxuz6nfy5bkiZm4/D4La/6jI1EVS', 'Super Admin', 'admin@nexion.ai', NULL, 1, 1)
+  (1, 'superadmin', '$2a$10$OiCP0hEdnWNuxl/Q6PQ.juoWSzQCXFbvrLheJ.TYywnoyiZY7s19C', 'Super Admin', 'admin@nexion.ai', NULL, 1, 1)
 ON DUPLICATE KEY UPDATE
   password_hash = VALUES(password_hash),
   nickname = VALUES(nickname),
@@ -51,7 +51,8 @@ VALUES
   (109, 'PERM_MISSION_READ', 'Read mission operations', 'API', '/missions/**', NULL, 1),
   (110, 'PERM_COMPLIANCE_READ', 'Read compliance operations', 'API', '/compliance/**', NULL, 1),
   (113, 'PERM_COMPLIANCE_WRITE', 'Write compliance operations', 'API', '/compliance/**', NULL, 1),
-  (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1)
+  (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1),
+  (114, 'PERM_OPENAPI_ADMIN', 'Admin OpenAPI apps, quotas, audits, and webhook delivery', 'API', '/openapi/ops/**,/openapi/webhooks/deliveries/**', NULL, 1)
 ON DUPLICATE KEY UPDATE
   permission_code = VALUES(permission_code),
   permission_name = VALUES(permission_name),
@@ -104,7 +105,8 @@ WHERE permission_code IN (
   'PERM_NOTIFICATION_READ',
   'PERM_EARNINGS_READ',
   'PERM_MISSION_READ',
-  'PERM_SYSTEM_READ'
+  'PERM_SYSTEM_READ',
+  'PERM_OPENAPI_ADMIN'
 );
 
 INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
