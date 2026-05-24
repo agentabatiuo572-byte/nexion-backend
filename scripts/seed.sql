@@ -44,11 +44,13 @@ VALUES
   (103, 'PERM_COMMERCE_READ', 'Read commerce operations', 'API', '/commerce/**', NULL, 1),
   (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**', NULL, 1),
   (105, 'PERM_WALLET_READ', 'Read wallet operations', 'API', '/wallet/**', NULL, 1),
+  (112, 'PERM_WALLET_WRITE', 'Write wallet operations', 'API', '/wallet/**', NULL, 1),
   (106, 'PERM_TEAM_READ', 'Read team operations', 'API', '/team/**', NULL, 1),
   (107, 'PERM_NOTIFICATION_READ', 'Read notifications', 'API', '/notifications/**', NULL, 1),
   (108, 'PERM_EARNINGS_READ', 'Read earnings operations', 'API', '/earnings/**', NULL, 1),
   (109, 'PERM_MISSION_READ', 'Read mission operations', 'API', '/missions/**', NULL, 1),
   (110, 'PERM_COMPLIANCE_READ', 'Read compliance operations', 'API', '/compliance/**', NULL, 1),
+  (113, 'PERM_COMPLIANCE_WRITE', 'Write compliance operations', 'API', '/compliance/**', NULL, 1),
   (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1)
 ON DUPLICATE KEY UPDATE
   permission_code = VALUES(permission_code),

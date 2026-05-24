@@ -153,19 +153,34 @@ Local startup parameters:
 
 Gateway responses include `X-RateLimit-Backend` with `redis`, `local`, or `local-fallback`, which makes Redis outages visible during smoke and log checks. Gateway also includes the Spring Cloud Alibaba Sentinel starter and a route-group Sentinel filter. Sentinel resources use `gateway:{routeGroup}` names such as `gateway:commerce`; blocked requests return unified JSON with `X-Sentinel-Block: true`.
 
-## Wallet Credit Baseline
+## Wallet Balance Mutation Baseline
 
-Wallet owns balance mutation and ledger idempotency. Internal services can post credits through:
+Wallet owns balance mutation and ledger idempotency. Internal services can post balance changes through:
 
 - `POST /wallet/credits/post`: protected by `PERM_WALLET_WRITE`.
+- `POST /wallet/debits/post`: protected by `PERM_WALLET_WRITE`.
+- `POST /wallet/withdrawals`: creates an idempotent USDT withdrawal order, checks Compliance, and moves available balance into `pending_withdraw` when approved. Compliance `REVIEW` leaves the order in `REVIEWING` without mutating balances.
+- `POST /wallet/withdrawals/{withdrawalNo}/chain-submitted`: records chain tx hash and moves the order to `CHAIN_SUBMITTED`.
+- `POST /wallet/withdrawals/{withdrawalNo}/succeeded`: finalizes an approved/submitted withdrawal and releases `pending_withdraw`.
+- `POST /wallet/withdrawals/{withdrawalNo}/failed`: marks the withdrawal failed, releases `pending_withdraw`, refunds available balance, and records a refund ledger.
+- `POST /wallet/withdrawals/broadcast/publish?limit=20`: ops trigger for the withdrawal broadcast batch.
+- `GET /wallet/withdrawals/broadcast/pending|dead|summary`: inspect withdrawal broadcast backlog and local DEAD rows.
+- `POST /wallet/exchanges`: creates an idempotent exchange order, checks Compliance, debits the source asset, and credits the target asset when approved. Compliance `REVIEW` leaves the order in `REVIEWING`.
+- `POST /compliance/gates/check`: protected by `PERM_COMPLIANCE_WRITE`; creates an idempotent `nx_risk_decision` from the KYC profile, blacklist, amount threshold, and daily frequency checks.
+- `GET /compliance/risk-decisions/review`: lists pending manual review decisions.
+- `POST /compliance/risk-decisions/{decisionNo}/approve|reject`: records manual review outcome.
 - Required fields: `userId`, `bizNo`, `bizType`, `asset`, and positive `amount`.
 - Idempotency key: `(biz_no, asset, direction)`.
+- Debit safety: debits use a single conditional update (`available >= amount`) inside the transaction, so concurrent withdrawals or exchanges cannot drive available balance negative.
+- Withdrawal safety: withdrawal reservation uses one conditional update (`usdt_available >= amount + fee`) to atomically decrement available USDT and increment `pending_withdraw`; success decrements pending only, while failure moves pending back to available.
+- Withdrawal broadcast worker is disabled by default (`NEXION_WALLET_WITHDRAWAL_BROADCAST_ENABLED=false`). It scans `PENDING_CHAIN` rows, calls a replaceable `WithdrawalChainBroadcaster`, records `CHAIN_SUBMITTED` on success, and uses exponential retry before moving poison rows to local `DEAD`.
+- Compliance risk thresholds are configurable with `NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT`, and `NEXION_COMPLIANCE_DAILY_REVIEW_COUNT`.
 
 Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION-{commissionId}` for both USDT and NEX ledger entries.
 
 ## Reliable Event Outbox Baseline
 
-`nexion-common` provides a JDBC-backed outbox helper for the local transaction + reliable event pattern described in the high-concurrency architecture document.
+`nexion-common` provides JDBC-backed outbox and consumer-delivery helpers for the local transaction + reliable event pattern described in the high-concurrency architecture document.
 
 - Table: `nx_event_outbox`.
 - Initial producer: `nexion-commerce-service` writes an `OrderPaid` event in the same transaction that marks an order as paid.
@@ -177,10 +192,11 @@ Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION
 - `POST /commerce/outbox/{eventId}/published`: mark delivery complete.
 - `POST /commerce/outbox/{eventId}/failed`: mark delivery failed, schedule exponential retry, and move to `DEAD` after `nexion.outbox.max-retries`.
 - `POST /commerce/outbox/broker/publish?limit=20`: manually trigger one broker publish batch when the broker publisher is enabled.
-- `GET /team/outbox/consumer/summary`: summarize consumer delivery status by group/topic/status.
-- `GET /team/outbox/consumer/dead?consumerGroup=nexion-team-order-paid&limit=20`: inspect Team consumer local DLQ rows.
-- `GET /team/outbox/consumer/events/{eventId}`: inspect one Team consumer delivery row.
-- `GET /team/outbox/consumer/aggregates/{aggregateType}/{aggregateId}`: inspect Team consumer delivery rows for one aggregate.
+- `GET /{service}/outbox/consumer/summary`: summarize consumer delivery status by group/topic/status.
+- `GET /{service}/outbox/consumer/dead?consumerGroup={group}&limit=20`: inspect local DEAD rows.
+- `GET /{service}/outbox/consumer/events/{eventId}`: inspect one consumer delivery row, defaulting to the service's RocketMQ group.
+- `GET /{service}/outbox/consumer/aggregates/{aggregateType}/{aggregateId}`: inspect delivery rows for one aggregate.
+- Consumer delivery endpoints are available under `/team`, `/compute`, `/earnings`, `/wallet`, `/notifications`, and `/missions`.
 - `GET /team/outbox/broker/consumer/status?includeDlq=true`: inspect RocketMQ broker-side consumer offset lag, active consumer connections, and `%DLQ%{consumerGroup}` queue depth.
 
 RocketMQ broker delivery is optional and disabled by default. To switch the OrderPaid path to RocketMQ delivery, start commerce/team with:
@@ -190,9 +206,13 @@ RocketMQ broker delivery is optional and disabled by default. To switch the Orde
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=nexion-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=nexion-team-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_COMPUTE_GROUP=nexion-compute-order-paid`
+- `NEXION_OUTBOX_ROCKETMQ_EARNINGS_GROUP=nexion-earnings-compute-task-completed`
+- `NEXION_OUTBOX_ROCKETMQ_WALLET_GROUP=nexion-wallet-earning-generated`
+- `NEXION_OUTBOX_ROCKETMQ_NOTIFICATION_GROUP=nexion-notification-earning-generated`
+- `NEXION_OUTBOX_ROCKETMQ_MISSION_GROUP=nexion-mission-earning-generated`
 - `NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES=5`
 
-For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Team consumer delivery is tracked in `nx_event_consumer_delivery`; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, and poison messages move to local `DEAD` after the configured max retry count. Compute also subscribes with its own consumer group and idempotently activates devices by `sourceOrderNo`, so duplicate broker deliveries do not create duplicate devices. Broker-side lag and DLQ depth are available from `/team/outbox/broker/consumer/status`.
+For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Consumer delivery is tracked in `nx_event_consumer_delivery` for Team, Compute, Earnings, Wallet, Notification, and Mission consumers; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, malformed messages are recorded by `msgId`, and poison messages move to local `DEAD` after the configured max retry count. Broker-side lag and DLQ depth are available from `/team/outbox/broker/consumer/status`.
 
 Gateway chain startup supports the same switch:
 

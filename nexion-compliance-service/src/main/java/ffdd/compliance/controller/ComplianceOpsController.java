@@ -15,6 +15,8 @@ public class ComplianceOpsController {
         return ApiResult.ok(Map.of(
                 "service", "nexion-compliance-service",
                 "database", "nexion_compliance",
-                "responsibilities", List.of("KYC", "risk decisions", "withdrawal checks", "proof assets")));
+                "responsibilities", List.of("KYC", "risk decisions", "blacklist", "manual review",
+                        "withdrawal checks", "exchange checks", "proof assets"),
+                "gate", "/compliance/gates/check"));
     }
 }

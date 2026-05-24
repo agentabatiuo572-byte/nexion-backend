@@ -222,7 +222,13 @@ CREATE TABLE IF NOT EXISTS nx_user_wallet (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_wallet_user (user_id)
+  UNIQUE KEY uk_wallet_user (user_id),
+  CONSTRAINT chk_user_wallet_non_negative CHECK (
+    usdt_available >= 0
+    AND nex_available >= 0
+    AND pending_withdraw >= 0
+    AND lifetime_earned >= 0
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_wallet' AND COLUMN_NAME = 'version') = 0,
@@ -232,6 +238,11 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_wallet' AND COLUMN_NAME = 'is_deleted') = 0,
   'ALTER TABLE nx_user_wallet ADD COLUMN is_deleted TINYINT NOT NULL DEFAULT 0',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_user_wallet_non_negative') = 0,
+  'ALTER TABLE nx_user_wallet ADD CONSTRAINT chk_user_wallet_non_negative CHECK (usdt_available >= 0 AND nex_available >= 0 AND pending_withdraw >= 0 AND lifetime_earned >= 0)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -250,11 +261,17 @@ CREATE TABLE IF NOT EXISTS nx_wallet_ledger (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_wallet_ledger_biz (biz_no, asset, direction),
-  KEY idx_wallet_ledger_user_time (user_id, created_at)
+  KEY idx_wallet_ledger_user_time (user_id, created_at),
+  CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_ledger' AND INDEX_NAME = 'uk_wallet_ledger_biz') = 0,
   'ALTER TABLE nx_wallet_ledger ADD UNIQUE KEY uk_wallet_ledger_biz (biz_no, asset, direction)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_wallet_ledger_positive_amount') = 0,
+  'ALTER TABLE nx_wallet_ledger ADD CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -267,13 +284,91 @@ CREATE TABLE IF NOT EXISTS nx_withdrawal_order (
   fee DECIMAL(18,6) NOT NULL DEFAULT 0,
   target_address VARCHAR(128) NOT NULL,
   risk_decision_id BIGINT NULL,
+  chain_tx_hash VARCHAR(128) NULL,
   status VARCHAR(32) NOT NULL,
+  chain_submitted_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  failed_at DATETIME NULL,
+  failure_reason VARCHAR(255) NULL,
+  chain_broadcast_attempts INT NOT NULL DEFAULT 0,
+  next_broadcast_at DATETIME NULL,
+  last_broadcast_error VARCHAR(512) NULL,
+  broadcast_dead_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_withdrawal_no (withdrawal_no),
-  KEY idx_withdrawal_user_time (user_id, created_at)
+  UNIQUE KEY uk_withdrawal_chain_tx (chain_tx_hash),
+  KEY idx_withdrawal_user_time (user_id, created_at),
+  KEY idx_withdrawal_status (status, created_at),
+  KEY idx_withdrawal_broadcast_due (status, next_broadcast_at),
+  CONSTRAINT chk_withdrawal_positive_amount CHECK (amount > 0 AND fee >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'chain_tx_hash') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN chain_tx_hash VARCHAR(128) NULL AFTER risk_decision_id',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'chain_submitted_at') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN chain_submitted_at DATETIME NULL AFTER status',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'completed_at') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN completed_at DATETIME NULL AFTER chain_submitted_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'failed_at') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN failed_at DATETIME NULL AFTER completed_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'failure_reason') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN failure_reason VARCHAR(255) NULL AFTER failed_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'chain_broadcast_attempts') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN chain_broadcast_attempts INT NOT NULL DEFAULT 0 AFTER failure_reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'next_broadcast_at') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN next_broadcast_at DATETIME NULL AFTER chain_broadcast_attempts',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'last_broadcast_error') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN last_broadcast_error VARCHAR(512) NULL AFTER next_broadcast_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'broadcast_dead_at') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN broadcast_dead_at DATETIME NULL AFTER last_broadcast_error',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND INDEX_NAME = 'uk_withdrawal_chain_tx') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD UNIQUE KEY uk_withdrawal_chain_tx (chain_tx_hash)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND INDEX_NAME = 'idx_withdrawal_status') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD INDEX idx_withdrawal_status (status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND INDEX_NAME = 'idx_withdrawal_broadcast_due') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD INDEX idx_withdrawal_broadcast_due (status, next_broadcast_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_withdrawal_positive_amount') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD CONSTRAINT chk_withdrawal_positive_amount CHECK (amount > 0 AND fee >= 0)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_exchange_order (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -289,8 +384,14 @@ CREATE TABLE IF NOT EXISTS nx_exchange_order (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_exchange_no (exchange_no),
-  KEY idx_exchange_user_time (user_id, created_at)
+  KEY idx_exchange_user_time (user_id, created_at),
+  CONSTRAINT chk_exchange_positive_amount CHECK (from_amount > 0 AND to_amount > 0 AND rate > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_exchange_positive_amount') = 0,
+  'ALTER TABLE nx_exchange_order ADD CONSTRAINT chk_exchange_positive_amount CHECK (from_amount > 0 AND to_amount > 0 AND rate > 0)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_product (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -826,12 +927,42 @@ CREATE TABLE IF NOT EXISTS nx_risk_decision (
   biz_no VARCHAR(96) NOT NULL,
   decision VARCHAR(32) NOT NULL,
   reason VARCHAR(255) NULL,
+  reviewed_by VARCHAR(64) NULL,
+  reviewed_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_risk_decision_no (decision_no),
   KEY idx_risk_biz (biz_type, biz_no),
-  KEY idx_risk_user_time (user_id, created_at)
+  KEY idx_risk_user_time (user_id, created_at),
+  KEY idx_risk_decision_review (decision, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'reviewed_by') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN reviewed_by VARCHAR(64) NULL AFTER reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'reviewed_at') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN reviewed_at DATETIME NULL AFTER reviewed_by',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND INDEX_NAME = 'idx_risk_decision_review') = 0,
+  'ALTER TABLE nx_risk_decision ADD INDEX idx_risk_decision_review (decision, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_risk_blacklist (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_risk_blacklist_user (user_id),
+  KEY idx_risk_blacklist_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_proof_asset (

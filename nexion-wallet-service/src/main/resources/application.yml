@@ -24,6 +24,13 @@ server:
   port: 8105
 
 nexion:
+  wallet:
+    withdrawal:
+      broadcast:
+        enabled: ${NEXION_WALLET_WITHDRAWAL_BROADCAST_ENABLED:false}
+        batch-size: ${NEXION_WALLET_WITHDRAWAL_BROADCAST_BATCH_SIZE:20}
+        max-retries: ${NEXION_WALLET_WITHDRAWAL_BROADCAST_MAX_RETRIES:5}
+        initial-backoff-seconds: ${NEXION_WALLET_WITHDRAWAL_BROADCAST_INITIAL_BACKOFF_SECONDS:60}
   outbox:
     rocketmq:
       enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}

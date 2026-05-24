@@ -1,6 +1,11 @@
 spring:
   application:
     name: nexion-compliance-service
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:nexion}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
+    password: "${MYSQL_PASSWORD:A123456789Z!@#}"
   config:
     import:
       - optional:nacos:nexion-common.yaml
@@ -17,3 +22,12 @@ spring:
 
 server:
   port: 8109
+
+nexion:
+  compliance:
+    risk:
+      withdrawal-review-amount: ${NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT:1000.000000}
+      exchange-review-amount: ${NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT:5000.000000}
+      daily-review-count: ${NEXION_COMPLIANCE_DAILY_REVIEW_COUNT:3}
+  services:
+    wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}

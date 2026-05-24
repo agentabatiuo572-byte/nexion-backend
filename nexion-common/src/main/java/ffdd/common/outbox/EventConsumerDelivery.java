@@ -1,4 +1,4 @@
-package ffdd.team.dto;
+package ffdd.common.outbox;
 
 import java.time.LocalDateTime;
 import lombok.Data;

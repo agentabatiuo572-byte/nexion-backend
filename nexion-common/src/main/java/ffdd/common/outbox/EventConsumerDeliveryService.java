@@ -1,13 +1,12 @@
-package ffdd.team.service;
+package ffdd.common.outbox;
 
-import ffdd.common.outbox.EventOutboxMessage;
-import ffdd.team.dto.EventConsumerDelivery;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -15,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
+@ConditionalOnClass(JdbcTemplate.class)
 public class EventConsumerDeliveryService {
     private static final int MAX_LIMIT = 200;
     private static final int MAX_ERROR_LENGTH = 512;
@@ -61,9 +61,9 @@ public class EventConsumerDeliveryService {
                     consumerGroup,
                     topic,
                     msgId,
-                    valueOrUnknown(message.getEventType()),
-                    message.getAggregateType(),
-                    message.getAggregateId(),
+                    valueOrUnknown(message == null ? null : message.getEventType()),
+                    message == null ? null : message.getAggregateType(),
+                    message == null ? null : message.getAggregateId(),
                     STATUS_PROCESSING,
                     Math.max(0, rocketmqReconsumeTimes));
             return new ConsumerClaim(true, eventId, STATUS_PROCESSING, 1);
@@ -97,9 +97,9 @@ public class EventConsumerDeliveryService {
                 STATUS_PROCESSING,
                 topic,
                 msgId,
-                valueOrUnknown(message.getEventType()),
-                message.getAggregateType(),
-                message.getAggregateId(),
+                valueOrUnknown(message == null ? null : message.getEventType()),
+                message == null ? null : message.getAggregateType(),
+                message == null ? null : message.getAggregateId(),
                 Math.max(0, rocketmqReconsumeTimes),
                 eventId,
                 consumerGroup,
@@ -147,7 +147,7 @@ public class EventConsumerDeliveryService {
         return new ConsumerFailure(dead, eventId, status, attemptCount);
     }
 
-    public void markSuccess(String consumerGroup, String eventId, int createdCommissions) {
+    public void markSuccess(String consumerGroup, String eventId, int processedCount) {
         jdbcTemplate.update("""
                 UPDATE nx_event_consumer_delivery
                    SET status = ?,
@@ -161,7 +161,7 @@ public class EventConsumerDeliveryService {
                  WHERE event_id = ?
                    AND consumer_group = ?
                    AND is_deleted = 0
-                """, STATUS_SUCCESS, Math.max(0, createdCommissions), eventId, consumerGroup);
+                """, STATUS_SUCCESS, Math.max(0, processedCount), eventId, consumerGroup);
     }
 
     public void markSkipped(String consumerGroup, String eventId, String reason) {

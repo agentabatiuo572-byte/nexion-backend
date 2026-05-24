@@ -3,7 +3,7 @@ package ffdd.team.controller;
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.security.AuthHeaders;
-import ffdd.team.dto.EventConsumerDelivery;
+import ffdd.common.outbox.EventConsumerDelivery;
 import ffdd.team.dto.RocketMqBrokerMonitor;
 import ffdd.team.dto.TeamCommissionConsumeResult;
 import ffdd.team.dto.TeamCommissionUnlockResult;

@@ -1,0 +1,232 @@
+package ffdd.compliance.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import ffdd.common.api.ApiResult;
+import ffdd.compliance.client.WalletClient;
+import ffdd.compliance.client.dto.WalletRiskDecisionApplyRequest;
+import ffdd.compliance.domain.KycProfile;
+import ffdd.compliance.domain.RiskBlacklist;
+import ffdd.compliance.domain.RiskDecision;
+import ffdd.compliance.dto.ComplianceGateRequest;
+import ffdd.compliance.dto.ComplianceGateResponse;
+import ffdd.compliance.dto.ManualRiskReviewRequest;
+import ffdd.compliance.mapper.KycProfileMapper;
+import ffdd.compliance.mapper.RiskBlacklistMapper;
+import ffdd.compliance.mapper.RiskDecisionMapper;
+import java.math.BigDecimal;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+class ComplianceGateServiceTest {
+    private final KycProfileMapper kycProfileMapper = mock(KycProfileMapper.class);
+    private final RiskDecisionMapper riskDecisionMapper = mock(RiskDecisionMapper.class);
+    private final RiskBlacklistMapper riskBlacklistMapper = mock(RiskBlacklistMapper.class);
+    private final WalletClient walletClient = mock(WalletClient.class);
+    private final ComplianceGateService service = new ComplianceGateService(
+            kycProfileMapper,
+            riskDecisionMapper,
+            riskBlacklistMapper,
+            new BigDecimal("1000.000000"),
+            new BigDecimal("5000.000000"),
+            3,
+            walletClient);
+
+    @Test
+    void approvesWithdrawalWhenKycApproved() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(91L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-1"));
+
+        assertThat(response.getDecision()).isEqualTo("APPROVE");
+        assertThat(response.getDecisionId()).isEqualTo(91L);
+        assertThat(response.getReason()).isEqualTo("KYC_APPROVED");
+    }
+
+    @Test
+    void rejectsWhenKycIsMissing() {
+        when(kycProfileMapper.selectOne(any())).thenReturn(null);
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(92L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("EXCHANGE", "EX-1"));
+
+        assertThat(response.getDecision()).isEqualTo("REJECT");
+        assertThat(response.getDecisionId()).isEqualTo(92L);
+        assertThat(response.getReason()).isEqualTo("KYC_NOT_APPROVED");
+    }
+
+    @Test
+    void returnsExistingDecisionForRepeatedBizNo() {
+        RiskDecision existing = new RiskDecision();
+        existing.setId(93L);
+        existing.setDecisionNo("RISK-WITHDRAWAL-WD-2");
+        existing.setDecision("APPROVE");
+        existing.setReason("KYC_APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(existing);
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-2"));
+
+        assertThat(response.getDecision()).isEqualTo("APPROVE");
+        assertThat(response.getDecisionId()).isEqualTo(93L);
+    }
+
+    @Test
+    void rejectsWhenUserIsBlacklisted() {
+        RiskBlacklist blacklist = new RiskBlacklist();
+        blacklist.setUserId(10001L);
+        blacklist.setStatus("ACTIVE");
+        blacklist.setReason("SANCTIONED");
+
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(riskBlacklistMapper.selectOne(any())).thenReturn(blacklist);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(94L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-BLACK"));
+
+        assertThat(response.getDecision()).isEqualTo("REJECT");
+        assertThat(response.getReason()).isEqualTo("BLACKLISTED");
+    }
+
+    @Test
+    void reviewsWithdrawalWhenAmountExceedsThreshold() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(95L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateRequest request = request("WITHDRAWAL", "WD-LARGE");
+        request.setAmount(new BigDecimal("1500.000000"));
+        ComplianceGateResponse response = service.check(request);
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("AMOUNT_REVIEW");
+    }
+
+    @Test
+    void reviewsWhenDailyFrequencyLimitIsReached() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectCount(any())).thenReturn(3L);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(96L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-FREQ"));
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("FREQUENCY_REVIEW");
+    }
+
+    @Test
+    void approvesReviewDecisionManually() {
+        RiskDecision review = new RiskDecision();
+        review.setId(97L);
+        review.setDecisionNo("RISK-WITHDRAWAL-WD-REVIEW");
+        review.setBizType("WITHDRAWAL");
+        review.setBizNo("WD-REVIEW");
+        review.setDecision("REVIEW");
+        review.setReason("AMOUNT_REVIEW");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(review);
+        when(walletClient.applyRiskDecision(any())).thenReturn(ApiResult.ok(Map.of("status", "PENDING_CHAIN")));
+
+        RiskDecision result = service.approveDecision("RISK-WITHDRAWAL-WD-REVIEW", reviewRequest("admin-1", "verified"));
+
+        assertThat(result.getDecision()).isEqualTo("APPROVE");
+        assertThat(result.getReason()).isEqualTo("MANUAL_APPROVE: verified");
+        ArgumentCaptor<WalletRiskDecisionApplyRequest> captor =
+                ArgumentCaptor.forClass(WalletRiskDecisionApplyRequest.class);
+        verify(walletClient).applyRiskDecision(captor.capture());
+        assertThat(captor.getValue().getDecisionId()).isEqualTo(97L);
+        assertThat(captor.getValue().getBizType()).isEqualTo("WITHDRAWAL");
+        assertThat(captor.getValue().getBizNo()).isEqualTo("WD-REVIEW");
+        assertThat(captor.getValue().getDecision()).isEqualTo("APPROVE");
+    }
+
+    @Test
+    void rejectsReviewDecisionManually() {
+        RiskDecision review = new RiskDecision();
+        review.setId(98L);
+        review.setDecisionNo("RISK-WITHDRAWAL-WD-REVIEW-2");
+        review.setBizType("WITHDRAWAL");
+        review.setBizNo("WD-REVIEW-2");
+        review.setDecision("REVIEW");
+        review.setReason("FREQUENCY_REVIEW");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(review);
+        when(walletClient.applyRiskDecision(any())).thenReturn(ApiResult.ok(Map.of("status", "REJECTED")));
+
+        RiskDecision result = service.rejectDecision("RISK-WITHDRAWAL-WD-REVIEW-2", reviewRequest("admin-1", "suspicious"));
+
+        assertThat(result.getDecision()).isEqualTo("REJECT");
+        assertThat(result.getReason()).isEqualTo("MANUAL_REJECT: suspicious");
+        ArgumentCaptor<WalletRiskDecisionApplyRequest> captor =
+                ArgumentCaptor.forClass(WalletRiskDecisionApplyRequest.class);
+        verify(walletClient).applyRiskDecision(captor.capture());
+        assertThat(captor.getValue().getDecisionId()).isEqualTo(98L);
+        assertThat(captor.getValue().getBizType()).isEqualTo("WITHDRAWAL");
+        assertThat(captor.getValue().getBizNo()).isEqualTo("WD-REVIEW-2");
+        assertThat(captor.getValue().getDecision()).isEqualTo("REJECT");
+    }
+
+    private ComplianceGateRequest request(String bizType, String bizNo) {
+        ComplianceGateRequest request = new ComplianceGateRequest();
+        request.setUserId(10001L);
+        request.setBizType(bizType);
+        request.setBizNo(bizNo);
+        request.setAsset("USDT");
+        request.setAmount(new BigDecimal("1.000000"));
+        return request;
+    }
+
+    private ManualRiskReviewRequest reviewRequest(String reviewer, String reason) {
+        ManualRiskReviewRequest request = new ManualRiskReviewRequest();
+        request.setReviewer(reviewer);
+        request.setReason(reason);
+        return request;
+    }
+}
