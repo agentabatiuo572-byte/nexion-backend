@@ -20,6 +20,9 @@ import ffdd.openapi.domain.OpenApiApp;
 import ffdd.openapi.domain.OpenApiCallAudit;
 import ffdd.openapi.dto.OpenApiAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppCreateResponse;
+import ffdd.openapi.dto.OpenApiAppOpsResponse;
+import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
+import ffdd.openapi.dto.OpenApiCallAuditResponse;
 import ffdd.openapi.dto.OpenApiReceiptCreateRequest;
 import ffdd.openapi.dto.OpenApiSignatureHeaders;
 import ffdd.openapi.dto.WebhookCreateRequest;
@@ -32,11 +35,15 @@ import ffdd.openapi.service.OpenApiQuotaService;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class OpenApiServiceImplTest {
     private final OpenApiAppMapper appMapper = mock(OpenApiAppMapper.class);
@@ -75,6 +82,96 @@ class OpenApiServiceImplTest {
         assertThat(response.getAppKey()).startsWith("nxak_");
         assertThat(response.getQpsLimit()).isEqualTo(20);
         assertThat(response.getDailyLimit()).isEqualTo(10000);
+    }
+
+    @Test
+    void listOpsAppsReturnsSecretFreeSummaries() {
+        OpenApiApp app = app("ACTIVE");
+        app.setCreatedAt(LocalDateTime.now().minusDays(1));
+        app.setUpdatedAt(LocalDateTime.now());
+        when(appMapper.selectList(any(Wrapper.class))).thenReturn(List.of(app));
+
+        List<OpenApiAppOpsResponse> responses = service.listOpsApps("ACTIVE", "nxak_test", 10001L, 50);
+
+        assertThat(responses).hasSize(1);
+        assertThat(responses.get(0).getAppKey()).isEqualTo("nxak_test");
+        assertThat(responses.get(0).getQpsLimit()).isEqualTo(10);
+        assertThat(Arrays.stream(OpenApiAppOpsResponse.class.getDeclaredFields())
+                .map(field -> field.getName()))
+                .doesNotContain("appSecret");
+    }
+
+    @Test
+    void disableAndEnableAppUpdatesStatus() {
+        OpenApiApp app = app("ACTIVE");
+        when(appMapper.selectById(1L)).thenReturn(app);
+        ArgumentCaptor<OpenApiApp> appCaptor = ArgumentCaptor.forClass(OpenApiApp.class);
+
+        OpenApiAppOpsResponse disabled = service.disableApp(1L);
+
+        assertThat(disabled.getStatus()).isEqualTo("DISABLED");
+        verify(appMapper).updateById(appCaptor.capture());
+        assertThat(appCaptor.getValue().getStatus()).isEqualTo("DISABLED");
+
+        when(appMapper.selectById(1L)).thenReturn(app);
+        OpenApiAppOpsResponse enabled = service.enableApp(1L);
+
+        assertThat(enabled.getStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void updateAppQuotaUpdatesOnlyProvidedFields() {
+        OpenApiApp app = app("ACTIVE");
+        when(appMapper.selectById(1L)).thenReturn(app);
+        OpenApiAppQuotaUpdateRequest request = new OpenApiAppQuotaUpdateRequest();
+        request.setQpsLimit(30);
+        request.setRemark("temporary burst");
+
+        OpenApiAppOpsResponse response = service.updateAppQuota(1L, request);
+
+        ArgumentCaptor<OpenApiApp> appCaptor = ArgumentCaptor.forClass(OpenApiApp.class);
+        verify(appMapper).updateById(appCaptor.capture());
+        assertThat(appCaptor.getValue().getQpsLimit()).isEqualTo(30);
+        assertThat(appCaptor.getValue().getDailyLimit()).isEqualTo(1000);
+        assertThat(appCaptor.getValue().getRemark()).isEqualTo("temporary burst");
+        assertThat(response.getQpsLimit()).isEqualTo(30);
+    }
+
+    @Test
+    void updateAppQuotaRejectsInvalidServiceInput() {
+        OpenApiAppQuotaUpdateRequest request = new OpenApiAppQuotaUpdateRequest();
+        request.setQpsLimit(0);
+
+        assertThatThrownBy(() -> service.updateAppQuota(1L, request))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("qpsLimit");
+
+        verify(appMapper, never()).selectById(any());
+    }
+
+    @Test
+    void listCallAuditsReturnsRecentAuditRows() {
+        OpenApiCallAudit audit = new OpenApiCallAudit();
+        audit.setId(99L);
+        audit.setAppId(1L);
+        audit.setAppKey("nxak_test");
+        audit.setApiPath("/openapi/v1/compute/receipts");
+        audit.setHttpMethod("POST");
+        audit.setNonce("nonce-1");
+        audit.setRequestHash("hash");
+        audit.setResponseCode(0);
+        audit.setResponseMessage("success");
+        audit.setCostMs(12L);
+        audit.setCreatedAt(LocalDateTime.now());
+        when(auditMapper.selectList(any(Wrapper.class))).thenReturn(List.of(audit));
+
+        List<OpenApiCallAuditResponse> responses = service.listCallAudits(
+                1L, "nxak_test", "/openapi/v1/compute/receipts", 0, 20);
+
+        assertThat(responses).hasSize(1);
+        assertThat(responses.get(0).getId()).isEqualTo(99L);
+        assertThat(responses.get(0).getResponseCode()).isZero();
+        assertThat(responses.get(0).getCostMs()).isEqualTo(12L);
     }
 
     @Test

@@ -15,7 +15,10 @@ import ffdd.openapi.domain.WebhookDelivery;
 import ffdd.openapi.domain.WebhookSubscription;
 import ffdd.openapi.dto.OpenApiAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppCreateResponse;
+import ffdd.openapi.dto.OpenApiAppOpsResponse;
+import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
 import ffdd.openapi.dto.OpenApiAppSummaryResponse;
+import ffdd.openapi.dto.OpenApiCallAuditResponse;
 import ffdd.openapi.dto.OpenApiReceiptCreateRequest;
 import ffdd.openapi.dto.OpenApiSignatureHeaders;
 import ffdd.openapi.dto.WebhookCreateRequest;
@@ -48,7 +51,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpenApiServiceImpl implements OpenApiService {
     private static final String STATUS_ACTIVE = "ACTIVE";
+    private static final String STATUS_DISABLED = "DISABLED";
     private static final String EVENT_RECEIPT_CREATED = "COMPUTE_RECEIPT_CREATED";
+    private static final int MAX_LIST_LIMIT = 200;
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final OpenApiAppMapper appMapper;
@@ -133,6 +138,68 @@ public class OpenApiServiceImpl implements OpenApiService {
                         app.getDailyLimit(),
                         app.getRemark(),
                         app.getCreatedAt()))
+                .toList();
+    }
+
+    @Override
+    public List<OpenApiAppOpsResponse> listOpsApps(String status, String appKey, Long ownerUserId, int limit) {
+        LambdaQueryWrapper<OpenApiApp> wrapper = new LambdaQueryWrapper<OpenApiApp>()
+                .eq(OpenApiApp::getIsDeleted, 0)
+                .eq(StringUtils.hasText(status), OpenApiApp::getStatus, normalizeStatus(status))
+                .eq(StringUtils.hasText(appKey), OpenApiApp::getAppKey, appKey)
+                .eq(ownerUserId != null, OpenApiApp::getOwnerUserId, ownerUserId)
+                .orderByDesc(OpenApiApp::getCreatedAt)
+                .last("LIMIT " + normalizeLimit(limit));
+        return appMapper.selectList(wrapper).stream()
+                .map(this::toOpsResponse)
+                .toList();
+    }
+
+    @Override
+    public OpenApiAppOpsResponse enableApp(Long appId) {
+        return updateAppStatus(appId, STATUS_ACTIVE);
+    }
+
+    @Override
+    public OpenApiAppOpsResponse disableApp(Long appId) {
+        return updateAppStatus(appId, STATUS_DISABLED);
+    }
+
+    @Override
+    public OpenApiAppOpsResponse updateAppQuota(Long appId, OpenApiAppQuotaUpdateRequest request) {
+        if (request == null) {
+            throw new BizException("OpenAPI app quota request is required");
+        }
+        validateLimit("qpsLimit", request.getQpsLimit(), 1000);
+        validateLimit("dailyLimit", request.getDailyLimit(), 10000000);
+
+        OpenApiApp app = getExistingApp(appId);
+        if (request.getQpsLimit() != null) {
+            app.setQpsLimit(request.getQpsLimit());
+        }
+        if (request.getDailyLimit() != null) {
+            app.setDailyLimit(request.getDailyLimit());
+        }
+        if (request.getRemark() != null) {
+            app.setRemark(request.getRemark());
+        }
+        appMapper.updateById(app);
+        return toOpsResponse(app);
+    }
+
+    @Override
+    public List<OpenApiCallAuditResponse> listCallAudits(
+            Long appId, String appKey, String apiPath, Integer responseCode, int limit) {
+        LambdaQueryWrapper<OpenApiCallAudit> wrapper = new LambdaQueryWrapper<OpenApiCallAudit>()
+                .eq(OpenApiCallAudit::getIsDeleted, 0)
+                .eq(appId != null, OpenApiCallAudit::getAppId, appId)
+                .eq(StringUtils.hasText(appKey), OpenApiCallAudit::getAppKey, appKey)
+                .eq(StringUtils.hasText(apiPath), OpenApiCallAudit::getApiPath, apiPath)
+                .eq(responseCode != null, OpenApiCallAudit::getResponseCode, responseCode)
+                .orderByDesc(OpenApiCallAudit::getCreatedAt)
+                .last("LIMIT " + normalizeLimit(limit));
+        return auditMapper.selectList(wrapper).stream()
+                .map(this::toAuditResponse)
                 .toList();
     }
 
@@ -251,6 +318,50 @@ public class OpenApiServiceImpl implements OpenApiService {
         return app;
     }
 
+    private OpenApiApp getExistingApp(Long appId) {
+        OpenApiApp app = appMapper.selectById(appId);
+        if (app == null || Integer.valueOf(1).equals(app.getIsDeleted())) {
+            throw new BizException("OpenAPI app not found");
+        }
+        return app;
+    }
+
+    private OpenApiAppOpsResponse updateAppStatus(Long appId, String status) {
+        OpenApiApp app = getExistingApp(appId);
+        app.setStatus(status);
+        appMapper.updateById(app);
+        return toOpsResponse(app);
+    }
+
+    private OpenApiAppOpsResponse toOpsResponse(OpenApiApp app) {
+        return new OpenApiAppOpsResponse(
+                app.getId(),
+                app.getOwnerUserId(),
+                app.getAppName(),
+                app.getAppKey(),
+                app.getStatus(),
+                app.getQpsLimit(),
+                app.getDailyLimit(),
+                app.getRemark(),
+                app.getCreatedAt(),
+                app.getUpdatedAt());
+    }
+
+    private OpenApiCallAuditResponse toAuditResponse(OpenApiCallAudit audit) {
+        return new OpenApiCallAuditResponse(
+                audit.getId(),
+                audit.getAppId(),
+                audit.getAppKey(),
+                audit.getApiPath(),
+                audit.getHttpMethod(),
+                audit.getNonce(),
+                audit.getRequestHash(),
+                audit.getResponseCode(),
+                audit.getResponseMessage(),
+                audit.getCostMs(),
+                audit.getCreatedAt());
+    }
+
     private void enqueueWebhookDeliveries(Long appId, String eventType, Object payload) {
         List<WebhookSubscription> subscriptions = webhookMapper.selectList(new LambdaQueryWrapper<WebhookSubscription>()
                 .eq(WebhookSubscription::getAppId, appId)
@@ -345,5 +456,25 @@ public class OpenApiServiceImpl implements OpenApiService {
 
     private int positiveOrDefault(Integer value, int defaultValue) {
         return value == null || value < 1 ? Math.max(1, defaultValue) : value;
+    }
+
+    private int normalizeLimit(int limit) {
+        if (limit < 1) {
+            return 20;
+        }
+        return Math.min(limit, MAX_LIST_LIMIT);
+    }
+
+    private String normalizeStatus(String status) {
+        return StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : status;
+    }
+
+    private void validateLimit(String field, Integer value, int max) {
+        if (value == null) {
+            return;
+        }
+        if (value < 1 || value > max) {
+            throw new BizException(field + " must be between 1 and " + max);
+        }
     }
 }

@@ -258,13 +258,21 @@ The OpenAPI service is exposed through Gateway at `/api/openapi/**`.
 - Signed partner API:
   - `POST /api/openapi/v1/compute/receipts`: submit a compute receipt through HMAC-SHA256 signature auth.
 - Ops APIs:
+  - `GET /api/openapi/ops/apps?status=&appKey=&ownerUserId=&limit=20`: query API apps without returning app secrets.
+  - `POST /api/openapi/ops/apps/{appId}/enable`: enable an API app.
+  - `POST /api/openapi/ops/apps/{appId}/disable`: disable an API app.
+  - `PATCH /api/openapi/ops/apps/{appId}/quotas`: adjust QPS/daily quota and ops remark.
+  - `GET /api/openapi/ops/call-audits?appId=&appKey=&apiPath=&responseCode=`: query signed API call audit rows.
   - `POST /api/openapi/webhooks/deliveries/publish?limit=20`: manually trigger webhook delivery.
   - `GET /api/openapi/webhooks/deliveries?status=&appId=&eventType=`: query webhook delivery records.
   - `GET /api/openapi/webhooks/deliveries/pending|success|failed|dead|summary`: inspect delivery backlog and poison rows.
+  - Ops endpoints require `PERM_OPENAPI_ADMIN`.
 
 Signed requests use these headers: `X-Nexion-App-Key`, `X-Nexion-Timestamp`, `X-Nexion-Nonce`, and `X-Nexion-Signature`.
 The string to sign is `appKey + "\n" + timestamp + "\n" + nonce + "\n" + sha256(canonicalJsonBody)`.
 Nonce replay protection is tracked in `nx_openapi_nonce` with `NEXION_OPENAPI_NONCE_TTL_SECONDS`, while app quota counters use Redis keys scoped by `appKey + endpoint`.
 If Redis ACL is enabled, set `SPRING_DATA_REDIS_USERNAME` and `SPRING_DATA_REDIS_PASSWORD` for the OpenAPI service.
+
+See `docs/openapi-integration.md` for JavaScript signing, curl, webhook verification, and ops/admin examples.
 
 Webhook delivery is disabled by default (`NEXION_OPENAPI_WEBHOOK_DELIVERY_ENABLED=false`). It sends JSON payloads to the subscription callback URL with `X-Nexion-Webhook-Id`, `X-Nexion-Event-Type`, `X-Nexion-Timestamp`, and `X-Nexion-Signature`, then retries with exponential backoff before moving poison deliveries to `DEAD`. Private callback URLs are rejected by default; set `NEXION_OPENAPI_WEBHOOK_ALLOW_PRIVATE_CALLBACKS=true` only for local integration tests.
