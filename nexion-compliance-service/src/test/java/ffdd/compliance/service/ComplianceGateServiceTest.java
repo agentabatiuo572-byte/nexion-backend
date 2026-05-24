@@ -2,25 +2,25 @@ package ffdd.compliance.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ffdd.common.api.ApiResult;
-import ffdd.compliance.client.WalletClient;
-import ffdd.compliance.client.dto.WalletRiskDecisionApplyRequest;
+import ffdd.common.outbox.EventOutboxService;
 import ffdd.compliance.domain.KycProfile;
 import ffdd.compliance.domain.RiskBlacklist;
 import ffdd.compliance.domain.RiskDecision;
 import ffdd.compliance.dto.ComplianceGateRequest;
 import ffdd.compliance.dto.ComplianceGateResponse;
 import ffdd.compliance.dto.ManualRiskReviewRequest;
+import ffdd.compliance.dto.RiskDecisionFinalizedPayload;
 import ffdd.compliance.mapper.KycProfileMapper;
 import ffdd.compliance.mapper.RiskBlacklistMapper;
 import ffdd.compliance.mapper.RiskDecisionMapper;
+import ffdd.compliance.worker.ComplianceOutboxRocketPublisher;
 import java.math.BigDecimal;
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -28,7 +28,7 @@ class ComplianceGateServiceTest {
     private final KycProfileMapper kycProfileMapper = mock(KycProfileMapper.class);
     private final RiskDecisionMapper riskDecisionMapper = mock(RiskDecisionMapper.class);
     private final RiskBlacklistMapper riskBlacklistMapper = mock(RiskBlacklistMapper.class);
-    private final WalletClient walletClient = mock(WalletClient.class);
+    private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final ComplianceGateService service = new ComplianceGateService(
             kycProfileMapper,
             riskDecisionMapper,
@@ -36,7 +36,7 @@ class ComplianceGateServiceTest {
             new BigDecimal("1000.000000"),
             new BigDecimal("5000.000000"),
             3,
-            walletClient);
+            outboxService);
 
     @Test
     void approvesWithdrawalWhenKycApproved() {
@@ -162,51 +162,64 @@ class ComplianceGateServiceTest {
     }
 
     @Test
-    void approvesReviewDecisionManually() {
+    void approvesReviewDecisionManuallyAndPublishesFinalizedOutbox() {
         RiskDecision review = new RiskDecision();
         review.setId(97L);
         review.setDecisionNo("RISK-WITHDRAWAL-WD-REVIEW");
+        review.setUserId(10001L);
         review.setBizType("WITHDRAWAL");
         review.setBizNo("WD-REVIEW");
         review.setDecision("REVIEW");
         review.setReason("AMOUNT_REVIEW");
 
         when(riskDecisionMapper.selectOne(any())).thenReturn(review);
-        when(walletClient.applyRiskDecision(any())).thenReturn(ApiResult.ok(Map.of("status", "PENDING_CHAIN")));
+        when(outboxService.publish(any(), any(), any(), any())).thenReturn("evt-risk-1");
 
         RiskDecision result = service.approveDecision("RISK-WITHDRAWAL-WD-REVIEW", reviewRequest("admin-1", "verified"));
 
         assertThat(result.getDecision()).isEqualTo("APPROVE");
         assertThat(result.getReason()).isEqualTo("MANUAL_APPROVE: verified");
-        ArgumentCaptor<WalletRiskDecisionApplyRequest> captor =
-                ArgumentCaptor.forClass(WalletRiskDecisionApplyRequest.class);
-        verify(walletClient).applyRiskDecision(captor.capture());
+        ArgumentCaptor<RiskDecisionFinalizedPayload> captor =
+                ArgumentCaptor.forClass(RiskDecisionFinalizedPayload.class);
+        verify(outboxService).publish(
+                eq("RISK_DECISION"),
+                eq("RISK-WITHDRAWAL-WD-REVIEW"),
+                eq(ComplianceOutboxRocketPublisher.EVENT_RISK_DECISION_FINALIZED),
+                captor.capture());
         assertThat(captor.getValue().getDecisionId()).isEqualTo(97L);
+        assertThat(captor.getValue().getDecisionNo()).isEqualTo("RISK-WITHDRAWAL-WD-REVIEW");
+        assertThat(captor.getValue().getUserId()).isEqualTo(10001L);
         assertThat(captor.getValue().getBizType()).isEqualTo("WITHDRAWAL");
         assertThat(captor.getValue().getBizNo()).isEqualTo("WD-REVIEW");
         assertThat(captor.getValue().getDecision()).isEqualTo("APPROVE");
+        assertThat(captor.getValue().getReviewedBy()).isEqualTo("admin-1");
     }
 
     @Test
-    void rejectsReviewDecisionManually() {
+    void rejectsReviewDecisionManuallyAndPublishesFinalizedOutbox() {
         RiskDecision review = new RiskDecision();
         review.setId(98L);
         review.setDecisionNo("RISK-WITHDRAWAL-WD-REVIEW-2");
+        review.setUserId(10001L);
         review.setBizType("WITHDRAWAL");
         review.setBizNo("WD-REVIEW-2");
         review.setDecision("REVIEW");
         review.setReason("FREQUENCY_REVIEW");
 
         when(riskDecisionMapper.selectOne(any())).thenReturn(review);
-        when(walletClient.applyRiskDecision(any())).thenReturn(ApiResult.ok(Map.of("status", "REJECTED")));
+        when(outboxService.publish(any(), any(), any(), any())).thenReturn("evt-risk-2");
 
         RiskDecision result = service.rejectDecision("RISK-WITHDRAWAL-WD-REVIEW-2", reviewRequest("admin-1", "suspicious"));
 
         assertThat(result.getDecision()).isEqualTo("REJECT");
         assertThat(result.getReason()).isEqualTo("MANUAL_REJECT: suspicious");
-        ArgumentCaptor<WalletRiskDecisionApplyRequest> captor =
-                ArgumentCaptor.forClass(WalletRiskDecisionApplyRequest.class);
-        verify(walletClient).applyRiskDecision(captor.capture());
+        ArgumentCaptor<RiskDecisionFinalizedPayload> captor =
+                ArgumentCaptor.forClass(RiskDecisionFinalizedPayload.class);
+        verify(outboxService).publish(
+                eq("RISK_DECISION"),
+                eq("RISK-WITHDRAWAL-WD-REVIEW-2"),
+                eq(ComplianceOutboxRocketPublisher.EVENT_RISK_DECISION_FINALIZED),
+                captor.capture());
         assertThat(captor.getValue().getDecisionId()).isEqualTo(98L);
         assertThat(captor.getValue().getBizType()).isEqualTo("WITHDRAWAL");
         assertThat(captor.getValue().getBizNo()).isEqualTo("WD-REVIEW-2");

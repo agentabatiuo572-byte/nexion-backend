@@ -31,3 +31,11 @@ nexion:
       daily-review-count: ${NEXION_COMPLIANCE_DAILY_REVIEW_COUNT:3}
   services:
     wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}
+  outbox:
+    rocketmq:
+      enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
+      name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+      risk-decision-finalized-topic: ${NEXION_OUTBOX_ROCKETMQ_RISK_DECISION_FINALIZED_TOPIC:nexion-risk-decision-finalized}
+      compliance-producer-group: ${NEXION_OUTBOX_ROCKETMQ_COMPLIANCE_PRODUCER_GROUP:nexion-compliance-outbox}
+      publisher:
+        batch-size: ${NEXION_OUTBOX_ROCKETMQ_PUBLISHER_BATCH_SIZE:50}

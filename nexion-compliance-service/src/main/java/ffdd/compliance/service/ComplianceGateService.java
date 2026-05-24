@@ -1,24 +1,23 @@
 package ffdd.compliance.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import ffdd.common.api.ApiResult;
 import ffdd.common.exception.BizException;
-import ffdd.compliance.client.WalletClient;
-import ffdd.compliance.client.dto.WalletRiskDecisionApplyRequest;
+import ffdd.common.outbox.EventOutboxService;
 import ffdd.compliance.domain.KycProfile;
 import ffdd.compliance.domain.RiskBlacklist;
 import ffdd.compliance.domain.RiskDecision;
 import ffdd.compliance.dto.ComplianceGateRequest;
 import ffdd.compliance.dto.ComplianceGateResponse;
 import ffdd.compliance.dto.ManualRiskReviewRequest;
+import ffdd.compliance.dto.RiskDecisionFinalizedPayload;
 import ffdd.compliance.mapper.KycProfileMapper;
 import ffdd.compliance.mapper.RiskBlacklistMapper;
 import ffdd.compliance.mapper.RiskDecisionMapper;
+import ffdd.compliance.worker.ComplianceOutboxRocketPublisher;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -43,7 +42,7 @@ public class ComplianceGateService {
     private final KycProfileMapper kycProfileMapper;
     private final RiskDecisionMapper riskDecisionMapper;
     private final RiskBlacklistMapper riskBlacklistMapper;
-    private final WalletClient walletClient;
+    private final EventOutboxService outboxService;
     private final BigDecimal withdrawalReviewAmount;
     private final BigDecimal exchangeReviewAmount;
     private final int dailyReviewCount;
@@ -55,11 +54,11 @@ public class ComplianceGateService {
             @Value("${nexion.compliance.risk.withdrawal-review-amount:1000.000000}") BigDecimal withdrawalReviewAmount,
             @Value("${nexion.compliance.risk.exchange-review-amount:5000.000000}") BigDecimal exchangeReviewAmount,
             @Value("${nexion.compliance.risk.daily-review-count:3}") int dailyReviewCount,
-            WalletClient walletClient) {
+            EventOutboxService outboxService) {
         this.kycProfileMapper = kycProfileMapper;
         this.riskDecisionMapper = riskDecisionMapper;
         this.riskBlacklistMapper = riskBlacklistMapper;
-        this.walletClient = walletClient;
+        this.outboxService = outboxService;
         this.withdrawalReviewAmount = withdrawalReviewAmount;
         this.exchangeReviewAmount = exchangeReviewAmount;
         this.dailyReviewCount = Math.max(1, dailyReviewCount);
@@ -163,7 +162,7 @@ public class ComplianceGateService {
             throw new BizException("Risk decision not found");
         }
         if (!DECISION_REVIEW.equals(decision.getDecision()) && decisionValue.equals(decision.getDecision())) {
-            applyWalletRiskDecision(decision);
+            publishRiskDecisionFinalized(decision);
             return decision;
         }
         if (!DECISION_REVIEW.equals(decision.getDecision())) {
@@ -180,31 +179,29 @@ public class ComplianceGateService {
         decision.setReason(patch.getReason());
         decision.setReviewedBy(patch.getReviewedBy());
         decision.setReviewedAt(patch.getReviewedAt());
-        applyWalletRiskDecision(decision);
+        publishRiskDecisionFinalized(decision);
         return decision;
     }
 
-    private void applyWalletRiskDecision(RiskDecision decision) {
+    private void publishRiskDecisionFinalized(RiskDecision decision) {
         if (!isWalletBizType(decision.getBizType())) {
             return;
         }
-        WalletRiskDecisionApplyRequest request = new WalletRiskDecisionApplyRequest();
-        request.setDecisionId(decision.getId());
-        request.setDecisionNo(decision.getDecisionNo());
-        request.setBizType(decision.getBizType());
-        request.setBizNo(decision.getBizNo());
-        request.setDecision(decision.getDecision());
-        request.setReason(decision.getReason());
-        try {
-            ApiResult<Map<String, Object>> result = walletClient.applyRiskDecision(request);
-            if (result == null || result.getCode() != 0) {
-                throw new BizException("Wallet risk decision apply failed");
-            }
-        } catch (BizException ex) {
-            throw ex;
-        } catch (RuntimeException ex) {
-            throw new BizException("Wallet risk decision apply failed");
-        }
+        RiskDecisionFinalizedPayload payload = new RiskDecisionFinalizedPayload();
+        payload.setDecisionId(decision.getId());
+        payload.setDecisionNo(decision.getDecisionNo());
+        payload.setUserId(decision.getUserId());
+        payload.setBizType(decision.getBizType());
+        payload.setBizNo(decision.getBizNo());
+        payload.setDecision(decision.getDecision());
+        payload.setReason(decision.getReason());
+        payload.setReviewedBy(decision.getReviewedBy());
+        payload.setReviewedAt(decision.getReviewedAt());
+        outboxService.publish(
+                "RISK_DECISION",
+                decision.getDecisionNo(),
+                ComplianceOutboxRocketPublisher.EVENT_RISK_DECISION_FINALIZED,
+                payload);
     }
 
     private boolean isWalletBizType(String bizType) {
