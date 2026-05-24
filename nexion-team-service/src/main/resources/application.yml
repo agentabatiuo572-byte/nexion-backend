@@ -6,6 +6,12 @@ spring:
     url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:nexion}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USERNAME:root}
     password: "${MYSQL_PASSWORD:A123456789Z!@#}"
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:127.0.0.1}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      username: "${SPRING_DATA_REDIS_USERNAME:}"
+      password: "${SPRING_DATA_REDIS_PASSWORD:}"
   config:
     import:
       - optional:nacos:nexion-common.yaml

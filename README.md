@@ -41,7 +41,8 @@ Rank upgrades are handled by `POST /team/ranks/evaluate`. Business services call
 Commission settlement is handled by independent trigger endpoints under `/team/commissions`:
 
 - `POST /team/commissions/unilevel`: 7-layer order commissions, 30-day cooldown.
-- `POST /team/commissions/binary`: daily binary collision, min(left,right) * 10%, capped at 5000 USDT.
+- `POST /team/commissions/binary`: daily binary collision, min(left,right) * 10%, capped at 5000 USDT, with historical matched-volume deduction.
+- `GET /team/commissions/binary/summary`: inspect binary daily settlement rows.
 - `POST /team/commissions/peer`: same-rank volume * 5%.
 - `POST /team/commissions/cultivation`: one-time NEX reward when a downline promotes to V1-V5.
 - `POST /team/commissions/leadership`: weekly leadership pool, platform weekly volume * 5% by V-rank votes.
@@ -51,6 +52,7 @@ The current backend baseline implements the first event-driven slice:
 - `POST /team/outbox/consume-order-paid`: pulls pending `OrderPaid` events from commerce outbox, creates unilevel commission events for sponsor layers, and marks the outbox event as published.
 - `TeamOutboxWorker`: automatically polls due commerce outbox events and runs the same idempotent `OrderPaid` commission consumer.
 - `CommerceOutboxRocketPublisher` / `TeamOrderPaidRocketListener` / `ComputeOrderPaidRocketListener`: optional RocketMQ path for publishing `OrderPaid` outbox events to a broker and consuming them from Team and Compute.
+- `POST /team/commissions/binary`: scans users with at least two direct legs, treats the first two direct legs as LEFT/RIGHT roots, deducts historical matched volume, and creates one daily `BINARY` commission event per user.
 - `POST /team/commissions/unlock`: scans due `PENDING` commission events, posts USDT/NEX credits to wallet, and marks commissions as `POSTED`.
 - `GET /team/overview`: team count and commission summary for the current user.
 - `GET /team/commissions`: paged commission events for the current user.
@@ -89,11 +91,16 @@ Start the gateway chain services first. The start script now includes `nexion-te
 ```powershell
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_team_commission.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_team_binary_commission.ps1
 ```
 
 The smoke script verifies:
 
 `referred user register -> order paid -> OrderPaid outbox -> team consume -> sponsor unilevel commission -> commission unlock -> wallet post`
+
+The binary smoke verifies:
+
+`sponsor + two direct legs -> two paid orders -> Team volume -> binary daily settlement -> binary summary -> commission unlock -> wallet post`
 
 Pass `-RequireWorker` to require the scheduled Team outbox worker or RocketMQ listener to consume the event without using the manual fallback endpoint.
 

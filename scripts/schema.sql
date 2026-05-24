@@ -867,6 +867,27 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+CREATE TABLE IF NOT EXISTS nx_binary_commission_settlement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  settlement_date DATE NOT NULL,
+  left_user_id BIGINT NOT NULL,
+  right_user_id BIGINT NOT NULL,
+  left_volume DECIMAL(18,6) NOT NULL DEFAULT 0,
+  right_volume DECIMAL(18,6) NOT NULL DEFAULT 0,
+  matched_volume DECIMAL(18,6) NOT NULL DEFAULT 0,
+  amount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  daily_cap_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  commission_event_id BIGINT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'CREATED',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_binary_settlement_user_date (user_id, settlement_date),
+  KEY idx_binary_settlement_date (settlement_date, status),
+  KEY idx_binary_settlement_event (commission_event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_mission (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   mission_code VARCHAR(64) NOT NULL,
