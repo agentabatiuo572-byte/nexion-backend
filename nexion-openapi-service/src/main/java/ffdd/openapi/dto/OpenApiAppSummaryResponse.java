@@ -11,6 +11,8 @@ public class OpenApiAppSummaryResponse {
     private String appName;
     private String appKey;
     private String status;
+    private Integer qpsLimit;
+    private Integer dailyLimit;
     private String remark;
     private LocalDateTime createdAt;
 }

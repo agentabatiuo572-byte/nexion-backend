@@ -15,22 +15,26 @@ import ffdd.openapi.domain.WebhookDelivery;
 import ffdd.openapi.domain.WebhookSubscription;
 import ffdd.openapi.dto.OpenApiAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppCreateResponse;
+import ffdd.openapi.dto.OpenApiAppSummaryResponse;
 import ffdd.openapi.dto.OpenApiReceiptCreateRequest;
 import ffdd.openapi.dto.OpenApiSignatureHeaders;
-import ffdd.openapi.dto.OpenApiAppSummaryResponse;
 import ffdd.openapi.dto.WebhookCreateRequest;
 import ffdd.openapi.mapper.OpenApiAppMapper;
 import ffdd.openapi.mapper.OpenApiCallAuditMapper;
 import ffdd.openapi.mapper.WebhookDeliveryMapper;
 import ffdd.openapi.mapper.WebhookSubscriptionMapper;
+import ffdd.openapi.service.OpenApiNonceService;
+import ffdd.openapi.service.OpenApiQuotaService;
 import ffdd.openapi.service.OpenApiService;
 import jakarta.annotation.PostConstruct;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -52,16 +56,43 @@ public class OpenApiServiceImpl implements OpenApiService {
     private final WebhookSubscriptionMapper webhookMapper;
     private final WebhookDeliveryMapper deliveryMapper;
     private final ComputeClient computeClient;
+    private final OpenApiNonceService nonceService;
+    private final OpenApiQuotaService quotaService;
     private ObjectMapper canonicalMapper;
 
     @Value("${nexion.openapi.signature-window-seconds:300}")
     private long signatureWindowSeconds;
+
+    @Value("${nexion.openapi.quota.default-qps-limit:20}")
+    private int defaultQpsLimit;
+
+    @Value("${nexion.openapi.quota.default-daily-limit:10000}")
+    private int defaultDailyLimit;
+
+    @Value("${nexion.openapi.webhook.allow-private-callbacks:false}")
+    private boolean allowPrivateWebhookCallbacks;
 
     @PostConstruct
     void init() {
         canonicalMapper = new ObjectMapper()
                 .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true)
                 .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
+    }
+
+    void setSignatureWindowSeconds(long signatureWindowSeconds) {
+        this.signatureWindowSeconds = signatureWindowSeconds;
+    }
+
+    void setDefaultQpsLimit(int defaultQpsLimit) {
+        this.defaultQpsLimit = defaultQpsLimit;
+    }
+
+    void setDefaultDailyLimit(int defaultDailyLimit) {
+        this.defaultDailyLimit = defaultDailyLimit;
+    }
+
+    void setAllowPrivateWebhookCallbacks(boolean allowPrivateWebhookCallbacks) {
+        this.allowPrivateWebhookCallbacks = allowPrivateWebhookCallbacks;
     }
 
     @Override
@@ -72,10 +103,18 @@ public class OpenApiServiceImpl implements OpenApiService {
         app.setAppKey("nxak_" + randomHex(16));
         app.setAppSecret("nxsk_" + randomHex(32));
         app.setStatus(STATUS_ACTIVE);
+        app.setQpsLimit(positiveOrDefault(request.getQpsLimit(), defaultQpsLimit));
+        app.setDailyLimit(positiveOrDefault(request.getDailyLimit(), defaultDailyLimit));
         app.setRemark(request.getRemark());
         app.setIsDeleted(0);
         appMapper.insert(app);
-        return new OpenApiAppCreateResponse(app.getId(), app.getAppName(), app.getAppKey(), app.getAppSecret());
+        return new OpenApiAppCreateResponse(
+                app.getId(),
+                app.getAppName(),
+                app.getAppKey(),
+                app.getAppSecret(),
+                app.getQpsLimit(),
+                app.getDailyLimit());
     }
 
     @Override
@@ -90,6 +129,8 @@ public class OpenApiServiceImpl implements OpenApiService {
                         app.getAppName(),
                         app.getAppKey(),
                         app.getStatus(),
+                        app.getQpsLimit(),
+                        app.getDailyLimit(),
                         app.getRemark(),
                         app.getCreatedAt()))
                 .toList();
@@ -98,6 +139,7 @@ public class OpenApiServiceImpl implements OpenApiService {
     @Override
     public WebhookSubscription createWebhook(Long ownerUserId, WebhookCreateRequest request) {
         OpenApiApp app = getOwnedApp(ownerUserId, request.getAppId());
+        validateCallbackUrl(request.getCallbackUrl());
         WebhookSubscription webhook = new WebhookSubscription();
         webhook.setAppId(app.getId());
         webhook.setEventType(request.getEventType());
@@ -124,7 +166,7 @@ public class OpenApiServiceImpl implements OpenApiService {
         long started = System.currentTimeMillis();
         OpenApiApp app = verifySignature(headers, request);
         String requestHash = sha256(canonicalJson(request));
-        ensureNonceUnused(app.getAppKey(), headers.getNonce());
+        nonceService.claim(app.getAppKey(), headers.getNonce());
 
         OpenApiCallAudit audit = new OpenApiCallAudit();
         audit.setAppId(app.getId());
@@ -136,6 +178,7 @@ public class OpenApiServiceImpl implements OpenApiService {
         audit.setIsDeleted(0);
 
         try {
+            quotaService.enforce(app, path);
             ApiResult<Map<String, Object>> response = computeClient.createReceipt(toComputeRequest(request));
             audit.setResponseCode(response == null ? 500 : response.getCode());
             audit.setResponseMessage(response == null ? "empty response" : response.getMessage());
@@ -144,6 +187,10 @@ public class OpenApiServiceImpl implements OpenApiService {
             }
             enqueueWebhookDeliveries(app.getId(), EVENT_RECEIPT_CREATED, response.getData());
             return response.getData();
+        } catch (BizException ex) {
+            audit.setResponseCode(ex.getCode());
+            audit.setResponseMessage(ex.getMessage());
+            throw ex;
         } finally {
             audit.setCostMs(System.currentTimeMillis() - started);
             auditMapper.insert(audit);
@@ -170,7 +217,6 @@ public class OpenApiServiceImpl implements OpenApiService {
 
         OpenApiApp app = appMapper.selectOne(new LambdaQueryWrapper<OpenApiApp>()
                 .eq(OpenApiApp::getAppKey, headers.getAppKey())
-                .eq(OpenApiApp::getStatus, STATUS_ACTIVE)
                 .eq(OpenApiApp::getIsDeleted, 0)
                 .last("LIMIT 1"));
         if (app == null) {
@@ -187,17 +233,10 @@ public class OpenApiServiceImpl implements OpenApiService {
                 headers.getSignature().toLowerCase().getBytes(StandardCharsets.UTF_8))) {
             throw new BizException(401, "Invalid OpenAPI signature");
         }
-        return app;
-    }
-
-    private void ensureNonceUnused(String appKey, String nonce) {
-        Long count = auditMapper.selectCount(new LambdaQueryWrapper<OpenApiCallAudit>()
-                .eq(OpenApiCallAudit::getAppKey, appKey)
-                .eq(OpenApiCallAudit::getNonce, nonce)
-                .eq(OpenApiCallAudit::getIsDeleted, 0));
-        if (count != null && count > 0) {
-            throw new BizException(409, "OpenAPI nonce already used");
+        if (!STATUS_ACTIVE.equals(app.getStatus())) {
+            throw new BizException(403, "OpenAPI app disabled");
         }
+        return app;
     }
 
     private OpenApiApp getOwnedApp(Long ownerUserId, Long appId) {
@@ -230,6 +269,35 @@ public class OpenApiServiceImpl implements OpenApiService {
             delivery.setIsDeleted(0);
             deliveryMapper.insert(delivery);
         }
+    }
+
+    private void validateCallbackUrl(String callbackUrl) {
+        URI uri;
+        try {
+            uri = URI.create(callbackUrl);
+        } catch (IllegalArgumentException ex) {
+            throw new BizException("Webhook callback URL is not allowed");
+        }
+        String scheme = uri.getScheme();
+        String host = uri.getHost();
+        if (!("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme))
+                || !StringUtils.hasText(host)
+                || (!allowPrivateWebhookCallbacks && isPrivateHost(host))) {
+            throw new BizException("Webhook callback URL is not allowed");
+        }
+    }
+
+    private boolean isPrivateHost(String host) {
+        String normalized = host.toLowerCase(Locale.ROOT);
+        return "localhost".equals(normalized)
+                || normalized.endsWith(".localhost")
+                || normalized.equals("0.0.0.0")
+                || normalized.startsWith("127.")
+                || normalized.startsWith("10.")
+                || normalized.startsWith("192.168.")
+                || normalized.matches("^172\\.(1[6-9]|2[0-9]|3[0-1])\\..*")
+                || normalized.equals("::1")
+                || normalized.equals("[::1]");
     }
 
     private ComputeReceiptCreateRequest toComputeRequest(OpenApiReceiptCreateRequest request) {
@@ -273,5 +341,9 @@ public class OpenApiServiceImpl implements OpenApiService {
         byte[] data = new byte[bytes];
         RANDOM.nextBytes(data);
         return HexFormat.of().formatHex(data);
+    }
+
+    private int positiveOrDefault(Integer value, int defaultValue) {
+        return value == null || value < 1 ? Math.max(1, defaultValue) : value;
     }
 }

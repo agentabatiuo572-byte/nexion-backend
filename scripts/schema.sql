@@ -1077,6 +1077,8 @@ CREATE TABLE IF NOT EXISTS nx_openapi_app (
   app_key VARCHAR(96) NOT NULL,
   app_secret VARCHAR(128) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  qps_limit INT NOT NULL DEFAULT 20,
+  daily_limit INT NOT NULL DEFAULT 10000,
   remark VARCHAR(255) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1099,9 +1101,21 @@ CREATE TABLE IF NOT EXISTS nx_openapi_call_audit (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_openapi_app_nonce (app_key, nonce),
+  KEY idx_openapi_app_nonce (app_key, nonce),
   KEY idx_openapi_audit_app_time (app_id, created_at),
   KEY idx_openapi_audit_path_time (api_path, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_openapi_nonce (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  app_key VARCHAR(96) NOT NULL,
+  nonce VARCHAR(128) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_openapi_nonce (app_key, nonce),
+  KEY idx_openapi_nonce_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_webhook_subscription (
@@ -1125,10 +1139,48 @@ CREATE TABLE IF NOT EXISTS nx_webhook_delivery (
   payload JSON NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   retry_count INT NOT NULL DEFAULT 0,
+  last_status_code INT NULL,
   last_error VARCHAR(512) NULL,
+  next_retry_at DATETIME NULL,
+  delivered_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  KEY idx_webhook_delivery_status (status, created_at),
+  KEY idx_webhook_delivery_status (status, next_retry_at, created_at),
   KEY idx_webhook_delivery_app_event (app_id, event_type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_openapi_app' AND COLUMN_NAME = 'qps_limit') = 0,
+  'ALTER TABLE nx_openapi_app ADD COLUMN qps_limit INT NOT NULL DEFAULT 20 AFTER status',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_openapi_app' AND COLUMN_NAME = 'daily_limit') = 0,
+  'ALTER TABLE nx_openapi_app ADD COLUMN daily_limit INT NOT NULL DEFAULT 10000 AFTER qps_limit',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_openapi_call_audit' AND INDEX_NAME = 'uk_openapi_app_nonce') > 0,
+  'ALTER TABLE nx_openapi_call_audit DROP INDEX uk_openapi_app_nonce',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_openapi_call_audit' AND INDEX_NAME = 'idx_openapi_app_nonce') = 0,
+  'CREATE INDEX idx_openapi_app_nonce ON nx_openapi_call_audit (app_key, nonce)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_webhook_delivery' AND COLUMN_NAME = 'last_status_code') = 0,
+  'ALTER TABLE nx_webhook_delivery ADD COLUMN last_status_code INT NULL AFTER retry_count',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_webhook_delivery' AND COLUMN_NAME = 'next_retry_at') = 0,
+  'ALTER TABLE nx_webhook_delivery ADD COLUMN next_retry_at DATETIME NULL AFTER last_error',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_webhook_delivery' AND COLUMN_NAME = 'delivered_at') = 0,
+  'ALTER TABLE nx_webhook_delivery ADD COLUMN delivered_at DATETIME NULL AFTER next_retry_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

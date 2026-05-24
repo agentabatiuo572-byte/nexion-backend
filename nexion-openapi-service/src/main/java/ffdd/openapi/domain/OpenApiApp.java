@@ -14,5 +14,7 @@ public class OpenApiApp extends BaseEntity {
     private String appKey;
     private String appSecret;
     private String status;
+    private Integer qpsLimit;
+    private Integer dailyLimit;
     private String remark;
 }

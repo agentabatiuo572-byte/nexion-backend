@@ -20,7 +20,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
 | `nexion-system-service` | 8110 | operation config, i18n, content, help center |
-| `nexion-openapi-service` | 8111 | API app keys, HMAC signature auth, call audit, webhook queue |
+| `nexion-openapi-service` | 8111 | API app keys, HMAC signature auth, Redis app quotas, call audit, webhook delivery worker |
 
 User growth levels are modeled separately from the current user snapshot:
 
@@ -251,12 +251,20 @@ Snapshot keys use `bff:{view}:{userId}` with a default TTL of 3 seconds, plus `b
 The OpenAPI service is exposed through Gateway at `/api/openapi/**`.
 
 - Authenticated user APIs:
-  - `POST /api/openapi/apps`: create an app key/secret pair.
-  - `GET /api/openapi/apps`: list the current user's apps.
+  - `POST /api/openapi/apps`: create an app key/secret pair with QPS and daily quota fields.
+  - `GET /api/openapi/apps`: list the current user's apps without returning app secrets.
   - `POST /api/openapi/webhooks`: create a webhook subscription.
   - `GET /api/openapi/webhooks?appId=...`: list webhook subscriptions.
 - Signed partner API:
   - `POST /api/openapi/v1/compute/receipts`: submit a compute receipt through HMAC-SHA256 signature auth.
+- Ops APIs:
+  - `POST /api/openapi/webhooks/deliveries/publish?limit=20`: manually trigger webhook delivery.
+  - `GET /api/openapi/webhooks/deliveries?status=&appId=&eventType=`: query webhook delivery records.
+  - `GET /api/openapi/webhooks/deliveries/pending|success|failed|dead|summary`: inspect delivery backlog and poison rows.
 
 Signed requests use these headers: `X-Nexion-App-Key`, `X-Nexion-Timestamp`, `X-Nexion-Nonce`, and `X-Nexion-Signature`.
 The string to sign is `appKey + "\n" + timestamp + "\n" + nonce + "\n" + sha256(canonicalJsonBody)`.
+Nonce replay protection is tracked in `nx_openapi_nonce` with `NEXION_OPENAPI_NONCE_TTL_SECONDS`, while app quota counters use Redis keys scoped by `appKey + endpoint`.
+If Redis ACL is enabled, set `SPRING_DATA_REDIS_USERNAME` and `SPRING_DATA_REDIS_PASSWORD` for the OpenAPI service.
+
+Webhook delivery is disabled by default (`NEXION_OPENAPI_WEBHOOK_DELIVERY_ENABLED=false`). It sends JSON payloads to the subscription callback URL with `X-Nexion-Webhook-Id`, `X-Nexion-Event-Type`, `X-Nexion-Timestamp`, and `X-Nexion-Signature`, then retries with exponential backoff before moving poison deliveries to `DEAD`. Private callback URLs are rejected by default; set `NEXION_OPENAPI_WEBHOOK_ALLOW_PRIVATE_CALLBACKS=true` only for local integration tests.

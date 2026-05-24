@@ -10,4 +10,6 @@ public class OpenApiAppCreateResponse {
     private String appName;
     private String appKey;
     private String appSecret;
+    private Integer qpsLimit;
+    private Integer dailyLimit;
 }
