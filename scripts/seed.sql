@@ -54,7 +54,7 @@ VALUES
   (110, 'PERM_COMPLIANCE_READ', 'Read compliance operations', 'API', '/compliance/**', NULL, 1),
   (113, 'PERM_COMPLIANCE_WRITE', 'Write compliance operations', 'API', '/compliance/**', NULL, 1),
   (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1),
-  (115, 'PERM_SYSTEM_WRITE', 'Write system operation configs', 'API', '/system/configs/**', NULL, 1),
+  (115, 'PERM_SYSTEM_WRITE', 'Write system operations', 'API', '/system/**', NULL, 1),
   (114, 'PERM_OPENAPI_ADMIN', 'Admin OpenAPI apps, quotas, audits, and webhook delivery', 'API', '/openapi/ops/**,/openapi/webhooks/deliveries/**', NULL, 1)
 ON DUPLICATE KEY UPDATE
   permission_code = VALUES(permission_code),
@@ -337,4 +337,33 @@ ON DUPLICATE KEY UPDATE
   config_value = VALUES(config_value),
   value_type = VALUES(value_type),
   remark = VALUES(remark),
+  status = VALUES(status);
+
+INSERT INTO nx_i18n_message (id, message_key, locale, message_value, status)
+VALUES
+  (1, 'app.name', 'en-US', 'Nexion', 1),
+  (2, 'app.name', 'zh-CN', 'Nexion', 1),
+  (3, 'home.compute_marketplace.title', 'en-US', 'Distributed AI compute marketplace', 1),
+  (4, 'home.compute_marketplace.title', 'zh-CN', '分布式 AI 算力商城', 1)
+ON DUPLICATE KEY UPDATE
+  message_value = VALUES(message_value),
+  status = VALUES(status);
+
+INSERT INTO nx_content_page (id, page_code, title, content, status)
+VALUES
+  (1, 'terms.service', 'Terms of Service', 'Nexion service terms baseline content.', 1),
+  (2, 'privacy.policy', 'Privacy Policy', 'Nexion privacy policy baseline content.', 1)
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  content = VALUES(content),
+  status = VALUES(status);
+
+INSERT INTO nx_help_article (id, article_code, title, content, sort_order, status)
+VALUES
+  (1, 'compute.getting_started', 'Getting started with compute devices', 'Activate a device after a paid order, then wait for task dispatch.', 10, 1),
+  (2, 'wallet.withdrawal', 'Withdrawal basics', 'Complete KYC and submit a withdrawal request for review and broadcast.', 20, 1)
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  content = VALUES(content),
+  sort_order = VALUES(sort_order),
   status = VALUES(status);

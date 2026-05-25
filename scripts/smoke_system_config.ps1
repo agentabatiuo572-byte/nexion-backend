@@ -172,7 +172,9 @@ $userToken = New-SmokeUserToken
 Write-Host "Verifying normal user without System permission is rejected..."
 $userDenied = Invoke-RawJson -Method Get -Uri "$GatewayUrl/api/system/configs?limit=1" -Token $userToken
 Assert-ApiCode -Response $userDenied -ExpectedCode 403 -Context "normal user read"
-Write-Host "Normal user read rejected with code=403"
+$userDeniedHelp = Invoke-RawJson -Method Get -Uri "$GatewayUrl/api/system/help/articles?limit=1" -Token $userToken
+Assert-ApiCode -Response $userDeniedHelp -ExpectedCode 403 -Context "normal user help read"
+Write-Host "Normal user System reads rejected with code=403"
 
 $stamp = Get-Date -Format "yyyyMMddHHmmss"
 $configKey = "smoke.system.config.$stamp.$(Get-Random -Minimum 1000 -Maximum 9999)"
@@ -228,4 +230,96 @@ if ($disabled.status -ne 0) {
 $missingActive = Invoke-RawJson -Method Get -Uri "$GatewayUrl/api/system/configs/$encodedKey" -Token $script:AdminToken
 Assert-ApiCode -Response $missingActive -ExpectedCode 404 -Context "disabled active lookup"
 
-Write-Host "System config smoke completed. configId=$($created.id), configKey=$configKey"
+Write-Host "Creating and verifying i18n message..."
+$messageKey = "smoke.system.i18n.$stamp.$(Get-Random -Minimum 1000 -Maximum 9999)"
+$encodedMessageKey = [System.Uri]::EscapeDataString($messageKey)
+$locale = "en_US"
+$encodedLocale = [System.Uri]::EscapeDataString($locale)
+$createdMessage = Invoke-NexionJson -Method Post -Uri "$GatewayUrl/api/system/i18n/messages" -Token $script:AdminToken -Body @{
+  messageKey = $messageKey
+  locale = $locale
+  messageValue = "System smoke message"
+  status = 1
+}
+if (-not $createdMessage.id -or $createdMessage.locale -ne "en-US") {
+  throw "I18n message creation returned unexpected payload."
+}
+$listedMessages = @(Invoke-NexionJson -Method Get -Uri "$GatewayUrl/api/system/i18n/messages?locale=$encodedLocale&query=$encodedMessageKey&limit=5" -Token $script:AdminToken)
+if (@($listedMessages | Where-Object { $_.messageKey -eq $messageKey }).Count -lt 1) {
+  throw "Expected created i18n message in list response."
+}
+$activeMessage = Invoke-NexionJson -Method Get -Uri "$GatewayUrl/api/system/i18n/messages/$encodedMessageKey`?locale=$encodedLocale" -Token $script:AdminToken
+if ($activeMessage.messageValue -ne "System smoke message") {
+  throw "Expected active i18n message value, got $($activeMessage.messageValue)."
+}
+$messageBatch = @(Invoke-NexionJson -Method Post -Uri "$GatewayUrl/api/system/i18n/messages/batch-query" -Token $script:AdminToken -Body @{
+  locale = $locale
+  messageKeys = @($messageKey, "smoke.system.i18n.missing")
+})
+if (@($messageBatch | Where-Object { $_.messageKey -eq $messageKey }).Count -lt 1) {
+  throw "Expected created i18n message in batch response."
+}
+$updatedMessage = Invoke-NexionJson -Method Patch -Uri "$GatewayUrl/api/system/i18n/messages/$($createdMessage.id)" -Token $script:AdminToken -Body @{
+  messageValue = "Updated system smoke message"
+}
+if ($updatedMessage.messageValue -ne "Updated system smoke message") {
+  throw "I18n update returned unexpected payload."
+}
+
+Write-Host "Creating and verifying content page..."
+$pageCode = "smoke.content.$stamp.$(Get-Random -Minimum 1000 -Maximum 9999)"
+$encodedPageCode = [System.Uri]::EscapeDataString($pageCode)
+$createdPage = Invoke-NexionJson -Method Post -Uri "$GatewayUrl/api/system/content/pages" -Token $script:AdminToken -Body @{
+  pageCode = $pageCode
+  title = "Smoke Content Page"
+  content = "System smoke content"
+  status = 1
+}
+if (-not $createdPage.id -or $createdPage.pageCode -ne $pageCode) {
+  throw "Content page creation returned unexpected payload."
+}
+$listedPages = @(Invoke-NexionJson -Method Get -Uri "$GatewayUrl/api/system/content/pages?query=$encodedPageCode&limit=5" -Token $script:AdminToken)
+if (@($listedPages | Where-Object { $_.pageCode -eq $pageCode }).Count -lt 1) {
+  throw "Expected created content page in list response."
+}
+$activePage = Invoke-NexionJson -Method Get -Uri "$GatewayUrl/api/system/content/pages/$encodedPageCode" -Token $script:AdminToken
+if ($activePage.title -ne "Smoke Content Page") {
+  throw "Expected active content page title, got $($activePage.title)."
+}
+$updatedPage = Invoke-NexionJson -Method Patch -Uri "$GatewayUrl/api/system/content/pages/$($createdPage.id)" -Token $script:AdminToken -Body @{
+  title = "Updated Smoke Content Page"
+}
+if ($updatedPage.title -ne "Updated Smoke Content Page") {
+  throw "Content page update returned unexpected payload."
+}
+
+Write-Host "Creating and verifying help article..."
+$articleCode = "smoke.help.$stamp.$(Get-Random -Minimum 1000 -Maximum 9999)"
+$encodedArticleCode = [System.Uri]::EscapeDataString($articleCode)
+$createdArticle = Invoke-NexionJson -Method Post -Uri "$GatewayUrl/api/system/help/articles" -Token $script:AdminToken -Body @{
+  articleCode = $articleCode
+  title = "Smoke Help Article"
+  content = "System smoke help"
+  sortOrder = 10
+  status = 1
+}
+if (-not $createdArticle.id -or $createdArticle.articleCode -ne $articleCode) {
+  throw "Help article creation returned unexpected payload."
+}
+$listedArticles = @(Invoke-NexionJson -Method Get -Uri "$GatewayUrl/api/system/help/articles?query=$encodedArticleCode&limit=5" -Token $script:AdminToken)
+if (@($listedArticles | Where-Object { $_.articleCode -eq $articleCode }).Count -lt 1) {
+  throw "Expected created help article in list response."
+}
+$activeArticle = Invoke-NexionJson -Method Get -Uri "$GatewayUrl/api/system/help/articles/$encodedArticleCode" -Token $script:AdminToken
+if ($activeArticle.title -ne "Smoke Help Article") {
+  throw "Expected active help article title, got $($activeArticle.title)."
+}
+$updatedArticle = Invoke-NexionJson -Method Patch -Uri "$GatewayUrl/api/system/help/articles/$($createdArticle.id)" -Token $script:AdminToken -Body @{
+  sortOrder = 5
+  content = "Updated system smoke help"
+}
+if ($updatedArticle.sortOrder -ne 5 -or $updatedArticle.content -ne "Updated system smoke help") {
+  throw "Help article update returned unexpected payload."
+}
+
+Write-Host "System smoke completed. configId=$($created.id), messageId=$($createdMessage.id), pageId=$($createdPage.id), articleId=$($createdArticle.id)"

@@ -310,20 +310,35 @@ The BFF service exposes page-level view models through Gateway at `/api/bff/**` 
 
 Snapshot keys use `bff:{view}:{userId}` with a default TTL of 3 seconds, plus `bff:{view}:{userId}:last` for stale fallback.
 
-## System Config Baseline
+## System Operations Baseline
 
-The System service exposes operational configuration through Gateway at `/api/system/**`.
+The System service exposes operational configuration, i18n messages, content pages, and help articles through Gateway at `/api/system/**`.
 
 - `GET /api/system/configs?query=&status=&limit=20`: query config items for operations screens.
 - `GET /api/system/configs/{configKey}`: read one active config item by key.
 - `POST /api/system/configs/batch-query`: read active config items by key list.
 - `POST /api/system/configs`: create a config item.
 - `PATCH /api/system/configs/{id}`: update value, value type, remark, or status.
+- `GET /api/system/i18n/messages?locale=&query=&status=&limit=20`: query i18n messages.
+- `GET /api/system/i18n/messages/{messageKey}?locale=en-US`: read one active i18n message.
+- `POST /api/system/i18n/messages/batch-query`: read active messages by locale and key list.
+- `POST /api/system/i18n/messages`: create an i18n message.
+- `PATCH /api/system/i18n/messages/{id}`: update message value or status.
+- `GET /api/system/content/pages?query=&status=&limit=20`: query content pages.
+- `GET /api/system/content/pages/{pageCode}`: read one active content page.
+- `POST /api/system/content/pages`: create a content page.
+- `PATCH /api/system/content/pages/{id}`: update title, content, or status.
+- `GET /api/system/help/articles?query=&status=&limit=20`: query help articles.
+- `GET /api/system/help/articles/{articleCode}`: read one active help article.
+- `POST /api/system/help/articles`: create a help article.
+- `PATCH /api/system/help/articles/{id}`: update title, content, sort order, or status.
 - Read endpoints require `PERM_SYSTEM_READ`; create/update endpoints require `PERM_SYSTEM_WRITE`.
 
 Supported value types are `STRING`, `NUMBER`, `BOOLEAN`, and `JSON`. Do not store credentials, private keys, or long-lived secrets in `nx_config_item`; use environment variables or a secret manager for those values.
 
-Seeded operational keys include product phase, withdrawal minimums, OpenAPI default quotas, risk review thresholds, and feature switches. Run the System config smoke after applying `scripts/seed.sql` or `scripts/patch_business_api_permissions.sql` so admin tokens include `PERM_SYSTEM_READ` and `PERM_SYSTEM_WRITE`:
+Content payloads are capped at 65,535 characters at the API layer. Message keys, page codes, and article codes only allow letters, numbers, dot, underscore, colon, and hyphen; locales are normalized from forms such as `en_US` to `en-US`. Clients that render content as HTML must sanitize or escape it before display.
+
+Seeded operational keys include product phase, withdrawal minimums, OpenAPI default quotas, risk review thresholds, and feature switches. Run the System smoke after applying `scripts/seed.sql` or `scripts/patch_business_api_permissions.sql` so admin tokens include `PERM_SYSTEM_READ` and `PERM_SYSTEM_WRITE`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
