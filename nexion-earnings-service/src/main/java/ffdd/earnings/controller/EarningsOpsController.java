@@ -33,8 +33,10 @@ public class EarningsOpsController {
                 "database", "nexion_earnings",
                 "responsibilities", List.of(
                         "earning ticks",
+                        "automatic device tick settlement",
                         "earning summaries",
                         "event stream",
+                        "milestone reward events",
                         "wallet posting outbox",
                         "read-only earning analytics")));
     }

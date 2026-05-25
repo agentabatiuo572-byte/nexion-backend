@@ -815,6 +815,28 @@ CREATE TABLE IF NOT EXISTS nx_earning_summary (
   UNIQUE KEY uk_earning_summary_user_date (user_id, summary_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_earning_milestone (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  milestone_id VARCHAR(64) NOT NULL,
+  threshold_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  reward_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL,
+  event_no VARCHAR(96) NULL,
+  achieved_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_earning_milestone_user (user_id, milestone_id),
+  KEY idx_earning_milestone_status (status, achieved_at),
+  CONSTRAINT chk_earning_milestone_amount CHECK (threshold_usdt >= 0 AND reward_nex >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_earning_milestone' AND INDEX_NAME = 'uk_earning_milestone_user') = 0,
+  'ALTER TABLE nx_earning_milestone ADD UNIQUE KEY uk_earning_milestone_user (user_id, milestone_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_team_member (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,

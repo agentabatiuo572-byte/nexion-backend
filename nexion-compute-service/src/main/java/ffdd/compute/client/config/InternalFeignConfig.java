@@ -14,7 +14,7 @@ public class InternalFeignConfig {
             template.header(AuthHeaders.SUBJECT_ID, "0");
             template.header(AuthHeaders.SUBJECT_TYPE, "SERVICE");
             template.header(AuthHeaders.USERNAME, "nexion-compute-service");
-            template.header(AuthHeaders.AUTHORITIES, "PERM_EARNINGS_READ");
+            template.header(AuthHeaders.AUTHORITIES, "PERM_EARNINGS_READ,PERM_EARNINGS_WRITE");
         };
     }
 }

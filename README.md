@@ -17,7 +17,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-wallet-service` | 8105 | wallet balances, bills, idempotent earning/team commission credits, withdrawals |
 | `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel/binary/peer/cultivation/leadership commission events, commission unlock, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
-| `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream, read-only analytics |
+| `nexion-earnings-service` | 8108 | earning ticks, device snapshot settlement, milestone rewards, summaries, event stream, read-only analytics |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
 | `nexion-system-service` | 8110 | operation config, i18n, content, help center |
 | `nexion-openapi-service` | 8111 | API app keys, HMAC signature auth, Redis app quotas, call audit, webhook delivery worker |
@@ -216,6 +216,34 @@ Earnings exposes read-only derived analytics for the `/earn` experience without 
 - `GET /earnings/analytics/missed-income?userId=&joinedAt=`: computes the product missed-income banner numbers from configurable `PHONE_DAILY` and `S1_DAILY` constants. Defaults are `0.06` and `38.50` USDT/day; override with `NEXION_EARNINGS_ANALYTICS_PHONE_DAILY_USDT` and `NEXION_EARNINGS_ANALYTICS_S1_DAILY_USDT`.
 
 The analytics endpoints are intentionally read-only and use parameterized mapper queries for range and lifetime aggregation. Direct and Gateway smoke scripts now verify trend, milestone, and missed-income responses as part of the main earning chain.
+
+## Earnings Tick And Milestone Baseline
+
+Earnings now has an ops/scheduler path for automatic device income ticks and lifetime milestone reward events. It stays inside `nexion-earnings-service`; no separate compute worker service is required for this baseline.
+
+- `POST /earnings/ticks/settle-batch`: settles an explicit batch of earning ticks through the existing idempotent receipt settlement path. Batch size is capped at 500 and requires `PERM_EARNINGS_WRITE`.
+- `POST /earnings/ticks/settle-device-snapshot?tickAt=&limit=100`: scans `ONLINE`/`BUSY` devices from `nx_user_device`, prorates `daily_usdt` and `daily_nex` by the configured interval, creates deterministic `TICK-{slotStart}-{deviceId}` receipts, and then scans affected users for milestones. Requires `PERM_EARNINGS_WRITE`.
+- `POST /earnings/milestones/scan?userId=&achievedAt=`: scans lifetime USDT from `nx_earning_summary` and creates one idempotent NEX reward event per newly achieved milestone.
+- Milestone rules are shared by read-only analytics and reward settlement: `earn-100`, `earn-500`, `earn-1000`, `earn-5000`, and `earn-10000`.
+- Milestone reward receipts use `MILESTONE-{userId}-{milestoneId}` and are fenced by `nx_earning_milestone (user_id, milestone_id)`.
+- The scheduled `EarningTickWorker` is disabled by default. Enable it only after confirming the intended settlement cadence.
+
+Local startup knobs:
+
+- `NEXION_EARNINGS_TICK_WORKER_ENABLED=false`
+- `NEXION_EARNINGS_TICK_INTERVAL_SECONDS=3600`
+- `NEXION_EARNINGS_TICK_BATCH_SIZE=100`
+- `NEXION_EARNINGS_TICK_WORKER_INITIAL_DELAY_MS=60000`
+- `NEXION_EARNINGS_TICK_WORKER_FIXED_DELAY_MS=3600000`
+
+Manual direct-service smoke coverage:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_main_chain_services.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_main_chain.ps1
+```
+
+The direct smoke now verifies `commerce paid -> compute task completion receipt -> earnings settle -> analytics -> device snapshot tick -> wallet post`.
 
 ## Gateway Canary Baseline
 

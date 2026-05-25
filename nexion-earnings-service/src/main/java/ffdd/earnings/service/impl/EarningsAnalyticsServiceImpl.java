@@ -10,6 +10,7 @@ import ffdd.earnings.dto.EarningTrendResponse;
 import ffdd.earnings.dto.MissedIncomeQueryRequest;
 import ffdd.earnings.dto.MissedIncomeResponse;
 import ffdd.earnings.mapper.EarningSummaryMapper;
+import ffdd.earnings.service.EarningMilestoneRules;
 import ffdd.earnings.service.EarningsAnalyticsService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -34,13 +35,6 @@ public class EarningsAnalyticsServiceImpl implements EarningsAnalyticsService {
     private static final int SCALE = 6;
     private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
     private static final BigDecimal SECONDS_PER_DAY = new BigDecimal("86400");
-
-    private static final List<MilestoneRule> MILESTONE_RULES = List.of(
-            new MilestoneRule("earn-100", "First $100 earned", "100", "100"),
-            new MilestoneRule("earn-500", "Half-grand reached", "500", "250"),
-            new MilestoneRule("earn-1000", "Four-figure earner", "1000", "500"),
-            new MilestoneRule("earn-5000", "Mid five-figure operator", "5000", "1500"),
-            new MilestoneRule("earn-10000", "Top 2% of Nexion earners", "10000", "3000"));
 
     private final EarningSummaryMapper summaryMapper;
     private final BigDecimal phoneDailyUsdt;
@@ -118,7 +112,7 @@ public class EarningsAnalyticsServiceImpl implements EarningsAnalyticsService {
             throw new BizException("userId is required");
         }
         BigDecimal lifetimeUsdt = scaled(summaryMapper.sumLifetimeUsdtByUser(userId));
-        List<EarningMilestoneResponse> milestones = MILESTONE_RULES.stream()
+        List<EarningMilestoneResponse> milestones = EarningMilestoneRules.rules().stream()
                 .map(rule -> toMilestone(rule, lifetimeUsdt))
                 .toList();
         EarningMilestoneResponse nextMilestone = milestones.stream()
@@ -171,8 +165,8 @@ public class EarningsAnalyticsServiceImpl implements EarningsAnalyticsService {
                 cumulativeMissed);
     }
 
-    private EarningMilestoneResponse toMilestone(MilestoneRule rule, BigDecimal lifetimeUsdt) {
-        BigDecimal threshold = new BigDecimal(rule.thresholdUsdt()).setScale(SCALE);
+    private EarningMilestoneResponse toMilestone(EarningMilestoneRules.Rule rule, BigDecimal lifetimeUsdt) {
+        BigDecimal threshold = rule.thresholdUsdt().setScale(SCALE);
         boolean achieved = lifetimeUsdt.compareTo(threshold) >= 0;
         BigDecimal remaining = achieved
                 ? BigDecimal.ZERO.setScale(SCALE)
@@ -180,7 +174,7 @@ public class EarningsAnalyticsServiceImpl implements EarningsAnalyticsService {
         return new EarningMilestoneResponse(
                 rule.milestoneId(),
                 threshold,
-                new BigDecimal(rule.rewardNex()).setScale(SCALE),
+                rule.rewardNex().setScale(SCALE),
                 rule.label(),
                 achieved,
                 remaining);
@@ -188,8 +182,5 @@ public class EarningsAnalyticsServiceImpl implements EarningsAnalyticsService {
 
     private static BigDecimal scaled(BigDecimal value) {
         return (value == null ? BigDecimal.ZERO : value).setScale(SCALE, RoundingMode.HALF_UP);
-    }
-
-    private record MilestoneRule(String milestoneId, String label, String thresholdUsdt, String rewardNex) {
     }
 }

@@ -27,6 +27,13 @@ nexion:
   earnings:
     auto-post-wallet: ${NEXION_EARNINGS_AUTO_POST_WALLET:true}
     earning-generated-outbox-enabled: ${NEXION_EARNINGS_EARNING_GENERATED_OUTBOX_ENABLED:true}
+    tick:
+      interval-seconds: ${NEXION_EARNINGS_TICK_INTERVAL_SECONDS:3600}
+      batch-size: ${NEXION_EARNINGS_TICK_BATCH_SIZE:100}
+      worker:
+        enabled: ${NEXION_EARNINGS_TICK_WORKER_ENABLED:false}
+        initial-delay-ms: ${NEXION_EARNINGS_TICK_WORKER_INITIAL_DELAY_MS:60000}
+        fixed-delay-ms: ${NEXION_EARNINGS_TICK_WORKER_FIXED_DELAY_MS:3600000}
   outbox:
     rocketmq:
       enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}

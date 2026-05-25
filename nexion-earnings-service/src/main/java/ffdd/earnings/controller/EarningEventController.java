@@ -8,6 +8,7 @@ import ffdd.earnings.dto.ReceiptSettleRequest;
 import ffdd.earnings.dto.ReceiptSettleResponse;
 import ffdd.earnings.service.EarningsService;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -29,6 +30,7 @@ public class EarningEventController {
     }
 
     @PostMapping("/settle-receipt")
+    @PreAuthorize("hasAuthority('PERM_EARNINGS_WRITE')")
     public ApiResult<ReceiptSettleResponse> settleReceipt(@Valid @RequestBody ReceiptSettleRequest request) {
         return ApiResult.ok(earningsService.settleReceipt(request));
     }

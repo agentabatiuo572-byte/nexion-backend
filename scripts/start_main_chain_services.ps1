@@ -1,6 +1,11 @@
 param(
   [string]$Root = "D:\workspace\nexion-backend",
-  [string]$Maven = "D:\software\apache-maven-3.9.9\bin\mvn.cmd"
+  [string]$Maven = "D:\software\apache-maven-3.9.9\bin\mvn.cmd",
+  [string]$EarningsTickWorkerEnabled = "false",
+  [int]$EarningsTickIntervalSeconds = 3600,
+  [int]$EarningsTickBatchSize = 100,
+  [int]$EarningsTickWorkerInitialDelayMs = 60000,
+  [int]$EarningsTickWorkerFixedDelayMs = 3600000
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,7 +27,7 @@ foreach ($service in $services) {
   $workDir = Join-Path $Root $service.Name
   $outLog = Join-Path $Root "logs\$($service.Name).out.log"
   $errLog = Join-Path $Root "logs\$($service.Name).err.log"
-  $inner = "cd /d `"$workDir`" && call `"$Maven`" spring-boot:run > `"$outLog`" 2> `"$errLog`""
+  $inner = "cd /d `"$workDir`" && set `"NEXION_EARNINGS_TICK_WORKER_ENABLED=$EarningsTickWorkerEnabled`" && set `"NEXION_EARNINGS_TICK_INTERVAL_SECONDS=$EarningsTickIntervalSeconds`" && set `"NEXION_EARNINGS_TICK_BATCH_SIZE=$EarningsTickBatchSize`" && set `"NEXION_EARNINGS_TICK_WORKER_INITIAL_DELAY_MS=$EarningsTickWorkerInitialDelayMs`" && set `"NEXION_EARNINGS_TICK_WORKER_FIXED_DELAY_MS=$EarningsTickWorkerFixedDelayMs`" && call `"$Maven`" spring-boot:run > `"$outLog`" 2> `"$errLog`""
   & cmd.exe /c "start `"$($service.Name)`" /B cmd.exe /c `"$inner`""
   Write-Host "Started $($service.Name), logs: $outLog / $errLog"
 }

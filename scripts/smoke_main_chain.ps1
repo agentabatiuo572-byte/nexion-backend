@@ -17,7 +17,7 @@ $InternalHeaders = @{
   "X-Nexion-Subject-Id" = "0"
   "X-Nexion-Subject-Type" = "SERVICE"
   "X-Nexion-Username" = "smoke-main-chain"
-  "X-Nexion-Authorities" = "PERM_COMMERCE_WRITE,PERM_COMPUTE_READ,PERM_COMPUTE_WRITE,PERM_EARNINGS_READ,PERM_WALLET_READ"
+  "X-Nexion-Authorities" = "PERM_COMMERCE_WRITE,PERM_COMPUTE_READ,PERM_COMPUTE_WRITE,PERM_EARNINGS_READ,PERM_EARNINGS_WRITE,PERM_WALLET_READ"
 }
 
 function Invoke-NexionJson {
@@ -153,6 +153,13 @@ if ($missedIncome.dailyGapUsdt -le 0 -or $missedIncome.daysSinceJoin -lt 1) {
   throw "Unexpected missed income response."
 }
 Write-Host "Earnings analytics trendDays=$($trend.points.Count), lifetime=$($milestones.lifetimeUsdt), missed=$($missedIncome.cumulativeMissedUsdt)"
+
+Write-Host "Triggering earnings device tick snapshot..."
+$tickResult = Invoke-NexionJson -Method Post -Uri "$EarningsUrl/earnings/ticks/settle-device-snapshot?limit=20"
+if ($tickResult.requested -lt 1 -or $tickResult.settled -lt 1) {
+  throw "Expected at least one device tick settlement, requested=$($tickResult.requested), settled=$($tickResult.settled)."
+}
+Write-Host "Earnings tick requested=$($tickResult.requested), settled=$($tickResult.settled), milestoneRewards=$($tickResult.milestoneRewards)"
 
 Write-Host "Posting any pending earnings to wallet for retry safety..."
 $postResult = Invoke-NexionJson -Method Post -Uri "$WalletUrl/wallet/earnings/post-pending" -Body @{

@@ -46,6 +46,7 @@ VALUES
   (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**', NULL, 1),
   (105, 'PERM_WALLET_READ', 'Read wallet operations', 'API', '/wallet/**', NULL, 1),
   (112, 'PERM_WALLET_WRITE', 'Write wallet operations', 'API', '/wallet/**', NULL, 1),
+  (118, 'PERM_EARNINGS_WRITE', 'Write earnings tick and milestone operations', 'API', '/earnings/ticks/**,/earnings/milestones/**,/earnings/events/settle-receipt', NULL, 1),
   (106, 'PERM_TEAM_READ', 'Read team operations', 'API', '/team/**', NULL, 1),
   (116, 'PERM_TEAM_WRITE', 'Write team operations', 'API', '/team/**', NULL, 1),
   (107, 'PERM_NOTIFICATION_READ', 'Read notifications', 'API', '/notifications/**', NULL, 1),
@@ -112,6 +113,7 @@ WHERE permission_code IN (
   'PERM_MISSION_READ',
   'PERM_SYSTEM_READ',
   'PERM_SYSTEM_WRITE',
+  'PERM_EARNINGS_WRITE',
   'PERM_OPENAPI_ADMIN'
 );
 

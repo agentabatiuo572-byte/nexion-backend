@@ -1,6 +1,5 @@
 package ffdd.earnings.dto;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
@@ -11,17 +10,16 @@ import java.time.LocalDateTime;
 import lombok.Data;
 
 @Data
-public class ReceiptSettleRequest {
+public class EarningTickRequest {
+    @Size(max = 96)
+    private String tickNo;
+
     @NotNull
     @Positive
     private Long userId;
 
     @Positive
     private Long userDeviceId;
-
-    @NotBlank
-    @Size(max = 96)
-    private String receiptNo;
 
     @DecimalMin("0.000000")
     @Digits(integer = 12, fraction = 6)
@@ -31,5 +29,8 @@ public class ReceiptSettleRequest {
     @Digits(integer = 12, fraction = 6)
     private BigDecimal rewardNex = BigDecimal.ZERO;
 
-    private LocalDateTime completedAt;
+    private LocalDateTime tickAt;
+
+    @Size(max = 64)
+    private String source;
 }
