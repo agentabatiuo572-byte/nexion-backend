@@ -15,6 +15,10 @@ public class TeamOpsController {
         return ApiResult.ok(Map.of(
                 "service", "nexion-team-service",
                 "database", "nexion_team",
-                "responsibilities", List.of("team tree", "V rank", "commission events", "leaderboard snapshots")));
+                "responsibilities", List.of(
+                        "team tree",
+                        "V rank",
+                        "unilevel/binary/peer/cultivation/leadership commissions",
+                        "leaderboard snapshots")));
     }
 }

@@ -15,7 +15,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-mission-service` | 8103 | check-in, quests, points, achievements |
 | `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in, outbox broker publisher |
 | `nexion-wallet-service` | 8105 | wallet balances, bills, idempotent earning/team commission credits, withdrawals |
-| `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel commission events, commission unlock, team overview |
+| `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel/binary/peer/cultivation/leadership commission events, commission unlock, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
 | `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream, read-only analytics |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
@@ -53,6 +53,10 @@ The current backend baseline implements the first event-driven slice:
 - `TeamOutboxWorker`: automatically polls due commerce outbox events and runs the same idempotent `OrderPaid` commission consumer.
 - `CommerceOutboxRocketPublisher` / `TeamOrderPaidRocketListener` / `ComputeOrderPaidRocketListener`: optional RocketMQ path for publishing `OrderPaid` outbox events to a broker and consuming them from Team and Compute.
 - `POST /team/commissions/binary`: scans users with at least two direct legs, treats the first two direct legs as LEFT/RIGHT roots, deducts historical matched volume, and creates one daily `BINARY` commission event per user.
+- `POST /team/commissions/peer`: creates monthly same-rank `PEER` commission events from `nx_team_member` volume for V3+ ranks with peer bonus enabled.
+- `POST /team/commissions/cultivation`: scans V-rank upgrade logs and creates one-time `CULTIVATION` NEX commission events for the promoted user's direct sponsor.
+- `POST /team/commissions/leadership`: splits a weekly leadership pool from `platformVolumeUsdt * leadership rule rate` across V3+ users by configured rank votes.
+- `GET /team/leadership-pool`: returns the current user's pool unlock state, vote count, estimated share, total votes, and top vote participants for a supplied platform volume snapshot.
 - `POST /team/commissions/unlock`: scans due `PENDING` commission events, posts USDT/NEX credits to wallet, and marks commissions as `POSTED`.
 - `GET /team/overview`: team count and commission summary for the current user.
 - `GET /team/commissions`: paged commission events for the current user.

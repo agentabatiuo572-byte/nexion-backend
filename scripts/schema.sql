@@ -831,6 +831,11 @@ CREATE TABLE IF NOT EXISTS nx_team_member (
   KEY idx_team_user_level (user_id, level)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_member' AND INDEX_NAME = 'idx_team_user_rank') = 0,
+  'ALTER TABLE nx_team_member ADD INDEX idx_team_user_rank (user_id, v_rank)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_user_level_config (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   level_code VARCHAR(16) NOT NULL,
@@ -880,6 +885,11 @@ CREATE TABLE IF NOT EXISTS nx_user_level_log (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   KEY idx_user_level_log_user (user_id, level_type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_level_log' AND INDEX_NAME = 'idx_user_level_log_type_time') = 0,
+  'ALTER TABLE nx_user_level_log ADD INDEX idx_user_level_log_type_time (level_type, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_commission_rule (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

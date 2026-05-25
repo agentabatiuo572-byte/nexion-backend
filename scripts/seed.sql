@@ -178,7 +178,8 @@ VALUES
   (2, 'V1', 'Pilot', 'Pilot', 299, 3, 0, NULL, 0, 'Self buy >= 299 USDT and 3 directs', 'L2', 0, 0, 'Pilot badge', 1, 1),
   (3, 'V2', 'Operator', 'Operator', 0, 0, 5000, NULL, 0, 'Team volume >= 5000 USDT', 'L2-L3', 0, 0, 'Operator badge', 2, 1),
   (4, 'V3', 'Captain', 'Captain', 0, 0, 20000, 'V1', 2, 'Team volume >= 20000 USDT and 2 V1 legs', 'L2-L4', 0.0500, 1, 'Apple Watch SE', 3, 1),
-  (5, 'V4', 'Commander', 'Commander', 0, 0, 50000, 'V2', 3, 'Team volume >= 50000 USDT and 3 V2 legs', 'L2-L5', 0.0500, 2, 'iPhone 16 Pro', 4, 1)
+  (5, 'V4', 'Commander', 'Commander', 0, 0, 50000, 'V2', 3, 'Team volume >= 50000 USDT and 3 V2 legs', 'L2-L5', 0.0500, 2, 'iPhone 16 Pro', 4, 1),
+  (6, 'V5', 'Wing Leader', 'Wing Leader', 0, 0, 150000, 'V3', 4, 'Team volume >= 150000 USDT and 4 V3 legs', 'L2-L6', 0.0500, 4, 'Apple Vision Pro', 5, 1)
 ON DUPLICATE KEY UPDATE
   title_en = VALUES(title_en),
   title_cn = VALUES(title_cn),
@@ -207,7 +208,12 @@ VALUES
   (7, 'UNILEVEL', 7, NULL, 0.005000, 1.000000, 0, 0, 30, 1),
   (8, 'BINARY', NULL, NULL, 0.100000, 0, 0, 5000.000000, 1, 1),
   (9, 'PEER', NULL, NULL, 0.050000, 0, 0, 0, 30, 1),
-  (10, 'LEADERSHIP', NULL, NULL, 0.050000, 0, 0, 0, 0, 1)
+  (10, 'LEADERSHIP', NULL, NULL, 0.050000, 0, 0, 0, 0, 1),
+  (11, 'CULTIVATION', NULL, 'V1', 0, 0, 500.000000, 0, 0, 1),
+  (12, 'CULTIVATION', NULL, 'V2', 0, 0, 2000.000000, 0, 0, 1),
+  (13, 'CULTIVATION', NULL, 'V3', 0, 0, 10000.000000, 0, 0, 1),
+  (14, 'CULTIVATION', NULL, 'V4', 0, 0, 50000.000000, 0, 0, 1),
+  (15, 'CULTIVATION', NULL, 'V5', 0, 0, 200000.000000, 0, 0, 1)
 ON DUPLICATE KEY UPDATE
   rank_code = VALUES(rank_code),
   usdt_rate = VALUES(usdt_rate),
