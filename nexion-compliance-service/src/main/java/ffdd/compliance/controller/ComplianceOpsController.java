@@ -16,7 +16,9 @@ public class ComplianceOpsController {
                 "service", "nexion-compliance-service",
                 "database", "nexion_compliance",
                 "responsibilities", List.of("KYC", "risk decisions", "blacklist", "manual review",
-                        "withdrawal checks", "exchange checks", "proof assets"),
-                "gate", "/compliance/gates/check"));
+                        "risk scoring", "withdrawal checks", "exchange checks", "proof assets"),
+                "gate", "/compliance/gates/check",
+                "riskDecisionSummary", "/compliance/risk-decisions/summary",
+                "blacklists", "/compliance/blacklists"));
     }
 }

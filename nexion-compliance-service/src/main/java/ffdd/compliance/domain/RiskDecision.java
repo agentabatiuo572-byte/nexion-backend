@@ -16,6 +16,9 @@ public class RiskDecision extends BaseEntity {
     private String bizNo;
     private String decision;
     private String reason;
+    private Integer riskScore;
+    private String ruleCodes;
+    private String ruleSnapshot;
     private String reviewedBy;
     private LocalDateTime reviewedAt;
 }

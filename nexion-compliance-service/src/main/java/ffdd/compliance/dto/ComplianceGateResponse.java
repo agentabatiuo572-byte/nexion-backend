@@ -7,4 +7,6 @@ public class ComplianceGateResponse {
     private Long decisionId;
     private String decision;
     private String reason;
+    private Integer riskScore;
+    private String ruleCodes;
 }

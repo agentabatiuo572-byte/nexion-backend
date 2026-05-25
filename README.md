@@ -251,8 +251,14 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 - `GET /wallet/withdrawals/broadcast/pending|dead|summary`: inspect withdrawal broadcast backlog and local DEAD rows.
 - `POST /wallet/exchanges`: creates an idempotent exchange order, checks Compliance, debits the source asset, and credits the target asset when approved. Compliance `REVIEW` leaves the order in `REVIEWING`.
 - `POST /compliance/gates/check`: protected by `PERM_COMPLIANCE_WRITE`; creates an idempotent `nx_risk_decision` from the KYC profile, blacklist, amount threshold, and daily frequency checks.
+- Compliance gate responses now include `riskScore` and `ruleCodes` so ops can trace whether a hold came from active blacklist, KYC state, amount threshold, or daily frequency rules.
+- `GET /compliance/risk-decisions?userId=&bizType=&decision=&reason=&limit=20`: query recent risk decisions for operations review.
+- `GET /compliance/risk-decisions/summary?days=7`: returns decision totals by outcome plus active blacklist count.
 - `GET /compliance/risk-decisions/review`: lists pending manual review decisions.
 - `POST /compliance/risk-decisions/{decisionNo}/approve|reject`: records manual review outcome.
+- `GET /compliance/blacklists?status=&limit=20`: query blacklist rows.
+- `POST /compliance/blacklists`: add or reactivate a user blacklist row with `reason`, `riskLevel`, `source`, `operator`, and optional `expiresAt`.
+- `POST /compliance/blacklists/{userId}/release`: release an active blacklist row with reviewer attribution.
 - Required fields: `userId`, `bizNo`, `bizType`, `asset`, and positive `amount`.
 - Idempotency key: `(biz_no, asset, direction)`.
 - Debit safety: debits use a single conditional update (`available >= amount`) inside the transaction, so concurrent withdrawals or exchanges cannot drive available balance negative.

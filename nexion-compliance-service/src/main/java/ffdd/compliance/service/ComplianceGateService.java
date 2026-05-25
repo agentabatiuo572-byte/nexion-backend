@@ -17,6 +17,7 @@ import ffdd.compliance.worker.ComplianceOutboxRocketPublisher;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
@@ -36,6 +37,11 @@ public class ComplianceGateService {
     private static final String REASON_BLACKLISTED = "BLACKLISTED";
     private static final String REASON_AMOUNT_REVIEW = "AMOUNT_REVIEW";
     private static final String REASON_FREQUENCY_REVIEW = "FREQUENCY_REVIEW";
+    private static final String RULE_BLACKLIST_ACTIVE = "BLACKLIST_ACTIVE";
+    private static final String RULE_KYC_APPROVED = "KYC_APPROVED";
+    private static final String RULE_KYC_NOT_APPROVED = "KYC_NOT_APPROVED";
+    private static final String RULE_AMOUNT_THRESHOLD = "AMOUNT_THRESHOLD";
+    private static final String RULE_DAILY_FREQUENCY = "DAILY_FREQUENCY";
     private static final String BIZ_TYPE_WITHDRAWAL = "WITHDRAWAL";
     private static final String BIZ_TYPE_EXCHANGE = "EXCHANGE";
 
@@ -81,6 +87,9 @@ public class ComplianceGateService {
         decision.setBizNo(request.getBizNo());
         decision.setDecision(result.decision());
         decision.setReason(result.reason());
+        decision.setRiskScore(result.riskScore());
+        decision.setRuleCodes(result.ruleCodes());
+        decision.setRuleSnapshot(result.ruleSnapshot());
         decision.setIsDeleted(0);
         try {
             riskDecisionMapper.insert(decision);
@@ -116,30 +125,69 @@ public class ComplianceGateService {
         RiskBlacklist blacklist = riskBlacklistMapper.selectOne(new LambdaQueryWrapper<RiskBlacklist>()
                 .eq(RiskBlacklist::getUserId, request.getUserId())
                 .eq(RiskBlacklist::getStatus, BLACKLIST_ACTIVE)
-                .eq(RiskBlacklist::getIsDeleted, 0));
-        if (blacklist != null) {
-            return new DecisionResult(DECISION_REJECT, REASON_BLACKLISTED);
+                .eq(RiskBlacklist::getIsDeleted, 0)
+                .and(wrapper -> wrapper.isNull(RiskBlacklist::getExpiresAt)
+                        .or()
+                        .gt(RiskBlacklist::getExpiresAt, LocalDateTime.now())));
+        if (isActiveBlacklist(blacklist)) {
+            return new DecisionResult(
+                    DECISION_REJECT,
+                    REASON_BLACKLISTED,
+                    100,
+                    RULE_BLACKLIST_ACTIVE,
+                    "blacklistReason=" + safeSnapshotValue(blacklist.getReason())
+                            + ";riskLevel=" + safeSnapshotValue(blacklist.getRiskLevel()));
         }
 
         KycProfile kyc = kycProfileMapper.selectOne(new LambdaQueryWrapper<KycProfile>()
                 .eq(KycProfile::getUserId, request.getUserId())
                 .eq(KycProfile::getIsDeleted, 0));
         if (kyc == null || !KYC_APPROVED.equals(kyc.getStatus())) {
-            return new DecisionResult(DECISION_REJECT, REASON_KYC_NOT_APPROVED);
+            return new DecisionResult(
+                    DECISION_REJECT,
+                    REASON_KYC_NOT_APPROVED,
+                    80,
+                    RULE_KYC_NOT_APPROVED,
+                    "kycStatus=" + (kyc == null ? "MISSING" : safeSnapshotValue(kyc.getStatus())));
         }
 
-        if (requiresAmountReview(request)) {
-            return new DecisionResult(DECISION_REVIEW, REASON_AMOUNT_REVIEW);
+        List<String> ruleCodes = new ArrayList<>();
+        int riskScore = 0;
+        String primaryReason = REASON_KYC_APPROVED;
+        BigDecimal threshold = reviewThreshold(request.getBizType());
+        if (requiresAmountReview(request, threshold)) {
+            ruleCodes.add(RULE_AMOUNT_THRESHOLD);
+            riskScore = Math.max(riskScore, 60);
+            primaryReason = REASON_AMOUNT_REVIEW;
         }
-        if (dailyDecisionCount(request) >= dailyReviewCount) {
-            return new DecisionResult(DECISION_REVIEW, REASON_FREQUENCY_REVIEW);
+        long dailyCount = dailyDecisionCount(request);
+        if (dailyCount >= dailyReviewCount) {
+            ruleCodes.add(RULE_DAILY_FREQUENCY);
+            riskScore = Math.max(riskScore, 50);
+            if (REASON_KYC_APPROVED.equals(primaryReason)) {
+                primaryReason = REASON_FREQUENCY_REVIEW;
+            }
         }
-        return new DecisionResult(DECISION_APPROVE, REASON_KYC_APPROVED);
+        if (!ruleCodes.isEmpty()) {
+            return new DecisionResult(
+                    DECISION_REVIEW,
+                    primaryReason,
+                    riskScore,
+                    String.join(",", ruleCodes),
+                    "amount=" + request.getAmount().toPlainString()
+                            + ";threshold=" + threshold.toPlainString()
+                            + ";dailyCount=" + dailyCount
+                            + ";dailyLimit=" + dailyReviewCount);
+        }
+        return new DecisionResult(DECISION_APPROVE, REASON_KYC_APPROVED, 0, RULE_KYC_APPROVED, "kycStatus=APPROVED");
     }
 
-    private boolean requiresAmountReview(ComplianceGateRequest request) {
-        BigDecimal threshold = "EXCHANGE".equals(request.getBizType()) ? exchangeReviewAmount : withdrawalReviewAmount;
+    private boolean requiresAmountReview(ComplianceGateRequest request, BigDecimal threshold) {
         return request.getAmount().compareTo(threshold) > 0;
+    }
+
+    private BigDecimal reviewThreshold(String bizType) {
+        return BIZ_TYPE_EXCHANGE.equals(bizType) ? exchangeReviewAmount : withdrawalReviewAmount;
     }
 
     private long dailyDecisionCount(ComplianceGateRequest request) {
@@ -149,6 +197,13 @@ public class ComplianceGateService {
                 .eq(RiskDecision::getIsDeleted, 0)
                 .ge(RiskDecision::getCreatedAt, LocalDate.now().atStartOfDay()));
         return count == null ? 0 : count;
+    }
+
+    private boolean isActiveBlacklist(RiskBlacklist blacklist) {
+        return blacklist != null
+                && BLACKLIST_ACTIVE.equals(blacklist.getStatus())
+                && !Integer.valueOf(1).equals(blacklist.getIsDeleted())
+                && (blacklist.getExpiresAt() == null || blacklist.getExpiresAt().isAfter(LocalDateTime.now()));
     }
 
     private RiskDecision reviewDecision(
@@ -223,7 +278,16 @@ public class ComplianceGateService {
         response.setDecisionId(decision.getId());
         response.setDecision(decision.getDecision());
         response.setReason(decision.getReason());
+        response.setRiskScore(decision.getRiskScore());
+        response.setRuleCodes(decision.getRuleCodes());
         return response;
+    }
+
+    private String safeSnapshotValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "UNKNOWN";
+        }
+        return value.replace(';', ',').replace('\n', ' ').replace('\r', ' ');
     }
 
     private void validateManualReview(ManualRiskReviewRequest request) {
@@ -266,6 +330,6 @@ public class ComplianceGateService {
         return Math.min(limit, 100);
     }
 
-    private record DecisionResult(String decision, String reason) {
+    private record DecisionResult(String decision, String reason, Integer riskScore, String ruleCodes, String ruleSnapshot) {
     }
 }

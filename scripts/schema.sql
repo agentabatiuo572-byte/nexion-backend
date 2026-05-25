@@ -1058,6 +1058,9 @@ CREATE TABLE IF NOT EXISTS nx_risk_decision (
   biz_no VARCHAR(96) NOT NULL,
   decision VARCHAR(32) NOT NULL,
   reason VARCHAR(255) NULL,
+  risk_score INT NOT NULL DEFAULT 0,
+  rule_codes VARCHAR(512) NULL,
+  rule_snapshot TEXT NULL,
   reviewed_by VARCHAR(64) NULL,
   reviewed_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1074,6 +1077,21 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'risk_score') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN risk_score INT NOT NULL DEFAULT 0 AFTER reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'rule_codes') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN rule_codes VARCHAR(512) NULL AFTER risk_score',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'rule_snapshot') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN rule_snapshot TEXT NULL AFTER rule_codes',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'reviewed_at') = 0,
   'ALTER TABLE nx_risk_decision ADD COLUMN reviewed_at DATETIME NULL AFTER reviewed_by',
   'SELECT 1');
@@ -1084,17 +1102,69 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND INDEX_NAME = 'idx_risk_decision_user_decision_time') = 0,
+  'ALTER TABLE nx_risk_decision ADD INDEX idx_risk_decision_user_decision_time (user_id, decision, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_risk_blacklist (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
   reason VARCHAR(255) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  source VARCHAR(64) NULL,
+  risk_level VARCHAR(32) NULL,
+  expires_at DATETIME NULL,
+  created_by VARCHAR(64) NULL,
+  released_by VARCHAR(64) NULL,
+  release_reason VARCHAR(255) NULL,
+  released_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_risk_blacklist_user (user_id),
   KEY idx_risk_blacklist_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND COLUMN_NAME = 'source') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD COLUMN source VARCHAR(64) NULL AFTER status',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND COLUMN_NAME = 'risk_level') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD COLUMN risk_level VARCHAR(32) NULL AFTER source',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND COLUMN_NAME = 'expires_at') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD COLUMN expires_at DATETIME NULL AFTER risk_level',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND COLUMN_NAME = 'created_by') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD COLUMN created_by VARCHAR(64) NULL AFTER expires_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND COLUMN_NAME = 'released_by') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD COLUMN released_by VARCHAR(64) NULL AFTER created_by',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND COLUMN_NAME = 'release_reason') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD COLUMN release_reason VARCHAR(255) NULL AFTER released_by',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND COLUMN_NAME = 'released_at') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD COLUMN released_at DATETIME NULL AFTER release_reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_blacklist' AND INDEX_NAME = 'idx_risk_blacklist_active_expiry') = 0,
+  'ALTER TABLE nx_risk_blacklist ADD INDEX idx_risk_blacklist_active_expiry (status, expires_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_proof_asset (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

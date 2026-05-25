@@ -21,6 +21,7 @@ import ffdd.compliance.mapper.RiskBlacklistMapper;
 import ffdd.compliance.mapper.RiskDecisionMapper;
 import ffdd.compliance.worker.ComplianceOutboxRocketPublisher;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -98,6 +99,7 @@ class ComplianceGateServiceTest {
         blacklist.setUserId(10001L);
         blacklist.setStatus("ACTIVE");
         blacklist.setReason("SANCTIONED");
+        blacklist.setRiskLevel("HIGH");
 
         KycProfile kyc = new KycProfile();
         kyc.setUserId(10001L);
@@ -116,6 +118,37 @@ class ComplianceGateServiceTest {
 
         assertThat(response.getDecision()).isEqualTo("REJECT");
         assertThat(response.getReason()).isEqualTo("BLACKLISTED");
+        assertThat(response.getRiskScore()).isEqualTo(100);
+        assertThat(response.getRuleCodes()).contains("BLACKLIST_ACTIVE");
+    }
+
+    @Test
+    void ignoresExpiredBlacklistAndApprovesWhenKycApproved() {
+        RiskBlacklist blacklist = new RiskBlacklist();
+        blacklist.setUserId(10001L);
+        blacklist.setStatus("ACTIVE");
+        blacklist.setReason("TEMP_HOLD");
+        blacklist.setExpiresAt(LocalDateTime.now().minusMinutes(1));
+
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(riskBlacklistMapper.selectOne(any())).thenReturn(blacklist);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9401L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-EXPIRED-BLACKLIST"));
+
+        assertThat(response.getDecision()).isEqualTo("APPROVE");
+        assertThat(response.getReason()).isEqualTo("KYC_APPROVED");
+        assertThat(response.getRiskScore()).isZero();
+        assertThat(response.getRuleCodes()).contains("KYC_APPROVED");
     }
 
     @Test
@@ -138,6 +171,8 @@ class ComplianceGateServiceTest {
 
         assertThat(response.getDecision()).isEqualTo("REVIEW");
         assertThat(response.getReason()).isEqualTo("AMOUNT_REVIEW");
+        assertThat(response.getRiskScore()).isEqualTo(60);
+        assertThat(response.getRuleCodes()).contains("AMOUNT_THRESHOLD");
     }
 
     @Test
