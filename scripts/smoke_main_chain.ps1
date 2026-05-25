@@ -136,6 +136,24 @@ $eventsPage.records | ForEach-Object {
   Write-Host "Earning event $($_.eventNo) $($_.asset) $($_.amount) status=$($_.status)"
 }
 
+Write-Host "Checking earnings analytics trend, milestones, and missed income..."
+$trendEndDate = Get-Date -Format "yyyy-MM-dd"
+$trendStartDate = (Get-Date).AddDays(-13).ToString("yyyy-MM-dd")
+$trend = Invoke-NexionJson -Method Get -Uri "$EarningsUrl/earnings/analytics/trend?userId=$UserId&startDate=$trendStartDate&endDate=$trendEndDate"
+if ($trend.points.Count -lt 1 -or $trend.totalUsdt -lt 0) {
+  throw "Unexpected earnings trend response."
+}
+$milestones = Invoke-NexionJson -Method Get -Uri "$EarningsUrl/earnings/analytics/milestones?userId=$UserId"
+if ($milestones.milestones.Count -lt 5) {
+  throw "Expected at least 5 earnings milestones."
+}
+$joinedAt = [System.Uri]::EscapeDataString((Get-Date).AddDays(-2).ToString("s"))
+$missedIncome = Invoke-NexionJson -Method Get -Uri "$EarningsUrl/earnings/analytics/missed-income?userId=$UserId&joinedAt=$joinedAt"
+if ($missedIncome.dailyGapUsdt -le 0 -or $missedIncome.daysSinceJoin -lt 1) {
+  throw "Unexpected missed income response."
+}
+Write-Host "Earnings analytics trendDays=$($trend.points.Count), lifetime=$($milestones.lifetimeUsdt), missed=$($missedIncome.cumulativeMissedUsdt)"
+
 Write-Host "Posting any pending earnings to wallet for retry safety..."
 $postResult = Invoke-NexionJson -Method Post -Uri "$WalletUrl/wallet/earnings/post-pending" -Body @{
   limit = 100

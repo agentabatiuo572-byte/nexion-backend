@@ -31,7 +31,12 @@ public class EarningsOpsController {
         return ApiResult.ok(Map.of(
                 "service", "nexion-earnings-service",
                 "database", "nexion_earnings",
-                "responsibilities", List.of("earning ticks", "earning summaries", "event stream", "wallet posting outbox")));
+                "responsibilities", List.of(
+                        "earning ticks",
+                        "earning summaries",
+                        "event stream",
+                        "wallet posting outbox",
+                        "read-only earning analytics")));
     }
 
     @GetMapping("/outbox/consumer/dead")

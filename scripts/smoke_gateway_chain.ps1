@@ -208,6 +208,24 @@ $eventsPage.records | ForEach-Object {
   Write-Host "Earning event $($_.eventNo) $($_.asset) $($_.amount) status=$($_.status)"
 }
 
+Write-Host "Checking earnings analytics through gateway..."
+$trendEndDate = Get-Date -Format "yyyy-MM-dd"
+$trendStartDate = (Get-Date).AddDays(-13).ToString("yyyy-MM-dd")
+$trend = Invoke-GatewayJson -Method Get -Uri "$GatewayUrl/api/earnings/analytics/trend?userId=$($script:UserId)&startDate=$trendStartDate&endDate=$trendEndDate"
+if ($trend.points.Count -lt 1 -or $trend.totalUsdt -lt 0) {
+  throw "Unexpected gateway earnings trend response."
+}
+$milestones = Invoke-GatewayJson -Method Get -Uri "$GatewayUrl/api/earnings/analytics/milestones?userId=$($script:UserId)"
+if ($milestones.milestones.Count -lt 5) {
+  throw "Expected at least 5 gateway earnings milestones."
+}
+$joinedAt = [System.Uri]::EscapeDataString((Get-Date).AddDays(-2).ToString("s"))
+$missedIncome = Invoke-GatewayJson -Method Get -Uri "$GatewayUrl/api/earnings/analytics/missed-income?userId=$($script:UserId)&joinedAt=$joinedAt"
+if ($missedIncome.dailyGapUsdt -le 0 -or $missedIncome.daysSinceJoin -lt 1) {
+  throw "Unexpected gateway missed income response."
+}
+Write-Host "Gateway earnings analytics trendDays=$($trend.points.Count), lifetime=$($milestones.lifetimeUsdt), missed=$($missedIncome.cumulativeMissedUsdt)"
+
 Write-Host "Posting any pending earnings to wallet through gateway for retry safety..."
 $postResult = Invoke-GatewayJson -Method Post -Uri "$GatewayUrl/api/wallet/earnings/post-pending" -Body @{
   limit = 100

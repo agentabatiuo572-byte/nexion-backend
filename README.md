@@ -17,7 +17,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-wallet-service` | 8105 | wallet balances, bills, idempotent earning/team commission credits, withdrawals |
 | `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel commission events, commission unlock, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
-| `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream |
+| `nexion-earnings-service` | 8108 | earning ticks, summaries, event stream, read-only analytics |
 | `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
 | `nexion-system-service` | 8110 | operation config, i18n, content, help center |
 | `nexion-openapi-service` | 8111 | API app keys, HMAC signature auth, Redis app quotas, call audit, webhook delivery worker |
@@ -200,6 +200,16 @@ Run the direct Compute task smoke after applying `scripts/schema.sql` and `scrip
 ```powershell
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_compute_task_dispatch.ps1
 ```
+
+## Earnings Analytics Baseline
+
+Earnings exposes read-only derived analytics for the `/earn` experience without mutating wallet balances or settlement events.
+
+- `GET /earnings/analytics/trend?userId=&startDate=&endDate=`: returns up to 90 days of daily USDT/NEX summary points, fills missing dates with zeroes, and includes period totals, cumulative values, average daily USDT, and best day.
+- `GET /earnings/analytics/milestones?userId=`: computes lifetime USDT from `nx_earning_summary` and returns the five product milestone thresholds (`earn-100` through `earn-10000`), achieved state, next milestone, remaining USDT, and progress percent.
+- `GET /earnings/analytics/missed-income?userId=&joinedAt=`: computes the product missed-income banner numbers from configurable `PHONE_DAILY` and `S1_DAILY` constants. Defaults are `0.06` and `38.50` USDT/day; override with `NEXION_EARNINGS_ANALYTICS_PHONE_DAILY_USDT` and `NEXION_EARNINGS_ANALYTICS_S1_DAILY_USDT`.
+
+The analytics endpoints are intentionally read-only and use parameterized mapper queries for range and lifetime aggregation. Direct and Gateway smoke scripts now verify trend, milestone, and missed-income responses as part of the main earning chain.
 
 ## Gateway Canary Baseline
 
