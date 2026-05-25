@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.mission.dto.EarningGeneratedPayload;
 import ffdd.mission.dto.MissionConsumeResult;
 import ffdd.mission.service.EarningGeneratedMissionService;
@@ -23,7 +24,7 @@ class MissionEarningGeneratedRocketListenerTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final MissionEarningGeneratedRocketListener listener = new MissionEarningGeneratedRocketListener(
             missionService, objectMapper, deliveryService, "127.0.0.1:9876",
-            "nexion-earning-generated", "mission-group", 5);
+            "nexion-earning-generated", "mission-group", 5, new RocketMqAclProperties());
 
     @Test
     void recordsSuccessfulDeliveryAfterConsumingMission() throws Exception {

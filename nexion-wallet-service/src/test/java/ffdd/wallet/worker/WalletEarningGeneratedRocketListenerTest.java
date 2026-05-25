@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.wallet.domain.WalletLedger;
 import ffdd.wallet.dto.EarningGeneratedPayload;
 import ffdd.wallet.service.EarningGeneratedPostingService;
@@ -23,7 +24,7 @@ class WalletEarningGeneratedRocketListenerTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final WalletEarningGeneratedRocketListener listener = new WalletEarningGeneratedRocketListener(
             postingService, objectMapper, deliveryService, "127.0.0.1:9876",
-            "nexion-earning-generated", "wallet-group", 5);
+            "nexion-earning-generated", "wallet-group", 5, new RocketMqAclProperties());
 
     @Test
     void recordsSuccessfulDeliveryAfterPostingLedger() throws Exception {

@@ -3,6 +3,8 @@ package ffdd.notification.worker;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclHookFactory;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.notification.domain.Notification;
 import ffdd.notification.dto.EarningGeneratedPayload;
 import ffdd.notification.service.EarningGeneratedNotificationService;
@@ -13,6 +15,7 @@ import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
 import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 import org.apache.rocketmq.common.message.MessageExt;
+import org.apache.rocketmq.remoting.RPCHook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -33,6 +36,7 @@ public class NotificationEarningGeneratedRocketListener {
     private final String topic;
     private final String consumerGroup;
     private final int maxReconsumeTimes;
+    private final RocketMqAclProperties aclProperties;
     private DefaultMQPushConsumer consumer;
 
     public NotificationEarningGeneratedRocketListener(
@@ -43,7 +47,8 @@ public class NotificationEarningGeneratedRocketListener {
             @Value("${nexion.outbox.rocketmq.earning-generated-topic:nexion-earning-generated}") String topic,
             @Value("${nexion.outbox.rocketmq.notification-consumer-group:nexion-notification-earning-generated}")
                     String consumerGroup,
-            @Value("${nexion.outbox.rocketmq.consumer.max-retries:5}") int maxReconsumeTimes) {
+            @Value("${nexion.outbox.rocketmq.consumer.max-retries:5}") int maxReconsumeTimes,
+            RocketMqAclProperties aclProperties) {
         this.notificationService = notificationService;
         this.objectMapper = objectMapper;
         this.deliveryService = deliveryService;
@@ -51,11 +56,12 @@ public class NotificationEarningGeneratedRocketListener {
         this.topic = topic;
         this.consumerGroup = consumerGroup;
         this.maxReconsumeTimes = Math.max(1, maxReconsumeTimes);
+        this.aclProperties = aclProperties;
     }
 
     @PostConstruct
     public void start() throws Exception {
-        consumer = new DefaultMQPushConsumer(consumerGroup);
+        consumer = createConsumer();
         consumer.setNamesrvAddr(nameServer);
         consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_LAST_OFFSET);
         consumer.setMaxReconsumeTimes(maxReconsumeTimes);
@@ -172,6 +178,13 @@ public class NotificationEarningGeneratedRocketListener {
         message.setAggregateType("ROCKETMQ");
         message.setAggregateId(rocketMessage.getMsgId());
         return message;
+    }
+
+    private DefaultMQPushConsumer createConsumer() {
+        RPCHook rpcHook = RocketMqAclHookFactory.createOrNull(aclProperties);
+        return rpcHook == null
+                ? new DefaultMQPushConsumer(consumerGroup)
+                : new DefaultMQPushConsumer(consumerGroup, rpcHook);
     }
 
     private String errorMessage(Exception ex) {

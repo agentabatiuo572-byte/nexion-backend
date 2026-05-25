@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.earnings.domain.EarningEvent;
 import ffdd.earnings.dto.ComputeTaskCompletedPayload;
 import ffdd.earnings.dto.ReceiptSettleResponse;
@@ -25,7 +26,7 @@ class EarningsComputeTaskCompletedRocketListenerTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final EarningsComputeTaskCompletedRocketListener listener = new EarningsComputeTaskCompletedRocketListener(
             settlementService, objectMapper, deliveryService, "127.0.0.1:9876",
-            "nexion-compute-task-completed", "earnings-group", 5);
+            "nexion-compute-task-completed", "earnings-group", 5, new RocketMqAclProperties());
 
     @Test
     void recordsSuccessfulDeliveryAfterSettlingReceipt() throws Exception {

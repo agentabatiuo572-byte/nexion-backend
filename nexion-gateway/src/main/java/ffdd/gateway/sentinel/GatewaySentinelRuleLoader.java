@@ -11,6 +11,10 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cloud.context.environment.EnvironmentChangeEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -50,8 +54,26 @@ public class GatewaySentinelRuleLoader {
         log.info("Gateway Sentinel loaded flowRules={}, degradeRules={}", flowRules.size(), degradeRules.size());
     }
 
+    @EventListener
+    @Order(Ordered.LOWEST_PRECEDENCE)
+    public void onEnvironmentChange(EnvironmentChangeEvent event) {
+        if (event == null || event.getKeys() == null) {
+            return;
+        }
+        boolean sentinelChanged = event.getKeys().stream().anyMatch(this::isSentinelConfigKey);
+        if (sentinelChanged) {
+            afterPropertiesSet();
+        }
+    }
+
     public static String resource(String routeGroup) {
         return RESOURCE_PREFIX + routeGroup;
+    }
+
+    private boolean isSentinelConfigKey(String key) {
+        return key != null
+                && (key.startsWith("nexion.gateway.sentinel.")
+                || key.startsWith("spring.cloud.sentinel."));
     }
 
     private FlowRule flowRule(String resource, GatewaySentinelProperties.RouteRule routeRule) {

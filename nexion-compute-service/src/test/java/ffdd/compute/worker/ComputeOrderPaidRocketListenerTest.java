@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.compute.domain.UserDevice;
 import ffdd.compute.dto.OrderPaidPayload;
 import ffdd.compute.service.OrderPaidActivationService;
@@ -24,7 +25,8 @@ class ComputeOrderPaidRocketListenerTest {
     private final EventConsumerDeliveryService deliveryService = mock(EventConsumerDeliveryService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ComputeOrderPaidRocketListener listener = new ComputeOrderPaidRocketListener(
-            activationService, objectMapper, deliveryService, "127.0.0.1:9876", "nexion-order-paid", "compute-group", 5);
+            activationService, objectMapper, deliveryService, "127.0.0.1:9876", "nexion-order-paid", "compute-group", 5,
+            new RocketMqAclProperties());
 
     @Test
     void recordsSuccessfulDeliveryAfterActivatingDevices() throws Exception {

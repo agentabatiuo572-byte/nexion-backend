@@ -42,7 +42,12 @@ nexion:
   outbox:
     rocketmq:
       enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
-      name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+      name-server: ${NEXION_OUTBOX_ROCKETMQ_NAME_SERVER:${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}}
+      acl:
+        enabled: ${NEXION_OUTBOX_ROCKETMQ_ACL_ENABLED:false}
+        access-key: "${NEXION_OUTBOX_ROCKETMQ_ACCESS_KEY:}"
+        secret-key: "${NEXION_OUTBOX_ROCKETMQ_SECRET_KEY:}"
+        security-token: "${NEXION_OUTBOX_ROCKETMQ_SECURITY_TOKEN:}"
       order-paid-topic: ${NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC:nexion-order-paid}
       compute-consumer-group: ${NEXION_OUTBOX_ROCKETMQ_COMPUTE_GROUP:nexion-compute-order-paid}
       compute-task-completed-topic: ${NEXION_OUTBOX_ROCKETMQ_COMPUTE_TASK_COMPLETED_TOPIC:nexion-compute-task-completed}

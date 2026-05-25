@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.notification.domain.Notification;
 import ffdd.notification.dto.EarningGeneratedPayload;
 import ffdd.notification.service.EarningGeneratedNotificationService;
@@ -23,7 +24,7 @@ class NotificationEarningGeneratedRocketListenerTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final NotificationEarningGeneratedRocketListener listener = new NotificationEarningGeneratedRocketListener(
             notificationService, objectMapper, deliveryService, "127.0.0.1:9876",
-            "nexion-earning-generated", "notification-group", 5);
+            "nexion-earning-generated", "notification-group", 5, new RocketMqAclProperties());
 
     @Test
     void recordsSuccessfulDeliveryAfterCreatingNotification() throws Exception {

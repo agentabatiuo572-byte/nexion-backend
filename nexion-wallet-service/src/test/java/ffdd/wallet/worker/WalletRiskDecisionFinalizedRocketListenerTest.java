@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.wallet.dto.ApplyRiskDecisionRequest;
 import ffdd.wallet.dto.RiskDecisionApplyResult;
 import ffdd.wallet.dto.RiskDecisionFinalizedPayload;
@@ -30,7 +31,8 @@ class WalletRiskDecisionFinalizedRocketListenerTest {
             "127.0.0.1:9876",
             "nexion-risk-decision-finalized",
             "wallet-risk-group",
-            5);
+            5,
+            new RocketMqAclProperties());
 
     @Test
     void recordsSuccessfulDeliveryAfterApplyingRiskDecision() throws Exception {

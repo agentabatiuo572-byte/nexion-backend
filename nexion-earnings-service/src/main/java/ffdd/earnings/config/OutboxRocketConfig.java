@@ -1,6 +1,9 @@
 package ffdd.earnings.config;
 
+import ffdd.common.rocketmq.RocketMqAclHookFactory;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
+import org.apache.rocketmq.remoting.RPCHook;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -13,8 +16,12 @@ public class OutboxRocketConfig {
     public DefaultMQProducer earningsOutboxRocketProducer(
             @Value("${nexion.outbox.rocketmq.name-server:127.0.0.1:9876}") String nameServer,
             @Value("${nexion.outbox.rocketmq.earnings-producer-group:nexion-earnings-outbox}")
-                    String producerGroup) {
-        DefaultMQProducer producer = new DefaultMQProducer(producerGroup);
+                    String producerGroup,
+            RocketMqAclProperties aclProperties) {
+        RPCHook rpcHook = RocketMqAclHookFactory.createOrNull(aclProperties);
+        DefaultMQProducer producer = rpcHook == null
+                ? new DefaultMQProducer(producerGroup)
+                : new DefaultMQProducer(producerGroup, rpcHook);
         producer.setNamesrvAddr(nameServer);
         producer.setRetryTimesWhenSendFailed(2);
         producer.setRetryTimesWhenSendAsyncFailed(2);

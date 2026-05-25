@@ -3,6 +3,8 @@ package ffdd.compute.worker;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.outbox.EventOutboxMessage;
+import ffdd.common.rocketmq.RocketMqAclHookFactory;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.compute.dto.OrderPaidPayload;
 import ffdd.compute.service.OrderPaidActivationService;
 import jakarta.annotation.PostConstruct;
@@ -12,6 +14,7 @@ import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
 import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 import org.apache.rocketmq.common.message.MessageExt;
+import org.apache.rocketmq.remoting.RPCHook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,6 +35,7 @@ public class ComputeOrderPaidRocketListener {
     private final String topic;
     private final String consumerGroup;
     private final int maxReconsumeTimes;
+    private final RocketMqAclProperties aclProperties;
     private DefaultMQPushConsumer consumer;
 
     public ComputeOrderPaidRocketListener(
@@ -41,7 +45,8 @@ public class ComputeOrderPaidRocketListener {
             @Value("${nexion.outbox.rocketmq.name-server:127.0.0.1:9876}") String nameServer,
             @Value("${nexion.outbox.rocketmq.order-paid-topic:nexion-order-paid}") String topic,
             @Value("${nexion.outbox.rocketmq.compute-consumer-group:nexion-compute-order-paid}") String consumerGroup,
-            @Value("${nexion.outbox.rocketmq.consumer.max-retries:5}") int maxReconsumeTimes) {
+            @Value("${nexion.outbox.rocketmq.consumer.max-retries:5}") int maxReconsumeTimes,
+            RocketMqAclProperties aclProperties) {
         this.activationService = activationService;
         this.objectMapper = objectMapper;
         this.deliveryService = deliveryService;
@@ -49,11 +54,12 @@ public class ComputeOrderPaidRocketListener {
         this.topic = topic;
         this.consumerGroup = consumerGroup;
         this.maxReconsumeTimes = Math.max(1, maxReconsumeTimes);
+        this.aclProperties = aclProperties;
     }
 
     @PostConstruct
     public void start() throws Exception {
-        consumer = new DefaultMQPushConsumer(consumerGroup);
+        consumer = createConsumer();
         consumer.setNamesrvAddr(nameServer);
         consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_LAST_OFFSET);
         consumer.setMaxReconsumeTimes(maxReconsumeTimes);
@@ -170,6 +176,13 @@ public class ComputeOrderPaidRocketListener {
         message.setAggregateType("ROCKETMQ");
         message.setAggregateId(rocketMessage.getMsgId());
         return message;
+    }
+
+    private DefaultMQPushConsumer createConsumer() {
+        RPCHook rpcHook = RocketMqAclHookFactory.createOrNull(aclProperties);
+        return rpcHook == null
+                ? new DefaultMQPushConsumer(consumerGroup)
+                : new DefaultMQPushConsumer(consumerGroup, rpcHook);
     }
 
     private String errorMessage(Exception ex) {

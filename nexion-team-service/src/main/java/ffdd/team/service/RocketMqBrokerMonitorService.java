@@ -1,5 +1,7 @@
 package ffdd.team.service;
 
+import ffdd.common.rocketmq.RocketMqAclHookFactory;
+import ffdd.common.rocketmq.RocketMqAclProperties;
 import ffdd.team.dto.RocketMqBrokerMonitor;
 import ffdd.team.dto.RocketMqConsumerClient;
 import ffdd.team.dto.RocketMqConsumerConnection;
@@ -18,6 +20,7 @@ import org.apache.rocketmq.remoting.protocol.admin.TopicOffset;
 import org.apache.rocketmq.remoting.protocol.admin.TopicStatsTable;
 import org.apache.rocketmq.remoting.protocol.body.Connection;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
+import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.tools.admin.DefaultMQAdminExt;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -29,16 +32,19 @@ public class RocketMqBrokerMonitorService {
     private final String nameServer;
     private final String defaultTopic;
     private final String defaultConsumerGroup;
+    private final RocketMqAclProperties aclProperties;
 
     public RocketMqBrokerMonitorService(
             @Value("${nexion.outbox.rocketmq.enabled:false}") boolean enabled,
             @Value("${nexion.outbox.rocketmq.name-server:127.0.0.1:9876}") String nameServer,
             @Value("${nexion.outbox.rocketmq.order-paid-topic:nexion-order-paid}") String defaultTopic,
-            @Value("${nexion.outbox.rocketmq.consumer-group:nexion-team-order-paid}") String defaultConsumerGroup) {
+            @Value("${nexion.outbox.rocketmq.consumer-group:nexion-team-order-paid}") String defaultConsumerGroup,
+            RocketMqAclProperties aclProperties) {
         this.enabled = enabled;
         this.nameServer = nameServer;
         this.defaultTopic = defaultTopic;
         this.defaultConsumerGroup = defaultConsumerGroup;
+        this.aclProperties = aclProperties;
     }
 
     public RocketMqBrokerMonitor inspectConsumer(String topic, String consumerGroup, boolean includeDlq) {
@@ -52,7 +58,7 @@ public class RocketMqBrokerMonitorService {
         monitor.setConsumerGroup(resolvedConsumerGroup);
         monitor.setDlqTopic(MixAll.getDLQTopic(resolvedConsumerGroup));
 
-        DefaultMQAdminExt admin = new DefaultMQAdminExt("nexion-team-monitor-" + UUID.randomUUID().toString().replace("-", ""));
+        DefaultMQAdminExt admin = createAdmin("nexion-team-monitor-" + UUID.randomUUID().toString().replace("-", ""));
         admin.setNamesrvAddr(nameServer);
         try {
             admin.start();
@@ -68,6 +74,13 @@ public class RocketMqBrokerMonitorService {
         }
         monitor.setOk(monitor.getErrors().isEmpty());
         return monitor;
+    }
+
+    private DefaultMQAdminExt createAdmin(String adminGroup) {
+        RPCHook rpcHook = RocketMqAclHookFactory.createOrNull(aclProperties);
+        DefaultMQAdminExt admin = rpcHook == null ? new DefaultMQAdminExt(adminGroup) : new DefaultMQAdminExt(rpcHook);
+        admin.setAdminExtGroup(adminGroup);
+        return admin;
     }
 
     private void loadConsumeStats(DefaultMQAdminExt admin, RocketMqBrokerMonitor monitor) {

@@ -9,8 +9,10 @@ import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.alibaba.csp.sentinel.slots.block.degrade.DegradeRuleManager;
 import com.alibaba.csp.sentinel.slots.block.flow.FlowRuleManager;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.cloud.context.environment.EnvironmentChangeEvent;
 
 class GatewaySentinelRuleLoaderTest {
     @AfterEach
@@ -58,5 +60,44 @@ class GatewaySentinelRuleLoaderTest {
         assertThat(DegradeRuleManager.getRules().get(0).getMinRequestAmount()).isEqualTo(3);
         assertThat(DegradeRuleManager.getRules().get(0).getTimeWindow()).isEqualTo(9);
         assertThat(DegradeRuleManager.getRules().get(0).getStatIntervalMs()).isEqualTo(2000);
+    }
+
+    @Test
+    void reloadsRulesWhenSentinelEnvironmentChanges() {
+        GatewaySentinelProperties properties = new GatewaySentinelProperties();
+        properties.setEnabled(true);
+        GatewaySentinelProperties.RouteRule routeRule = new GatewaySentinelProperties.RouteRule();
+        routeRule.setFlowQps(2.0);
+        properties.getRoutes().put("commerce", routeRule);
+        GatewaySentinelRuleLoader loader = new GatewaySentinelRuleLoader(properties);
+
+        loader.afterPropertiesSet();
+        assertThat(FlowRuleManager.getRules().get(0).getCount()).isEqualTo(2.0);
+
+        routeRule.setFlowQps(7.0);
+        loader.onEnvironmentChange(new EnvironmentChangeEvent(Set.of(
+                "nexion.gateway.sentinel.routes.commerce.flow-qps")));
+
+        assertThat(FlowRuleManager.getRules()).hasSize(1);
+        assertThat(FlowRuleManager.getRules().get(0).getResource()).isEqualTo("gateway:commerce");
+        assertThat(FlowRuleManager.getRules().get(0).getCount()).isEqualTo(7.0);
+    }
+
+    @Test
+    void ignoresUnrelatedEnvironmentChanges() {
+        GatewaySentinelProperties properties = new GatewaySentinelProperties();
+        properties.setEnabled(true);
+        GatewaySentinelProperties.RouteRule routeRule = new GatewaySentinelProperties.RouteRule();
+        routeRule.setFlowQps(2.0);
+        properties.getRoutes().put("wallet", routeRule);
+        GatewaySentinelRuleLoader loader = new GatewaySentinelRuleLoader(properties);
+
+        loader.afterPropertiesSet();
+        routeRule.setFlowQps(9.0);
+        loader.onEnvironmentChange(new EnvironmentChangeEvent(Set.of("nexion.gateway.rate-limit.enabled")));
+
+        assertThat(FlowRuleManager.getRules()).hasSize(1);
+        assertThat(FlowRuleManager.getRules().get(0).getResource()).isEqualTo("gateway:wallet");
+        assertThat(FlowRuleManager.getRules().get(0).getCount()).isEqualTo(2.0);
     }
 }

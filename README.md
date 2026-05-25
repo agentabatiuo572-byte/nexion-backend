@@ -167,6 +167,8 @@ Local startup parameters:
 
 Gateway responses include `X-RateLimit-Backend` with `redis`, `local`, or `local-fallback`, which makes Redis outages visible during smoke and log checks. Gateway also includes the Spring Cloud Alibaba Sentinel starter and a route-group Sentinel filter. Sentinel resources use `gateway:{routeGroup}` names such as `gateway:commerce`; flow-control blocks return `429` with `X-Sentinel-Block-Type: flow`, and degrade/circuit blocks return `503` with `X-Sentinel-Block-Type: degrade`.
 
+Gateway reloads Sentinel flow/degrade rules when Spring Cloud publishes environment changes for `nexion.gateway.sentinel.*` or `spring.cloud.sentinel.*`, so Nacos-pushed Sentinel rule updates can take effect without restarting Gateway.
+
 ## Compute Device State Baseline
 
 Compute now keeps high-frequency device state in Redis instead of writing every heartbeat to MySQL.
@@ -292,7 +294,11 @@ Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION
 RocketMQ broker delivery is optional and disabled by default. To switch the OrderPaid path to RocketMQ delivery, start commerce/team with:
 
 - `NEXION_OUTBOX_ROCKETMQ_ENABLED=true`
-- `ROCKETMQ_NAME_SERVER=127.0.0.1:9876`
+- `NEXION_OUTBOX_ROCKETMQ_NAME_SERVER=127.0.0.1:9876` (`ROCKETMQ_NAME_SERVER` is still accepted as a fallback)
+- `NEXION_OUTBOX_ROCKETMQ_ACL_ENABLED=false`
+- `NEXION_OUTBOX_ROCKETMQ_ACCESS_KEY=<rocketmq-access-key>`
+- `NEXION_OUTBOX_ROCKETMQ_SECRET_KEY=<rocketmq-secret-key>`
+- `NEXION_OUTBOX_ROCKETMQ_SECURITY_TOKEN=<optional-security-token>`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=nexion-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=nexion-team-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_COMPUTE_GROUP=nexion-compute-order-paid`
@@ -304,10 +310,12 @@ RocketMQ broker delivery is optional and disabled by default. To switch the Orde
 
 For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Consumer delivery is tracked in `nx_event_consumer_delivery` for Team, Compute, Earnings, Wallet, Notification, and Mission consumers; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, malformed messages are recorded by `msgId`, and poison messages move to local `DEAD` after the configured max retry count. Broker-side lag and DLQ depth are available from `/team/outbox/broker/consumer/status`.
 
+When RocketMQ ACL is enabled, all configured outbox producers, push consumers, and the Team broker monitor create RocketMQ clients with `AclClientRPCHook`. Startup fails fast if ACL is enabled but access key or secret key is blank; logs and diagnostics only expose masked key metadata, not the secret.
+
 Gateway chain startup supports the same switch:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1 -OutboxRocketMqEnabled true -RocketMqNameServer "127.0.0.1:9876" -TeamOutboxWorkerEnabled false -OutboxRocketMqConsumerMaxRetries 5
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1 -OutboxRocketMqEnabled true -RocketMqNameServer "127.0.0.1:9876" -OutboxRocketMqAclEnabled true -OutboxRocketMqAccessKey "<access-key>" -OutboxRocketMqSecretKey "<secret-key>" -TeamOutboxWorkerEnabled false -OutboxRocketMqConsumerMaxRetries 5
 ```
 
 Team outbox worker defaults:
