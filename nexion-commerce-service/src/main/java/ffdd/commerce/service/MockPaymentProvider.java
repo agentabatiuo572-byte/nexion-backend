@@ -17,6 +17,7 @@ import java.util.Locale;
 import java.util.Map;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -35,6 +36,7 @@ public class MockPaymentProvider implements PaymentProvider {
     private final long signatureWindowSeconds;
     private final Clock clock;
 
+    @Autowired
     public MockPaymentProvider(
             ObjectMapper objectMapper,
             @Value("${nexion.payment.mock.secret:nexion-mock-payment-secret}") String secret,

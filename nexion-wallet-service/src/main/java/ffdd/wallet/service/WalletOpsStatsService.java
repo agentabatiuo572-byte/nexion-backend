@@ -13,6 +13,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -38,6 +39,7 @@ public class WalletOpsStatsService {
     private final WalletLedgerMapper ledgerMapper;
     private final Clock clock;
 
+    @Autowired
     public WalletOpsStatsService(
             DepositOrderMapper depositOrderMapper,
             WithdrawalOrderMapper withdrawalOrderMapper,

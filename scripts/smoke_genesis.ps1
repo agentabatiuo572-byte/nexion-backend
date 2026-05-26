@@ -131,10 +131,14 @@ function Ensure-AdminToken {
 
 function First-Record {
   param([object]$Page)
-  if ($null -eq $Page -or $null -eq $Page.records -or $Page.records.Count -lt 1) {
+  [object[]]$records = @()
+  if ($null -ne $Page -and $null -ne $Page.records) {
+    $records = @($Page.records)
+  }
+  if ($records.Count -lt 1) {
     throw "Expected at least one record, got none."
   }
-  return $Page.records[0]
+  return $records[0]
 }
 
 function Find-Series {
@@ -266,7 +270,7 @@ if ($loadedOrder.orderNo -ne $order.orderNo -or $loadedOrder.status -ne "COMPLET
 }
 
 $holdingsPage = Invoke-NexionJson -Method Get -Uri "$GatewayUrl/api/genesis/holdings?userId=$($script:UserId)&seriesCode=$SeriesCode&pageNum=1&pageSize=20" -Token $script:UserToken
-$matchingHoldings = @($holdingsPage.records) | Where-Object { $_.orderNo -eq $order.orderNo }
+$matchingHoldings = @(@($holdingsPage.records) | Where-Object { $_.orderNo -eq $order.orderNo })
 if ($matchingHoldings.Count -lt $Quantity) {
   throw "Expected at least $Quantity holdings for order $($order.orderNo), got $($matchingHoldings.Count)."
 }

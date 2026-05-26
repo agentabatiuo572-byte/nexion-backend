@@ -19,6 +19,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -48,6 +49,7 @@ public class CommerceOpsStatsService {
     private final GenesisHoldingMapper genesisHoldingMapper;
     private final Clock clock;
 
+    @Autowired
     public CommerceOpsStatsService(
             CommerceOrderMapper orderMapper,
             PaymentRecordMapper paymentRecordMapper,

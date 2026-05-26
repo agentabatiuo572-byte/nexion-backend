@@ -11,6 +11,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -30,6 +31,7 @@ public class OpenApiOpsStatsService {
     private final WebhookDeliveryMapper deliveryMapper;
     private final Clock clock;
 
+    @Autowired
     public OpenApiOpsStatsService(
             OpenApiAppMapper appMapper,
             OpenApiCallAuditMapper auditMapper,

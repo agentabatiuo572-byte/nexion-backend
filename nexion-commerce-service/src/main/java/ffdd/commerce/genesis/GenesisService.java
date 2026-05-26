@@ -33,6 +33,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -64,6 +65,7 @@ public class GenesisService {
     private final EventOutboxService outboxService;
     private final Clock clock;
 
+    @Autowired
     public GenesisService(
             GenesisSeriesMapper seriesMapper,
             GenesisOrderMapper orderMapper,
