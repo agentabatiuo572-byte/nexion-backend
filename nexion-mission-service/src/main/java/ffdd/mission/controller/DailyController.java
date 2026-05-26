@@ -3,6 +3,7 @@ package ffdd.mission.controller;
 import ffdd.common.api.ApiResult;
 import ffdd.common.security.AuthHeaders;
 import ffdd.mission.dto.DailyCheckInResponse;
+import ffdd.mission.dto.StreakLeaderboardEntryResponse;
 import ffdd.mission.dto.StreakMilestoneClaimResponse;
 import ffdd.mission.dto.StreakMilestoneItemResponse;
 import ffdd.mission.dto.StreakPowerUpActivationResponse;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -57,6 +59,13 @@ public class DailyController {
     @GetMapping("/milestones")
     public ApiResult<List<StreakMilestoneItemResponse>> milestones(@RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
         return ApiResult.ok(missionCenterService.listMilestones(userId));
+    }
+
+    @GetMapping("/top-streakers")
+    public ApiResult<List<StreakLeaderboardEntryResponse>> topStreakers(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @RequestParam(defaultValue = "5") int limit) {
+        return ApiResult.ok(missionCenterService.topStreakers(userId, limit));
     }
 
     @PostMapping("/milestones/{day}/claim")

@@ -95,6 +95,16 @@ Mission now persists the Daily 30-day milestone roadmap from the product spec. U
 - Tables: `nx_streak_milestone` for configuration and `nx_user_streak_milestone` for claim state.
 - `POINTS` rewards write `nx_points_ledger` using `STREAK-MILESTONE-{day}-{userId}`. `BADGE` rewards unlock the configured achievement. `USDT`, `NEX`, and `SPIN` are claim-recorded for downstream wallet/spin integration and do not yet post assets.
 
+## Mission Top Streakers Baseline
+
+Daily now exposes the product spec's Top Streakers social-proof list from `nx_user_streak`.
+
+- `GET /daily/top-streakers?limit=5`: authenticated user's Daily Top Streakers list.
+- `GET /missions/streak/top?limit=5`: Mission Center compatible alias.
+- The response includes rank, user id, display name, avatar URL, country code, current streak, longest streak, last check-in date, and whether the user checked in today.
+- Only active streaks with `last_check_in_date` today or yesterday are listed. `limit` is bounded to `1..100`.
+- Phone numbers and emails are not exposed; blank nicknames fall back to a generated `Nexion_####` display name.
+
 ## Main Chain Smoke Test
 
 Start these services first: `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, and `nexion-wallet-service`.

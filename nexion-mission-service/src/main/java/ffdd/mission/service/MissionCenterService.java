@@ -26,6 +26,7 @@ import ffdd.mission.dto.StreakMilestoneClaimResponse;
 import ffdd.mission.dto.StreakMilestoneItemResponse;
 import ffdd.mission.dto.StreakPowerUpActivationResponse;
 import ffdd.mission.dto.StreakPowerUpItemResponse;
+import ffdd.mission.dto.StreakLeaderboardEntryResponse;
 import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
 import ffdd.mission.mapper.AchievementMapper;
@@ -80,6 +81,7 @@ public class MissionCenterService {
     private static final int STREAK_SAVER_RECOVERY_LIMIT_DAYS = 30;
     private static final int STREAK_BONUS_INTERVAL_DAYS = 7;
     private static final int STREAK_BONUS_POINTS = 5;
+    private static final int TOP_STREAKERS_MAX_LIMIT = 100;
     private static final BigDecimal DEFAULT_REWARD_MULTIPLIER = new BigDecimal("1.00");
     private static final Pattern ACHIEVEMENT_CODE_PATTERN = Pattern.compile("[A-Z0-9_]{1,64}");
     private static final Pattern POWER_UP_CODE_PATTERN = Pattern.compile("[a-z0-9_]{1,64}");
@@ -249,6 +251,14 @@ public class MissionCenterService {
                 streakBroken,
                 saverAvailable(streak, today),
                 streakBroken ? recoverableStreak(streak) : 0);
+    }
+
+    public List<StreakLeaderboardEntryResponse> topStreakers(Long userId, int limit) {
+        requireUserId(userId);
+        int normalizedLimit = Math.min(Math.max(1, limit), TOP_STREAKERS_MAX_LIMIT);
+        List<StreakLeaderboardEntryResponse> entries =
+                userStreakMapper.selectTopStreakers(LocalDate.now(), normalizedLimit);
+        return entries == null ? List.of() : entries;
     }
 
     @Transactional(rollbackFor = Exception.class)

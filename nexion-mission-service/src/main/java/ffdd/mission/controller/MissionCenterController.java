@@ -7,6 +7,7 @@ import ffdd.mission.dto.AchievementItemResponse;
 import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionListResponse;
 import ffdd.mission.dto.PointsSummaryResponse;
+import ffdd.mission.dto.StreakLeaderboardEntryResponse;
 import ffdd.mission.dto.StreakMilestoneClaimResponse;
 import ffdd.mission.dto.StreakMilestoneItemResponse;
 import ffdd.mission.dto.StreakPowerUpActivationResponse;
@@ -48,6 +49,13 @@ public class MissionCenterController {
     @GetMapping("/streak")
     public ApiResult<StreakSummaryResponse> streak(@RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
         return ApiResult.ok(missionCenterService.streakSummary(userId));
+    }
+
+    @GetMapping("/streak/top")
+    public ApiResult<List<StreakLeaderboardEntryResponse>> topStreakers(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @RequestParam(defaultValue = "5") int limit) {
+        return ApiResult.ok(missionCenterService.topStreakers(userId, limit));
     }
 
     @GetMapping("/milestones")

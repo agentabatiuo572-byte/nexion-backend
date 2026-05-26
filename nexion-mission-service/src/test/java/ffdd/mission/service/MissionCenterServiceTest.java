@@ -33,6 +33,7 @@ import ffdd.mission.dto.StreakMilestoneClaimResponse;
 import ffdd.mission.dto.StreakMilestoneItemResponse;
 import ffdd.mission.dto.StreakPowerUpActivationResponse;
 import ffdd.mission.dto.StreakPowerUpItemResponse;
+import ffdd.mission.dto.StreakLeaderboardEntryResponse;
 import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
 import ffdd.mission.mapper.AchievementMapper;
@@ -380,6 +381,28 @@ class MissionCenterServiceTest {
     }
 
     @Test
+    void listsTopStreakersWithBoundedLimit() {
+        StreakLeaderboardEntryResponse first = streakLeaderboardEntry(
+                1, 10002L, "Daniel_K", "https://cdn.example/avatar.png", "+1", 41, 42, LocalDate.now(), true);
+        StreakLeaderboardEntryResponse second = streakLeaderboardEntry(
+                2, 10003L, "Nexion_0003", null, "+65", 32, 40, LocalDate.now().minusDays(1), false);
+        when(userStreakMapper.selectTopStreakers(any(), eq(100))).thenReturn(List.of(first, second));
+
+        List<StreakLeaderboardEntryResponse> response = service.topStreakers(10001L, 500);
+
+        assertThat(response).containsExactly(first, second);
+        verify(userStreakMapper).selectTopStreakers(any(LocalDate.class), eq(100));
+    }
+
+    @Test
+    void rejectsTopStreakersWithoutUserId() {
+        assertThatThrownBy(() -> service.topStreakers(null, 5))
+                .isInstanceOf(BizException.class)
+                .hasMessage("User id is required");
+        verify(userStreakMapper, never()).selectTopStreakers(any(), any(Integer.class));
+    }
+
+    @Test
     void listsPowerUpsWithDerivedLockedUnlockedAndActivatedStatus() {
         StreakPowerUp royalty = powerUp(1L, "royalty_boost", "Royalty Boost +5% this week", 7,
                 "streak_royalty", "/team/unilevel/how-it-works");
@@ -653,6 +676,28 @@ class MissionCenterServiceTest {
         streak.setLastCheckInDate(lastCheckInDate);
         streak.setIsDeleted(0);
         return streak;
+    }
+
+    private StreakLeaderboardEntryResponse streakLeaderboardEntry(
+            int rank,
+            Long userId,
+            String displayName,
+            String avatarUrl,
+            String countryCode,
+            int currentStreak,
+            int longestStreak,
+            LocalDate lastCheckInDate,
+            boolean checkedInToday) {
+        return new StreakLeaderboardEntryResponse(
+                rank,
+                userId,
+                displayName,
+                avatarUrl,
+                countryCode,
+                currentStreak,
+                longestStreak,
+                lastCheckInDate,
+                checkedInToday);
     }
 
     private Achievement achievement(Long id, String code, String name, int triggerValue, int rewardPoints) {
