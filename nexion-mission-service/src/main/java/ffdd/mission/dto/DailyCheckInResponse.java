@@ -1,5 +1,6 @@
 package ffdd.mission.dto;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import lombok.AllArgsConstructor;
@@ -14,6 +15,10 @@ public class DailyCheckInResponse {
     private LocalDate checkInDate;
     private boolean completed;
     private int awardedPoints;
+    private int basePoints;
+    private BigDecimal rewardMultiplier;
+    private int bonusPoints;
+    private int streakBonusPoints;
     private int totalPoints;
     private String status;
     private int currentStreak;

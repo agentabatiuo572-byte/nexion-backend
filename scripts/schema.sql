@@ -1010,6 +1010,10 @@ CREATE TABLE IF NOT EXISTS nx_daily_check_in (
   user_id BIGINT NOT NULL,
   mission_id BIGINT NOT NULL,
   check_in_date DATE NOT NULL,
+  base_points INT NOT NULL DEFAULT 0,
+  reward_multiplier DECIMAL(4,2) NOT NULL DEFAULT 1.00,
+  bonus_points INT NOT NULL DEFAULT 0,
+  streak_bonus_points INT NOT NULL DEFAULT 0,
   reward_points INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1017,6 +1021,26 @@ CREATE TABLE IF NOT EXISTS nx_daily_check_in (
   UNIQUE KEY uk_daily_check_in_user_date (user_id, check_in_date),
   KEY idx_daily_check_in_date (check_in_date, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_daily_check_in' AND COLUMN_NAME = 'base_points') = 0,
+  'ALTER TABLE nx_daily_check_in ADD COLUMN base_points INT NOT NULL DEFAULT 0 AFTER check_in_date',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_daily_check_in' AND COLUMN_NAME = 'reward_multiplier') = 0,
+  'ALTER TABLE nx_daily_check_in ADD COLUMN reward_multiplier DECIMAL(4,2) NOT NULL DEFAULT 1.00 AFTER base_points',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_daily_check_in' AND COLUMN_NAME = 'bonus_points') = 0,
+  'ALTER TABLE nx_daily_check_in ADD COLUMN bonus_points INT NOT NULL DEFAULT 0 AFTER reward_multiplier',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_daily_check_in' AND COLUMN_NAME = 'streak_bonus_points') = 0,
+  'ALTER TABLE nx_daily_check_in ADD COLUMN streak_bonus_points INT NOT NULL DEFAULT 0 AFTER bonus_points',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_user_streak (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

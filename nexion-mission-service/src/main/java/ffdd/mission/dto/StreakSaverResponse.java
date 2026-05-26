@@ -8,15 +8,14 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class StreakSummaryResponse {
+public class StreakSaverResponse {
     private Long userId;
+    private boolean restored;
+    private String status;
     private int currentStreak;
     private int longestStreak;
-    private int streakSavers;
+    private int remainingStreakSavers;
     private LocalDate lastCheckInDate;
-    private int nextMilestoneDays;
-    private boolean checkedInToday;
-    private boolean streakBroken;
-    private boolean saverAvailable;
     private int recoverableStreak;
+    private boolean checkedInToday;
 }

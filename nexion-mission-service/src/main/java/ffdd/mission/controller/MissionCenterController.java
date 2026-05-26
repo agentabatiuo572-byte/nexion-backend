@@ -7,6 +7,7 @@ import ffdd.mission.dto.AchievementItemResponse;
 import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionListResponse;
 import ffdd.mission.dto.PointsSummaryResponse;
+import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
 import ffdd.mission.service.MissionCenterService;
 import java.util.List;
@@ -60,5 +61,10 @@ public class MissionCenterController {
     @PostMapping("/daily/check-in")
     public ApiResult<DailyCheckInResponse> dailyCheckIn(@RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
         return ApiResult.ok(missionCenterService.dailyCheckIn(userId));
+    }
+
+    @PostMapping("/daily/streak-saver")
+    public ApiResult<StreakSaverResponse> useStreakSaver(@RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
+        return ApiResult.ok(missionCenterService.useStreakSaver(userId));
     }
 }

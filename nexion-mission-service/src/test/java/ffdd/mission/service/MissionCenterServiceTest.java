@@ -25,6 +25,7 @@ import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionItemResponse;
 import ffdd.mission.dto.MissionListResponse;
 import ffdd.mission.dto.PointsSummaryResponse;
+import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
 import ffdd.mission.mapper.AchievementMapper;
 import ffdd.mission.mapper.DailyCheckInMapper;
@@ -33,6 +34,7 @@ import ffdd.mission.mapper.PointsLedgerMapper;
 import ffdd.mission.mapper.UserAchievementMapper;
 import ffdd.mission.mapper.UserMissionMapper;
 import ffdd.mission.mapper.UserStreakMapper;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -47,6 +49,7 @@ class MissionCenterServiceTest {
     private final UserStreakMapper userStreakMapper = mock(UserStreakMapper.class);
     private final AchievementMapper achievementMapper = mock(AchievementMapper.class);
     private final UserAchievementMapper userAchievementMapper = mock(UserAchievementMapper.class);
+    private final DailyCheckInRewardPolicy rewardPolicy = mock(DailyCheckInRewardPolicy.class);
     private final MissionCenterService service =
             new MissionCenterService(
                     missionMapper,
@@ -55,7 +58,8 @@ class MissionCenterServiceTest {
                     dailyCheckInMapper,
                     userStreakMapper,
                     achievementMapper,
-                    userAchievementMapper);
+                    userAchievementMapper,
+                    rewardPolicy);
 
     @Test
     void listsActiveMissionsWithUserCompletionAndTodayCheckInStatus() {
@@ -89,6 +93,7 @@ class MissionCenterServiceTest {
         Mission daily = mission(3L, "DAILY_CHECK_IN", "Daily Check-in", "DAILY", 30);
         when(missionMapper.selectOne(any())).thenReturn(daily);
         when(pointsLedgerMapper.sumPointsByUser(10001L)).thenReturn(120);
+        when(rewardPolicy.roll(30)).thenReturn(reward(30, "1.00", 30));
 
         DailyCheckInResponse response = service.dailyCheckIn(10001L);
 
@@ -96,6 +101,10 @@ class MissionCenterServiceTest {
         assertThat(response.getAwardedPoints()).isEqualTo(30);
         assertThat(response.getTotalPoints()).isEqualTo(150);
         assertThat(response.getStatus()).isEqualTo("COMPLETED");
+        assertThat(response.getBasePoints()).isEqualTo(30);
+        assertThat(response.getRewardMultiplier()).isEqualByComparingTo("1.00");
+        assertThat(response.getBonusPoints()).isZero();
+        assertThat(response.getStreakBonusPoints()).isZero();
         assertThat(response.getCurrentStreak()).isEqualTo(1);
         assertThat(response.getLongestStreak()).isEqualTo(1);
 
@@ -104,6 +113,10 @@ class MissionCenterServiceTest {
         assertThat(checkInCaptor.getValue().getUserId()).isEqualTo(10001L);
         assertThat(checkInCaptor.getValue().getMissionId()).isEqualTo(3L);
         assertThat(checkInCaptor.getValue().getRewardPoints()).isEqualTo(30);
+        assertThat(checkInCaptor.getValue().getBasePoints()).isEqualTo(30);
+        assertThat(checkInCaptor.getValue().getRewardMultiplier()).isEqualByComparingTo("1.00");
+        assertThat(checkInCaptor.getValue().getBonusPoints()).isZero();
+        assertThat(checkInCaptor.getValue().getStreakBonusPoints()).isZero();
 
         ArgumentCaptor<UserStreak> streakCaptor = ArgumentCaptor.forClass(UserStreak.class);
         verify(userStreakMapper).insert(streakCaptor.capture());
@@ -149,6 +162,7 @@ class MissionCenterServiceTest {
         when(userStreakMapper.selectOne(any())).thenReturn(streak);
         when(pointsLedgerMapper.sumPointsByUser(10001L)).thenReturn(120);
         when(achievementMapper.selectList(any())).thenReturn(List.of(achievement));
+        when(rewardPolicy.roll(30)).thenReturn(reward(30, "1.00", 30));
 
         DailyCheckInResponse response = service.dailyCheckIn(10001L);
 
@@ -177,11 +191,85 @@ class MissionCenterServiceTest {
         UserStreak streak = streak(9L, 10001L, 4, 4, LocalDate.now().minusDays(3));
         when(missionMapper.selectOne(any())).thenReturn(daily);
         when(userStreakMapper.selectOne(any())).thenReturn(streak);
+        when(rewardPolicy.roll(30)).thenReturn(reward(30, "1.00", 30));
 
         DailyCheckInResponse response = service.dailyCheckIn(10001L);
 
         assertThat(response.getCurrentStreak()).isEqualTo(1);
         assertThat(response.getLongestStreak()).isEqualTo(4);
+    }
+
+    @Test
+    void dailyCheckInAppliesLuckyMultiplierAndSevenDayBonus() {
+        Mission daily = mission(3L, "DAILY_CHECK_IN", "Daily Check-in", "DAILY", 30);
+        UserStreak streak = streak(9L, 10001L, 6, 6, LocalDate.now().minusDays(1));
+        when(missionMapper.selectOne(any())).thenReturn(daily);
+        when(userStreakMapper.selectOne(any())).thenReturn(streak);
+        when(pointsLedgerMapper.sumPointsByUser(10001L)).thenReturn(120);
+        when(rewardPolicy.roll(30)).thenReturn(reward(30, "2.00", 60));
+
+        DailyCheckInResponse response = service.dailyCheckIn(10001L);
+
+        assertThat(response.getAwardedPoints()).isEqualTo(65);
+        assertThat(response.getTotalPoints()).isEqualTo(185);
+        assertThat(response.getBasePoints()).isEqualTo(30);
+        assertThat(response.getRewardMultiplier()).isEqualByComparingTo("2.00");
+        assertThat(response.getBonusPoints()).isEqualTo(35);
+        assertThat(response.getStreakBonusPoints()).isEqualTo(5);
+        assertThat(response.getCurrentStreak()).isEqualTo(7);
+
+        ArgumentCaptor<DailyCheckIn> checkInCaptor = ArgumentCaptor.forClass(DailyCheckIn.class);
+        verify(dailyCheckInMapper).insert(checkInCaptor.capture());
+        assertThat(checkInCaptor.getValue().getRewardPoints()).isEqualTo(65);
+        assertThat(checkInCaptor.getValue().getBasePoints()).isEqualTo(30);
+        assertThat(checkInCaptor.getValue().getRewardMultiplier()).isEqualByComparingTo("2.00");
+        assertThat(checkInCaptor.getValue().getBonusPoints()).isEqualTo(35);
+        assertThat(checkInCaptor.getValue().getStreakBonusPoints()).isEqualTo(5);
+
+        ArgumentCaptor<PointsLedger> ledgerCaptor = ArgumentCaptor.forClass(PointsLedger.class);
+        verify(pointsLedgerMapper).insert(ledgerCaptor.capture());
+        assertThat(ledgerCaptor.getValue().getPoints()).isEqualTo(65);
+        assertThat(ledgerCaptor.getValue().getBalanceAfter()).isEqualTo(185);
+    }
+
+    @Test
+    void usesStreakSaverToRecoverBrokenStreak() {
+        UserStreak streak = streak(9L, 10001L, 4, 18, LocalDate.now().minusDays(3));
+        when(userStreakMapper.selectOne(any())).thenReturn(streak);
+        when(userStreakMapper.update(any(UserStreak.class), any())).thenReturn(1);
+
+        StreakSaverResponse response = service.useStreakSaver(10001L);
+
+        assertThat(response.isRestored()).isTrue();
+        assertThat(response.getStatus()).isEqualTo("RESTORED");
+        assertThat(response.getCurrentStreak()).isEqualTo(18);
+        assertThat(response.getLongestStreak()).isEqualTo(18);
+        assertThat(response.getRemainingStreakSavers()).isZero();
+        assertThat(response.getLastCheckInDate()).isEqualTo(LocalDate.now().minusDays(1));
+        assertThat(response.getRecoverableStreak()).isEqualTo(18);
+        assertThat(response.isCheckedInToday()).isFalse();
+
+        ArgumentCaptor<UserStreak> patchCaptor = ArgumentCaptor.forClass(UserStreak.class);
+        verify(userStreakMapper).update(patchCaptor.capture(), any());
+        assertThat(patchCaptor.getValue().getId()).isEqualTo(9L);
+        assertThat(patchCaptor.getValue().getCurrentStreak()).isEqualTo(18);
+        assertThat(patchCaptor.getValue().getStreakSavers()).isZero();
+        assertThat(patchCaptor.getValue().getLastCheckInDate()).isEqualTo(LocalDate.now().minusDays(1));
+    }
+
+    @Test
+    void doesNotUseStreakSaverWhenNoSaversRemain() {
+        UserStreak streak = streak(9L, 10001L, 0, 18, LocalDate.now().minusDays(3));
+        streak.setStreakSavers(0);
+        when(userStreakMapper.selectOne(any())).thenReturn(streak);
+
+        StreakSaverResponse response = service.useStreakSaver(10001L);
+
+        assertThat(response.isRestored()).isFalse();
+        assertThat(response.getStatus()).isEqualTo("NO_SAVERS");
+        assertThat(response.getRemainingStreakSavers()).isZero();
+        assertThat(response.getRecoverableStreak()).isEqualTo(18);
+        verify(userStreakMapper, never()).update(any(UserStreak.class), any());
     }
 
     @Test
@@ -266,6 +354,9 @@ class MissionCenterServiceTest {
         assertThat(response.getLongestStreak()).isEqualTo(8);
         assertThat(response.getNextMilestoneDays()).isEqualTo(7);
         assertThat(response.isCheckedInToday()).isTrue();
+        assertThat(response.isStreakBroken()).isFalse();
+        assertThat(response.isSaverAvailable()).isFalse();
+        assertThat(response.getRecoverableStreak()).isZero();
     }
 
     @Test
@@ -355,5 +446,9 @@ class MissionCenterServiceTest {
         userAchievement.setUnlockedAt(LocalDateTime.now());
         userAchievement.setIsDeleted(0);
         return userAchievement;
+    }
+
+    private DailyCheckInReward reward(int basePoints, String multiplier, int awardedPoints) {
+        return new DailyCheckInReward(basePoints, new BigDecimal(multiplier), awardedPoints);
     }
 }

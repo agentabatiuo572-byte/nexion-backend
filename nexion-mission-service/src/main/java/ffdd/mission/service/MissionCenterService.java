@@ -1,6 +1,7 @@
 package ffdd.mission.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
@@ -17,6 +18,7 @@ import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionItemResponse;
 import ffdd.mission.dto.MissionListResponse;
 import ffdd.mission.dto.PointsSummaryResponse;
+import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
 import ffdd.mission.mapper.AchievementMapper;
 import ffdd.mission.mapper.DailyCheckInMapper;
@@ -25,6 +27,7 @@ import ffdd.mission.mapper.PointsLedgerMapper;
 import ffdd.mission.mapper.UserAchievementMapper;
 import ffdd.mission.mapper.UserMissionMapper;
 import ffdd.mission.mapper.UserStreakMapper;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -49,10 +52,18 @@ public class MissionCenterService {
     private static final String STATUS_UNLOCKED = "UNLOCKED";
     private static final String STATUS_CLAIMED = "CLAIMED";
     private static final String STATUS_ALREADY_CLAIMED = "ALREADY_CLAIMED";
+    private static final String STATUS_RESTORED = "RESTORED";
+    private static final String STATUS_NOT_BROKEN = "NOT_BROKEN";
+    private static final String STATUS_NO_SAVERS = "NO_SAVERS";
+    private static final String STATUS_NO_RECOVERABLE_STREAK = "NO_RECOVERABLE_STREAK";
     private static final String BIZ_TYPE_DAILY_CHECK_IN = "DAILY_CHECK_IN";
     private static final String BIZ_TYPE_ACHIEVEMENT = "ACHIEVEMENT";
     private static final String TRIGGER_STREAK_DAYS = "STREAK_DAYS";
     private static final int INITIAL_STREAK_SAVERS = 1;
+    private static final int STREAK_SAVER_RECOVERY_LIMIT_DAYS = 30;
+    private static final int STREAK_BONUS_INTERVAL_DAYS = 7;
+    private static final int STREAK_BONUS_POINTS = 5;
+    private static final BigDecimal DEFAULT_REWARD_MULTIPLIER = new BigDecimal("1.00");
     private static final Pattern ACHIEVEMENT_CODE_PATTERN = Pattern.compile("[A-Z0-9_]{1,64}");
 
     private final MissionMapper missionMapper;
@@ -62,6 +73,7 @@ public class MissionCenterService {
     private final UserStreakMapper userStreakMapper;
     private final AchievementMapper achievementMapper;
     private final UserAchievementMapper userAchievementMapper;
+    private final DailyCheckInRewardPolicy rewardPolicy;
 
     public MissionCenterService(
             MissionMapper missionMapper,
@@ -70,7 +82,8 @@ public class MissionCenterService {
             DailyCheckInMapper dailyCheckInMapper,
             UserStreakMapper userStreakMapper,
             AchievementMapper achievementMapper,
-            UserAchievementMapper userAchievementMapper) {
+            UserAchievementMapper userAchievementMapper,
+            DailyCheckInRewardPolicy rewardPolicy) {
         this.missionMapper = missionMapper;
         this.userMissionMapper = userMissionMapper;
         this.pointsLedgerMapper = pointsLedgerMapper;
@@ -78,6 +91,7 @@ public class MissionCenterService {
         this.userStreakMapper = userStreakMapper;
         this.achievementMapper = achievementMapper;
         this.userAchievementMapper = userAchievementMapper;
+        this.rewardPolicy = rewardPolicy;
     }
 
     public MissionListResponse listMissions(Long userId) {
@@ -107,42 +121,65 @@ public class MissionCenterService {
                     today,
                     false,
                     0,
+                    basePoints(existing),
+                    rewardMultiplier(existing),
+                    bonusPoints(existing),
+                    streakBonusPoints(existing),
                     currentTotalPoints,
                     STATUS_ALREADY_CHECKED_IN,
                     streak,
                     List.of());
         }
 
-        int rewardPoints = rewardPoints(mission);
+        int basePoints = rewardPoints(mission);
+        UserStreak streakBeforeCheckIn = findUserStreak(userId);
+        int nextStreak = nextStreakAfterCheckIn(streakBeforeCheckIn, today);
+        DailyCheckInReward reward = rewardPolicy.roll(basePoints);
+        int streakBonusPoints = streakBonusPoints(nextStreak);
+        int awardedPoints = reward.getAwardedPoints() + streakBonusPoints;
+        int bonusPoints = Math.max(0, awardedPoints - basePoints);
         DailyCheckIn checkIn = new DailyCheckIn();
         checkIn.setUserId(userId);
         checkIn.setMissionId(mission.getId());
         checkIn.setCheckInDate(today);
-        checkIn.setRewardPoints(rewardPoints);
+        checkIn.setBasePoints(basePoints);
+        checkIn.setRewardMultiplier(rewardMultiplier(reward));
+        checkIn.setBonusPoints(bonusPoints);
+        checkIn.setStreakBonusPoints(streakBonusPoints);
+        checkIn.setRewardPoints(awardedPoints);
         checkIn.setIsDeleted(0);
         try {
             dailyCheckInMapper.insert(checkIn);
         } catch (DuplicateKeyException ex) {
+            DailyCheckIn persisted = findDailyCheckIn(userId, today);
             return dailyCheckInResponse(
                     userId,
                     today,
                     false,
                     0,
+                    basePoints(persisted),
+                    rewardMultiplier(persisted),
+                    bonusPoints(persisted),
+                    streakBonusPoints(persisted),
                     totalPoints(userId),
                     STATUS_ALREADY_CHECKED_IN,
                     findUserStreak(userId),
                     List.of());
         }
 
-        UserStreak streak = advanceStreak(userId, today);
+        UserStreak streak = advanceStreak(userId, today, streakBeforeCheckIn, nextStreak);
         List<AchievementItemResponse> unlockedAchievements = unlockStreakAchievements(userId, streak);
-        int balanceAfter = currentTotalPoints + rewardPoints;
-        insertPointsLedgerIfNeeded(userId, dailyCheckInBizNo(userId, today), BIZ_TYPE_DAILY_CHECK_IN, rewardPoints, balanceAfter);
+        int balanceAfter = currentTotalPoints + awardedPoints;
+        insertPointsLedgerIfNeeded(userId, dailyCheckInBizNo(userId, today), BIZ_TYPE_DAILY_CHECK_IN, awardedPoints, balanceAfter);
         return dailyCheckInResponse(
                 userId,
                 today,
                 true,
-                rewardPoints,
+                awardedPoints,
+                basePoints,
+                rewardMultiplier(reward),
+                bonusPoints,
+                streakBonusPoints,
                 balanceAfter,
                 STATUS_COMPLETED,
                 streak,
@@ -168,6 +205,8 @@ public class MissionCenterService {
     public StreakSummaryResponse streakSummary(Long userId) {
         requireUserId(userId);
         UserStreak streak = findUserStreak(userId);
+        LocalDate today = LocalDate.now();
+        boolean streakBroken = isStreakBroken(streak, today);
         int currentStreak = currentStreak(streak);
         return new StreakSummaryResponse(
                 userId,
@@ -176,7 +215,55 @@ public class MissionCenterService {
                 intValue(streak == null ? null : streak.getStreakSavers()),
                 streak == null ? null : streak.getLastCheckInDate(),
                 nextStreakMilestone(currentStreak),
-                checkedInToday(streak));
+                checkedInToday(streak),
+                streakBroken,
+                saverAvailable(streak, today),
+                streakBroken ? recoverableStreak(streak) : 0);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public StreakSaverResponse useStreakSaver(Long userId) {
+        requireUserId(userId);
+        LocalDate today = LocalDate.now();
+        UserStreak streak = findUserStreak(userId);
+        if (!isStreakBroken(streak, today)) {
+            return streakSaverResponse(userId, streak, STATUS_NOT_BROKEN, false);
+        }
+        int recoverableStreak = recoverableStreak(streak);
+        if (recoverableStreak < 1) {
+            return streakSaverResponse(userId, streak, STATUS_NO_RECOVERABLE_STREAK, false);
+        }
+        int remainingSavers = intValue(streak.getStreakSavers());
+        if (remainingSavers < 1) {
+            return streakSaverResponse(userId, streak, STATUS_NO_SAVERS, false);
+        }
+
+        LocalDate recoveredLastCheckInDate = today.minusDays(1);
+        UserStreak patch = new UserStreak();
+        patch.setId(streak.getId());
+        patch.setCurrentStreak(recoverableStreak);
+        patch.setStreakSavers(remainingSavers - 1);
+        patch.setLastCheckInDate(recoveredLastCheckInDate);
+        int updated = userStreakMapper.update(patch, new LambdaUpdateWrapper<UserStreak>()
+                .eq(UserStreak::getId, streak.getId())
+                .eq(UserStreak::getIsDeleted, 0)
+                .gt(UserStreak::getStreakSavers, 0)
+                .lt(UserStreak::getLastCheckInDate, today.minusDays(1)));
+        if (updated < 1) {
+            UserStreak latest = findUserStreak(userId);
+            if (!isStreakBroken(latest, today)) {
+                return streakSaverResponse(userId, latest, STATUS_NOT_BROKEN, false);
+            }
+            if (intValue(latest == null ? null : latest.getStreakSavers()) < 1) {
+                return streakSaverResponse(userId, latest, STATUS_NO_SAVERS, false);
+            }
+            return streakSaverResponse(userId, latest, STATUS_NOT_BROKEN, false);
+        }
+
+        streak.setCurrentStreak(recoverableStreak);
+        streak.setStreakSavers(remainingSavers - 1);
+        streak.setLastCheckInDate(recoveredLastCheckInDate);
+        return streakSaverResponse(userId, streak, STATUS_RESTORED, true);
     }
 
     public List<AchievementItemResponse> listAchievements(Long userId) {
@@ -275,13 +362,12 @@ public class MissionCenterService {
                 .eq(DailyCheckIn::getIsDeleted, 0));
     }
 
-    private UserStreak advanceStreak(Long userId, LocalDate today) {
-        UserStreak existing = findUserStreak(userId);
+    private UserStreak advanceStreak(Long userId, LocalDate today, UserStreak existing, int nextStreak) {
         if (existing == null) {
             UserStreak created = new UserStreak();
             created.setUserId(userId);
-            created.setCurrentStreak(1);
-            created.setLongestStreak(1);
+            created.setCurrentStreak(nextStreak);
+            created.setLongestStreak(nextStreak);
             created.setStreakSavers(INITIAL_STREAK_SAVERS);
             created.setLastCheckInDate(today);
             created.setIsDeleted(0);
@@ -296,9 +382,6 @@ public class MissionCenterService {
             }
         }
 
-        int nextStreak = today.minusDays(1).equals(existing.getLastCheckInDate())
-                ? intValue(existing.getCurrentStreak()) + 1
-                : 1;
         int nextLongest = Math.max(intValue(existing.getLongestStreak()), nextStreak);
         UserStreak patch = new UserStreak();
         patch.setId(existing.getId());
@@ -414,6 +497,10 @@ public class MissionCenterService {
             LocalDate checkInDate,
             boolean completed,
             int awardedPoints,
+            int basePoints,
+            BigDecimal rewardMultiplier,
+            int bonusPoints,
+            int streakBonusPoints,
             int totalPoints,
             String status,
             UserStreak streak,
@@ -423,11 +510,32 @@ public class MissionCenterService {
                 checkInDate,
                 completed,
                 awardedPoints,
+                basePoints,
+                rewardMultiplier == null ? DEFAULT_REWARD_MULTIPLIER : rewardMultiplier,
+                bonusPoints,
+                streakBonusPoints,
                 totalPoints,
                 status,
                 intValue(streak == null ? null : streak.getCurrentStreak()),
                 intValue(streak == null ? null : streak.getLongestStreak()),
                 unlockedAchievements == null ? List.of() : unlockedAchievements);
+    }
+
+    private StreakSaverResponse streakSaverResponse(
+            Long userId,
+            UserStreak streak,
+            String status,
+            boolean restored) {
+        return new StreakSaverResponse(
+                userId,
+                restored,
+                status,
+                currentStreak(streak),
+                intValue(streak == null ? null : streak.getLongestStreak()),
+                intValue(streak == null ? null : streak.getStreakSavers()),
+                streak == null ? null : streak.getLastCheckInDate(),
+                recoverableStreak(streak),
+                checkedInToday(streak));
     }
 
     private void insertPointsLedgerIfNeeded(
@@ -490,6 +598,23 @@ public class MissionCenterService {
                 .orElse(0);
     }
 
+    private int nextStreakAfterCheckIn(UserStreak streak, LocalDate today) {
+        if (streak == null || streak.getLastCheckInDate() == null) {
+            return 1;
+        }
+        if (today.equals(streak.getLastCheckInDate())) {
+            return Math.max(1, intValue(streak.getCurrentStreak()));
+        }
+        if (today.minusDays(1).equals(streak.getLastCheckInDate())) {
+            return intValue(streak.getCurrentStreak()) + 1;
+        }
+        return 1;
+    }
+
+    private int streakBonusPoints(int nextStreak) {
+        return nextStreak > 0 && nextStreak % STREAK_BONUS_INTERVAL_DAYS == 0 ? STREAK_BONUS_POINTS : 0;
+    }
+
     private int currentStreak(UserStreak streak) {
         if (streak == null || streak.getLastCheckInDate() == null) {
             return 0;
@@ -505,6 +630,24 @@ public class MissionCenterService {
         return streak != null && LocalDate.now().equals(streak.getLastCheckInDate());
     }
 
+    private boolean isStreakBroken(UserStreak streak, LocalDate today) {
+        return streak != null
+                && streak.getLastCheckInDate() != null
+                && streak.getLastCheckInDate().isBefore(today.minusDays(1));
+    }
+
+    private boolean saverAvailable(UserStreak streak, LocalDate today) {
+        return isStreakBroken(streak, today)
+                && intValue(streak == null ? null : streak.getStreakSavers()) > 0
+                && recoverableStreak(streak) > 0;
+    }
+
+    private int recoverableStreak(UserStreak streak) {
+        return Math.min(
+                intValue(streak == null ? null : streak.getLongestStreak()),
+                STREAK_SAVER_RECOVERY_LIMIT_DAYS);
+    }
+
     private int totalPoints(Long userId) {
         Integer total = pointsLedgerMapper.sumPointsByUser(userId);
         return total == null ? 0 : total;
@@ -516,6 +659,34 @@ public class MissionCenterService {
 
     private int rewardPoints(Achievement achievement) {
         return achievement.getRewardPoints() == null ? 0 : achievement.getRewardPoints();
+    }
+
+    private int basePoints(DailyCheckIn checkIn) {
+        if (checkIn == null) {
+            return 0;
+        }
+        return checkIn.getBasePoints() == null ? intValue(checkIn.getRewardPoints()) : checkIn.getBasePoints();
+    }
+
+    private BigDecimal rewardMultiplier(DailyCheckIn checkIn) {
+        if (checkIn == null || checkIn.getRewardMultiplier() == null) {
+            return DEFAULT_REWARD_MULTIPLIER;
+        }
+        return checkIn.getRewardMultiplier();
+    }
+
+    private BigDecimal rewardMultiplier(DailyCheckInReward reward) {
+        return reward == null || reward.getMultiplier() == null
+                ? DEFAULT_REWARD_MULTIPLIER
+                : reward.getMultiplier();
+    }
+
+    private int bonusPoints(DailyCheckIn checkIn) {
+        return checkIn == null || checkIn.getBonusPoints() == null ? 0 : checkIn.getBonusPoints();
+    }
+
+    private int streakBonusPoints(DailyCheckIn checkIn) {
+        return checkIn == null || checkIn.getStreakBonusPoints() == null ? 0 : checkIn.getStreakBonusPoints();
     }
 
     private int intValue(Integer value) {
