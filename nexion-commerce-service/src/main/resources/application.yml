@@ -26,6 +26,8 @@ server:
 nexion:
   services:
     compute-url: ${NEXION_COMPUTE_URL:http://localhost:8102}
+    wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}
+    compliance-url: ${NEXION_COMPLIANCE_URL:http://localhost:8109}
   payment:
     mock:
       secret: "${NEXION_PAYMENT_MOCK_SECRET:nexion-mock-payment-secret}"

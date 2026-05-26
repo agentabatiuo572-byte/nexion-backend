@@ -37,6 +37,12 @@ spring:
             - Path=/api/commerce/**
           filters:
             - StripPrefix=1
+        - id: genesis-commerce-service
+          uri: http://localhost:8104
+          predicates:
+            - Path=/api/genesis/**
+          filters:
+            - StripPrefix=1
         - id: wallet-service
           uri: http://localhost:8105
           predicates:
@@ -107,6 +113,8 @@ nexion:
           flow-qps: ${NEXION_GATEWAY_SENTINEL_AUTH_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
         commerce:
           flow-qps: ${NEXION_GATEWAY_SENTINEL_COMMERCE_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        genesis:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_GENESIS_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
         compute:
           flow-qps: ${NEXION_GATEWAY_SENTINEL_COMPUTE_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
         earnings:

@@ -569,6 +569,73 @@ CREATE TABLE IF NOT EXISTS nx_tradein_application (
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_genesis_series (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  series_code VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  total_supply INT NOT NULL,
+  sold_supply INT NOT NULL DEFAULT 0,
+  price_usdt DECIMAL(18,6) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  sale_start_at DATETIME NULL,
+  sale_end_at DATETIME NULL,
+  royalty_bps INT NOT NULL DEFAULT 0,
+  cover_url VARCHAR(512) NULL,
+  metadata_json VARCHAR(2048) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_genesis_series_code (series_code),
+  KEY idx_genesis_series_status (status, created_at),
+  CONSTRAINT chk_genesis_series_supply CHECK (total_supply > 0 AND sold_supply >= 0 AND sold_supply <= total_supply),
+  CONSTRAINT chk_genesis_series_price CHECK (price_usdt > 0 AND royalty_bps >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_genesis_order (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  order_no VARCHAR(96) NOT NULL,
+  client_request_no VARCHAR(96) NULL,
+  user_id BIGINT NOT NULL,
+  series_code VARCHAR(64) NOT NULL,
+  quantity INT NOT NULL,
+  unit_price_usdt DECIMAL(18,6) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  payment_asset VARCHAR(16) NOT NULL DEFAULT 'USDT',
+  status VARCHAR(32) NOT NULL,
+  risk_decision_id BIGINT NULL,
+  wallet_ledger_id BIGINT NULL,
+  failure_reason VARCHAR(255) NULL,
+  paid_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_genesis_order_no (order_no),
+  UNIQUE KEY uk_genesis_order_client_request (user_id, client_request_no),
+  KEY idx_genesis_order_user_time (user_id, created_at),
+  KEY idx_genesis_order_status_time (status, created_at),
+  CONSTRAINT chk_genesis_order_positive_amount CHECK (quantity > 0 AND unit_price_usdt > 0 AND amount_usdt > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_genesis_holding (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  holding_no VARCHAR(128) NOT NULL,
+  user_id BIGINT NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  series_code VARCHAR(64) NOT NULL,
+  acquired_price_usdt DECIMAL(18,6) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  acquired_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_genesis_holding_no (holding_no),
+  KEY idx_genesis_holding_user_time (user_id, created_at),
+  KEY idx_genesis_holding_order (order_no),
+  KEY idx_genesis_holding_series (series_code, status),
+  CONSTRAINT chk_genesis_holding_positive_price CHECK (acquired_price_usdt > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET @sql = IF((SELECT EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'id') NOT LIKE '%auto_increment%',
   'ALTER TABLE nx_order MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT',
   'SELECT 1');

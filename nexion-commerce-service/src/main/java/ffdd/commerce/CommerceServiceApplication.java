@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-@MapperScan("ffdd.commerce.mapper")
+@MapperScan({"ffdd.commerce.mapper", "ffdd.commerce.genesis.mapper"})
 @EnableScheduling
 @EnableFeignClients(basePackages = "ffdd.commerce.client")
 @SpringBootApplication(scanBasePackages = {"ffdd.commerce", "ffdd.common"})

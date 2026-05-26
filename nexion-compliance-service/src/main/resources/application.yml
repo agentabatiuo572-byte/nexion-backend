@@ -42,6 +42,7 @@ nexion:
     risk:
       withdrawal-review-amount: ${NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT:1000.000000}
       exchange-review-amount: ${NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT:5000.000000}
+      genesis-review-amount: ${NEXION_COMPLIANCE_GENESIS_REVIEW_AMOUNT:10000.000000}
       daily-review-count: ${NEXION_COMPLIANCE_DAILY_REVIEW_COUNT:3}
       blocked-regions: ${NEXION_COMPLIANCE_BLOCKED_REGIONS:}
       review-regions: ${NEXION_COMPLIANCE_REVIEW_REGIONS:}

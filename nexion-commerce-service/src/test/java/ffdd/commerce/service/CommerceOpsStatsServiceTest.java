@@ -6,6 +6,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ffdd.commerce.mapper.CommerceOrderMapper;
+import ffdd.commerce.genesis.mapper.GenesisHoldingMapper;
+import ffdd.commerce.genesis.mapper.GenesisOrderMapper;
+import ffdd.commerce.genesis.mapper.GenesisSeriesMapper;
 import ffdd.commerce.mapper.PaymentCallbackEventMapper;
 import ffdd.commerce.mapper.PaymentRecordMapper;
 import ffdd.commerce.mapper.TradeinApplicationMapper;
@@ -23,8 +26,18 @@ class CommerceOpsStatsServiceTest {
     private final PaymentRecordMapper paymentRecordMapper = mock(PaymentRecordMapper.class);
     private final PaymentCallbackEventMapper callbackEventMapper = mock(PaymentCallbackEventMapper.class);
     private final TradeinApplicationMapper tradeinApplicationMapper = mock(TradeinApplicationMapper.class);
+    private final GenesisSeriesMapper genesisSeriesMapper = mock(GenesisSeriesMapper.class);
+    private final GenesisOrderMapper genesisOrderMapper = mock(GenesisOrderMapper.class);
+    private final GenesisHoldingMapper genesisHoldingMapper = mock(GenesisHoldingMapper.class);
     private final CommerceOpsStatsService service = new CommerceOpsStatsService(
-            orderMapper, paymentRecordMapper, callbackEventMapper, tradeinApplicationMapper, CLOCK);
+            orderMapper,
+            paymentRecordMapper,
+            callbackEventMapper,
+            tradeinApplicationMapper,
+            genesisSeriesMapper,
+            genesisOrderMapper,
+            genesisHoldingMapper,
+            CLOCK);
 
     @Test
     @SuppressWarnings("unchecked")
@@ -48,6 +61,13 @@ class CommerceOpsStatsServiceTest {
         when(tradeinApplicationMapper.selectCount(any()))
                 .thenReturn(3L)
                 .thenReturn(2L);
+        when(genesisSeriesMapper.selectCount(any())).thenReturn(1L);
+        when(genesisOrderMapper.selectCount(any()))
+                .thenReturn(6L)
+                .thenReturn(4L)
+                .thenReturn(1L)
+                .thenReturn(1L);
+        when(genesisHoldingMapper.selectCount(any())).thenReturn(4L);
 
         Map<String, Object> stats = service.summary(120);
 
@@ -73,5 +93,12 @@ class CommerceOpsStatsServiceTest {
         assertThat((Map<String, Object>) stats.get("tradeins"))
                 .containsEntry("total", 3L)
                 .containsEntry("submitted", 2L);
+        Map<String, Object> genesis = (Map<String, Object>) stats.get("genesis");
+        assertThat(genesis).containsEntry("activeSeries", 1L).containsEntry("activeHoldings", 4L);
+        assertThat((Map<String, Object>) genesis.get("orders"))
+                .containsEntry("total", 6L)
+                .containsEntry("completed", 4L)
+                .containsEntry("reviewing", 1L)
+                .containsEntry("rejected", 1L);
     }
 }

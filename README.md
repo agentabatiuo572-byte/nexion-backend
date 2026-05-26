@@ -13,7 +13,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
 | `nexion-compute-service` | 8102 | device status, compute tasks, node map, Proof-of-Compute receipts |
 | `nexion-mission-service` | 8103 | check-in, quests, points, achievements, streak milestones, streak power-ups |
-| `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in, outbox broker publisher |
+| `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in, Genesis purchases/holdings, outbox broker publisher |
 | `nexion-wallet-service` | 8105 | wallet balances, bills, idempotent earning/team commission credits, withdrawals |
 | `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel/binary/peer/cultivation/leadership commission events, commission unlock, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
@@ -82,7 +82,7 @@ The current backend baseline implements the first event-driven slice:
 - `GET /audit/stats/summary?days=7&startAt=&endAt=&serviceName=&action=&riskLevel=&result=&userId=&actorId=`: count audit rows for a bounded time window and return result/risk distributions.
 - `GET /audit/stats/actions|services|users?days=7&limit=10`: return top action, service, or user buckets. `limit` is capped at 50 and the query window is capped at 90 days.
 - Gateway exposes the ops query route at `/api/audit/**`, currently routed to `nexion-system-service`.
-- Covered write points include Commerce order/payment success paths, Wallet deposit/withdrawal/exchange/risk-apply paths, Compliance KYC/risk/blacklist/proof evidence operations, and OpenAPI admin app/webhook delivery operations.
+- Covered write points include Commerce order/payment/Genesis success paths, Wallet deposit/withdrawal/exchange/risk-apply paths, Compliance KYC/risk/blacklist/proof evidence operations, and OpenAPI admin app/webhook delivery operations.
 - Sensitive detail keys such as `secret`, `token`, `signature`, `authorization`, `objectKey`, and raw callback bodies are redacted before persistence.
 - Table: `nx_audit_log`. Permission seed: `PERM_AUDIT_READ`.
 
@@ -148,6 +148,34 @@ Commerce now has a provider-facing payment baseline that keeps the existing `mar
 - Mock string to sign: `provider + "\n" + timestamp + "\n" + nonce + "\n" + sha256(rawJsonBody)`, HMAC-SHA256 with `NEXION_PAYMENT_MOCK_SECRET`.
 - Payment ops write endpoints require `PERM_COMMERCE_WRITE`; anomaly reads require `PERM_COMMERCE_READ`.
 
+## Commerce Genesis Baseline
+
+Genesis is implemented inside `nexion-commerce-service` under `ffdd.commerce.genesis`; no standalone Genesis service is added.
+
+- `GET /genesis/overview?userId=`: active Genesis series and optional current-user holding count.
+- `POST /genesis/orders`: purchases Genesis nodes from a server-side series price. The request supports `clientRequestNo` for idempotent client retries.
+- `GET /genesis/orders?userId=&status=&pageNum=&pageSize=`: pages Genesis orders.
+- `GET /genesis/orders/{orderNo}`: returns one Genesis order.
+- `GET /genesis/holdings?userId=&seriesCode=&pageNum=&pageSize=`: pages Genesis holdings.
+- Gateway exposes this module at `/api/genesis/**`, routed to Commerce.
+- Purchase flow: Compliance gate (`GENESIS`) -> atomic series supply claim -> Wallet USDT debit (`GENESIS_PURCHASE`) -> holding allocation -> `GenesisPurchased` outbox event.
+- Tables: `nx_genesis_series`, `nx_genesis_order`, `nx_genesis_holding`.
+- Seeded MVP series: `GENESIS-2026`, total supply `1000`, price `9999` USDT.
+- Compliance uses `NEXION_COMPLIANCE_GENESIS_REVIEW_AMOUNT` for Genesis purchase review thresholds; the local default `10000` lets one seeded `GENESIS-2026` node complete after KYC approval.
+
+## Genesis Smoke Test
+
+Start the gateway chain services first. The start script includes Auth, Commerce, Wallet, Compliance, and Gateway for the Genesis purchase path.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_genesis.ps1 -AdminPassword "<superadmin-password>"
+```
+
+The smoke script verifies:
+
+`auth user register/login -> admin KYC approval -> wallet test funding -> /api/genesis/overview -> /api/genesis/orders -> Wallet USDT debit -> Genesis holding allocation -> GenesisPurchased outbox`
+
 ## Main Chain Smoke Test
 
 Start these services first: `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, and `nexion-wallet-service`.
@@ -185,7 +213,7 @@ Pass `-RequireWorker` to require the scheduled Team outbox worker or RocketMQ li
 
 ## Gateway Chain Smoke Test
 
-Start the Gateway path services first: `nexion-gateway`, `nexion-bff-service`, `nexion-auth-service`, `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, and `nexion-wallet-service`.
+Start the Gateway path services first: `nexion-gateway`, `nexion-bff-service`, `nexion-auth-service`, `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, `nexion-wallet-service`, and `nexion-compliance-service`.
 
 Then run:
 
@@ -394,7 +422,7 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 - Debit safety: debits use a single conditional update (`available >= amount`) inside the transaction, so concurrent withdrawals or exchanges cannot drive available balance negative.
 - Withdrawal safety: withdrawal reservation uses one conditional update (`usdt_available >= amount + fee`) to atomically decrement available USDT and increment `pending_withdraw`; success decrements pending only, while failure moves pending back to available.
 - Withdrawal broadcast worker is disabled by default (`NEXION_WALLET_WITHDRAWAL_BROADCAST_ENABLED=false`). It scans `PENDING_CHAIN` rows, calls a replaceable `WithdrawalChainBroadcaster`, records `CHAIN_SUBMITTED` on success, and uses exponential retry before moving poison rows to local `DEAD`.
-- Compliance risk thresholds are configurable with `NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_DAILY_REVIEW_COUNT`, `NEXION_COMPLIANCE_BLOCKED_REGIONS`, `NEXION_COMPLIANCE_REVIEW_REGIONS`, `NEXION_COMPLIANCE_LOW_TIER_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_LOW_TIER_LEVELS`, `NEXION_COMPLIANCE_IP_DAILY_REVIEW_COUNT`, and `NEXION_COMPLIANCE_DEVICE_DAILY_REVIEW_COUNT`.
+- Compliance risk thresholds are configurable with `NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_GENESIS_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_DAILY_REVIEW_COUNT`, `NEXION_COMPLIANCE_BLOCKED_REGIONS`, `NEXION_COMPLIANCE_REVIEW_REGIONS`, `NEXION_COMPLIANCE_LOW_TIER_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_LOW_TIER_LEVELS`, `NEXION_COMPLIANCE_IP_DAILY_REVIEW_COUNT`, and `NEXION_COMPLIANCE_DEVICE_DAILY_REVIEW_COUNT`.
 - Compliance evidence storage uses `NEXION_STORAGE_ENDPOINT`, `NEXION_STORAGE_ACCESS_KEY`, `NEXION_STORAGE_SECRET_KEY`, `NEXION_STORAGE_BUCKET`, `NEXION_COMPLIANCE_EVIDENCE_MAX_UPLOAD_SIZE_BYTES`, and `NEXION_COMPLIANCE_EVIDENCE_PRESIGN_EXPIRY_SECONDS`.
 - KYC expiry worker is disabled by default (`NEXION_COMPLIANCE_KYC_EXPIRY_ENABLED=false`) and can be enabled with `NEXION_COMPLIANCE_KYC_EXPIRY_BATCH_SIZE`, `NEXION_COMPLIANCE_KYC_EXPIRY_REVIEWER`, `NEXION_COMPLIANCE_KYC_EXPIRY_INITIAL_DELAY_MS`, and `NEXION_COMPLIANCE_KYC_EXPIRY_FIXED_DELAY_MS`.
 
@@ -473,7 +501,7 @@ Snapshot keys use `bff:{view}:{userId}` with a default TTL of 3 seconds, plus `b
 
 The first service-native Ops/KPI layer stays inside the existing 13-service boundary. Query windows default to 7 days and are capped at 90 days.
 
-- `GET /api/commerce/ops/stats?days=7`: order, payment, callback, reconciliation backlog, expired pending payment, and trade-in counters. Requires `PERM_COMMERCE_READ`.
+- `GET /api/commerce/ops/stats?days=7`: order, payment, callback, reconciliation backlog, expired pending payment, trade-in, and Genesis counters. Requires `PERM_COMMERCE_READ`.
 - `GET /api/wallet/ops/stats?days=7`: deposit, withdrawal, exchange, and ledger credit/debit counters. Requires `PERM_WALLET_READ`.
 - `GET /api/compliance/ops/stats?days=7`: risk decision, manual review queue, blacklist, and KYC lifecycle counters. Requires `PERM_COMPLIANCE_READ`.
 - `GET /api/openapi/ops/stats?days=7`: API app, signed call, and webhook delivery counters. Requires `PERM_OPENAPI_ADMIN`.

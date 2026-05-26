@@ -36,6 +36,7 @@ class ComplianceGateServiceTest {
             riskBlacklistMapper,
             new BigDecimal("1000.000000"),
             new BigDecimal("5000.000000"),
+            new BigDecimal("10000.000000"),
             3,
             "ZZ",
             "XR",
@@ -273,6 +274,52 @@ class ComplianceGateServiceTest {
         assertThat(response.getDecision()).isEqualTo("REVIEW");
         assertThat(response.getReason()).isEqualTo("AMOUNT_REVIEW");
         assertThat(response.getRiskScore()).isEqualTo(60);
+        assertThat(response.getRuleCodes()).contains("AMOUNT_THRESHOLD");
+    }
+
+    @Test
+    void approvesGenesisPurchaseAtSeededPriceWithGenesisThreshold() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9501L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateRequest request = request("GENESIS", "GEN-SEEDED");
+        request.setAmount(new BigDecimal("9999.000000"));
+        ComplianceGateResponse response = service.check(request);
+
+        assertThat(response.getDecision()).isEqualTo("APPROVE");
+        assertThat(response.getReason()).isEqualTo("KYC_APPROVED");
+        assertThat(response.getRuleCodes()).contains("KYC_APPROVED");
+    }
+
+    @Test
+    void reviewsGenesisPurchaseWhenAmountExceedsGenesisThreshold() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9502L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateRequest request = request("GENESIS", "GEN-LARGE");
+        request.setAmount(new BigDecimal("15000.000000"));
+        ComplianceGateResponse response = service.check(request);
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("AMOUNT_REVIEW");
         assertThat(response.getRuleCodes()).contains("AMOUNT_THRESHOLD");
     }
 

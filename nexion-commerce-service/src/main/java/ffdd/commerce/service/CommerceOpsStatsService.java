@@ -5,6 +5,12 @@ import ffdd.commerce.domain.CommerceOrder;
 import ffdd.commerce.domain.PaymentCallbackEvent;
 import ffdd.commerce.domain.PaymentRecord;
 import ffdd.commerce.domain.TradeinApplication;
+import ffdd.commerce.genesis.domain.GenesisHolding;
+import ffdd.commerce.genesis.domain.GenesisOrder;
+import ffdd.commerce.genesis.domain.GenesisSeries;
+import ffdd.commerce.genesis.mapper.GenesisHoldingMapper;
+import ffdd.commerce.genesis.mapper.GenesisOrderMapper;
+import ffdd.commerce.genesis.mapper.GenesisSeriesMapper;
 import ffdd.commerce.mapper.CommerceOrderMapper;
 import ffdd.commerce.mapper.PaymentCallbackEventMapper;
 import ffdd.commerce.mapper.PaymentRecordMapper;
@@ -27,19 +33,38 @@ public class CommerceOpsStatsService {
     private static final String ACTIVATION_WAITING_PAYMENT = "WAITING_PAYMENT";
     private static final String CALLBACK_FAILED = "FAILED";
     private static final String TRADEIN_SUBMITTED = "SUBMITTED";
+    private static final String GENESIS_SERIES_ACTIVE = "ACTIVE";
+    private static final String GENESIS_ORDER_COMPLETED = "COMPLETED";
+    private static final String GENESIS_ORDER_REVIEWING = "REVIEWING";
+    private static final String GENESIS_ORDER_REJECTED = "REJECTED";
+    private static final String GENESIS_HOLDING_ACTIVE = "ACTIVE";
 
     private final CommerceOrderMapper orderMapper;
     private final PaymentRecordMapper paymentRecordMapper;
     private final PaymentCallbackEventMapper callbackEventMapper;
     private final TradeinApplicationMapper tradeinApplicationMapper;
+    private final GenesisSeriesMapper genesisSeriesMapper;
+    private final GenesisOrderMapper genesisOrderMapper;
+    private final GenesisHoldingMapper genesisHoldingMapper;
     private final Clock clock;
 
     public CommerceOpsStatsService(
             CommerceOrderMapper orderMapper,
             PaymentRecordMapper paymentRecordMapper,
             PaymentCallbackEventMapper callbackEventMapper,
-            TradeinApplicationMapper tradeinApplicationMapper) {
-        this(orderMapper, paymentRecordMapper, callbackEventMapper, tradeinApplicationMapper, Clock.systemDefaultZone());
+            TradeinApplicationMapper tradeinApplicationMapper,
+            GenesisSeriesMapper genesisSeriesMapper,
+            GenesisOrderMapper genesisOrderMapper,
+            GenesisHoldingMapper genesisHoldingMapper) {
+        this(
+                orderMapper,
+                paymentRecordMapper,
+                callbackEventMapper,
+                tradeinApplicationMapper,
+                genesisSeriesMapper,
+                genesisOrderMapper,
+                genesisHoldingMapper,
+                Clock.systemDefaultZone());
     }
 
     CommerceOpsStatsService(
@@ -47,11 +72,17 @@ public class CommerceOpsStatsService {
             PaymentRecordMapper paymentRecordMapper,
             PaymentCallbackEventMapper callbackEventMapper,
             TradeinApplicationMapper tradeinApplicationMapper,
+            GenesisSeriesMapper genesisSeriesMapper,
+            GenesisOrderMapper genesisOrderMapper,
+            GenesisHoldingMapper genesisHoldingMapper,
             Clock clock) {
         this.orderMapper = orderMapper;
         this.paymentRecordMapper = paymentRecordMapper;
         this.callbackEventMapper = callbackEventMapper;
         this.tradeinApplicationMapper = tradeinApplicationMapper;
+        this.genesisSeriesMapper = genesisSeriesMapper;
+        this.genesisOrderMapper = genesisOrderMapper;
+        this.genesisHoldingMapper = genesisHoldingMapper;
         this.clock = clock;
     }
 
@@ -84,6 +115,14 @@ public class CommerceOpsStatsService {
         response.put("tradeins", section(
                 "total", countTradeins(since, null),
                 "submitted", countTradeins(since, TRADEIN_SUBMITTED)));
+        response.put("genesis", section(
+                "activeSeries", countGenesisSeries(GENESIS_SERIES_ACTIVE),
+                "orders", section(
+                        "total", countGenesisOrders(since, null),
+                        "completed", countGenesisOrders(since, GENESIS_ORDER_COMPLETED),
+                        "reviewing", countGenesisOrders(since, GENESIS_ORDER_REVIEWING),
+                        "rejected", countGenesisOrders(since, GENESIS_ORDER_REJECTED)),
+                "activeHoldings", countGenesisHoldings(since, GENESIS_HOLDING_ACTIVE)));
         return response;
     }
 
@@ -133,6 +172,29 @@ public class CommerceOpsStatsService {
                 .eq(TradeinApplication::getIsDeleted, 0)
                 .ge(TradeinApplication::getCreatedAt, since)
                 .eq(StringUtils.hasText(status), TradeinApplication::getStatus, status));
+        return nullToZero(count);
+    }
+
+    private long countGenesisSeries(String status) {
+        Long count = genesisSeriesMapper.selectCount(new LambdaQueryWrapper<GenesisSeries>()
+                .eq(GenesisSeries::getIsDeleted, 0)
+                .eq(StringUtils.hasText(status), GenesisSeries::getStatus, status));
+        return nullToZero(count);
+    }
+
+    private long countGenesisOrders(LocalDateTime since, String status) {
+        Long count = genesisOrderMapper.selectCount(new LambdaQueryWrapper<GenesisOrder>()
+                .eq(GenesisOrder::getIsDeleted, 0)
+                .ge(GenesisOrder::getCreatedAt, since)
+                .eq(StringUtils.hasText(status), GenesisOrder::getStatus, status));
+        return nullToZero(count);
+    }
+
+    private long countGenesisHoldings(LocalDateTime since, String status) {
+        Long count = genesisHoldingMapper.selectCount(new LambdaQueryWrapper<GenesisHolding>()
+                .eq(GenesisHolding::getIsDeleted, 0)
+                .ge(GenesisHolding::getCreatedAt, since)
+                .eq(StringUtils.hasText(status), GenesisHolding::getStatus, status));
         return nullToZero(count);
     }
 

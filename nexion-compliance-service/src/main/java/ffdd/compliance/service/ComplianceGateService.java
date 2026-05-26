@@ -63,6 +63,7 @@ public class ComplianceGateService {
     private static final String RULE_DEVICE_DAILY_FREQUENCY = "DEVICE_DAILY_FREQUENCY";
     private static final String BIZ_TYPE_WITHDRAWAL = "WITHDRAWAL";
     private static final String BIZ_TYPE_EXCHANGE = "EXCHANGE";
+    private static final String BIZ_TYPE_GENESIS = "GENESIS";
     private static final Pattern SAFE_CONTEXT_TOKEN = Pattern.compile("[A-Za-z0-9._:@%\\-]+");
 
     private final KycProfileMapper kycProfileMapper;
@@ -71,6 +72,7 @@ public class ComplianceGateService {
     private final EventOutboxService outboxService;
     private final BigDecimal withdrawalReviewAmount;
     private final BigDecimal exchangeReviewAmount;
+    private final BigDecimal genesisReviewAmount;
     private final int dailyReviewCount;
     private final Set<String> blockedRegions;
     private final Set<String> reviewRegions;
@@ -85,6 +87,7 @@ public class ComplianceGateService {
             RiskBlacklistMapper riskBlacklistMapper,
             @Value("${nexion.compliance.risk.withdrawal-review-amount:1000.000000}") BigDecimal withdrawalReviewAmount,
             @Value("${nexion.compliance.risk.exchange-review-amount:5000.000000}") BigDecimal exchangeReviewAmount,
+            @Value("${nexion.compliance.risk.genesis-review-amount:10000.000000}") BigDecimal genesisReviewAmount,
             @Value("${nexion.compliance.risk.daily-review-count:3}") int dailyReviewCount,
             @Value("${nexion.compliance.risk.blocked-regions:}") String blockedRegions,
             @Value("${nexion.compliance.risk.review-regions:}") String reviewRegions,
@@ -99,6 +102,9 @@ public class ComplianceGateService {
         this.outboxService = outboxService;
         this.withdrawalReviewAmount = withdrawalReviewAmount;
         this.exchangeReviewAmount = exchangeReviewAmount;
+        this.genesisReviewAmount = genesisReviewAmount == null
+                ? new BigDecimal("10000.000000")
+                : genesisReviewAmount;
         this.dailyReviewCount = Math.max(1, dailyReviewCount);
         this.blockedRegions = parseTokenSet(blockedRegions);
         this.reviewRegions = parseTokenSet(reviewRegions);
@@ -317,7 +323,11 @@ public class ComplianceGateService {
     }
 
     private BigDecimal reviewThreshold(String bizType) {
-        return BIZ_TYPE_EXCHANGE.equals(bizType) ? exchangeReviewAmount : withdrawalReviewAmount;
+        return switch (bizType) {
+            case BIZ_TYPE_EXCHANGE -> exchangeReviewAmount;
+            case BIZ_TYPE_GENESIS -> genesisReviewAmount;
+            default -> withdrawalReviewAmount;
+        };
     }
 
     private long dailyDecisionCount(ComplianceGateRequest request) {

@@ -42,8 +42,8 @@ VALUES
   (101, 'PERM_BFF_READ', 'Read BFF aggregation', 'API', '/bff/**', NULL, 1),
   (102, 'PERM_COMPUTE_READ', 'Read compute operations', 'API', '/compute/**', NULL, 1),
   (117, 'PERM_COMPUTE_WRITE', 'Write compute task and device status', 'API', '/compute/tasks/**,/compute/devices/*/status', NULL, 1),
-  (103, 'PERM_COMMERCE_READ', 'Read commerce operations', 'API', '/commerce/**', NULL, 1),
-  (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**,/commerce/payments/ops/**', NULL, 1),
+  (103, 'PERM_COMMERCE_READ', 'Read commerce operations', 'API', '/commerce/**,/genesis/**', NULL, 1),
+  (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**,/commerce/payments/ops/**,/genesis/**', NULL, 1),
   (105, 'PERM_WALLET_READ', 'Read wallet operations', 'API', '/wallet/**', NULL, 1),
   (112, 'PERM_WALLET_WRITE', 'Write wallet operations', 'API', '/wallet/**', NULL, 1),
   (118, 'PERM_EARNINGS_WRITE', 'Write earnings tick and milestone operations', 'API', '/earnings/ticks/**,/earnings/milestones/**,/earnings/events/settle-receipt', NULL, 1),
@@ -248,6 +248,22 @@ ON DUPLICATE KEY UPDATE
   stock = VALUES(stock),
   cover_url = VALUES(cover_url);
 
+INSERT INTO nx_genesis_series
+  (id, series_code, name, total_supply, sold_supply, price_usdt, status, sale_start_at, sale_end_at, royalty_bps, cover_url, metadata_json)
+VALUES
+  (1, 'GENESIS-2026', 'Nexion Genesis Node 2026', 1000, 0, 9999.000000, 'ACTIVE', '2026-05-01 00:00:00', NULL, 800, '/img/genesis/genesis-2026.png',
+   '{"utility":["lifetime node rights","leadership pool boost","secondary royalty"],"phase":"MVP"}')
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  total_supply = VALUES(total_supply),
+  price_usdt = VALUES(price_usdt),
+  status = VALUES(status),
+  sale_start_at = VALUES(sale_start_at),
+  sale_end_at = VALUES(sale_end_at),
+  royalty_bps = VALUES(royalty_bps),
+  cover_url = VALUES(cover_url),
+  metadata_json = VALUES(metadata_json);
+
 INSERT INTO nx_user_device (id, user_id, source_order_no, product_id, instance_no, name, device_type, status, hashrate, daily_usdt, daily_nex, last_seen_at, activated_at)
 VALUES
   (1, 10001, NULL, NULL, 'UD-10001-PHONE', 'Mobile Compute', 'MOBILE', 'ONLINE', 0.250000, 0.060000, 12.000000, NOW(), NOW())
@@ -438,7 +454,8 @@ VALUES
   (11, 'risk.low_tier.review_amount', '100', 'NUMBER', 'Low-tier withdrawal amount that triggers manual review.', 1),
   (12, 'risk.low_tier.levels', 'L0,L1', 'STRING', 'User levels subject to low-tier withdrawal review amount.', 1),
   (13, 'risk.ip.daily_review_count', '10', 'NUMBER', 'Daily same-IP decision count that triggers manual review.', 1),
-  (14, 'risk.device.daily_review_count', '5', 'NUMBER', 'Daily same-device decision count that triggers manual review.', 1)
+  (14, 'risk.device.daily_review_count', '5', 'NUMBER', 'Daily same-device decision count that triggers manual review.', 1),
+  (15, 'risk.genesis.review_amount', '10000', 'NUMBER', 'Genesis purchase amount that triggers manual review.', 1)
 ON DUPLICATE KEY UPDATE
   config_value = VALUES(config_value),
   value_type = VALUES(value_type),
