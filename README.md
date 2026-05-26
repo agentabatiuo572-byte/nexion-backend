@@ -118,6 +118,18 @@ Commerce now owns the server-side Trade-in quote and application baseline. Price
 - Salvage formula: `source price * current efficiency * 0.30`; trade-in discounts are `300` USDT for S1/Pro -> Pro v2 and `800` USDT for Rack -> Rack P2.
 - Device efficiency follows the product lifecycle curve: months 1-3 multiply by `0.96`, months 4-8 by `0.94`, months 9+ by `0.90`, floored at `0.22`.
 
+## Commerce Payment Callback Baseline
+
+Commerce now has a provider-facing payment baseline that keeps the existing `markPaid -> OrderPaid outbox -> compute activation` chain as the source of truth.
+
+- `POST /commerce/payments/checkout`: creates or reuses a pending payment session for an unpaid order. The initial provider is `MOCK`.
+- `POST /commerce/payments/callbacks/{provider}`: verifies provider callback HMAC headers, records callback events idempotently by `provider + eventId`, validates order/payment id/amount/currency, then calls the existing `markPaid` flow on successful payment.
+- `GET /commerce/payments?userId=&orderNo=&paymentNo=&provider=&paymentStatus=&pageNum=&pageSize=`: pages payment records.
+- `GET /commerce/payments/{paymentNo}`: returns one payment record.
+- Tables: `nx_payment_record`, `nx_payment_callback_event`.
+- Mock callback signature headers: `X-Nexion-Payment-Timestamp`, `X-Nexion-Payment-Nonce`, `X-Nexion-Payment-Signature`.
+- Mock string to sign: `provider + "\n" + timestamp + "\n" + nonce + "\n" + sha256(rawJsonBody)`, HMAC-SHA256 with `NEXION_PAYMENT_MOCK_SECRET`.
+
 ## Main Chain Smoke Test
 
 Start these services first: `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, and `nexion-wallet-service`.

@@ -473,6 +473,54 @@ CREATE TABLE IF NOT EXISTS nx_order (
   KEY idx_order_status (order_status, payment_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_payment_record (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  payment_no VARCHAR(96) NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  provider VARCHAR(32) NOT NULL,
+  provider_payment_id VARCHAR(128) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  currency VARCHAR(16) NOT NULL DEFAULT 'USDT',
+  payment_status VARCHAR(32) NOT NULL,
+  checkout_url VARCHAR(1024) NULL,
+  expires_at DATETIME NULL,
+  callback_event_id VARCHAR(128) NULL,
+  signature_status VARCHAR(32) NULL,
+  raw_callback TEXT NULL,
+  paid_at DATETIME NULL,
+  failed_at DATETIME NULL,
+  failure_reason VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_payment_no (payment_no),
+  UNIQUE KEY uk_payment_provider_id (provider, provider_payment_id),
+  KEY idx_payment_order (order_no),
+  KEY idx_payment_user_status (user_id, payment_status, created_at),
+  KEY idx_payment_status_time (payment_status, created_at),
+  CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_payment_callback_event (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  provider VARCHAR(32) NOT NULL,
+  provider_event_id VARCHAR(128) NOT NULL,
+  payment_no VARCHAR(96) NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  event_status VARCHAR(32) NOT NULL,
+  processing_status VARCHAR(32) NOT NULL,
+  signature_status VARCHAR(32) NULL,
+  raw_payload TEXT NULL,
+  failure_reason VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_payment_callback_event (provider, provider_event_id),
+  KEY idx_payment_callback_payment (payment_no, created_at),
+  KEY idx_payment_callback_status (processing_status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_tradein_application (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   tradein_no VARCHAR(96) NOT NULL,
@@ -583,6 +631,31 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND INDEX_NAME = 'idx_order_status') = 0,
   'ALTER TABLE nx_order ADD INDEX idx_order_status (order_status, payment_status)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND INDEX_NAME = 'uk_payment_no') = 0,
+  'ALTER TABLE nx_payment_record ADD UNIQUE KEY uk_payment_no (payment_no)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND INDEX_NAME = 'uk_payment_provider_id') = 0,
+  'ALTER TABLE nx_payment_record ADD UNIQUE KEY uk_payment_provider_id (provider, provider_payment_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND INDEX_NAME = 'idx_payment_user_status') = 0,
+  'ALTER TABLE nx_payment_record ADD INDEX idx_payment_user_status (user_id, payment_status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_payment_record_positive_amount') = 0,
+  'ALTER TABLE nx_payment_record ADD CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_callback_event' AND INDEX_NAME = 'uk_payment_callback_event') = 0,
+  'ALTER TABLE nx_payment_callback_event ADD UNIQUE KEY uk_payment_callback_event (provider, provider_event_id)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

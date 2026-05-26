@@ -26,6 +26,12 @@ server:
 nexion:
   services:
     compute-url: ${NEXION_COMPUTE_URL:http://localhost:8102}
+  payment:
+    mock:
+      secret: "${NEXION_PAYMENT_MOCK_SECRET:nexion-mock-payment-secret}"
+      checkout-base-url: ${NEXION_PAYMENT_MOCK_CHECKOUT_BASE_URL:https://mock-pay.nexion.local/checkout}
+      checkout-ttl-minutes: ${NEXION_PAYMENT_MOCK_CHECKOUT_TTL_MINUTES:15}
+      signature-window-seconds: ${NEXION_PAYMENT_MOCK_SIGNATURE_WINDOW_SECONDS:300}
   outbox:
     rocketmq:
       enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
