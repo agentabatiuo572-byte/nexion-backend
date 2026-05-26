@@ -79,6 +79,8 @@ The current backend baseline implements the first event-driven slice:
 
 - `GET /audit/logs?traceId=&serviceName=&action=&resourceType=&resourceId=&bizNo=&userId=&actorId=&result=&riskLevel=&limit=20`: query audit rows, protected by `PERM_AUDIT_READ`.
 - `GET /audit/logs/trace/{traceId}`: inspect up to 200 rows for one trace id.
+- `GET /audit/stats/summary?days=7&startAt=&endAt=&serviceName=&action=&riskLevel=&result=&userId=&actorId=`: count audit rows for a bounded time window and return result/risk distributions.
+- `GET /audit/stats/actions|services|users?days=7&limit=10`: return top action, service, or user buckets. `limit` is capped at 50 and the query window is capped at 90 days.
 - Gateway exposes the ops query route at `/api/audit/**`, currently routed to `nexion-system-service`.
 - Covered write points include Commerce order/payment success paths, Wallet deposit/withdrawal/exchange/risk-apply paths, Compliance KYC/risk/blacklist/proof evidence operations, and OpenAPI admin app/webhook delivery operations.
 - Sensitive detail keys such as `secret`, `token`, `signature`, `authorization`, `objectKey`, and raw callback bodies are redacted before persistence.
@@ -488,6 +490,7 @@ The System service exposes operational configuration, i18n messages, content pag
 - `GET /api/system/help/articles/{articleCode}`: read one active help article.
 - `POST /api/system/help/articles`: create a help article.
 - `PATCH /api/system/help/articles/{id}`: update title, content, sort order, or status.
+- `GET /api/system/ops/dashboard?days=7`: read the first Ops/KPI dashboard MVP with audit summary, top actions, top services, top users, and current module coverage. Requires `PERM_AUDIT_READ`.
 - Read endpoints require `PERM_SYSTEM_READ`; create/update endpoints require `PERM_SYSTEM_WRITE`.
 
 Supported value types are `STRING`, `NUMBER`, `BOOLEAN`, and `JSON`. Do not store credentials, private keys, or long-lived secrets in `nx_config_item`; use environment variables or a secret manager for those values.

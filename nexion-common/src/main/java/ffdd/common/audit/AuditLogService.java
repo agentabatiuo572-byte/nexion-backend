@@ -1,5 +1,6 @@
 package ffdd.common.audit;
 
+import ffdd.common.exception.BizException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -25,6 +26,10 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 public class AuditLogService {
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 200;
+    private static final int DEFAULT_STATS_DAYS = 7;
+    private static final int MAX_STATS_DAYS = 90;
+    private static final int DEFAULT_TOP_LIMIT = 10;
+    private static final int MAX_TOP_LIMIT = 50;
 
     private final NamedParameterJdbcTemplate jdbcTemplate;
     private final AuditLogSanitizer sanitizer;
@@ -95,6 +100,33 @@ public class AuditLogService {
         return jdbcTemplate.query(sql.toString(), params, this::mapRecord);
     }
 
+    public AuditStatsSummaryResponse summary(AuditStatsQueryRequest request) {
+        NormalizedAuditStatsQuery query = normalizeStatsQuery(request);
+        Long total = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM nx_audit_log " + statsWhereClause(query),
+                query.params(),
+                Long.class);
+        AuditStatsSummaryResponse response = new AuditStatsSummaryResponse();
+        response.setStartAt(query.startAt());
+        response.setEndAt(query.endAt());
+        response.setTotal(total == null ? 0L : total);
+        response.setByResult(groupStats(query, "COALESCE(result, 'UNKNOWN')", null));
+        response.setByRiskLevel(groupStats(query, "COALESCE(risk_level, 'UNKNOWN')", null));
+        return response;
+    }
+
+    public List<AuditStatsBucket> topActions(AuditStatsQueryRequest request) {
+        return groupStats(normalizeStatsQuery(request), "COALESCE(action, 'UNKNOWN')", null);
+    }
+
+    public List<AuditStatsBucket> topServices(AuditStatsQueryRequest request) {
+        return groupStats(normalizeStatsQuery(request), "COALESCE(service_name, 'UNKNOWN')", null);
+    }
+
+    public List<AuditStatsBucket> topUsers(AuditStatsQueryRequest request) {
+        return groupStats(normalizeStatsQuery(request), "CAST(user_id AS CHAR)", "user_id IS NOT NULL");
+    }
+
     private Map<String, Object> buildParams(AuditLogWriteRequest request) {
         HttpServletRequest servletRequest = currentRequest();
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -123,6 +155,79 @@ public class AuditLogService {
         return params;
     }
 
+    private NormalizedAuditStatsQuery normalizeStatsQuery(AuditStatsQueryRequest request) {
+        AuditStatsQueryRequest query = request == null ? new AuditStatsQueryRequest() : request;
+        int days = normalizeStatsDays(query.getDays());
+        LocalDateTime endAt = query.getEndAt() == null ? LocalDateTime.now() : query.getEndAt();
+        LocalDateTime startAt = query.getStartAt() == null ? endAt.minusDays(days) : query.getStartAt();
+        if (!startAt.isBefore(endAt)) {
+            throw new BizException("audit stats endAt must be after startAt");
+        }
+        LocalDateTime earliestAllowed = endAt.minusDays(MAX_STATS_DAYS);
+        if (startAt.isBefore(earliestAllowed)) {
+            startAt = earliestAllowed;
+        }
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("startAt", startAt);
+        params.put("endAt", endAt);
+        addTextFilterParam(params, "serviceName", query.getServiceName());
+        addTextFilterParam(params, "action", normalizeOptionalCode(query.getAction()));
+        addTextFilterParam(params, "riskLevel", normalizeOptionalCode(query.getRiskLevel()));
+        addTextFilterParam(params, "result", normalizeOptionalCode(query.getResult()));
+        if (query.getUserId() != null) {
+            params.put("userId", query.getUserId());
+        }
+        if (query.getActorId() != null) {
+            params.put("actorId", query.getActorId());
+        }
+        return new NormalizedAuditStatsQuery(startAt, endAt, params, normalizeTopLimit(query.getLimit()));
+    }
+
+    private String statsWhereClause(NormalizedAuditStatsQuery query) {
+        StringBuilder sql = new StringBuilder("""
+                WHERE is_deleted = 0
+                  AND created_at >= :startAt
+                  AND created_at < :endAt
+                """);
+        if (query.params().containsKey("serviceName")) {
+            sql.append(" AND service_name = :serviceName");
+        }
+        if (query.params().containsKey("action")) {
+            sql.append(" AND action = :action");
+        }
+        if (query.params().containsKey("riskLevel")) {
+            sql.append(" AND risk_level = :riskLevel");
+        }
+        if (query.params().containsKey("result")) {
+            sql.append(" AND result = :result");
+        }
+        if (query.params().containsKey("userId")) {
+            sql.append(" AND user_id = :userId");
+        }
+        if (query.params().containsKey("actorId")) {
+            sql.append(" AND actor_id = :actorId");
+        }
+        return sql.toString();
+    }
+
+    private List<AuditStatsBucket> groupStats(
+            NormalizedAuditStatsQuery query, String bucketExpression, String extraWhere) {
+        Map<String, Object> params = new LinkedHashMap<>(query.params());
+        params.put("limit", query.limit());
+        StringBuilder sql = new StringBuilder()
+                .append("SELECT ")
+                .append(bucketExpression)
+                .append(" AS bucket_key, COUNT(*) AS bucket_count FROM nx_audit_log ")
+                .append(statsWhereClause(query));
+        if (StringUtils.hasText(extraWhere)) {
+            sql.append(" AND ").append(extraWhere);
+        }
+        sql.append(" GROUP BY ")
+                .append(bucketExpression)
+                .append(" ORDER BY bucket_count DESC, bucket_key ASC LIMIT :limit");
+        return jdbcTemplate.query(sql.toString(), params, this::mapBucket);
+    }
+
     private AuditLogRecord mapRecord(ResultSet rs, int rowNum) throws SQLException {
         AuditLogRecord record = new AuditLogRecord();
         record.setId(rs.getLong("id"));
@@ -144,6 +249,10 @@ public class AuditLogService {
         record.setDetailJson(rs.getString("detail_json"));
         record.setCreatedAt(toLocalDateTime(rs, "created_at"));
         return record;
+    }
+
+    private AuditStatsBucket mapBucket(ResultSet rs, int rowNum) throws SQLException {
+        return new AuditStatsBucket(rs.getString("bucket_key"), rs.getLong("bucket_count"));
     }
 
     private void addTextFilter(
@@ -207,8 +316,18 @@ public class AuditLogService {
         return value.trim().toUpperCase(Locale.ROOT);
     }
 
+    private String normalizeOptionalCode(String value) {
+        return StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : null;
+    }
+
     private String textOrNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private void addTextFilterParam(Map<String, Object> params, String paramName, String value) {
+        if (StringUtils.hasText(value)) {
+            params.put(paramName, value.trim());
+        }
     }
 
     private Long parseLong(String value) {
@@ -238,4 +357,21 @@ public class AuditLogService {
         }
         return Math.min(limit, MAX_LIMIT);
     }
+
+    private int normalizeStatsDays(Integer days) {
+        if (days == null || days < 1) {
+            return DEFAULT_STATS_DAYS;
+        }
+        return Math.min(days, MAX_STATS_DAYS);
+    }
+
+    private int normalizeTopLimit(Integer limit) {
+        if (limit == null || limit < 1) {
+            return DEFAULT_TOP_LIMIT;
+        }
+        return Math.min(limit, MAX_TOP_LIMIT);
+    }
+
+    private record NormalizedAuditStatsQuery(
+            LocalDateTime startAt, LocalDateTime endAt, Map<String, Object> params, int limit) {}
 }

@@ -30,4 +30,24 @@ public class AuditLogController {
         request.setLimit(200);
         return ApiResult.ok(auditLogService.list(request));
     }
+
+    @GetMapping("/stats/summary")
+    public ApiResult<AuditStatsSummaryResponse> summary(AuditStatsQueryRequest request) {
+        return ApiResult.ok(auditLogService.summary(request));
+    }
+
+    @GetMapping("/stats/actions")
+    public ApiResult<List<AuditStatsBucket>> actions(AuditStatsQueryRequest request) {
+        return ApiResult.ok(auditLogService.topActions(request));
+    }
+
+    @GetMapping("/stats/services")
+    public ApiResult<List<AuditStatsBucket>> services(AuditStatsQueryRequest request) {
+        return ApiResult.ok(auditLogService.topServices(request));
+    }
+
+    @GetMapping("/stats/users")
+    public ApiResult<List<AuditStatsBucket>> users(AuditStatsQueryRequest request) {
+        return ApiResult.ok(auditLogService.topUsers(request));
+    }
 }
