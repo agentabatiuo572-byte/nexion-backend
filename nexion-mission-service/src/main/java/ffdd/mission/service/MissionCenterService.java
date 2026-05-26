@@ -9,24 +9,36 @@ import ffdd.mission.domain.Achievement;
 import ffdd.mission.domain.DailyCheckIn;
 import ffdd.mission.domain.Mission;
 import ffdd.mission.domain.PointsLedger;
+import ffdd.mission.domain.StreakMilestone;
+import ffdd.mission.domain.StreakPowerUp;
 import ffdd.mission.domain.UserAchievement;
 import ffdd.mission.domain.UserMission;
 import ffdd.mission.domain.UserStreak;
+import ffdd.mission.domain.UserStreakMilestone;
+import ffdd.mission.domain.UserStreakPowerUp;
 import ffdd.mission.dto.AchievementClaimResponse;
 import ffdd.mission.dto.AchievementItemResponse;
 import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionItemResponse;
 import ffdd.mission.dto.MissionListResponse;
 import ffdd.mission.dto.PointsSummaryResponse;
+import ffdd.mission.dto.StreakMilestoneClaimResponse;
+import ffdd.mission.dto.StreakMilestoneItemResponse;
+import ffdd.mission.dto.StreakPowerUpActivationResponse;
+import ffdd.mission.dto.StreakPowerUpItemResponse;
 import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
 import ffdd.mission.mapper.AchievementMapper;
 import ffdd.mission.mapper.DailyCheckInMapper;
 import ffdd.mission.mapper.MissionMapper;
 import ffdd.mission.mapper.PointsLedgerMapper;
+import ffdd.mission.mapper.StreakMilestoneMapper;
+import ffdd.mission.mapper.StreakPowerUpMapper;
 import ffdd.mission.mapper.UserAchievementMapper;
 import ffdd.mission.mapper.UserMissionMapper;
 import ffdd.mission.mapper.UserStreakMapper;
+import ffdd.mission.mapper.UserStreakMilestoneMapper;
+import ffdd.mission.mapper.UserStreakPowerUpMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -52,12 +64,17 @@ public class MissionCenterService {
     private static final String STATUS_UNLOCKED = "UNLOCKED";
     private static final String STATUS_CLAIMED = "CLAIMED";
     private static final String STATUS_ALREADY_CLAIMED = "ALREADY_CLAIMED";
+    private static final String STATUS_ACTIVATED = "ACTIVATED";
+    private static final String STATUS_ALREADY_ACTIVATED = "ALREADY_ACTIVATED";
     private static final String STATUS_RESTORED = "RESTORED";
     private static final String STATUS_NOT_BROKEN = "NOT_BROKEN";
     private static final String STATUS_NO_SAVERS = "NO_SAVERS";
     private static final String STATUS_NO_RECOVERABLE_STREAK = "NO_RECOVERABLE_STREAK";
     private static final String BIZ_TYPE_DAILY_CHECK_IN = "DAILY_CHECK_IN";
     private static final String BIZ_TYPE_ACHIEVEMENT = "ACHIEVEMENT";
+    private static final String BIZ_TYPE_STREAK_MILESTONE = "STREAK_MILESTONE";
+    private static final String REWARD_TYPE_POINTS = "POINTS";
+    private static final String REWARD_TYPE_BADGE = "BADGE";
     private static final String TRIGGER_STREAK_DAYS = "STREAK_DAYS";
     private static final int INITIAL_STREAK_SAVERS = 1;
     private static final int STREAK_SAVER_RECOVERY_LIMIT_DAYS = 30;
@@ -65,6 +82,7 @@ public class MissionCenterService {
     private static final int STREAK_BONUS_POINTS = 5;
     private static final BigDecimal DEFAULT_REWARD_MULTIPLIER = new BigDecimal("1.00");
     private static final Pattern ACHIEVEMENT_CODE_PATTERN = Pattern.compile("[A-Z0-9_]{1,64}");
+    private static final Pattern POWER_UP_CODE_PATTERN = Pattern.compile("[a-z0-9_]{1,64}");
 
     private final MissionMapper missionMapper;
     private final UserMissionMapper userMissionMapper;
@@ -73,6 +91,10 @@ public class MissionCenterService {
     private final UserStreakMapper userStreakMapper;
     private final AchievementMapper achievementMapper;
     private final UserAchievementMapper userAchievementMapper;
+    private final StreakPowerUpMapper streakPowerUpMapper;
+    private final UserStreakPowerUpMapper userStreakPowerUpMapper;
+    private final StreakMilestoneMapper streakMilestoneMapper;
+    private final UserStreakMilestoneMapper userStreakMilestoneMapper;
     private final DailyCheckInRewardPolicy rewardPolicy;
 
     public MissionCenterService(
@@ -83,6 +105,10 @@ public class MissionCenterService {
             UserStreakMapper userStreakMapper,
             AchievementMapper achievementMapper,
             UserAchievementMapper userAchievementMapper,
+            StreakPowerUpMapper streakPowerUpMapper,
+            UserStreakPowerUpMapper userStreakPowerUpMapper,
+            StreakMilestoneMapper streakMilestoneMapper,
+            UserStreakMilestoneMapper userStreakMilestoneMapper,
             DailyCheckInRewardPolicy rewardPolicy) {
         this.missionMapper = missionMapper;
         this.userMissionMapper = userMissionMapper;
@@ -91,6 +117,10 @@ public class MissionCenterService {
         this.userStreakMapper = userStreakMapper;
         this.achievementMapper = achievementMapper;
         this.userAchievementMapper = userAchievementMapper;
+        this.streakPowerUpMapper = streakPowerUpMapper;
+        this.userStreakPowerUpMapper = userStreakPowerUpMapper;
+        this.streakMilestoneMapper = streakMilestoneMapper;
+        this.userStreakMilestoneMapper = userStreakMilestoneMapper;
         this.rewardPolicy = rewardPolicy;
     }
 
@@ -279,6 +309,180 @@ public class MissionCenterService {
                 .toList();
     }
 
+    public List<StreakPowerUpItemResponse> listPowerUps(Long userId) {
+        requireUserId(userId);
+        int currentStreak = currentStreak(findUserStreak(userId));
+        Map<String, UserStreakPowerUp> activations = userPowerUps(userId).stream()
+                .collect(Collectors.toMap(UserStreakPowerUp::getPowerUpCode, Function.identity(), (left, right) -> left));
+        return activePowerUps().stream()
+                .map(powerUp -> toPowerUpItem(powerUp, activations.get(powerUp.getPowerUpCode()), currentStreak))
+                .toList();
+    }
+
+    public List<StreakMilestoneItemResponse> listMilestones(Long userId) {
+        requireUserId(userId);
+        int currentStreak = currentStreak(findUserStreak(userId));
+        Map<Integer, UserStreakMilestone> claims = userMilestones(userId).stream()
+                .collect(Collectors.toMap(UserStreakMilestone::getMilestoneDay, Function.identity(), (left, right) -> left));
+        return activeMilestones().stream()
+                .map(milestone -> toMilestoneItem(milestone, claims.get(milestone.getMilestoneDay()), currentStreak))
+                .toList();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public StreakPowerUpActivationResponse activatePowerUp(Long userId, String powerUpCode) {
+        requireUserId(userId);
+        String normalizedCode = normalizePowerUpCode(powerUpCode);
+        StreakPowerUp powerUp = requirePowerUp(normalizedCode);
+        UserStreakPowerUp existing = findUserPowerUp(userId, normalizedCode);
+        int currentStreak = currentStreak(findUserStreak(userId));
+        if (existing != null && STATUS_ACTIVATED.equals(existing.getPowerUpStatus())) {
+            return powerUpActivationResponse(
+                    userId,
+                    powerUp,
+                    false,
+                    STATUS_ALREADY_ACTIVATED,
+                    currentStreak,
+                    existing.getActivatedAt(),
+                    existing.getExpiresAt());
+        }
+        if (currentStreak < intValue(powerUp.getUnlockStreakDays())) {
+            return powerUpActivationResponse(
+                    userId,
+                    powerUp,
+                    false,
+                    STATUS_LOCKED,
+                    currentStreak,
+                    null,
+                    null);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime expiresAt = powerUpExpiresAt(powerUp, now);
+        UserStreakPowerUp activation = new UserStreakPowerUp();
+        activation.setUserId(userId);
+        activation.setPowerUpId(powerUp.getId());
+        activation.setPowerUpCode(powerUp.getPowerUpCode());
+        activation.setPowerUpStatus(STATUS_ACTIVATED);
+        activation.setUnlockedAt(now);
+        activation.setActivatedAt(now);
+        activation.setExpiresAt(expiresAt);
+        activation.setIsDeleted(0);
+        try {
+            if (existing == null) {
+                userStreakPowerUpMapper.insert(activation);
+            } else {
+                activation.setId(existing.getId());
+                activation.setUnlockedAt(existing.getUnlockedAt() == null ? now : existing.getUnlockedAt());
+                userStreakPowerUpMapper.updateById(activation);
+            }
+        } catch (DuplicateKeyException ignored) {
+            UserStreakPowerUp latest = findUserPowerUp(userId, normalizedCode);
+            if (latest != null && STATUS_ACTIVATED.equals(latest.getPowerUpStatus())) {
+                return powerUpActivationResponse(
+                        userId,
+                        powerUp,
+                        false,
+                        STATUS_ALREADY_ACTIVATED,
+                        currentStreak,
+                        latest.getActivatedAt(),
+                        latest.getExpiresAt());
+            }
+            throw ignored;
+        }
+
+        unlockPowerUpBadge(userId, powerUp, now);
+        return powerUpActivationResponse(
+                userId,
+                powerUp,
+                true,
+                STATUS_ACTIVATED,
+                currentStreak,
+                activation.getActivatedAt(),
+                activation.getExpiresAt());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public StreakMilestoneClaimResponse claimMilestone(Long userId, Integer milestoneDay) {
+        requireUserId(userId);
+        int normalizedDay = normalizeMilestoneDay(milestoneDay);
+        StreakMilestone milestone = requireMilestone(normalizedDay);
+        UserStreakMilestone existing = findUserMilestone(userId, normalizedDay);
+        int currentStreak = currentStreak(findUserStreak(userId));
+        int currentTotalPoints = totalPoints(userId);
+        if (existing != null && STATUS_CLAIMED.equals(existing.getClaimStatus())) {
+            return milestoneClaimResponse(
+                    userId,
+                    milestone,
+                    false,
+                    STATUS_ALREADY_CLAIMED,
+                    currentStreak,
+                    0,
+                    currentTotalPoints,
+                    existing.getClaimedAt());
+        }
+        if (currentStreak < normalizedDay) {
+            return milestoneClaimResponse(
+                    userId,
+                    milestone,
+                    false,
+                    STATUS_LOCKED,
+                    currentStreak,
+                    0,
+                    currentTotalPoints,
+                    null);
+        }
+
+        int awardedPoints = milestonePoints(milestone);
+        LocalDateTime now = LocalDateTime.now();
+        UserStreakMilestone claim = new UserStreakMilestone();
+        claim.setUserId(userId);
+        claim.setMilestoneId(milestone.getId());
+        claim.setMilestoneDay(milestone.getMilestoneDay());
+        claim.setRewardType(milestone.getRewardType());
+        claim.setRewardAmount(milestone.getRewardAmount());
+        claim.setClaimStatus(STATUS_CLAIMED);
+        claim.setClaimedAt(now);
+        claim.setIsDeleted(0);
+        try {
+            userStreakMilestoneMapper.insert(claim);
+        } catch (DuplicateKeyException ignored) {
+            UserStreakMilestone latest = findUserMilestone(userId, normalizedDay);
+            if (latest != null && STATUS_CLAIMED.equals(latest.getClaimStatus())) {
+                return milestoneClaimResponse(
+                        userId,
+                        milestone,
+                        false,
+                        STATUS_ALREADY_CLAIMED,
+                        currentStreak,
+                        0,
+                        currentTotalPoints,
+                        latest.getClaimedAt());
+            }
+            throw ignored;
+        }
+
+        int balanceAfter = currentTotalPoints + awardedPoints;
+        if (awardedPoints > 0) {
+            insertPointsLedgerIfNeeded(
+                    userId,
+                    milestoneBizNo(userId, normalizedDay),
+                    BIZ_TYPE_STREAK_MILESTONE,
+                    awardedPoints,
+                    balanceAfter);
+        }
+        unlockMilestoneBadge(userId, milestone, now);
+        return milestoneClaimResponse(
+                userId,
+                milestone,
+                true,
+                STATUS_CLAIMED,
+                currentStreak,
+                awardedPoints,
+                balanceAfter,
+                now);
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public AchievementClaimResponse claimAchievement(Long userId, String achievementCode) {
         requireUserId(userId);
@@ -458,6 +662,26 @@ public class MissionCenterService {
                 .toList();
     }
 
+    private List<StreakPowerUp> activePowerUps() {
+        List<StreakPowerUp> powerUps = streakPowerUpMapper.selectList(new LambdaQueryWrapper<StreakPowerUp>()
+                .eq(StreakPowerUp::getStatus, 1)
+                .eq(StreakPowerUp::getIsDeleted, 0)
+                .orderByAsc(StreakPowerUp::getUnlockStreakDays)
+                .orderByAsc(StreakPowerUp::getSortOrder)
+                .orderByAsc(StreakPowerUp::getId));
+        return powerUps == null ? List.of() : powerUps;
+    }
+
+    private List<StreakMilestone> activeMilestones() {
+        List<StreakMilestone> milestones = streakMilestoneMapper.selectList(new LambdaQueryWrapper<StreakMilestone>()
+                .eq(StreakMilestone::getStatus, 1)
+                .eq(StreakMilestone::getIsDeleted, 0)
+                .orderByAsc(StreakMilestone::getMilestoneDay)
+                .orderByAsc(StreakMilestone::getSortOrder)
+                .orderByAsc(StreakMilestone::getId));
+        return milestones == null ? List.of() : milestones;
+    }
+
     private List<UserAchievement> userAchievements(Long userId) {
         List<UserAchievement> achievements = userAchievementMapper.selectList(new LambdaQueryWrapper<UserAchievement>()
                 .eq(UserAchievement::getUserId, userId)
@@ -465,11 +689,61 @@ public class MissionCenterService {
         return achievements == null ? List.of() : achievements;
     }
 
+    private List<UserStreakPowerUp> userPowerUps(Long userId) {
+        List<UserStreakPowerUp> powerUps = userStreakPowerUpMapper.selectList(new LambdaQueryWrapper<UserStreakPowerUp>()
+                .eq(UserStreakPowerUp::getUserId, userId)
+                .eq(UserStreakPowerUp::getIsDeleted, 0));
+        return powerUps == null ? List.of() : powerUps;
+    }
+
+    private List<UserStreakMilestone> userMilestones(Long userId) {
+        List<UserStreakMilestone> milestones = userStreakMilestoneMapper.selectList(new LambdaQueryWrapper<UserStreakMilestone>()
+                .eq(UserStreakMilestone::getUserId, userId)
+                .eq(UserStreakMilestone::getIsDeleted, 0));
+        return milestones == null ? List.of() : milestones;
+    }
+
     private UserAchievement findUserAchievement(Long userId, String achievementCode) {
         return userAchievementMapper.selectOne(new LambdaQueryWrapper<UserAchievement>()
                 .eq(UserAchievement::getUserId, userId)
                 .eq(UserAchievement::getAchievementCode, achievementCode)
                 .eq(UserAchievement::getIsDeleted, 0));
+    }
+
+    private StreakPowerUp requirePowerUp(String powerUpCode) {
+        StreakPowerUp powerUp = streakPowerUpMapper.selectOne(new LambdaQueryWrapper<StreakPowerUp>()
+                .eq(StreakPowerUp::getPowerUpCode, powerUpCode)
+                .eq(StreakPowerUp::getStatus, 1)
+                .eq(StreakPowerUp::getIsDeleted, 0));
+        if (powerUp == null) {
+            throw new BizException("Power-up not found");
+        }
+        return powerUp;
+    }
+
+    private StreakMilestone requireMilestone(int milestoneDay) {
+        StreakMilestone milestone = streakMilestoneMapper.selectOne(new LambdaQueryWrapper<StreakMilestone>()
+                .eq(StreakMilestone::getMilestoneDay, milestoneDay)
+                .eq(StreakMilestone::getStatus, 1)
+                .eq(StreakMilestone::getIsDeleted, 0));
+        if (milestone == null) {
+            throw new BizException("Streak milestone not found");
+        }
+        return milestone;
+    }
+
+    private UserStreakPowerUp findUserPowerUp(Long userId, String powerUpCode) {
+        return userStreakPowerUpMapper.selectOne(new LambdaQueryWrapper<UserStreakPowerUp>()
+                .eq(UserStreakPowerUp::getUserId, userId)
+                .eq(UserStreakPowerUp::getPowerUpCode, powerUpCode)
+                .eq(UserStreakPowerUp::getIsDeleted, 0));
+    }
+
+    private UserStreakMilestone findUserMilestone(Long userId, int milestoneDay) {
+        return userStreakMilestoneMapper.selectOne(new LambdaQueryWrapper<UserStreakMilestone>()
+                .eq(UserStreakMilestone::getUserId, userId)
+                .eq(UserStreakMilestone::getMilestoneDay, milestoneDay)
+                .eq(UserStreakMilestone::getIsDeleted, 0));
     }
 
     private AchievementItemResponse toAchievementItem(
@@ -490,6 +764,48 @@ public class MissionCenterService {
                         : 0,
                 userAchievement == null ? null : userAchievement.getUnlockedAt(),
                 userAchievement == null ? null : userAchievement.getClaimedAt());
+    }
+
+    private StreakPowerUpItemResponse toPowerUpItem(
+            StreakPowerUp powerUp,
+            UserStreakPowerUp activation,
+            int currentStreak) {
+        int unlockStreakDays = intValue(powerUp.getUnlockStreakDays());
+        return new StreakPowerUpItemResponse(
+                powerUp.getId(),
+                powerUp.getPowerUpCode(),
+                powerUp.getPowerUpName(),
+                powerUp.getI18nKey(),
+                powerUp.getTargetPath(),
+                powerUp.getBadgeAchievementCode(),
+                unlockStreakDays,
+                currentStreak,
+                Math.max(0, unlockStreakDays - currentStreak),
+                powerUp.getEffectType(),
+                powerUp.getEffectValue(),
+                intValue(powerUp.getDurationDays()),
+                powerUpStatus(powerUp, activation, currentStreak),
+                activation == null ? null : activation.getActivatedAt(),
+                activation == null ? null : activation.getExpiresAt());
+    }
+
+    private StreakMilestoneItemResponse toMilestoneItem(
+            StreakMilestone milestone,
+            UserStreakMilestone claim,
+            int currentStreak) {
+        int milestoneDay = intValue(milestone.getMilestoneDay());
+        return new StreakMilestoneItemResponse(
+                milestone.getId(),
+                milestoneDay,
+                milestone.getMilestoneName(),
+                milestone.getRewardType(),
+                milestone.getRewardAmount(),
+                milestone.getRewardName(),
+                milestone.getBadgeAchievementCode(),
+                currentStreak,
+                Math.max(0, milestoneDay - currentStreak),
+                milestoneStatus(milestone, claim, currentStreak),
+                claim == null ? null : claim.getClaimedAt());
     }
 
     private DailyCheckInResponse dailyCheckInResponse(
@@ -538,6 +854,124 @@ public class MissionCenterService {
                 checkedInToday(streak));
     }
 
+    private StreakPowerUpActivationResponse powerUpActivationResponse(
+            Long userId,
+            StreakPowerUp powerUp,
+            boolean activated,
+            String status,
+            int currentStreak,
+            LocalDateTime activatedAt,
+            LocalDateTime expiresAt) {
+        int unlockStreakDays = intValue(powerUp.getUnlockStreakDays());
+        return new StreakPowerUpActivationResponse(
+                userId,
+                powerUp.getPowerUpCode(),
+                activated,
+                status,
+                currentStreak,
+                unlockStreakDays,
+                Math.max(0, unlockStreakDays - currentStreak),
+                powerUp.getTargetPath(),
+                powerUp.getBadgeAchievementCode(),
+                activatedAt,
+                expiresAt);
+    }
+
+    private StreakMilestoneClaimResponse milestoneClaimResponse(
+            Long userId,
+            StreakMilestone milestone,
+            boolean claimed,
+            String status,
+            int currentStreak,
+            int awardedPoints,
+            int totalPoints,
+            LocalDateTime claimedAt) {
+        int milestoneDay = intValue(milestone.getMilestoneDay());
+        return new StreakMilestoneClaimResponse(
+                userId,
+                milestoneDay,
+                claimed,
+                status,
+                currentStreak,
+                Math.max(0, milestoneDay - currentStreak),
+                milestone.getRewardType(),
+                milestone.getRewardAmount(),
+                milestone.getRewardName(),
+                awardedPoints,
+                totalPoints,
+                milestone.getBadgeAchievementCode(),
+                claimedAt);
+    }
+
+    private String powerUpStatus(StreakPowerUp powerUp, UserStreakPowerUp activation, int currentStreak) {
+        if (activation != null && STATUS_ACTIVATED.equals(activation.getPowerUpStatus())) {
+            return STATUS_ACTIVATED;
+        }
+        return currentStreak >= intValue(powerUp.getUnlockStreakDays()) ? STATUS_UNLOCKED : STATUS_LOCKED;
+    }
+
+    private String milestoneStatus(StreakMilestone milestone, UserStreakMilestone claim, int currentStreak) {
+        if (claim != null && STATUS_CLAIMED.equals(claim.getClaimStatus())) {
+            return STATUS_CLAIMED;
+        }
+        return currentStreak >= intValue(milestone.getMilestoneDay()) ? STATUS_UNLOCKED : STATUS_LOCKED;
+    }
+
+    private void unlockPowerUpBadge(Long userId, StreakPowerUp powerUp, LocalDateTime now) {
+        String badgeCode = normalizeConfiguredAchievementCode(powerUp.getBadgeAchievementCode());
+        if (badgeCode == null || findUserAchievement(userId, badgeCode) != null) {
+            return;
+        }
+        Achievement achievement = achievementMapper.selectOne(new LambdaQueryWrapper<Achievement>()
+                .eq(Achievement::getAchievementCode, badgeCode)
+                .eq(Achievement::getStatus, 1)
+                .eq(Achievement::getIsDeleted, 0));
+        if (achievement == null) {
+            return;
+        }
+        UserAchievement userAchievement = new UserAchievement();
+        userAchievement.setUserId(userId);
+        userAchievement.setAchievementId(achievement.getId());
+        userAchievement.setAchievementCode(achievement.getAchievementCode());
+        userAchievement.setAchievementStatus(STATUS_UNLOCKED);
+        userAchievement.setUnlockedAt(now);
+        userAchievement.setIsDeleted(0);
+        try {
+            userAchievementMapper.insert(userAchievement);
+        } catch (DuplicateKeyException ignored) {
+            // Concurrent activation has already unlocked the same badge.
+        }
+    }
+
+    private void unlockMilestoneBadge(Long userId, StreakMilestone milestone, LocalDateTime now) {
+        if (!REWARD_TYPE_BADGE.equals(milestone.getRewardType())) {
+            return;
+        }
+        String badgeCode = normalizeConfiguredAchievementCode(milestone.getBadgeAchievementCode());
+        if (badgeCode == null || findUserAchievement(userId, badgeCode) != null) {
+            return;
+        }
+        Achievement achievement = achievementMapper.selectOne(new LambdaQueryWrapper<Achievement>()
+                .eq(Achievement::getAchievementCode, badgeCode)
+                .eq(Achievement::getStatus, 1)
+                .eq(Achievement::getIsDeleted, 0));
+        if (achievement == null) {
+            return;
+        }
+        UserAchievement userAchievement = new UserAchievement();
+        userAchievement.setUserId(userId);
+        userAchievement.setAchievementId(achievement.getId());
+        userAchievement.setAchievementCode(achievement.getAchievementCode());
+        userAchievement.setAchievementStatus(STATUS_UNLOCKED);
+        userAchievement.setUnlockedAt(now);
+        userAchievement.setIsDeleted(0);
+        try {
+            userAchievementMapper.insert(userAchievement);
+        } catch (DuplicateKeyException ignored) {
+            // Concurrent milestone claim has already unlocked the same badge.
+        }
+    }
+
     private void insertPointsLedgerIfNeeded(
             Long userId,
             String bizNo,
@@ -579,6 +1013,10 @@ public class MissionCenterService {
         return "ACHIEVEMENT-" + achievementCode + "-" + userId;
     }
 
+    private String milestoneBizNo(Long userId, int milestoneDay) {
+        return "STREAK-MILESTONE-" + milestoneDay + "-" + userId;
+    }
+
     private String normalizeAchievementCode(String achievementCode) {
         if (achievementCode == null) {
             throw new BizException("Achievement code is required");
@@ -588,6 +1026,37 @@ public class MissionCenterService {
             throw new BizException("Unsupported achievement code");
         }
         return normalized;
+    }
+
+    private String normalizePowerUpCode(String powerUpCode) {
+        if (powerUpCode == null) {
+            throw new BizException("Power-up code is required");
+        }
+        String normalized = powerUpCode.trim().toLowerCase();
+        if (!POWER_UP_CODE_PATTERN.matcher(normalized).matches()) {
+            throw new BizException("Unsupported power-up code");
+        }
+        return normalized;
+    }
+
+    private int normalizeMilestoneDay(Integer milestoneDay) {
+        if (milestoneDay == null || milestoneDay < 1) {
+            throw new BizException("Milestone day is required");
+        }
+        return milestoneDay;
+    }
+
+    private String normalizeConfiguredAchievementCode(String achievementCode) {
+        if (achievementCode == null) {
+            return null;
+        }
+        String normalized = achievementCode.trim().toUpperCase();
+        return ACHIEVEMENT_CODE_PATTERN.matcher(normalized).matches() ? normalized : null;
+    }
+
+    private LocalDateTime powerUpExpiresAt(StreakPowerUp powerUp, LocalDateTime activatedAt) {
+        int durationDays = intValue(powerUp == null ? null : powerUp.getDurationDays());
+        return durationDays > 0 ? activatedAt.plusDays(durationDays) : null;
     }
 
     private int nextStreakMilestone(int currentStreak) {
@@ -659,6 +1128,21 @@ public class MissionCenterService {
 
     private int rewardPoints(Achievement achievement) {
         return achievement.getRewardPoints() == null ? 0 : achievement.getRewardPoints();
+    }
+
+    private int milestonePoints(StreakMilestone milestone) {
+        if (milestone == null || !REWARD_TYPE_POINTS.equals(milestone.getRewardType())) {
+            return 0;
+        }
+        BigDecimal amount = milestone.getRewardAmount();
+        if (amount == null || amount.signum() <= 0) {
+            return 0;
+        }
+        try {
+            return amount.intValueExact();
+        } catch (ArithmeticException ex) {
+            throw new BizException("Unsupported milestone points reward");
+        }
     }
 
     private int basePoints(DailyCheckIn checkIn) {

@@ -319,13 +319,56 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO nx_achievement (id, achievement_code, achievement_name, category, trigger_type, trigger_value, reward_points, status)
 VALUES
   (1, 'STREAK_3', '3-Day Streak', 'LOYALTY', 'STREAK_DAYS', 3, 5, 1),
-  (2, 'STREAK_7', '7-Day Streak', 'LOYALTY', 'STREAK_DAYS', 7, 15, 1)
+  (2, 'STREAK_7', '7-Day Streak', 'LOYALTY', 'STREAK_DAYS', 7, 15, 1),
+  (3, 'STREAK_ROYALTY', 'Streak Royalty', 'LOYALTY', 'POWER_UP_ACTIVATION', 0, 0, 1),
+  (4, 'STREAK_PREMIUM', 'Streak Premium', 'LOYALTY', 'POWER_UP_ACTIVATION', 0, 0, 1),
+  (5, 'STREAK_STAKER', 'Streak Staker', 'LOYALTY', 'POWER_UP_ACTIVATION', 0, 0, 1),
+  (6, 'STREAK_FOUNDER', 'Streak Founder', 'LOYALTY', 'POWER_UP_ACTIVATION', 0, 0, 1),
+  (7, 'STREAK_MASTER', 'Streak Master', 'LOYALTY', 'STREAK_MILESTONE', 100, 0, 1)
 ON DUPLICATE KEY UPDATE
   achievement_name = VALUES(achievement_name),
   category = VALUES(category),
   trigger_type = VALUES(trigger_type),
   trigger_value = VALUES(trigger_value),
   reward_points = VALUES(reward_points),
+  status = VALUES(status);
+
+INSERT INTO nx_streak_power_up
+  (id, power_up_code, power_up_name, i18n_key, target_path, badge_achievement_code, unlock_streak_days, effect_type, effect_value, duration_days, sort_order, status)
+VALUES
+  (1, 'royalty_boost', 'Royalty Boost +5% this week', 'royalty_boost', '/team/unilevel/how-it-works', 'STREAK_ROYALTY', 7, 'CONVERSION_LINK', 'ROYALTY_BOOST_5PCT_WEEK', 7, 10, 1),
+  (2, 'premium_trial', 'Premium 7-day free trial', 'premium_trial', '/me/wallet/premium', 'STREAK_PREMIUM', 14, 'CONVERSION_LINK', 'PREMIUM_TRIAL_7D', 7, 20, 1),
+  (3, 'staking_boost', '+2% APY on next stake', 'staking_boost', '/staking', 'STREAK_STAKER', 30, 'CONVERSION_LINK', 'STAKING_APY_2PCT_NEXT', 0, 30, 1),
+  (4, 'genesis_whitelist', 'Genesis whitelist priority', 'genesis_whitelist', '/genesis', 'STREAK_FOUNDER', 60, 'CONVERSION_LINK', 'GENESIS_WHITELIST_PRIORITY', 0, 40, 1)
+ON DUPLICATE KEY UPDATE
+  power_up_name = VALUES(power_up_name),
+  i18n_key = VALUES(i18n_key),
+  target_path = VALUES(target_path),
+  badge_achievement_code = VALUES(badge_achievement_code),
+  unlock_streak_days = VALUES(unlock_streak_days),
+  effect_type = VALUES(effect_type),
+  effect_value = VALUES(effect_value),
+  duration_days = VALUES(duration_days),
+  sort_order = VALUES(sort_order),
+  status = VALUES(status);
+
+INSERT INTO nx_streak_milestone
+  (id, milestone_day, milestone_name, reward_type, reward_amount, reward_name, badge_achievement_code, sort_order, status)
+VALUES
+  (1, 3, '3-Day Streak', 'POINTS', 5.000000, '+5 Points', NULL, 10, 1),
+  (2, 7, '7-Day Streak', 'POINTS', 15.000000, '+15 Points', NULL, 20, 1),
+  (3, 14, '14-Day Streak', 'USDT', 1.000000, '+1 USDT', NULL, 30, 1),
+  (4, 21, '21-Day Streak', 'NEX', 100.000000, '+100 NEX', NULL, 40, 1),
+  (5, 30, '30-Day Streak', 'SPIN', 1.000000, 'Lucky Spin x1', NULL, 50, 1),
+  (6, 60, '60-Day Streak', 'USDT', 10.000000, '+10 USDT', NULL, 60, 1),
+  (7, 100, '100-Day Streak', 'BADGE', 1.000000, 'Streak Master Badge', 'STREAK_MASTER', 70, 1)
+ON DUPLICATE KEY UPDATE
+  milestone_name = VALUES(milestone_name),
+  reward_type = VALUES(reward_type),
+  reward_amount = VALUES(reward_amount),
+  reward_name = VALUES(reward_name),
+  badge_achievement_code = VALUES(badge_achievement_code),
+  sort_order = VALUES(sort_order),
   status = VALUES(status);
 
 INSERT INTO nx_notification (id, biz_no, user_id, type, title, body, read_flag, push_status)

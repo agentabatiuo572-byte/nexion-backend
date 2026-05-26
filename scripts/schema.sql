@@ -1087,6 +1087,77 @@ CREATE TABLE IF NOT EXISTS nx_user_achievement (
   KEY idx_user_achievement_status (achievement_status, unlocked_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_streak_power_up (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  power_up_code VARCHAR(64) NOT NULL,
+  power_up_name VARCHAR(128) NOT NULL,
+  i18n_key VARCHAR(96) NOT NULL,
+  target_path VARCHAR(255) NOT NULL,
+  badge_achievement_code VARCHAR(64) NOT NULL,
+  unlock_streak_days INT NOT NULL,
+  effect_type VARCHAR(32) NOT NULL,
+  effect_value VARCHAR(128) NULL,
+  duration_days INT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_streak_power_up_code (power_up_code),
+  KEY idx_streak_power_up_threshold (unlock_streak_days, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_streak_power_up (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  power_up_id BIGINT NOT NULL,
+  power_up_code VARCHAR(64) NOT NULL,
+  power_up_status VARCHAR(32) NOT NULL,
+  unlocked_at DATETIME NULL,
+  activated_at DATETIME NULL,
+  expires_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_streak_power_up (user_id, power_up_code),
+  KEY idx_user_streak_power_up_status (power_up_status, activated_at),
+  KEY idx_user_streak_power_up_expiry (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_streak_milestone (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  milestone_day INT NOT NULL,
+  milestone_name VARCHAR(128) NOT NULL,
+  reward_type VARCHAR(32) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  reward_name VARCHAR(128) NOT NULL,
+  badge_achievement_code VARCHAR(64) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_streak_milestone_day (milestone_day),
+  KEY idx_streak_milestone_status (status, sort_order, milestone_day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_streak_milestone (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  milestone_id BIGINT NOT NULL,
+  milestone_day INT NOT NULL,
+  reward_type VARCHAR(32) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  claim_status VARCHAR(32) NOT NULL,
+  claimed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_streak_milestone (user_id, milestone_day),
+  KEY idx_user_streak_milestone_status (claim_status, claimed_at),
+  KEY idx_user_streak_milestone_day (milestone_day, claimed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_points_ledger (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,

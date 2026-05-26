@@ -7,6 +7,10 @@ import ffdd.mission.dto.AchievementItemResponse;
 import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionListResponse;
 import ffdd.mission.dto.PointsSummaryResponse;
+import ffdd.mission.dto.StreakMilestoneClaimResponse;
+import ffdd.mission.dto.StreakMilestoneItemResponse;
+import ffdd.mission.dto.StreakPowerUpActivationResponse;
+import ffdd.mission.dto.StreakPowerUpItemResponse;
 import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
 import ffdd.mission.service.MissionCenterService;
@@ -46,9 +50,34 @@ public class MissionCenterController {
         return ApiResult.ok(missionCenterService.streakSummary(userId));
     }
 
+    @GetMapping("/milestones")
+    public ApiResult<List<StreakMilestoneItemResponse>> milestones(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
+        return ApiResult.ok(missionCenterService.listMilestones(userId));
+    }
+
+    @PostMapping("/milestones/{day}/claim")
+    public ApiResult<StreakMilestoneClaimResponse> claimMilestone(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @PathVariable Integer day) {
+        return ApiResult.ok(missionCenterService.claimMilestone(userId, day));
+    }
+
     @GetMapping("/achievements")
     public ApiResult<List<AchievementItemResponse>> achievements(@RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
         return ApiResult.ok(missionCenterService.listAchievements(userId));
+    }
+
+    @GetMapping("/power-ups")
+    public ApiResult<List<StreakPowerUpItemResponse>> powerUps(@RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
+        return ApiResult.ok(missionCenterService.listPowerUps(userId));
+    }
+
+    @PostMapping("/power-ups/{powerUpCode}/activate")
+    public ApiResult<StreakPowerUpActivationResponse> activatePowerUp(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @PathVariable String powerUpCode) {
+        return ApiResult.ok(missionCenterService.activatePowerUp(userId, powerUpCode));
     }
 
     @PostMapping("/achievements/{achievementCode}/claim")

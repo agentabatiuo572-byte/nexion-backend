@@ -12,7 +12,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
 | `nexion-auth-service` | 8101 | admin, role, permission, and assignment management |
 | `nexion-compute-service` | 8102 | device status, compute tasks, node map, Proof-of-Compute receipts |
-| `nexion-mission-service` | 8103 | check-in, quests, points, achievements |
+| `nexion-mission-service` | 8103 | check-in, quests, points, achievements, streak milestones, streak power-ups |
 | `nexion-commerce-service` | 8104 | SKU catalog, orders, payment callbacks, Trade-in, outbox broker publisher |
 | `nexion-wallet-service` | 8105 | wallet balances, bills, idempotent earning/team commission credits, withdrawals |
 | `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel/binary/peer/cultivation/leadership commission events, commission unlock, team overview |
@@ -72,6 +72,28 @@ The current backend baseline implements the first event-driven slice:
 ```powershell
 & 'D:\software\apache-maven-3.9.9\bin\mvn.cmd' -DskipTests compile
 ```
+
+## Mission Streak Power-Ups Baseline
+
+Mission now persists the Daily Streak Power-Up activation state described by the product spec. Unlock state is derived from the user's current streak; only explicit activation is stored.
+
+- `GET /daily/power-ups`: current user's Power-Up list with `LOCKED`, `UNLOCKED`, or `ACTIVATED` status.
+- `POST /daily/power-ups/{powerUpCode}/activate`: activates an unlocked Power-Up idempotently.
+- `GET /missions/power-ups` and `POST /missions/power-ups/{powerUpCode}/activate`: Mission Center compatible aliases.
+- Seeded Power-Ups: `royalty_boost` at 7 days, `premium_trial` at 14 days, `staking_boost` at 30 days, and `genesis_whitelist` at 60 days.
+- Tables: `nx_streak_power_up` for configuration and `nx_user_streak_power_up` for user activation state.
+- Activation also unlocks the matching badge achievement when configured and active; it does not yet apply cross-service commercial benefits.
+
+## Mission Streak Milestones Baseline
+
+Mission now persists the Daily 30-day milestone roadmap from the product spec. Unlock state is derived from the user's current streak; one successful claim is fenced by `nx_user_streak_milestone (user_id, milestone_day)`.
+
+- `GET /daily/milestones`: current user's streak milestone list with `LOCKED`, `UNLOCKED`, or `CLAIMED` status.
+- `POST /daily/milestones/{day}/claim`: claims an unlocked milestone idempotently.
+- `GET /missions/milestones` and `POST /missions/milestones/{day}/claim`: Mission Center compatible aliases.
+- Seeded milestones: day `3`, `7`, `14`, `21`, `30`, `60`, and `100`.
+- Tables: `nx_streak_milestone` for configuration and `nx_user_streak_milestone` for claim state.
+- `POINTS` rewards write `nx_points_ledger` using `STREAK-MILESTONE-{day}-{userId}`. `BADGE` rewards unlock the configured achievement. `USDT`, `NEX`, and `SPIN` are claim-recorded for downstream wallet/spin integration and do not yet post assets.
 
 ## Main Chain Smoke Test
 
