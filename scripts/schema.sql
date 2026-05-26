@@ -1253,8 +1253,16 @@ CREATE TABLE IF NOT EXISTS nx_kyc_profile (
   kyc_no VARCHAR(96) NOT NULL,
   status VARCHAR(32) NOT NULL,
   country VARCHAR(64) NULL,
+  applicant_name VARCHAR(128) NULL,
+  document_type VARCHAR(64) NULL,
+  document_last4 VARCHAR(16) NULL,
   document_object_key VARCHAR(255) NULL,
+  submitted_at DATETIME NULL,
+  reviewed_by VARCHAR(64) NULL,
   reviewed_at DATETIME NULL,
+  reject_reason VARCHAR(255) NULL,
+  expires_at DATETIME NULL,
+  risk_notes VARCHAR(512) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -1263,12 +1271,56 @@ CREATE TABLE IF NOT EXISTS nx_kyc_profile (
   KEY idx_kyc_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'applicant_name') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN applicant_name VARCHAR(128) NULL AFTER country',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'document_type') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN document_type VARCHAR(64) NULL AFTER applicant_name',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'document_last4') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN document_last4 VARCHAR(16) NULL AFTER document_type',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'submitted_at') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN submitted_at DATETIME NULL AFTER document_object_key',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'reviewed_by') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN reviewed_by VARCHAR(64) NULL AFTER submitted_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'reject_reason') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN reject_reason VARCHAR(255) NULL AFTER reviewed_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'expires_at') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN expires_at DATETIME NULL AFTER reject_reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'risk_notes') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN risk_notes VARCHAR(512) NULL AFTER expires_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_risk_decision (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   decision_no VARCHAR(96) NOT NULL,
   user_id BIGINT NOT NULL,
   biz_type VARCHAR(64) NOT NULL,
   biz_no VARCHAR(96) NOT NULL,
+  region VARCHAR(32) NULL,
+  user_level VARCHAR(16) NULL,
+  client_ip VARCHAR(64) NULL,
+  device_fingerprint VARCHAR(128) NULL,
   decision VARCHAR(32) NOT NULL,
   reason VARCHAR(255) NULL,
   risk_score INT NOT NULL DEFAULT 0,
@@ -1284,6 +1336,26 @@ CREATE TABLE IF NOT EXISTS nx_risk_decision (
   KEY idx_risk_user_time (user_id, created_at),
   KEY idx_risk_decision_review (decision, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'region') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN region VARCHAR(32) NULL AFTER biz_no',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'user_level') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN user_level VARCHAR(16) NULL AFTER region',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'client_ip') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN client_ip VARCHAR(64) NULL AFTER user_level',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'device_fingerprint') = 0,
+  'ALTER TABLE nx_risk_decision ADD COLUMN device_fingerprint VARCHAR(128) NULL AFTER client_ip',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND COLUMN_NAME = 'reviewed_by') = 0,
   'ALTER TABLE nx_risk_decision ADD COLUMN reviewed_by VARCHAR(64) NULL AFTER reason',
@@ -1317,6 +1389,21 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND INDEX_NAME = 'idx_risk_decision_user_decision_time') = 0,
   'ALTER TABLE nx_risk_decision ADD INDEX idx_risk_decision_user_decision_time (user_id, decision, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND INDEX_NAME = 'idx_risk_decision_region_time') = 0,
+  'ALTER TABLE nx_risk_decision ADD INDEX idx_risk_decision_region_time (region, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND INDEX_NAME = 'idx_risk_decision_ip_time') = 0,
+  'ALTER TABLE nx_risk_decision ADD INDEX idx_risk_decision_ip_time (client_ip, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_risk_decision' AND INDEX_NAME = 'idx_risk_decision_device_time') = 0,
+  'ALTER TABLE nx_risk_decision ADD INDEX idx_risk_decision_device_time (device_fingerprint, created_at)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -1386,12 +1473,89 @@ CREATE TABLE IF NOT EXISTS nx_proof_asset (
   proof_type VARCHAR(64) NOT NULL,
   object_key VARCHAR(255) NOT NULL,
   status VARCHAR(32) NOT NULL,
+  file_name VARCHAR(255) NULL,
+  content_type VARCHAR(128) NULL,
+  size_bytes BIGINT NULL,
+  checksum VARCHAR(128) NULL,
+  related_biz_type VARCHAR(64) NULL,
+  related_biz_no VARCHAR(96) NULL,
+  submitted_by VARCHAR(64) NULL,
+  reviewed_by VARCHAR(64) NULL,
+  reviewed_at DATETIME NULL,
+  reject_reason VARCHAR(255) NULL,
+  review_note VARCHAR(255) NULL,
+  metadata_json VARCHAR(2048) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_proof_no (proof_no),
   KEY idx_proof_user_time (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'file_name') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN file_name VARCHAR(255) NULL AFTER status',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'content_type') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN content_type VARCHAR(128) NULL AFTER file_name',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'size_bytes') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN size_bytes BIGINT NULL AFTER content_type',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'checksum') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN checksum VARCHAR(128) NULL AFTER size_bytes',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'related_biz_type') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN related_biz_type VARCHAR(64) NULL AFTER checksum',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'related_biz_no') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN related_biz_no VARCHAR(96) NULL AFTER related_biz_type',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'submitted_by') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN submitted_by VARCHAR(64) NULL AFTER related_biz_no',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'reviewed_by') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN reviewed_by VARCHAR(64) NULL AFTER submitted_by',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'reviewed_at') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN reviewed_at DATETIME NULL AFTER reviewed_by',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'reject_reason') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN reject_reason VARCHAR(255) NULL AFTER reviewed_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'metadata_json') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN metadata_json VARCHAR(2048) NULL AFTER reject_reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND COLUMN_NAME = 'review_note') = 0,
+  'ALTER TABLE nx_proof_asset ADD COLUMN review_note VARCHAR(255) NULL AFTER reject_reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_proof_asset' AND INDEX_NAME = 'idx_proof_status_time') = 0,
+  'ALTER TABLE nx_proof_asset ADD INDEX idx_proof_status_time (status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_config_item (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

@@ -37,6 +37,12 @@ class ComplianceGateServiceTest {
             new BigDecimal("1000.000000"),
             new BigDecimal("5000.000000"),
             3,
+            "ZZ",
+            "XR",
+            new BigDecimal("100.000000"),
+            "L0,L1",
+            2,
+            2,
             outboxService);
 
     @Test
@@ -75,6 +81,101 @@ class ComplianceGateServiceTest {
         assertThat(response.getDecision()).isEqualTo("REJECT");
         assertThat(response.getDecisionId()).isEqualTo(92L);
         assertThat(response.getReason()).isEqualTo("KYC_NOT_APPROVED");
+    }
+
+    @Test
+    void rejectsWhenApprovedKycHasExpired() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+        kyc.setCountry("US");
+        kyc.setExpiresAt(LocalDateTime.now().minusDays(1));
+
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9201L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-EXPIRED-KYC"));
+
+        assertThat(response.getDecision()).isEqualTo("REJECT");
+        assertThat(response.getReason()).isEqualTo("KYC_EXPIRED");
+        assertThat(response.getRuleCodes()).contains("KYC_EXPIRED");
+        assertThat(response.getRiskScore()).isEqualTo(85);
+    }
+
+    @Test
+    void rejectsWhenKycCountryIsBlocked() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+        kyc.setCountry("ZZ");
+
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9202L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-BLOCKED-REGION"));
+
+        assertThat(response.getDecision()).isEqualTo("REJECT");
+        assertThat(response.getReason()).isEqualTo("REGION_BLOCKED");
+        assertThat(response.getRuleCodes()).contains("REGION_BLOCKED");
+        assertThat(response.getRiskScore()).isEqualTo(95);
+    }
+
+    @Test
+    void reviewsWhenRequestRegionDiffersFromKycCountry() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+        kyc.setCountry("US");
+
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9203L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateRequest request = request("WITHDRAWAL", "WD-REGION-MISMATCH");
+        request.setRegion("CA");
+        ComplianceGateResponse response = service.check(request);
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("REGION_MISMATCH");
+        assertThat(response.getRuleCodes()).contains("REGION_MISMATCH");
+        assertThat(response.getRiskScore()).isEqualTo(65);
+    }
+
+    @Test
+    void reviewsWhenRegionRequiresManualReview() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+        kyc.setCountry("XR");
+
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9204L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateResponse response = service.check(request("WITHDRAWAL", "WD-REVIEW-REGION"));
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("REGION_REVIEW");
+        assertThat(response.getRuleCodes()).contains("REGION_REVIEW");
+        assertThat(response.getRiskScore()).isEqualTo(70);
     }
 
     @Test
@@ -176,6 +277,31 @@ class ComplianceGateServiceTest {
     }
 
     @Test
+    void reviewsLowTierWithdrawalAboveTierThreshold() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9501L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateRequest request = request("WITHDRAWAL", "WD-LOW-TIER");
+        request.setUserLevel("L0");
+        request.setAmount(new BigDecimal("150.000000"));
+        ComplianceGateResponse response = service.check(request);
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("USER_TIER_REVIEW");
+        assertThat(response.getRiskScore()).isEqualTo(55);
+        assertThat(response.getRuleCodes()).contains("USER_TIER_AMOUNT");
+    }
+
+    @Test
     void reviewsWhenDailyFrequencyLimitIsReached() {
         KycProfile kyc = new KycProfile();
         kyc.setUserId(10001L);
@@ -194,6 +320,56 @@ class ComplianceGateServiceTest {
 
         assertThat(response.getDecision()).isEqualTo("REVIEW");
         assertThat(response.getReason()).isEqualTo("FREQUENCY_REVIEW");
+    }
+
+    @Test
+    void reviewsWhenClientIpDailyVelocityLimitIsReached() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectCount(any())).thenReturn(0L).thenReturn(2L);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9601L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateRequest request = request("WITHDRAWAL", "WD-IP-VELOCITY");
+        request.setClientIp("203.0.113.8");
+        ComplianceGateResponse response = service.check(request);
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("IP_FREQUENCY_REVIEW");
+        assertThat(response.getRuleCodes()).contains("IP_DAILY_FREQUENCY");
+        assertThat(response.getRiskScore()).isEqualTo(70);
+    }
+
+    @Test
+    void reviewsWhenDeviceFingerprintDailyVelocityLimitIsReached() {
+        KycProfile kyc = new KycProfile();
+        kyc.setUserId(10001L);
+        kyc.setStatus("APPROVED");
+
+        when(riskDecisionMapper.selectOne(any())).thenReturn(null);
+        when(kycProfileMapper.selectOne(any())).thenReturn(kyc);
+        when(riskDecisionMapper.selectCount(any())).thenReturn(0L).thenReturn(2L);
+        doAnswer(invocation -> {
+            RiskDecision decision = invocation.getArgument(0);
+            decision.setId(9602L);
+            return 1;
+        }).when(riskDecisionMapper).insert(any(RiskDecision.class));
+
+        ComplianceGateRequest request = request("WITHDRAWAL", "WD-DEVICE-VELOCITY");
+        request.setDeviceFingerprint("device_hash_9f7c");
+        ComplianceGateResponse response = service.check(request);
+
+        assertThat(response.getDecision()).isEqualTo("REVIEW");
+        assertThat(response.getReason()).isEqualTo("DEVICE_FREQUENCY_REVIEW");
+        assertThat(response.getRuleCodes()).contains("DEVICE_DAILY_FREQUENCY");
+        assertThat(response.getRiskScore()).isEqualTo(70);
     }
 
     @Test

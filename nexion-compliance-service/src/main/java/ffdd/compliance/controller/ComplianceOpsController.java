@@ -18,6 +18,8 @@ public class ComplianceOpsController {
                 "responsibilities", List.of("KYC", "risk decisions", "blacklist", "manual review",
                         "risk scoring", "withdrawal checks", "exchange checks", "proof assets"),
                 "gate", "/compliance/gates/check",
+                "kycProfiles", "/compliance/kyc-profiles",
+                "proofAssets", "/compliance/proof-assets",
                 "riskDecisionSummary", "/compliance/risk-decisions/summary",
                 "blacklists", "/compliance/blacklists"));
     }

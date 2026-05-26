@@ -23,4 +23,12 @@ public class ComplianceGateRequest {
     @NotNull
     @DecimalMin("0.000001")
     private BigDecimal amount;
+
+    private String region;
+
+    private String userLevel;
+
+    private String clientIp;
+
+    private String deviceFingerprint;
 }

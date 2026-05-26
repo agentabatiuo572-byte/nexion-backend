@@ -14,6 +14,14 @@ public class KycProfile extends BaseEntity {
     private String kycNo;
     private String status;
     private String country;
+    private String applicantName;
+    private String documentType;
+    private String documentLast4;
     private String documentObjectKey;
+    private LocalDateTime submittedAt;
+    private String reviewedBy;
     private LocalDateTime reviewedAt;
+    private String rejectReason;
+    private LocalDateTime expiresAt;
+    private String riskNotes;
 }

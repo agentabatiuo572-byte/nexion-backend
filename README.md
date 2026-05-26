@@ -18,7 +18,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 | `nexion-team-service` | 8106 | OrderPaid outbox worker/broker listener, unilevel/binary/peer/cultivation/leadership commission events, commission unlock, team overview |
 | `nexion-notification-service` | 8107 | notifications, Stella messages, push, unread counters |
 | `nexion-earnings-service` | 8108 | earning ticks, device snapshot settlement, milestone rewards, summaries, event stream, read-only analytics |
-| `nexion-compliance-service` | 8109 | KYC, risk decisions, withdrawal checks, Proof assets |
+| `nexion-compliance-service` | 8109 | KYC lifecycle, risk decisions, withdrawal checks, Proof assets |
 | `nexion-system-service` | 8110 | operation config, i18n, content, help center |
 | `nexion-openapi-service` | 8111 | API app keys, HMAC signature auth, Redis app quotas, call audit, webhook delivery worker |
 
@@ -325,8 +325,15 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 - `POST /wallet/withdrawals/broadcast/publish?limit=20`: ops trigger for the withdrawal broadcast batch.
 - `GET /wallet/withdrawals/broadcast/pending|dead|summary`: inspect withdrawal broadcast backlog and local DEAD rows.
 - `POST /wallet/exchanges`: creates an idempotent exchange order, checks Compliance, debits the source asset, and credits the target asset when approved. Compliance `REVIEW` leaves the order in `REVIEWING`.
-- `POST /compliance/gates/check`: protected by `PERM_COMPLIANCE_WRITE`; creates an idempotent `nx_risk_decision` from the KYC profile, blacklist, amount threshold, and daily frequency checks.
-- Compliance gate responses now include `riskScore` and `ruleCodes` so ops can trace whether a hold came from active blacklist, KYC state, amount threshold, or daily frequency rules.
+- `POST /compliance/gates/check`: protected by `PERM_COMPLIANCE_WRITE`; creates an idempotent `nx_risk_decision` from the KYC profile, blacklist, amount threshold, region, user tier, same-IP velocity, same-device velocity, and daily frequency checks.
+- Compliance gate requests require `userId`, `bizNo`, `bizType`, `asset`, and positive `amount`; optional `region`, `userLevel`, `clientIp`, and `deviceFingerprint` are persisted on the risk decision for ops traceability.
+- Compliance gate responses now include `riskScore` and `ruleCodes` so ops can trace whether a hold came from active blacklist, KYC state, KYC expiry, region policy, region mismatch, amount threshold, low user tier, IP/device velocity, or daily frequency rules.
+- `GET /compliance/kyc-profiles?userId=&status=&limit=20` and `GET /compliance/kyc-profiles/users/{userId}`: inspect KYC profiles.
+- `POST /compliance/kyc-profiles`: submit or resubmit KYC metadata with storage object key only; no raw document number is stored.
+- `POST /compliance/kyc-profiles/{userId}/approve|reject|expire`: operate KYC lifecycle with reviewer attribution, reason, and optional approval expiry.
+- `GET /compliance/proof-assets?userId=&proofType=&status=&limit=20` and `GET /compliance/proof-assets/{proofNo}`: inspect Proof asset metadata.
+- `POST /compliance/proof-assets`: record Proof metadata such as object key, checksum, related business no, and JSON metadata without uploading file bytes.
+- `POST /compliance/proof-assets/{proofNo}/verify|reject` and `DELETE /compliance/proof-assets/{proofNo}`: review or archive Proof rows.
 - `GET /compliance/risk-decisions?userId=&bizType=&decision=&reason=&limit=20`: query recent risk decisions for operations review.
 - `GET /compliance/risk-decisions/summary?days=7`: returns decision totals by outcome plus active blacklist count.
 - `GET /compliance/risk-decisions/review`: lists pending manual review decisions.
@@ -339,7 +346,7 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 - Debit safety: debits use a single conditional update (`available >= amount`) inside the transaction, so concurrent withdrawals or exchanges cannot drive available balance negative.
 - Withdrawal safety: withdrawal reservation uses one conditional update (`usdt_available >= amount + fee`) to atomically decrement available USDT and increment `pending_withdraw`; success decrements pending only, while failure moves pending back to available.
 - Withdrawal broadcast worker is disabled by default (`NEXION_WALLET_WITHDRAWAL_BROADCAST_ENABLED=false`). It scans `PENDING_CHAIN` rows, calls a replaceable `WithdrawalChainBroadcaster`, records `CHAIN_SUBMITTED` on success, and uses exponential retry before moving poison rows to local `DEAD`.
-- Compliance risk thresholds are configurable with `NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT`, and `NEXION_COMPLIANCE_DAILY_REVIEW_COUNT`.
+- Compliance risk thresholds are configurable with `NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_DAILY_REVIEW_COUNT`, `NEXION_COMPLIANCE_BLOCKED_REGIONS`, `NEXION_COMPLIANCE_REVIEW_REGIONS`, `NEXION_COMPLIANCE_LOW_TIER_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_LOW_TIER_LEVELS`, `NEXION_COMPLIANCE_IP_DAILY_REVIEW_COUNT`, and `NEXION_COMPLIANCE_DEVICE_DAILY_REVIEW_COUNT`.
 
 Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION-{commissionId}` for both USDT and NEX ledger entries.
 

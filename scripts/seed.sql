@@ -382,12 +382,42 @@ ON DUPLICATE KEY UPDATE
   read_flag = VALUES(read_flag),
   push_status = VALUES(push_status);
 
-INSERT INTO nx_kyc_profile (id, user_id, kyc_no, status, country)
+INSERT INTO nx_kyc_profile (
+  id, user_id, kyc_no, status, country, applicant_name, document_type, document_last4,
+  document_object_key, submitted_at
+)
 VALUES
-  (1, 10001, 'KYC-10001', 'PENDING', 'US')
+  (1, 10001, 'KYC-10001', 'PENDING', 'US', 'Seed User', 'PASSPORT', '0001',
+   'kyc/10001/passport-front.jpg', NOW())
 ON DUPLICATE KEY UPDATE
   status = VALUES(status),
-  country = VALUES(country);
+  country = VALUES(country),
+  applicant_name = VALUES(applicant_name),
+  document_type = VALUES(document_type),
+  document_last4 = VALUES(document_last4),
+  document_object_key = VALUES(document_object_key),
+  submitted_at = VALUES(submitted_at);
+
+INSERT INTO nx_proof_asset (
+  id, user_id, proof_no, proof_type, object_key, status, file_name, content_type,
+  size_bytes, checksum, related_biz_type, related_biz_no, submitted_by, metadata_json
+)
+VALUES
+  (1, 10001, 'PROOF-SEED-10001-1', 'COMPUTE_RECEIPT', 'proofs/seed/compute-receipt-10001.json',
+   'PENDING', 'compute-receipt-10001.json', 'application/json', 1024, 'sha256:seed',
+   'COMPUTE_TASK', 'TASK-SEED-10001', 'seed', '{"receiptNo":"RCPT-SEED-10001"}')
+ON DUPLICATE KEY UPDATE
+  proof_type = VALUES(proof_type),
+  object_key = VALUES(object_key),
+  status = VALUES(status),
+  file_name = VALUES(file_name),
+  content_type = VALUES(content_type),
+  size_bytes = VALUES(size_bytes),
+  checksum = VALUES(checksum),
+  related_biz_type = VALUES(related_biz_type),
+  related_biz_no = VALUES(related_biz_no),
+  submitted_by = VALUES(submitted_by),
+  metadata_json = VALUES(metadata_json);
 
 INSERT INTO nx_config_item (id, config_key, config_value, value_type, remark, status)
 VALUES
@@ -398,7 +428,13 @@ VALUES
   (5, 'openapi.default_daily_limit', '10000', 'NUMBER', 'Default OpenAPI per-app daily quota.', 1),
   (6, 'risk.withdrawal.review_amount', '1000', 'NUMBER', 'Withdrawal amount that triggers manual review.', 1),
   (7, 'risk.exchange.review_amount', '5000', 'NUMBER', 'Exchange amount that triggers manual review.', 1),
-  (8, 'feature.genesis.enabled', 'false', 'BOOLEAN', 'Genesis feature launch switch.', 1)
+  (8, 'feature.genesis.enabled', 'false', 'BOOLEAN', 'Genesis feature launch switch.', 1),
+  (9, 'risk.region.blocked', '', 'STRING', 'Comma-separated regions that should be rejected by Compliance gate.', 1),
+  (10, 'risk.region.review', '', 'STRING', 'Comma-separated regions that should enter manual Compliance review.', 1),
+  (11, 'risk.low_tier.review_amount', '100', 'NUMBER', 'Low-tier withdrawal amount that triggers manual review.', 1),
+  (12, 'risk.low_tier.levels', 'L0,L1', 'STRING', 'User levels subject to low-tier withdrawal review amount.', 1),
+  (13, 'risk.ip.daily_review_count', '10', 'NUMBER', 'Daily same-IP decision count that triggers manual review.', 1),
+  (14, 'risk.device.daily_review_count', '5', 'NUMBER', 'Daily same-device decision count that triggers manual review.', 1)
 ON DUPLICATE KEY UPDATE
   config_value = VALUES(config_value),
   value_type = VALUES(value_type),

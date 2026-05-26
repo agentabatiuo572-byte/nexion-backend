@@ -29,6 +29,12 @@ nexion:
       withdrawal-review-amount: ${NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT:1000.000000}
       exchange-review-amount: ${NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT:5000.000000}
       daily-review-count: ${NEXION_COMPLIANCE_DAILY_REVIEW_COUNT:3}
+      blocked-regions: ${NEXION_COMPLIANCE_BLOCKED_REGIONS:}
+      review-regions: ${NEXION_COMPLIANCE_REVIEW_REGIONS:}
+      low-tier-review-amount: ${NEXION_COMPLIANCE_LOW_TIER_REVIEW_AMOUNT:100.000000}
+      low-tier-levels: ${NEXION_COMPLIANCE_LOW_TIER_LEVELS:L0,L1}
+      ip-daily-review-count: ${NEXION_COMPLIANCE_IP_DAILY_REVIEW_COUNT:10}
+      device-daily-review-count: ${NEXION_COMPLIANCE_DEVICE_DAILY_REVIEW_COUNT:5}
   services:
     wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}
   outbox:

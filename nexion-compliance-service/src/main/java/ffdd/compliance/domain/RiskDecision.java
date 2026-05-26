@@ -14,6 +14,10 @@ public class RiskDecision extends BaseEntity {
     private Long userId;
     private String bizType;
     private String bizNo;
+    private String region;
+    private String userLevel;
+    private String clientIp;
+    private String deviceFingerprint;
     private String decision;
     private String reason;
     private Integer riskScore;
