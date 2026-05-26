@@ -3,16 +3,20 @@ package ffdd.compliance.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import ffdd.common.exception.BizException;
+import ffdd.compliance.domain.KycProfile;
 import ffdd.compliance.domain.RiskBlacklist;
 import ffdd.compliance.domain.RiskDecision;
 import ffdd.compliance.dto.RiskBlacklistReleaseRequest;
 import ffdd.compliance.dto.RiskBlacklistUpsertRequest;
 import ffdd.compliance.dto.RiskDecisionSummaryResponse;
+import ffdd.compliance.mapper.KycProfileMapper;
 import ffdd.compliance.mapper.RiskBlacklistMapper;
 import ffdd.compliance.mapper.RiskDecisionMapper;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +29,10 @@ public class ComplianceRiskOpsService {
     private static final String DECISION_APPROVE = "APPROVE";
     private static final String DECISION_REVIEW = "REVIEW";
     private static final String DECISION_REJECT = "REJECT";
+    private static final String KYC_PENDING = "PENDING";
+    private static final String KYC_APPROVED = "APPROVED";
+    private static final String KYC_REJECTED = "REJECTED";
+    private static final String KYC_EXPIRED = "EXPIRED";
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
     private static final int DEFAULT_DAYS = 7;
@@ -32,10 +40,15 @@ public class ComplianceRiskOpsService {
 
     private final RiskDecisionMapper riskDecisionMapper;
     private final RiskBlacklistMapper riskBlacklistMapper;
+    private final KycProfileMapper kycProfileMapper;
 
-    public ComplianceRiskOpsService(RiskDecisionMapper riskDecisionMapper, RiskBlacklistMapper riskBlacklistMapper) {
+    public ComplianceRiskOpsService(
+            RiskDecisionMapper riskDecisionMapper,
+            RiskBlacklistMapper riskBlacklistMapper,
+            KycProfileMapper kycProfileMapper) {
         this.riskDecisionMapper = riskDecisionMapper;
         this.riskBlacklistMapper = riskBlacklistMapper;
+        this.kycProfileMapper = kycProfileMapper;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -139,6 +152,35 @@ public class ComplianceRiskOpsService {
         return response;
     }
 
+    public Map<String, Object> opsStats(int days) {
+        int normalizedDays = normalizeDays(days);
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime since = now.minusDays(normalizedDays - 1L).toLocalDate().atStartOfDay();
+
+        Map<String, Object> response = section(
+                "service", "nexion-compliance-service",
+                "days", normalizedDays,
+                "startAt", since,
+                "endAt", now);
+        response.put("risk", section(
+                "total", countDecisionsSince(since, null),
+                "approved", countDecisionsSince(since, DECISION_APPROVE),
+                "review", countDecisionsSince(since, DECISION_REVIEW),
+                "rejected", countDecisionsSince(since, DECISION_REJECT),
+                "reviewQueue", countReviewQueue()));
+        response.put("blacklists", section(
+                "active", countActiveBlacklists(),
+                "released", countBlacklists(STATUS_RELEASED)));
+        response.put("kyc", section(
+                "total", countKycSince(since, null),
+                "pending", countKycSince(since, KYC_PENDING),
+                "approved", countKycSince(since, KYC_APPROVED),
+                "rejected", countKycSince(since, KYC_REJECTED),
+                "expired", countKycSince(since, KYC_EXPIRED),
+                "expiringSoon", countKycExpiringSoon(now.plusDays(14))));
+        return response;
+    }
+
     private RiskBlacklist insertBlacklist(RiskBlacklistUpsertRequest request) {
         RiskBlacklist blacklist = new RiskBlacklist();
         blacklist.setUserId(request.getUserId());
@@ -171,6 +213,36 @@ public class ComplianceRiskOpsService {
 
     private long countActiveBlacklists() {
         Long count = riskBlacklistMapper.selectCount(activeBlacklistWrapper());
+        return count == null ? 0 : count;
+    }
+
+    private long countBlacklists(String status) {
+        Long count = riskBlacklistMapper.selectCount(new LambdaQueryWrapper<RiskBlacklist>()
+                .eq(RiskBlacklist::getIsDeleted, 0)
+                .eq(RiskBlacklist::getStatus, status));
+        return count == null ? 0 : count;
+    }
+
+    private long countReviewQueue() {
+        Long count = riskDecisionMapper.selectCount(new LambdaQueryWrapper<RiskDecision>()
+                .eq(RiskDecision::getIsDeleted, 0)
+                .eq(RiskDecision::getDecision, DECISION_REVIEW));
+        return count == null ? 0 : count;
+    }
+
+    private long countKycSince(LocalDateTime since, String status) {
+        Long count = kycProfileMapper.selectCount(new LambdaQueryWrapper<KycProfile>()
+                .eq(KycProfile::getIsDeleted, 0)
+                .ge(KycProfile::getCreatedAt, since)
+                .eq(StringUtils.hasText(status), KycProfile::getStatus, status));
+        return count == null ? 0 : count;
+    }
+
+    private long countKycExpiringSoon(LocalDateTime before) {
+        Long count = kycProfileMapper.selectCount(new LambdaQueryWrapper<KycProfile>()
+                .eq(KycProfile::getIsDeleted, 0)
+                .eq(KycProfile::getStatus, KYC_APPROVED)
+                .le(KycProfile::getExpiresAt, before));
         return count == null ? 0 : count;
     }
 
@@ -284,5 +356,13 @@ public class ComplianceRiskOpsService {
             return DEFAULT_DAYS;
         }
         return Math.min(days, MAX_DAYS);
+    }
+
+    private Map<String, Object> section(Object... pairs) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            values.put(String.valueOf(pairs[i]), pairs[i + 1]);
+        }
+        return values;
     }
 }

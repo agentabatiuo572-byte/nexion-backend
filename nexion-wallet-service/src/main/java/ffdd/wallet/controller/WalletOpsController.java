@@ -6,6 +6,7 @@ import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.wallet.domain.DepositOrder;
 import ffdd.wallet.domain.WithdrawalOrder;
 import ffdd.wallet.service.DepositPostingService;
+import ffdd.wallet.service.WalletOpsStatsService;
 import ffdd.wallet.service.WithdrawalBroadcastResponse;
 import ffdd.wallet.service.WithdrawalBroadcastService;
 import java.util.List;
@@ -25,17 +26,20 @@ public class WalletOpsController {
     private final EventConsumerDeliveryService deliveryService;
     private final WithdrawalBroadcastService withdrawalBroadcastService;
     private final DepositPostingService depositPostingService;
+    private final WalletOpsStatsService statsService;
     private final String defaultConsumerGroup;
 
     public WalletOpsController(
             EventConsumerDeliveryService deliveryService,
             WithdrawalBroadcastService withdrawalBroadcastService,
             DepositPostingService depositPostingService,
+            WalletOpsStatsService statsService,
             @Value("${nexion.outbox.rocketmq.wallet-consumer-group:nexion-wallet-earning-generated}")
                     String defaultConsumerGroup) {
         this.deliveryService = deliveryService;
         this.withdrawalBroadcastService = withdrawalBroadcastService;
         this.depositPostingService = depositPostingService;
+        this.statsService = statsService;
         this.defaultConsumerGroup = defaultConsumerGroup;
     }
 
@@ -45,6 +49,12 @@ public class WalletOpsController {
                 "service", "nexion-wallet-service",
                 "database", "nexion_wallet",
                 "responsibilities", List.of("balances", "ledger", "deposit", "withdrawal", "exchange", "risk gate")));
+    }
+
+    @GetMapping("/ops/stats")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<Map<String, Object>> stats(@RequestParam(defaultValue = "7") int days) {
+        return ApiResult.ok(statsService.summary(days));
     }
 
     @GetMapping("/outbox/consumer/dead")

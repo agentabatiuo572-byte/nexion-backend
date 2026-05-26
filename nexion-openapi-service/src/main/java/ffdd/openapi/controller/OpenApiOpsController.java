@@ -7,6 +7,7 @@ import ffdd.openapi.domain.WebhookDelivery;
 import ffdd.openapi.dto.OpenApiAppOpsResponse;
 import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
 import ffdd.openapi.dto.OpenApiCallAuditResponse;
+import ffdd.openapi.service.OpenApiOpsStatsService;
 import ffdd.openapi.service.OpenApiService;
 import ffdd.openapi.service.WebhookDeliveryPublishResponse;
 import ffdd.openapi.service.WebhookDeliveryService;
@@ -30,14 +31,17 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpenApiOpsController {
     private final OpenApiService openApiService;
     private final WebhookDeliveryService webhookDeliveryService;
+    private final OpenApiOpsStatsService statsService;
     private final AuditLogService auditLogService;
 
     public OpenApiOpsController(
             OpenApiService openApiService,
             WebhookDeliveryService webhookDeliveryService,
+            OpenApiOpsStatsService statsService,
             AuditLogService auditLogService) {
         this.openApiService = openApiService;
         this.webhookDeliveryService = webhookDeliveryService;
+        this.statsService = statsService;
         this.auditLogService = auditLogService;
     }
 
@@ -47,6 +51,11 @@ public class OpenApiOpsController {
                 "service", "nexion-openapi-service",
                 "database", "nexion_openapi",
                 "responsibilities", List.of("API app keys", "HMAC signature auth", "call audit", "webhook delivery queue")));
+    }
+
+    @GetMapping("/ops/stats")
+    public ApiResult<Map<String, Object>> stats(@RequestParam(defaultValue = "7") int days) {
+        return ApiResult.ok(statsService.summary(days));
     }
 
     @GetMapping("/ops/apps")

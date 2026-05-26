@@ -29,7 +29,9 @@ nexion:
     cache-ttl-seconds: ${NEXION_BFF_CACHE_TTL_SECONDS:3}
   services:
     commerce-url: ${NEXION_COMMERCE_URL:http://localhost:8104}
+    compliance-url: ${NEXION_COMPLIANCE_URL:http://localhost:8109}
     compute-url: ${NEXION_COMPUTE_URL:http://localhost:8102}
     earnings-url: ${NEXION_EARNINGS_URL:http://localhost:8108}
+    openapi-url: ${NEXION_OPENAPI_URL:http://localhost:8111}
     team-url: ${NEXION_TEAM_URL:http://localhost:8106}
     wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}

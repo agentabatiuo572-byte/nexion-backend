@@ -11,18 +11,21 @@ import ffdd.compliance.domain.RiskBlacklist;
 import ffdd.compliance.dto.RiskBlacklistReleaseRequest;
 import ffdd.compliance.dto.RiskBlacklistUpsertRequest;
 import ffdd.compliance.dto.RiskDecisionSummaryResponse;
+import ffdd.compliance.mapper.KycProfileMapper;
 import ffdd.compliance.mapper.RiskBlacklistMapper;
 import ffdd.compliance.mapper.RiskDecisionMapper;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class ComplianceRiskOpsServiceTest {
     private final RiskDecisionMapper riskDecisionMapper = mock(RiskDecisionMapper.class);
     private final RiskBlacklistMapper riskBlacklistMapper = mock(RiskBlacklistMapper.class);
+    private final KycProfileMapper kycProfileMapper = mock(KycProfileMapper.class);
     private final ComplianceRiskOpsService service =
-            new ComplianceRiskOpsService(riskDecisionMapper, riskBlacklistMapper);
+            new ComplianceRiskOpsService(riskDecisionMapper, riskBlacklistMapper, kycProfileMapper);
 
     @Test
     void createsActiveBlacklistEntryWithOperationalMetadata() {
@@ -109,5 +112,48 @@ class ComplianceRiskOpsServiceTest {
         List<RiskBlacklist> result = service.listBlacklists("ACTIVE", 1000);
 
         assertThat(result).containsExactly(first);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void summarizesOpsKpisAcrossRiskBlacklistAndKyc() {
+        when(riskDecisionMapper.selectCount(any()))
+                .thenReturn(20L)
+                .thenReturn(12L)
+                .thenReturn(5L)
+                .thenReturn(3L)
+                .thenReturn(4L);
+        when(riskBlacklistMapper.selectCount(any()))
+                .thenReturn(2L)
+                .thenReturn(1L);
+        when(kycProfileMapper.selectCount(any()))
+                .thenReturn(30L)
+                .thenReturn(6L)
+                .thenReturn(20L)
+                .thenReturn(3L)
+                .thenReturn(1L)
+                .thenReturn(2L);
+
+        Map<String, Object> stats = service.opsStats(120);
+
+        assertThat(stats)
+                .containsEntry("service", "nexion-compliance-service")
+                .containsEntry("days", 90);
+        assertThat((Map<String, Object>) stats.get("risk"))
+                .containsEntry("total", 20L)
+                .containsEntry("approved", 12L)
+                .containsEntry("review", 5L)
+                .containsEntry("rejected", 3L)
+                .containsEntry("reviewQueue", 4L);
+        assertThat((Map<String, Object>) stats.get("blacklists"))
+                .containsEntry("active", 2L)
+                .containsEntry("released", 1L);
+        assertThat((Map<String, Object>) stats.get("kyc"))
+                .containsEntry("total", 30L)
+                .containsEntry("pending", 6L)
+                .containsEntry("approved", 20L)
+                .containsEntry("rejected", 3L)
+                .containsEntry("expired", 1L)
+                .containsEntry("expiringSoon", 2L);
     }
 }

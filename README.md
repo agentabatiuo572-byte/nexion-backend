@@ -465,8 +465,19 @@ The BFF service exposes page-level view models through Gateway at `/api/bff/**` 
 - `GET /api/bff/earn`: earning summaries and recent earning events.
 - `GET /api/bff/wallet`: wallet balance and recent ledgers.
 - `GET /api/bff/team`: team overview and recent commission aggregation from team-service.
+- `GET /api/bff/ops/dashboard?days=7`: aggregate native Commerce, Wallet, Compliance, and OpenAPI Ops/KPI stats without adding an analytics service. Requires `PERM_AUDIT_READ`.
 
 Snapshot keys use `bff:{view}:{userId}` with a default TTL of 3 seconds, plus `bff:{view}:{userId}:last` for stale fallback.
+
+## Ops/KPI Stats Baseline
+
+The first service-native Ops/KPI layer stays inside the existing 13-service boundary. Query windows default to 7 days and are capped at 90 days.
+
+- `GET /api/commerce/ops/stats?days=7`: order, payment, callback, reconciliation backlog, expired pending payment, and trade-in counters. Requires `PERM_COMMERCE_READ`.
+- `GET /api/wallet/ops/stats?days=7`: deposit, withdrawal, exchange, and ledger credit/debit counters. Requires `PERM_WALLET_READ`.
+- `GET /api/compliance/ops/stats?days=7`: risk decision, manual review queue, blacklist, and KYC lifecycle counters. Requires `PERM_COMPLIANCE_READ`.
+- `GET /api/openapi/ops/stats?days=7`: API app, signed call, and webhook delivery counters. Requires `PERM_OPENAPI_ADMIN`.
+- `GET /api/bff/ops/dashboard?days=7`: BFF aggregation over the four service-native stats endpoints. Requires `PERM_AUDIT_READ`.
 
 ## System Operations Baseline
 
