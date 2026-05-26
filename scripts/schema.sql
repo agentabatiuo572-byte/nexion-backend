@@ -1028,12 +1028,17 @@ CREATE TABLE IF NOT EXISTS nx_notification (
   body VARCHAR(512) NOT NULL,
   read_flag TINYINT NOT NULL DEFAULT 0,
   push_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  push_attempts INT NOT NULL DEFAULT 0,
+  next_push_at DATETIME NULL,
+  last_push_error VARCHAR(512) NULL,
+  pushed_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_notification_biz (biz_no),
   KEY idx_notification_user_time (user_id, created_at),
-  KEY idx_notification_push (push_status, created_at)
+  KEY idx_notification_push (push_status, created_at),
+  KEY idx_notification_push_due (push_status, next_push_at, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'biz_no') = 0,
@@ -1046,6 +1051,26 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'push_attempts') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN push_attempts INT NOT NULL DEFAULT 0 AFTER push_status',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'next_push_at') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN next_push_at DATETIME NULL AFTER push_attempts',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'last_push_error') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN last_push_error VARCHAR(512) NULL AFTER next_push_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'pushed_at') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN pushed_at DATETIME NULL AFTER last_push_error',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND INDEX_NAME = 'uk_notification_biz') = 0,
   'ALTER TABLE nx_notification ADD UNIQUE KEY uk_notification_biz (biz_no)',
   'SELECT 1');
@@ -1053,6 +1078,11 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND INDEX_NAME = 'idx_notification_push') = 0,
   'ALTER TABLE nx_notification ADD INDEX idx_notification_push (push_status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND INDEX_NAME = 'idx_notification_push_due') = 0,
+  'ALTER TABLE nx_notification ADD INDEX idx_notification_push_due (push_status, next_push_at, created_at)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

@@ -24,6 +24,16 @@ server:
   port: 8107
 
 nexion:
+  notification:
+    unread:
+      ttl-seconds: ${NEXION_NOTIFICATION_UNREAD_TTL_SECONDS:60}
+    push:
+      max-attempts: ${NEXION_NOTIFICATION_PUSH_MAX_ATTEMPTS:3}
+      retry-delay-seconds: ${NEXION_NOTIFICATION_PUSH_RETRY_DELAY_SECONDS:60}
+      worker:
+        enabled: ${NEXION_NOTIFICATION_PUSH_WORKER_ENABLED:false}
+        batch-size: ${NEXION_NOTIFICATION_PUSH_WORKER_BATCH_SIZE:100}
+        fixed-delay-ms: ${NEXION_NOTIFICATION_PUSH_WORKER_FIXED_DELAY_MS:5000}
   outbox:
     rocketmq:
       enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}

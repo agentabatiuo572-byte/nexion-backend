@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.notification.domain.Notification;
@@ -16,8 +17,9 @@ import org.mockito.ArgumentCaptor;
 
 class EarningGeneratedNotificationServiceTest {
     private final NotificationMapper notificationMapper = mock(NotificationMapper.class);
+    private final NotificationUnreadCounter unreadCounter = mock(NotificationUnreadCounter.class);
     private final EarningGeneratedNotificationService service =
-            new EarningGeneratedNotificationService(notificationMapper);
+            new EarningGeneratedNotificationService(notificationMapper, unreadCounter);
 
     @Test
     void createsNotificationForEarningGenerated() {
@@ -39,6 +41,7 @@ class EarningGeneratedNotificationServiceTest {
         assertThat(captor.getValue().getBody()).contains("0.018", "USDT", "POC-1");
         assertThat(captor.getValue().getReadFlag()).isZero();
         assertThat(captor.getValue().getPushStatus()).isEqualTo("PENDING");
+        verify(unreadCounter).increment(10001L);
     }
 
     @Test
@@ -57,5 +60,6 @@ class EarningGeneratedNotificationServiceTest {
 
         assertThat(notification.getId()).isEqualTo(9L);
         verify(notificationMapper, never()).insert(any(Notification.class));
+        verifyNoInteractions(unreadCounter);
     }
 }

@@ -16,9 +16,13 @@ public class EarningGeneratedNotificationService {
     private static final String PUSH_PENDING = "PENDING";
 
     private final NotificationMapper notificationMapper;
+    private final NotificationUnreadCounter unreadCounter;
 
-    public EarningGeneratedNotificationService(NotificationMapper notificationMapper) {
+    public EarningGeneratedNotificationService(
+            NotificationMapper notificationMapper,
+            NotificationUnreadCounter unreadCounter) {
         this.notificationMapper = notificationMapper;
+        this.unreadCounter = unreadCounter;
     }
 
     public Notification create(EarningGeneratedPayload payload) {
@@ -40,6 +44,7 @@ public class EarningGeneratedNotificationService {
         notification.setIsDeleted(0);
         try {
             notificationMapper.insert(notification);
+            unreadCounter.increment(notification.getUserId());
             return notification;
         } catch (DuplicateKeyException ex) {
             return findByBizNo(bizNo);

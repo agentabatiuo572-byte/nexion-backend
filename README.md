@@ -245,6 +245,19 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smo
 
 The direct smoke now verifies `commerce paid -> compute task completion receipt -> earnings settle -> analytics -> device snapshot tick -> wallet post`.
 
+## Notification Center Baseline
+
+Notification now exposes the user-facing notification center and an internal push dispatch baseline inside `nexion-notification-service`.
+
+- `GET /notifications?readFlag=&type=&pageNum=&pageSize=`: current user's notification page.
+- `GET /notifications/unread-count`: Redis-first unread count using `notification:unread:{userId}` with MySQL fallback.
+- `POST /notifications/{notificationId}/read`: mark one owned notification as read and invalidate unread cache.
+- `POST /notifications/read-all`: mark all current user's unread notifications as read.
+- `DELETE /notifications/{notificationId}`: soft-delete one owned notification.
+- `POST /notifications/ops/push-pending?limit=100`: manually dispatch due `PENDING`/`FAILED` pushes; requires `PERM_NOTIFICATION_WRITE`.
+- The scheduled push worker is disabled by default. Enable it with `NEXION_NOTIFICATION_PUSH_WORKER_ENABLED=true`; tune `NEXION_NOTIFICATION_PUSH_WORKER_BATCH_SIZE`, `NEXION_NOTIFICATION_PUSH_WORKER_FIXED_DELAY_MS`, `NEXION_NOTIFICATION_PUSH_MAX_ATTEMPTS`, and `NEXION_NOTIFICATION_PUSH_RETRY_DELAY_SECONDS`.
+- The default `PushProvider` is a no-op logger so production push vendors can be wired later without changing notification state handling.
+
 ## Gateway Canary Baseline
 
 Gateway canary routing is disabled by default and only rewrites the downstream target URI when a configured route rule matches. The first committed route template is `commerce`:
