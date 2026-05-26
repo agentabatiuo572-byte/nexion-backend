@@ -473,6 +473,48 @@ CREATE TABLE IF NOT EXISTS nx_order (
   KEY idx_order_status (order_status, payment_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_tradein_application (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  tradein_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  source_device_id BIGINT NOT NULL,
+  source_instance_no VARCHAR(96) NULL,
+  source_product_id BIGINT NOT NULL,
+  source_product_name VARCHAR(128) NOT NULL,
+  source_product_tier VARCHAR(32) NULL,
+  target_product_id BIGINT NOT NULL,
+  target_product_name VARCHAR(128) NOT NULL,
+  target_product_tier VARCHAR(32) NULL,
+  months_owned INT NOT NULL DEFAULT 0,
+  current_efficiency DECIMAL(10,6) NOT NULL DEFAULT 1,
+  source_price_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  target_price_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  salvage_value_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  tradein_discount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  net_upgrade_cost_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL,
+  review_note VARCHAR(512) NULL,
+  reviewer VARCHAR(96) NULL,
+  submitted_at DATETIME NOT NULL,
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_tradein_no (tradein_no),
+  KEY idx_tradein_user_time (user_id, created_at),
+  KEY idx_tradein_status (status, created_at),
+  KEY idx_tradein_source_device (source_device_id),
+  CONSTRAINT chk_tradein_amounts CHECK (
+    months_owned >= 0
+    AND current_efficiency >= 0
+    AND source_price_usdt >= 0
+    AND target_price_usdt >= 0
+    AND salvage_value_usdt >= 0
+    AND tradein_discount_usdt >= 0
+    AND net_upgrade_cost_usdt >= 0
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET @sql = IF((SELECT EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'id') NOT LIKE '%auto_increment%',
   'ALTER TABLE nx_order MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT',
   'SELECT 1');

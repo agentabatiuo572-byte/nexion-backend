@@ -231,7 +231,9 @@ INSERT INTO nx_product (id, product_no, name, product_type, tier, status, price_
 VALUES
   (1, 'NX-S1', 'NexionBox S1', 'NEXION_BOX', 'S1', 'ON_SALE', 299.00, 4.200000, 38.560000, 720.000000, 280, '/img/products/nexionbox-s1.png'),
   (2, 'NX-PRO', 'NexionBox Pro', 'NEXION_BOX', 'PRO', 'ON_SALE', 899.00, 11.500000, 106.800000, 1880.000000, 96, '/img/products/nexionbox-pro.png'),
-  (3, 'NX-RACK', 'NexionRack', 'NEXION_RACK', 'RACK', 'ON_SALE', 3499.00, 48.000000, 438.200000, 7600.000000, 18, '/img/products/nexionrack.png')
+  (3, 'NX-RACK', 'NexionRack', 'NEXION_RACK', 'RACK', 'ON_SALE', 3499.00, 48.000000, 438.200000, 7600.000000, 18, '/img/products/nexionrack.png'),
+  (4, 'NX-PRO-V2', 'NexionBox Pro v2', 'NEXION_BOX', 'PRO_V2', 'ON_SALE', 2639.00, 18.000000, 96.000000, 2800.000000, 80, '/img/products/nexionbox-pro-v2.png'),
+  (5, 'NX-RACK-P2', 'NexionRack P2', 'NEXION_RACK', 'RACK_P2', 'ON_SALE', 14999.00, 96.000000, 248.000000, 18200.000000, 12, '/img/products/nexionrack-p2.png')
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
   product_type = VALUES(product_type),

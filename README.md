@@ -105,6 +105,19 @@ Daily now exposes the product spec's Top Streakers social-proof list from `nx_us
 - Only active streaks with `last_check_in_date` today or yesterday are listed. `limit` is bounded to `1..100`.
 - Phone numbers and emails are not exposed; blank nicknames fall back to a generated `Nexion_####` display name.
 
+## Commerce Trade-in Baseline
+
+Commerce now owns the server-side Trade-in quote and application baseline. Prices, product mapping, salvage value, and net upgrade cost are calculated on the server; clients only provide the current user and source device id.
+
+- `POST /commerce/tradeins/quote`: validates the source device through compute-service, verifies it belongs to the user, maps S1/Pro to Pro v2 or Rack to Rack P2, then returns salvage, discount, and net upgrade cost.
+- `POST /commerce/tradeins`: creates a `SUBMITTED` trade-in application from a fresh server-side quote.
+- `GET /commerce/tradeins?userId=&status=&pageNum=&pageSize=`: pages trade-in applications, with `pageSize` capped at `100`.
+- `GET /commerce/tradeins/{tradeinNo}`: returns one trade-in application.
+- Table: `nx_tradein_application`.
+- Seeded upgrade targets: `NX-PRO-V2` and `NX-RACK-P2`.
+- Salvage formula: `source price * current efficiency * 0.30`; trade-in discounts are `300` USDT for S1/Pro -> Pro v2 and `800` USDT for Rack -> Rack P2.
+- Device efficiency follows the product lifecycle curve: months 1-3 multiply by `0.96`, months 4-8 by `0.94`, months 9+ by `0.90`, floored at `0.22`.
+
 ## Main Chain Smoke Test
 
 Start these services first: `nexion-commerce-service`, `nexion-compute-service`, `nexion-earnings-service`, and `nexion-wallet-service`.
