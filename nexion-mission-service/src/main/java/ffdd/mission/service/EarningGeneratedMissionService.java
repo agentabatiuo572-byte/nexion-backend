@@ -93,7 +93,7 @@ public class EarningGeneratedMissionService {
         ledger.setBizNo(bizNo);
         ledger.setBizType(BIZ_TYPE_MISSION);
         ledger.setPoints(points);
-        ledger.setBalanceAfter(points);
+        ledger.setBalanceAfter(totalPoints(userId) + points);
         ledger.setIsDeleted(0);
         try {
             pointsLedgerMapper.insert(ledger);
@@ -108,6 +108,11 @@ public class EarningGeneratedMissionService {
 
     private int rewardPoints(Mission mission) {
         return mission.getRewardPoints() == null ? 0 : mission.getRewardPoints();
+    }
+
+    private int totalPoints(Long userId) {
+        Integer total = pointsLedgerMapper.sumPointsByUser(userId);
+        return total == null ? 0 : total;
     }
 
     private void validate(EarningGeneratedPayload payload) {

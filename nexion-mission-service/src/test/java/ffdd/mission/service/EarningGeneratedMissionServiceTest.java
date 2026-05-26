@@ -33,6 +33,7 @@ class EarningGeneratedMissionServiceTest {
         mission.setMissionCode("FIRST_RECEIPT");
         mission.setRewardPoints(200);
         when(missionMapper.selectOne(any())).thenReturn(mission);
+        when(pointsLedgerMapper.sumPointsByUser(10001L)).thenReturn(30);
 
         EarningGeneratedPayload payload = new EarningGeneratedPayload();
         payload.setEventNo("EARN-POC1-USDT");
@@ -56,6 +57,7 @@ class EarningGeneratedMissionServiceTest {
         assertThat(ledgerCaptor.getValue().getBizNo()).isEqualTo("MISSION-FIRST_RECEIPT-10001");
         assertThat(ledgerCaptor.getValue().getBizType()).isEqualTo("MISSION");
         assertThat(ledgerCaptor.getValue().getPoints()).isEqualTo(200);
+        assertThat(ledgerCaptor.getValue().getBalanceAfter()).isEqualTo(230);
     }
 
     @Test

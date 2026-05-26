@@ -308,7 +308,8 @@ WHERE biz_no IN ('EARN-20260522-USDT-0001', 'EARN-20260522-NEX-0001')
 INSERT INTO nx_mission (id, mission_code, mission_name, mission_type, reward_points, status)
 VALUES
   (1, 'DAY_ONE_ONLINE', 'Day-One Online', 'DAY_ONE', 100, 1),
-  (2, 'FIRST_RECEIPT', 'First Compute Receipt', 'GROWTH', 200, 1)
+  (2, 'FIRST_RECEIPT', 'First Compute Receipt', 'GROWTH', 200, 1),
+  (3, 'DAILY_CHECK_IN', 'Daily Check-in', 'DAILY', 30, 1)
 ON DUPLICATE KEY UPDATE
   mission_name = VALUES(mission_name),
   mission_type = VALUES(mission_type),
