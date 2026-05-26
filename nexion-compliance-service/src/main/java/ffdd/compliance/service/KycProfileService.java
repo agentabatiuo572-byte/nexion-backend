@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import ffdd.common.exception.BizException;
 import ffdd.compliance.domain.KycProfile;
+import ffdd.compliance.dto.KycExpiryResult;
 import ffdd.compliance.dto.KycProfileReviewRequest;
 import ffdd.compliance.dto.KycProfileSubmitRequest;
 import ffdd.compliance.mapper.KycProfileMapper;
@@ -23,6 +24,8 @@ public class KycProfileService {
     public static final String STATUS_EXPIRED = "EXPIRED";
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
+    private static final String SYSTEM_EXPIRY_REASON = "KYC approval expired";
+    private static final String DEFAULT_EXPIRY_REVIEWER = "system-kyc-expiry";
 
     private final KycProfileMapper kycProfileMapper;
 
@@ -70,6 +73,45 @@ public class KycProfileService {
                 .orderByDesc(KycProfile::getCreatedAt)
                 .last("LIMIT " + normalizeLimit(limit));
         return kycProfileMapper.selectList(wrapper);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public KycExpiryResult expireApprovedProfiles(int limit, String reviewer) {
+        String normalizedReviewer = normalizeExpiryReviewer(reviewer);
+        LocalDateTime now = LocalDateTime.now();
+        List<KycProfile> profiles = kycProfileMapper.selectList(new LambdaQueryWrapper<KycProfile>()
+                .eq(KycProfile::getStatus, STATUS_APPROVED)
+                .eq(KycProfile::getIsDeleted, 0)
+                .isNotNull(KycProfile::getExpiresAt)
+                .le(KycProfile::getExpiresAt, now)
+                .orderByAsc(KycProfile::getExpiresAt)
+                .last("LIMIT " + normalizeLimit(limit)));
+
+        KycExpiryResult result = new KycExpiryResult();
+        result.setScanned(profiles.size());
+        for (KycProfile profile : profiles) {
+            UpdateWrapper<KycProfile> wrapper = new UpdateWrapper<KycProfile>()
+                    .eq("id", profile.getId())
+                    .eq("status", STATUS_APPROVED)
+                    .eq("is_deleted", 0)
+                    .le("expires_at", now)
+                    .set("status", STATUS_EXPIRED)
+                    .set("reviewed_by", normalizedReviewer)
+                    .set("reviewed_at", now)
+                    .set("reject_reason", SYSTEM_EXPIRY_REASON)
+                    .set("risk_notes", SYSTEM_EXPIRY_REASON);
+            if (kycProfileMapper.update(null, wrapper) > 0) {
+                profile.setStatus(STATUS_EXPIRED);
+                profile.setReviewedBy(normalizedReviewer);
+                profile.setReviewedAt(now);
+                profile.setRejectReason(SYSTEM_EXPIRY_REASON);
+                profile.setRiskNotes(SYSTEM_EXPIRY_REASON);
+                result.incrementExpired(profile.getUserId());
+            } else {
+                result.incrementSkipped();
+            }
+        }
+        return result;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -262,6 +304,14 @@ public class KycProfileService {
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.contains("..")) {
             throw new BizException(fieldName + " must be a storage object key");
         }
+    }
+
+    private String normalizeExpiryReviewer(String reviewer) {
+        if (!StringUtils.hasText(reviewer)) {
+            return DEFAULT_EXPIRY_REVIEWER;
+        }
+        validateRequiredText("Reviewer", reviewer, 64);
+        return reviewer.trim();
     }
 
     private String normalizeKycNo(String requestedKycNo, Long userId) {

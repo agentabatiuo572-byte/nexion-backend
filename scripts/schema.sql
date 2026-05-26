@@ -1268,7 +1268,8 @@ CREATE TABLE IF NOT EXISTS nx_kyc_profile (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_kyc_user (user_id),
   UNIQUE KEY uk_kyc_no (kyc_no),
-  KEY idx_kyc_status (status, created_at)
+  KEY idx_kyc_status (status, created_at),
+  KEY idx_kyc_expiry (status, expires_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'applicant_name') = 0,
@@ -1308,6 +1309,11 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'risk_notes') = 0,
   'ALTER TABLE nx_kyc_profile ADD COLUMN risk_notes VARCHAR(512) NULL AFTER expires_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND INDEX_NAME = 'idx_kyc_expiry') = 0,
+  'ALTER TABLE nx_kyc_profile ADD INDEX idx_kyc_expiry (status, expires_at, id)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

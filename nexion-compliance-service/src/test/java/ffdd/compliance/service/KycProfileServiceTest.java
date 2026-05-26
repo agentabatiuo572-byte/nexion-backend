@@ -10,10 +10,12 @@ import static org.mockito.Mockito.when;
 
 import ffdd.common.exception.BizException;
 import ffdd.compliance.domain.KycProfile;
+import ffdd.compliance.dto.KycExpiryResult;
 import ffdd.compliance.dto.KycProfileReviewRequest;
 import ffdd.compliance.dto.KycProfileSubmitRequest;
 import ffdd.compliance.mapper.KycProfileMapper;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class KycProfileServiceTest {
@@ -101,6 +103,23 @@ class KycProfileServiceTest {
         assertThatThrownBy(() -> service.reject(10001L, request))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("Review reason is required");
+    }
+
+    @Test
+    void expiresApprovedProfilesPastExpiry() {
+        KycProfile expired = existingProfile("APPROVED");
+        expired.setExpiresAt(LocalDateTime.now().minusMinutes(1));
+        when(kycProfileMapper.selectList(any())).thenReturn(List.of(expired));
+        when(kycProfileMapper.update(any(), any())).thenReturn(1);
+
+        KycExpiryResult result = service.expireApprovedProfiles(20, "system-kyc-expiry");
+
+        assertThat(result.getScanned()).isEqualTo(1);
+        assertThat(result.getExpired()).isEqualTo(1);
+        assertThat(result.getSkipped()).isZero();
+        assertThat(result.getUserIds()).containsExactly(10001L);
+        assertThat(expired.getStatus()).isEqualTo("EXPIRED");
+        assertThat(expired.getRejectReason()).isEqualTo("KYC approval expired");
     }
 
     private KycProfileSubmitRequest submitRequest() {

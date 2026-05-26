@@ -331,9 +331,14 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 - `GET /compliance/kyc-profiles?userId=&status=&limit=20` and `GET /compliance/kyc-profiles/users/{userId}`: inspect KYC profiles.
 - `POST /compliance/kyc-profiles`: submit or resubmit KYC metadata with storage object key only; no raw document number is stored.
 - `POST /compliance/kyc-profiles/{userId}/approve|reject|expire`: operate KYC lifecycle with reviewer attribution, reason, and optional approval expiry.
+- `POST /compliance/kyc-profiles/maintenance/expire-approved?limit=50`: ops trigger for expiring approved KYC rows whose `expiresAt` is in the past.
 - `GET /compliance/proof-assets?userId=&proofType=&status=&limit=20` and `GET /compliance/proof-assets/{proofNo}`: inspect Proof asset metadata.
-- `POST /compliance/proof-assets`: record Proof metadata such as object key, checksum, related business no, and JSON metadata without uploading file bytes.
+- `POST /compliance/proof-assets`: record Proof metadata such as object key, checksum, related business no, and JSON metadata.
 - `POST /compliance/proof-assets/{proofNo}/verify|reject` and `DELETE /compliance/proof-assets/{proofNo}`: review or archive Proof rows.
+- `POST /compliance/evidence/kyc-documents`: multipart upload of a KYC document to MinIO, then submit/resubmit the KYC profile with only the generated object key and last4 metadata stored.
+- `POST /compliance/evidence/proof-assets`: multipart upload of Proof evidence to MinIO, computes `sha256:*`, then creates the Proof asset metadata row.
+- `POST /compliance/evidence/upload-policies`: creates a generated object key plus presigned MinIO `PUT` URL for direct client upload.
+- `GET /compliance/evidence/download-url?objectKey=&expiresInSeconds=900`: creates a short-lived presigned read URL for ops review.
 - `GET /compliance/risk-decisions?userId=&bizType=&decision=&reason=&limit=20`: query recent risk decisions for operations review.
 - `GET /compliance/risk-decisions/summary?days=7`: returns decision totals by outcome plus active blacklist count.
 - `GET /compliance/risk-decisions/review`: lists pending manual review decisions.
@@ -347,6 +352,8 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 - Withdrawal safety: withdrawal reservation uses one conditional update (`usdt_available >= amount + fee`) to atomically decrement available USDT and increment `pending_withdraw`; success decrements pending only, while failure moves pending back to available.
 - Withdrawal broadcast worker is disabled by default (`NEXION_WALLET_WITHDRAWAL_BROADCAST_ENABLED=false`). It scans `PENDING_CHAIN` rows, calls a replaceable `WithdrawalChainBroadcaster`, records `CHAIN_SUBMITTED` on success, and uses exponential retry before moving poison rows to local `DEAD`.
 - Compliance risk thresholds are configurable with `NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_DAILY_REVIEW_COUNT`, `NEXION_COMPLIANCE_BLOCKED_REGIONS`, `NEXION_COMPLIANCE_REVIEW_REGIONS`, `NEXION_COMPLIANCE_LOW_TIER_REVIEW_AMOUNT`, `NEXION_COMPLIANCE_LOW_TIER_LEVELS`, `NEXION_COMPLIANCE_IP_DAILY_REVIEW_COUNT`, and `NEXION_COMPLIANCE_DEVICE_DAILY_REVIEW_COUNT`.
+- Compliance evidence storage uses `NEXION_STORAGE_ENDPOINT`, `NEXION_STORAGE_ACCESS_KEY`, `NEXION_STORAGE_SECRET_KEY`, `NEXION_STORAGE_BUCKET`, `NEXION_COMPLIANCE_EVIDENCE_MAX_UPLOAD_SIZE_BYTES`, and `NEXION_COMPLIANCE_EVIDENCE_PRESIGN_EXPIRY_SECONDS`.
+- KYC expiry worker is disabled by default (`NEXION_COMPLIANCE_KYC_EXPIRY_ENABLED=false`) and can be enabled with `NEXION_COMPLIANCE_KYC_EXPIRY_BATCH_SIZE`, `NEXION_COMPLIANCE_KYC_EXPIRY_REVIEWER`, `NEXION_COMPLIANCE_KYC_EXPIRY_INITIAL_DELAY_MS`, and `NEXION_COMPLIANCE_KYC_EXPIRY_FIXED_DELAY_MS`.
 
 Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION-{commissionId}` for both USDT and NEX ledger entries.
 

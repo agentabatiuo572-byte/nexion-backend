@@ -24,7 +24,21 @@ server:
   port: 8109
 
 nexion:
+  storage:
+    endpoint: ${NEXION_STORAGE_ENDPOINT:http://127.0.0.1:9000}
+    access-key: "${NEXION_STORAGE_ACCESS_KEY:minioadmin}"
+    secret-key: "${NEXION_STORAGE_SECRET_KEY:change_me}"
+    bucket: ${NEXION_STORAGE_BUCKET:nexion}
   compliance:
+    evidence:
+      max-upload-size-bytes: ${NEXION_COMPLIANCE_EVIDENCE_MAX_UPLOAD_SIZE_BYTES:10485760}
+      presign-expiry-seconds: ${NEXION_COMPLIANCE_EVIDENCE_PRESIGN_EXPIRY_SECONDS:900}
+    kyc-expiry:
+      enabled: ${NEXION_COMPLIANCE_KYC_EXPIRY_ENABLED:false}
+      batch-size: ${NEXION_COMPLIANCE_KYC_EXPIRY_BATCH_SIZE:50}
+      reviewer: ${NEXION_COMPLIANCE_KYC_EXPIRY_REVIEWER:system-kyc-expiry}
+      initial-delay-ms: ${NEXION_COMPLIANCE_KYC_EXPIRY_INITIAL_DELAY_MS:30000}
+      fixed-delay-ms: ${NEXION_COMPLIANCE_KYC_EXPIRY_FIXED_DELAY_MS:60000}
     risk:
       withdrawal-review-amount: ${NEXION_COMPLIANCE_WITHDRAWAL_REVIEW_AMOUNT:1000.000000}
       exchange-review-amount: ${NEXION_COMPLIANCE_EXCHANGE_REVIEW_AMOUNT:5000.000000}

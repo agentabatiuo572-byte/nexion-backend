@@ -2,6 +2,7 @@ package ffdd.compliance.controller;
 
 import ffdd.common.api.ApiResult;
 import ffdd.compliance.domain.KycProfile;
+import ffdd.compliance.dto.KycExpiryResult;
 import ffdd.compliance.dto.KycProfileReviewRequest;
 import ffdd.compliance.dto.KycProfileSubmitRequest;
 import ffdd.compliance.service.KycProfileService;
@@ -44,6 +45,14 @@ public class KycProfileController {
     @PreAuthorize("hasAuthority('PERM_COMPLIANCE_WRITE')")
     public ApiResult<KycProfile> submit(@Valid @RequestBody KycProfileSubmitRequest request) {
         return ApiResult.ok(kycProfileService.submit(request));
+    }
+
+    @PostMapping("/maintenance/expire-approved")
+    @PreAuthorize("hasAuthority('PERM_COMPLIANCE_WRITE')")
+    public ApiResult<KycExpiryResult> expireApproved(
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(defaultValue = "ops-kyc-expiry") String reviewer) {
+        return ApiResult.ok(kycProfileService.expireApprovedProfiles(limit, reviewer));
     }
 
     @PostMapping("/{userId}/approve")
