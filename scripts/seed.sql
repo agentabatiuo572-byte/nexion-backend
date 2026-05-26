@@ -316,6 +316,18 @@ ON DUPLICATE KEY UPDATE
   reward_points = VALUES(reward_points),
   status = VALUES(status);
 
+INSERT INTO nx_achievement (id, achievement_code, achievement_name, category, trigger_type, trigger_value, reward_points, status)
+VALUES
+  (1, 'STREAK_3', '3-Day Streak', 'LOYALTY', 'STREAK_DAYS', 3, 5, 1),
+  (2, 'STREAK_7', '7-Day Streak', 'LOYALTY', 'STREAK_DAYS', 7, 15, 1)
+ON DUPLICATE KEY UPDATE
+  achievement_name = VALUES(achievement_name),
+  category = VALUES(category),
+  trigger_type = VALUES(trigger_type),
+  trigger_value = VALUES(trigger_value),
+  reward_points = VALUES(reward_points),
+  status = VALUES(status);
+
 INSERT INTO nx_notification (id, biz_no, user_id, type, title, body, read_flag, push_status)
 VALUES
   (1, 'seed:EARN-20260522-USDT-0001', 10001, 'EARNING', 'Overnight compute completed', '+0.018 USDT and +3.2 NEX are ready.', 0, 'PENDING')

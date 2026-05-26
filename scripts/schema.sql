@@ -1018,6 +1018,51 @@ CREATE TABLE IF NOT EXISTS nx_daily_check_in (
   KEY idx_daily_check_in_date (check_in_date, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_user_streak (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  current_streak INT NOT NULL DEFAULT 0,
+  longest_streak INT NOT NULL DEFAULT 0,
+  streak_savers INT NOT NULL DEFAULT 1,
+  last_check_in_date DATE NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_streak_user (user_id),
+  KEY idx_user_streak_last_check_in (last_check_in_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_achievement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  achievement_code VARCHAR(64) NOT NULL,
+  achievement_name VARCHAR(128) NOT NULL,
+  category VARCHAR(32) NOT NULL,
+  trigger_type VARCHAR(32) NOT NULL,
+  trigger_value INT NOT NULL DEFAULT 0,
+  reward_points INT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_achievement_code (achievement_code),
+  KEY idx_achievement_trigger (trigger_type, trigger_value)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_achievement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  achievement_id BIGINT NOT NULL,
+  achievement_code VARCHAR(64) NOT NULL,
+  achievement_status VARCHAR(32) NOT NULL,
+  unlocked_at DATETIME NULL,
+  claimed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_achievement (user_id, achievement_code),
+  KEY idx_user_achievement_status (achievement_status, unlocked_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_points_ledger (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
