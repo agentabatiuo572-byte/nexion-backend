@@ -85,6 +85,12 @@ spring:
             - Path=/api/system/**
           filters:
             - StripPrefix=1
+        - id: audit-service
+          uri: http://localhost:8110
+          predicates:
+            - Path=/api/audit/**
+          filters:
+            - StripPrefix=1
     nacos:
       username: ${NACOS_USERNAME:nacos}
       password: "${NACOS_PASSWORD:nacos}"
@@ -153,5 +159,7 @@ nexion:
           flow-qps: ${NEXION_GATEWAY_SENTINEL_COMPLIANCE_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
         system:
           flow-qps: ${NEXION_GATEWAY_SENTINEL_SYSTEM_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
+        audit:
+          flow-qps: ${NEXION_GATEWAY_SENTINEL_AUDIT_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}
         missions:
           flow-qps: ${NEXION_GATEWAY_SENTINEL_MISSIONS_QPS:${NEXION_GATEWAY_SENTINEL_DEFAULT_FLOW_QPS:1000}}

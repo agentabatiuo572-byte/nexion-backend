@@ -6,7 +6,7 @@ The project now follows the first-phase service split from the Nexion high-concu
 
 | Module | Port | Responsibility |
 |---|---:|---|
-| `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config |
+| `nexion-common` | - | shared API result, base entity, exception, security, MyBatis-Plus, MinIO config, audit trace/log utilities |
 | `nexion-gateway` | 8090 | Spring Cloud Gateway routes, JWT forwarding, Redis distributed rate limits, canary routing, Sentinel flow/degrade protection |
 | `nexion-bff-service` | 8100 | Home/Earn/Wallet page aggregation and short TTL Redis snapshots |
 | `nexion-auth-service` | 8101 | user register/login/referral identity |
@@ -72,6 +72,17 @@ The current backend baseline implements the first event-driven slice:
 ```powershell
 & 'D:\software\apache-maven-3.9.9\bin\mvn.cmd' -DskipTests compile
 ```
+
+## Audit Log Baseline
+
+`nexion-common` now provides a servlet trace filter and shared audit writer/query API. Incoming `X-Nexion-Trace-Id` is preserved when valid; otherwise services generate a new trace id and return it on the response header. High-value successful operations now write `nx_audit_log` rows with service, action, trace id, actor, user, resource, result, risk level, request path, client IP, and a sanitized JSON detail payload.
+
+- `GET /audit/logs?traceId=&serviceName=&action=&resourceType=&resourceId=&bizNo=&userId=&actorId=&result=&riskLevel=&limit=20`: query audit rows, protected by `PERM_AUDIT_READ`.
+- `GET /audit/logs/trace/{traceId}`: inspect up to 200 rows for one trace id.
+- Gateway exposes the ops query route at `/api/audit/**`, currently routed to `nexion-system-service`.
+- Covered write points include Commerce order/payment success paths, Wallet deposit/withdrawal/exchange/risk-apply paths, Compliance KYC/risk/blacklist/proof evidence operations, and OpenAPI admin app/webhook delivery operations.
+- Sensitive detail keys such as `secret`, `token`, `signature`, `authorization`, `objectKey`, and raw callback bodies are redacted before persistence.
+- Table: `nx_audit_log`. Permission seed: `PERM_AUDIT_READ`.
 
 ## Mission Streak Power-Ups Baseline
 

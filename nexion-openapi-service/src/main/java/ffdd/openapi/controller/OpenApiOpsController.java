@@ -1,6 +1,8 @@
 package ffdd.openapi.controller;
 
 import ffdd.common.api.ApiResult;
+import ffdd.common.audit.AuditLogService;
+import ffdd.common.audit.AuditLogWriteRequest;
 import ffdd.openapi.domain.WebhookDelivery;
 import ffdd.openapi.dto.OpenApiAppOpsResponse;
 import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
@@ -9,6 +11,7 @@ import ffdd.openapi.service.OpenApiService;
 import ffdd.openapi.service.WebhookDeliveryPublishResponse;
 import ffdd.openapi.service.WebhookDeliveryService;
 import jakarta.validation.Valid;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,10 +30,15 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpenApiOpsController {
     private final OpenApiService openApiService;
     private final WebhookDeliveryService webhookDeliveryService;
+    private final AuditLogService auditLogService;
 
-    public OpenApiOpsController(OpenApiService openApiService, WebhookDeliveryService webhookDeliveryService) {
+    public OpenApiOpsController(
+            OpenApiService openApiService,
+            WebhookDeliveryService webhookDeliveryService,
+            AuditLogService auditLogService) {
         this.openApiService = openApiService;
         this.webhookDeliveryService = webhookDeliveryService;
+        this.auditLogService = auditLogService;
     }
 
     @GetMapping("/ops/overview")
@@ -52,19 +60,27 @@ public class OpenApiOpsController {
 
     @PostMapping("/ops/apps/{appId}/enable")
     public ApiResult<OpenApiAppOpsResponse> enableApp(@PathVariable Long appId) {
-        return ApiResult.ok(openApiService.enableApp(appId));
+        OpenApiAppOpsResponse response = openApiService.enableApp(appId);
+        auditApp("OPENAPI_APP_ENABLE", response, detail("status", response.getStatus()));
+        return ApiResult.ok(response);
     }
 
     @PostMapping("/ops/apps/{appId}/disable")
     public ApiResult<OpenApiAppOpsResponse> disableApp(@PathVariable Long appId) {
-        return ApiResult.ok(openApiService.disableApp(appId));
+        OpenApiAppOpsResponse response = openApiService.disableApp(appId);
+        auditApp("OPENAPI_APP_DISABLE", response, detail("status", response.getStatus()));
+        return ApiResult.ok(response);
     }
 
     @PatchMapping("/ops/apps/{appId}/quotas")
     public ApiResult<OpenApiAppOpsResponse> updateAppQuota(
             @PathVariable Long appId,
             @Valid @RequestBody OpenApiAppQuotaUpdateRequest request) {
-        return ApiResult.ok(openApiService.updateAppQuota(appId, request));
+        OpenApiAppOpsResponse response = openApiService.updateAppQuota(appId, request);
+        auditApp("OPENAPI_APP_QUOTA_UPDATE", response, detail(
+                "qpsLimit", response.getQpsLimit(),
+                "dailyLimit", response.getDailyLimit()));
+        return ApiResult.ok(response);
     }
 
     @GetMapping("/ops/call-audits")
@@ -80,7 +96,19 @@ public class OpenApiOpsController {
     @PostMapping("/webhooks/deliveries/publish")
     public ApiResult<WebhookDeliveryPublishResponse> publishWebhookDeliveries(
             @RequestParam(defaultValue = "20") int limit) {
-        return ApiResult.ok(webhookDeliveryService.publishPending(limit));
+        WebhookDeliveryPublishResponse response = webhookDeliveryService.publishPending(limit);
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("OPENAPI_WEBHOOK_DELIVERY_PUBLISH")
+                .resourceType("WEBHOOK_DELIVERY")
+                .riskLevel("MEDIUM")
+                .detail(detail(
+                        "limit", limit,
+                        "scanned", response.getScanned(),
+                        "succeeded", response.getSucceeded(),
+                        "failed", response.getFailed(),
+                        "dead", response.getDead()))
+                .build());
+        return ApiResult.ok(response);
     }
 
     @GetMapping("/webhooks/deliveries")
@@ -115,5 +143,28 @@ public class OpenApiOpsController {
     @GetMapping("/webhooks/deliveries/summary")
     public ApiResult<Map<String, Object>> webhookSummary() {
         return ApiResult.ok(webhookDeliveryService.summary());
+    }
+
+    private void auditApp(String action, OpenApiAppOpsResponse app, Map<String, Object> detail) {
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action(action)
+                .resourceType("OPENAPI_APP")
+                .resourceId(String.valueOf(app.getId()))
+                .bizNo(app.getAppKey())
+                .userId(app.getOwnerUserId())
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
+    }
+
+    private Map<String, Object> detail(Object... pairs) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            Object value = pairs[i + 1];
+            if (value != null) {
+                detail.put(String.valueOf(pairs[i]), value);
+            }
+        }
+        return detail;
     }
 }

@@ -1,12 +1,16 @@
 package ffdd.compliance.controller;
 
 import ffdd.common.api.ApiResult;
+import ffdd.common.audit.AuditLogService;
+import ffdd.common.audit.AuditLogWriteRequest;
 import ffdd.compliance.domain.ProofAsset;
 import ffdd.compliance.dto.ProofAssetCreateRequest;
 import ffdd.compliance.dto.ProofAssetReviewRequest;
 import ffdd.compliance.service.ProofAssetService;
 import jakarta.validation.Valid;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,9 +25,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/compliance/proof-assets")
 public class ProofAssetController {
     private final ProofAssetService proofAssetService;
+    private final AuditLogService auditLogService;
 
-    public ProofAssetController(ProofAssetService proofAssetService) {
+    public ProofAssetController(ProofAssetService proofAssetService, AuditLogService auditLogService) {
         this.proofAssetService = proofAssetService;
+        this.auditLogService = auditLogService;
     }
 
     @GetMapping
@@ -45,7 +51,9 @@ public class ProofAssetController {
     @PostMapping
     @PreAuthorize("hasAuthority('PERM_COMPLIANCE_WRITE')")
     public ApiResult<ProofAsset> create(@Valid @RequestBody ProofAssetCreateRequest request) {
-        return ApiResult.ok(proofAssetService.create(request));
+        ProofAsset proof = proofAssetService.create(request);
+        auditProof("PROOF_ASSET_CREATE", proof);
+        return ApiResult.ok(proof);
     }
 
     @PostMapping("/{proofNo}/verify")
@@ -53,7 +61,9 @@ public class ProofAssetController {
     public ApiResult<ProofAsset> verify(
             @PathVariable String proofNo,
             @Valid @RequestBody ProofAssetReviewRequest request) {
-        return ApiResult.ok(proofAssetService.verify(proofNo, request));
+        ProofAsset proof = proofAssetService.verify(proofNo, request);
+        auditProof("PROOF_ASSET_VERIFY", proof);
+        return ApiResult.ok(proof);
     }
 
     @PostMapping("/{proofNo}/reject")
@@ -61,12 +71,47 @@ public class ProofAssetController {
     public ApiResult<ProofAsset> reject(
             @PathVariable String proofNo,
             @Valid @RequestBody ProofAssetReviewRequest request) {
-        return ApiResult.ok(proofAssetService.reject(proofNo, request));
+        ProofAsset proof = proofAssetService.reject(proofNo, request);
+        auditProof("PROOF_ASSET_REJECT", proof);
+        return ApiResult.ok(proof);
     }
 
     @DeleteMapping("/{proofNo}")
     @PreAuthorize("hasAuthority('PERM_COMPLIANCE_WRITE')")
     public ApiResult<ProofAsset> delete(@PathVariable String proofNo) {
-        return ApiResult.ok(proofAssetService.delete(proofNo));
+        ProofAsset proof = proofAssetService.delete(proofNo);
+        auditProof("PROOF_ASSET_ARCHIVE", proof);
+        return ApiResult.ok(proof);
+    }
+
+    private void auditProof(String action, ProofAsset proof) {
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action(action)
+                .resourceType("PROOF_ASSET")
+                .resourceId(proof.getProofNo())
+                .bizNo(proof.getProofNo())
+                .userId(proof.getUserId())
+                .riskLevel("HIGH")
+                .detail(detail(
+                        "proofType", proof.getProofType(),
+                        "status", proof.getStatus(),
+                        "contentType", proof.getContentType(),
+                        "sizeBytes", proof.getSizeBytes(),
+                        "relatedBizType", proof.getRelatedBizType(),
+                        "relatedBizNo", proof.getRelatedBizNo(),
+                        "reviewedBy", proof.getReviewedBy(),
+                        "reviewedAt", proof.getReviewedAt()))
+                .build());
+    }
+
+    private Map<String, Object> detail(Object... pairs) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            Object value = pairs[i + 1];
+            if (value != null) {
+                detail.put(String.valueOf(pairs[i]), value);
+            }
+        }
+        return detail;
     }
 }

@@ -6,6 +6,7 @@ public final class AuthHeaders {
     public static final String USERNAME = "X-Nexion-Username";
     public static final String AUTHORITIES = "X-Nexion-Authorities";
     public static final String GATEWAY_SECRET = "X-Nexion-Gateway-Secret";
+    public static final String TRACE_ID = "X-Nexion-Trace-Id";
 
     private AuthHeaders() {
     }

@@ -759,6 +759,34 @@ CREATE TABLE IF NOT EXISTS nx_event_consumer_delivery (
   KEY idx_event_consumer_aggregate (aggregate_type, aggregate_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_audit_log (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  trace_id VARCHAR(128) NULL,
+  service_name VARCHAR(96) NOT NULL,
+  action VARCHAR(96) NOT NULL,
+  resource_type VARCHAR(64) NOT NULL,
+  resource_id VARCHAR(128) NULL,
+  biz_no VARCHAR(128) NULL,
+  user_id BIGINT NULL,
+  actor_id BIGINT NULL,
+  actor_type VARCHAR(32) NULL,
+  actor_username VARCHAR(128) NULL,
+  client_ip VARCHAR(64) NULL,
+  method VARCHAR(16) NULL,
+  path VARCHAR(255) NULL,
+  result VARCHAR(32) NOT NULL DEFAULT 'SUCCESS',
+  risk_level VARCHAR(32) NOT NULL DEFAULT 'INFO',
+  detail_json JSON NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_audit_trace (trace_id, created_at),
+  KEY idx_audit_action_time (action, created_at),
+  KEY idx_audit_resource (resource_type, resource_id, created_at),
+  KEY idx_audit_biz_no (biz_no, created_at),
+  KEY idx_audit_user_time (user_id, created_at),
+  KEY idx_audit_actor_time (actor_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_user_device (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,

@@ -1,12 +1,16 @@
 package ffdd.compliance.controller;
 
 import ffdd.common.api.ApiResult;
+import ffdd.common.audit.AuditLogService;
+import ffdd.common.audit.AuditLogWriteRequest;
 import ffdd.compliance.domain.RiskBlacklist;
 import ffdd.compliance.dto.RiskBlacklistReleaseRequest;
 import ffdd.compliance.dto.RiskBlacklistUpsertRequest;
 import ffdd.compliance.service.ComplianceRiskOpsService;
 import jakarta.validation.Valid;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,9 +24,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/compliance/blacklists")
 public class ComplianceBlacklistController {
     private final ComplianceRiskOpsService riskOpsService;
+    private final AuditLogService auditLogService;
 
-    public ComplianceBlacklistController(ComplianceRiskOpsService riskOpsService) {
+    public ComplianceBlacklistController(ComplianceRiskOpsService riskOpsService, AuditLogService auditLogService) {
         this.riskOpsService = riskOpsService;
+        this.auditLogService = auditLogService;
     }
 
     @GetMapping
@@ -36,7 +42,9 @@ public class ComplianceBlacklistController {
     @PostMapping
     @PreAuthorize("hasAuthority('PERM_COMPLIANCE_WRITE')")
     public ApiResult<RiskBlacklist> upsert(@Valid @RequestBody RiskBlacklistUpsertRequest request) {
-        return ApiResult.ok(riskOpsService.upsertBlacklist(request));
+        RiskBlacklist blacklist = riskOpsService.upsertBlacklist(request);
+        auditBlacklist("RISK_BLACKLIST_UPSERT", blacklist);
+        return ApiResult.ok(blacklist);
     }
 
     @PostMapping("/{userId}/release")
@@ -44,6 +52,38 @@ public class ComplianceBlacklistController {
     public ApiResult<RiskBlacklist> release(
             @PathVariable Long userId,
             @Valid @RequestBody RiskBlacklistReleaseRequest request) {
-        return ApiResult.ok(riskOpsService.releaseBlacklist(userId, request));
+        RiskBlacklist blacklist = riskOpsService.releaseBlacklist(userId, request);
+        auditBlacklist("RISK_BLACKLIST_RELEASE", blacklist);
+        return ApiResult.ok(blacklist);
+    }
+
+    private void auditBlacklist(String action, RiskBlacklist blacklist) {
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action(action)
+                .resourceType("RISK_BLACKLIST")
+                .resourceId(String.valueOf(blacklist.getUserId()))
+                .bizNo(String.valueOf(blacklist.getUserId()))
+                .userId(blacklist.getUserId())
+                .riskLevel("HIGH")
+                .detail(detail(
+                        "status", blacklist.getStatus(),
+                        "source", blacklist.getSource(),
+                        "riskLevel", blacklist.getRiskLevel(),
+                        "expiresAt", blacklist.getExpiresAt(),
+                        "createdBy", blacklist.getCreatedBy(),
+                        "releasedBy", blacklist.getReleasedBy(),
+                        "releasedAt", blacklist.getReleasedAt()))
+                .build());
+    }
+
+    private Map<String, Object> detail(Object... pairs) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            Object value = pairs[i + 1];
+            if (value != null) {
+                detail.put(String.valueOf(pairs[i]), value);
+            }
+        }
+        return detail;
     }
 }
