@@ -6,10 +6,13 @@ import ffdd.commerce.domain.CommerceOrder;
 import ffdd.commerce.domain.PaymentCallbackEvent;
 import ffdd.commerce.domain.PaymentRecord;
 import ffdd.commerce.dto.OrderPayRequest;
+import ffdd.commerce.dto.PaymentAnomalyResponse;
 import ffdd.commerce.dto.PaymentCallbackResponse;
 import ffdd.commerce.dto.PaymentCheckoutRequest;
 import ffdd.commerce.dto.PaymentCheckoutResponse;
+import ffdd.commerce.dto.PaymentOpsResult;
 import ffdd.commerce.dto.PaymentRecordQueryRequest;
+import ffdd.commerce.dto.PaymentReconcileResponse;
 import ffdd.commerce.mapper.PaymentCallbackEventMapper;
 import ffdd.commerce.mapper.PaymentRecordMapper;
 import ffdd.common.api.PageResult;
@@ -18,6 +21,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,12 +37,14 @@ public class PaymentService {
     private static final String PAYMENT_PENDING = "PENDING";
     private static final String PAYMENT_PAID = "PAID";
     private static final String PAYMENT_FAILED = "FAILED";
+    private static final String PAYMENT_EXPIRED = "EXPIRED";
     private static final String EVENT_PROCESSING = "PROCESSING";
     private static final String EVENT_SUCCESS = "SUCCESS";
     private static final String EVENT_FAILED = "FAILED";
     private static final String SIGNATURE_VERIFIED = "VERIFIED";
     private static final String DEFAULT_CURRENCY = "USDT";
     private static final int MAX_RAW_PAYLOAD_LENGTH = 4096;
+    private static final long RECONCILE_RETRY_DELAY_SECONDS = 60;
 
     private final PaymentRecordMapper recordMapper;
     private final PaymentCallbackEventMapper eventMapper;
@@ -183,6 +189,157 @@ public class PaymentService {
         return record;
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public PaymentOpsResult expirePendingPayments(int limit) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<PaymentRecord> records = recordMapper.selectList(new LambdaQueryWrapper<PaymentRecord>()
+                .eq(PaymentRecord::getPaymentStatus, PAYMENT_PENDING)
+                .eq(PaymentRecord::getIsDeleted, 0)
+                .isNotNull(PaymentRecord::getExpiresAt)
+                .le(PaymentRecord::getExpiresAt, now)
+                .orderByAsc(PaymentRecord::getExpiresAt)
+                .last("LIMIT " + normalizeLimit(limit)));
+        PaymentOpsResult result = new PaymentOpsResult();
+        for (PaymentRecord record : records) {
+            result.incrementScanned();
+            if (!PAYMENT_PENDING.equals(record.getPaymentStatus())) {
+                result.incrementSkipped();
+                continue;
+            }
+            PaymentRecord patch = paymentRecordPatch(record);
+            patch.setPaymentStatus(PAYMENT_EXPIRED);
+            patch.setExpiredAt(now);
+            patch.setFailedAt(now);
+            patch.setFailureReason("Payment session expired");
+            recordMapper.updateById(patch);
+            result.incrementExpired(record.getPaymentNo());
+        }
+        return result;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public PaymentReconcileResponse reconcilePayment(String paymentNo) {
+        if (!StringUtils.hasText(paymentNo)) {
+            throw new BizException("Payment no is required");
+        }
+        PaymentRecord record = getRecord(paymentNo);
+        PaymentProvider provider = requireProvider(record.getProvider());
+        try {
+            PaymentProviderStatus providerStatus = provider.queryPayment(record);
+            if (providerStatus == null) {
+                markReconcileSuccess(record, null);
+                return toReconcileResponse(record, null, null, false, "Payment provider returned no status");
+            }
+            validateProviderStatus(record, providerStatus);
+            String status = normalizeProviderStatus(providerStatus.status());
+            if (PAYMENT_PAID.equals(status)) {
+                return reconcilePaid(record, providerStatus);
+            }
+            if (PAYMENT_FAILED.equals(status)) {
+                return reconcileFailed(record, providerStatus);
+            }
+            if (PAYMENT_EXPIRED.equals(status)) {
+                return reconcileExpired(record, providerStatus);
+            }
+            markReconcileSuccess(record, null);
+            return toReconcileResponse(record, providerStatus, null, false, "Payment is still pending");
+        } catch (RuntimeException ex) {
+            markReconcileFailure(record, ex);
+            throw ex;
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public PaymentOpsResult reconcileDuePayments(int limit) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<PaymentRecord> records = recordMapper.selectList(new LambdaQueryWrapper<PaymentRecord>()
+                .eq(PaymentRecord::getPaymentStatus, PAYMENT_PENDING)
+                .eq(PaymentRecord::getIsDeleted, 0)
+                .and(wrapper -> wrapper
+                        .isNull(PaymentRecord::getNextReconcileAt)
+                        .or()
+                        .le(PaymentRecord::getNextReconcileAt, now))
+                .orderByAsc(PaymentRecord::getCreatedAt)
+                .last("LIMIT " + normalizeLimit(limit)));
+        PaymentOpsResult result = new PaymentOpsResult();
+        for (PaymentRecord record : records) {
+            result.incrementScanned();
+            try {
+                PaymentReconcileResponse response = reconcilePayment(record.getPaymentNo());
+                result.incrementReconciled(record.getPaymentNo());
+                if (PAYMENT_PAID.equals(response.getPaymentStatus())) {
+                    result.incrementPaid();
+                } else if (PAYMENT_FAILED.equals(response.getPaymentStatus())
+                        || PAYMENT_EXPIRED.equals(response.getPaymentStatus())) {
+                    result.incrementFailed();
+                } else if (!response.isChanged()) {
+                    result.incrementSkipped();
+                }
+            } catch (RuntimeException ex) {
+                result.incrementErrors();
+            }
+        }
+        return result;
+    }
+
+    public List<PaymentAnomalyResponse> listPaymentAnomalies(int limit) {
+        List<PaymentRecord> records = recordMapper.selectList(new LambdaQueryWrapper<PaymentRecord>()
+                .eq(PaymentRecord::getIsDeleted, 0)
+                .orderByDesc(PaymentRecord::getCreatedAt)
+                .last("LIMIT " + normalizeLimit(limit)));
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<PaymentAnomalyResponse> anomalies = new ArrayList<>();
+        for (PaymentRecord record : records) {
+            CommerceOrder order;
+            try {
+                order = commerceService.getOrder(record.getOrderNo());
+            } catch (BizException ex) {
+                anomalies.add(new PaymentAnomalyResponse(
+                        "ORDER_NOT_FOUND",
+                        record.getProvider(),
+                        record.getPaymentNo(),
+                        record.getOrderNo(),
+                        record.getPaymentStatus(),
+                        null,
+                        "Payment record has no matching order"));
+                continue;
+            }
+            if (PAYMENT_PAID.equals(record.getPaymentStatus())
+                    && !PAYMENT_PAID.equals(order.getPaymentStatus())) {
+                anomalies.add(new PaymentAnomalyResponse(
+                        "PAYMENT_PAID_ORDER_NOT_PAID",
+                        record.getProvider(),
+                        record.getPaymentNo(),
+                        record.getOrderNo(),
+                        record.getPaymentStatus(),
+                        order.getPaymentStatus(),
+                        "Payment is paid but order is not marked paid"));
+            } else if (PAYMENT_PAID.equals(order.getPaymentStatus())
+                    && !PAYMENT_PAID.equals(record.getPaymentStatus())) {
+                anomalies.add(new PaymentAnomalyResponse(
+                        "ORDER_PAID_PAYMENT_NOT_PAID",
+                        record.getProvider(),
+                        record.getPaymentNo(),
+                        record.getOrderNo(),
+                        record.getPaymentStatus(),
+                        order.getPaymentStatus(),
+                        "Order is paid but payment record is not paid"));
+            } else if (PAYMENT_PENDING.equals(record.getPaymentStatus())
+                    && record.getExpiresAt() != null
+                    && !record.getExpiresAt().isAfter(now)) {
+                anomalies.add(new PaymentAnomalyResponse(
+                        "PENDING_PAYMENT_EXPIRED",
+                        record.getProvider(),
+                        record.getPaymentNo(),
+                        record.getOrderNo(),
+                        record.getPaymentStatus(),
+                        order.getPaymentStatus(),
+                        "Payment session expired but record is still pending"));
+            }
+        }
+        return anomalies;
+    }
+
     private PaymentCallbackResponse processPaidCallback(
             PaymentRecord record, PaymentCallbackEvent event, PaymentProviderCallback callback, String rawBody) {
         CommerceOrder order = null;
@@ -241,6 +398,64 @@ public class PaymentService {
                 "Payment failure callback processed");
     }
 
+    private PaymentReconcileResponse reconcilePaid(PaymentRecord record, PaymentProviderStatus providerStatus) {
+        CommerceOrder order = null;
+        boolean changed = !PAYMENT_PAID.equals(record.getPaymentStatus());
+        if (changed) {
+            PaymentRecord patch = reconcileSuccessPatch(record);
+            patch.setPaymentStatus(PAYMENT_PAID);
+            patch.setCallbackEventId(providerStatus.providerEventId());
+            patch.setPaidAt(LocalDateTime.now(clock));
+            patch.setFailureReason(null);
+            recordMapper.updateById(patch);
+
+            OrderPayRequest payRequest = new OrderPayRequest();
+            payRequest.setPaymentNo(record.getPaymentNo());
+            order = commerceService.markPaid(record.getOrderNo(), payRequest);
+            record.setPaymentStatus(PAYMENT_PAID);
+        } else {
+            markReconcileSuccess(record, providerStatus);
+        }
+        return toReconcileResponse(record, providerStatus, order, changed, "Payment reconciled as paid");
+    }
+
+    private PaymentReconcileResponse reconcileFailed(PaymentRecord record, PaymentProviderStatus providerStatus) {
+        boolean changed = !PAYMENT_PAID.equals(record.getPaymentStatus()) && !PAYMENT_FAILED.equals(record.getPaymentStatus());
+        if (changed) {
+            PaymentRecord patch = reconcileSuccessPatch(record);
+            patch.setPaymentStatus(PAYMENT_FAILED);
+            patch.setCallbackEventId(providerStatus.providerEventId());
+            patch.setFailedAt(LocalDateTime.now(clock));
+            patch.setFailureReason(truncate(
+                    providerStatus.failureReason() == null ? "Payment provider reported failure" : providerStatus.failureReason(),
+                    255));
+            recordMapper.updateById(patch);
+            record.setPaymentStatus(PAYMENT_FAILED);
+        } else {
+            markReconcileSuccess(record, providerStatus);
+        }
+        return toReconcileResponse(record, providerStatus, null, changed, "Payment reconciled as failed");
+    }
+
+    private PaymentReconcileResponse reconcileExpired(PaymentRecord record, PaymentProviderStatus providerStatus) {
+        boolean changed = PAYMENT_PENDING.equals(record.getPaymentStatus());
+        if (changed) {
+            PaymentRecord patch = reconcileSuccessPatch(record);
+            patch.setPaymentStatus(PAYMENT_EXPIRED);
+            patch.setCallbackEventId(providerStatus.providerEventId());
+            patch.setExpiredAt(LocalDateTime.now(clock));
+            patch.setFailedAt(LocalDateTime.now(clock));
+            patch.setFailureReason(truncate(
+                    providerStatus.failureReason() == null ? "Payment provider reported expiration" : providerStatus.failureReason(),
+                    255));
+            recordMapper.updateById(patch);
+            record.setPaymentStatus(PAYMENT_EXPIRED);
+        } else {
+            markReconcileSuccess(record, providerStatus);
+        }
+        return toReconcileResponse(record, providerStatus, null, changed, "Payment reconciled as expired");
+    }
+
     private PaymentRecord requireRecord(String provider, PaymentProviderCallback callback) {
         PaymentRecord record = recordMapper.selectOne(new LambdaQueryWrapper<PaymentRecord>()
                 .eq(PaymentRecord::getProvider, provider)
@@ -266,6 +481,20 @@ public class PaymentService {
         String currency = normalizeCurrency(callback.currency());
         if (!record.getCurrency().equals(currency)) {
             throw new BizException("Payment callback currency mismatch");
+        }
+    }
+
+    private void validateProviderStatus(PaymentRecord record, PaymentProviderStatus providerStatus) {
+        if (StringUtils.hasText(providerStatus.providerPaymentId())
+                && !record.getProviderPaymentId().equals(providerStatus.providerPaymentId())) {
+            throw new BizException("Payment provider status providerPaymentId mismatch");
+        }
+        if (providerStatus.amountUsdt() != null && record.getAmountUsdt().compareTo(providerStatus.amountUsdt()) != 0) {
+            throw new BizException("Payment provider status amount mismatch");
+        }
+        String currency = normalizeCurrency(providerStatus.currency());
+        if (!record.getCurrency().equals(currency)) {
+            throw new BizException("Payment provider status currency mismatch");
         }
     }
 
@@ -317,6 +546,34 @@ public class PaymentService {
         eventMapper.updateById(patch);
     }
 
+    private void markReconcileSuccess(PaymentRecord record, PaymentProviderStatus providerStatus) {
+        PaymentRecord patch = reconcileSuccessPatch(record);
+        if (providerStatus != null && StringUtils.hasText(providerStatus.providerEventId())) {
+            patch.setCallbackEventId(providerStatus.providerEventId());
+        }
+        recordMapper.updateById(patch);
+    }
+
+    private void markReconcileFailure(PaymentRecord record, RuntimeException ex) {
+        PaymentRecord patch = paymentRecordPatch(record);
+        int attempts = reconcileAttempts(record) + 1;
+        LocalDateTime now = LocalDateTime.now(clock);
+        patch.setReconcileAttempts(attempts);
+        patch.setLastReconcileAt(now);
+        patch.setNextReconcileAt(now.plusSeconds(RECONCILE_RETRY_DELAY_SECONDS));
+        patch.setLastReconcileError(truncate(ex.getMessage(), 512));
+        recordMapper.updateById(patch);
+    }
+
+    private PaymentRecord reconcileSuccessPatch(PaymentRecord record) {
+        PaymentRecord patch = paymentRecordPatch(record);
+        patch.setReconcileAttempts(reconcileAttempts(record) + 1);
+        patch.setLastReconcileAt(LocalDateTime.now(clock));
+        patch.setNextReconcileAt(null);
+        patch.setLastReconcileError(null);
+        return patch;
+    }
+
     private PaymentRecord paymentRecordPatch(PaymentRecord record) {
         PaymentRecord patch = new PaymentRecord();
         patch.setId(record.getId());
@@ -340,6 +597,24 @@ public class PaymentService {
                 null,
                 true,
                 "Payment callback event already processed");
+    }
+
+    private PaymentReconcileResponse toReconcileResponse(
+            PaymentRecord record,
+            PaymentProviderStatus providerStatus,
+            CommerceOrder order,
+            boolean changed,
+            String message) {
+        return new PaymentReconcileResponse(
+                record.getProvider(),
+                record.getPaymentNo(),
+                record.getOrderNo(),
+                providerStatus == null ? null : normalizeProviderStatus(providerStatus.status()),
+                record.getPaymentStatus(),
+                order == null ? null : order.getPaymentStatus(),
+                order == null ? null : order.getActivationStatus(),
+                changed,
+                message);
     }
 
     private PaymentCheckoutResponse toCheckoutResponse(PaymentRecord record) {
@@ -386,6 +661,16 @@ public class PaymentService {
         };
     }
 
+    private String normalizeProviderStatus(String status) {
+        String normalized = normalizeStatus(status);
+        return switch (normalized) {
+            case "SUCCESS", "SUCCEEDED", "COMPLETED", "PAID" -> PAYMENT_PAID;
+            case "FAIL", "FAILED", "CANCELED", "CANCELLED" -> PAYMENT_FAILED;
+            case "EXPIRED" -> PAYMENT_EXPIRED;
+            default -> PAYMENT_PENDING;
+        };
+    }
+
     private String normalizeStatus(String status) {
         return StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : "";
     }
@@ -403,6 +688,17 @@ public class PaymentService {
             return 10;
         }
         return Math.min(pageSize, 100);
+    }
+
+    private int normalizeLimit(int limit) {
+        if (limit < 1) {
+            return 20;
+        }
+        return Math.min(limit, 100);
+    }
+
+    private int reconcileAttempts(PaymentRecord record) {
+        return record.getReconcileAttempts() == null ? 0 : record.getReconcileAttempts();
     }
 
     private String nextPaymentNo() {

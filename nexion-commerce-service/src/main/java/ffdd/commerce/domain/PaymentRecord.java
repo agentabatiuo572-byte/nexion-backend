@@ -27,4 +27,9 @@ public class PaymentRecord extends BaseEntity {
     private LocalDateTime paidAt;
     private LocalDateTime failedAt;
     private String failureReason;
+    private Integer reconcileAttempts;
+    private LocalDateTime lastReconcileAt;
+    private LocalDateTime nextReconcileAt;
+    private String lastReconcileError;
+    private LocalDateTime expiredAt;
 }

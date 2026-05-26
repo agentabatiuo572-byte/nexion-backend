@@ -491,6 +491,11 @@ CREATE TABLE IF NOT EXISTS nx_payment_record (
   paid_at DATETIME NULL,
   failed_at DATETIME NULL,
   failure_reason VARCHAR(255) NULL,
+  reconcile_attempts INT NOT NULL DEFAULT 0,
+  last_reconcile_at DATETIME NULL,
+  next_reconcile_at DATETIME NULL,
+  last_reconcile_error VARCHAR(512) NULL,
+  expired_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -499,6 +504,7 @@ CREATE TABLE IF NOT EXISTS nx_payment_record (
   KEY idx_payment_order (order_no),
   KEY idx_payment_user_status (user_id, payment_status, created_at),
   KEY idx_payment_status_time (payment_status, created_at),
+  KEY idx_payment_reconcile_due (payment_status, next_reconcile_at, created_at),
   CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -646,6 +652,36 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND INDEX_NAME = 'idx_payment_user_status') = 0,
   'ALTER TABLE nx_payment_record ADD INDEX idx_payment_user_status (user_id, payment_status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND COLUMN_NAME = 'reconcile_attempts') = 0,
+  'ALTER TABLE nx_payment_record ADD COLUMN reconcile_attempts INT NOT NULL DEFAULT 0 AFTER failure_reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND COLUMN_NAME = 'last_reconcile_at') = 0,
+  'ALTER TABLE nx_payment_record ADD COLUMN last_reconcile_at DATETIME NULL AFTER reconcile_attempts',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND COLUMN_NAME = 'next_reconcile_at') = 0,
+  'ALTER TABLE nx_payment_record ADD COLUMN next_reconcile_at DATETIME NULL AFTER last_reconcile_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND COLUMN_NAME = 'last_reconcile_error') = 0,
+  'ALTER TABLE nx_payment_record ADD COLUMN last_reconcile_error VARCHAR(512) NULL AFTER next_reconcile_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND COLUMN_NAME = 'expired_at') = 0,
+  'ALTER TABLE nx_payment_record ADD COLUMN expired_at DATETIME NULL AFTER last_reconcile_error',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_payment_record' AND INDEX_NAME = 'idx_payment_reconcile_due') = 0,
+  'ALTER TABLE nx_payment_record ADD INDEX idx_payment_reconcile_due (payment_status, next_reconcile_at, created_at)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

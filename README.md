@@ -126,9 +126,14 @@ Commerce now has a provider-facing payment baseline that keeps the existing `mar
 - `POST /commerce/payments/callbacks/{provider}`: verifies provider callback HMAC headers, records callback events idempotently by `provider + eventId`, validates order/payment id/amount/currency, then calls the existing `markPaid` flow on successful payment.
 - `GET /commerce/payments?userId=&orderNo=&paymentNo=&provider=&paymentStatus=&pageNum=&pageSize=`: pages payment records.
 - `GET /commerce/payments/{paymentNo}`: returns one payment record.
+- `POST /commerce/payments/ops/expire-pending?limit=20`: marks expired pending sessions as `EXPIRED`.
+- `POST /commerce/payments/ops/reconcile/{paymentNo}`: queries the provider abstraction, validates amount/currency/payment id, and repairs local payment/order state when the provider reports paid, failed, or expired.
+- `POST /commerce/payments/ops/reconcile-due?limit=20`: batch reconciliation for due pending records.
+- `GET /commerce/payments/ops/anomalies?limit=20`: lists payment/order state mismatches for operations review.
 - Tables: `nx_payment_record`, `nx_payment_callback_event`.
 - Mock callback signature headers: `X-Nexion-Payment-Timestamp`, `X-Nexion-Payment-Nonce`, `X-Nexion-Payment-Signature`.
 - Mock string to sign: `provider + "\n" + timestamp + "\n" + nonce + "\n" + sha256(rawJsonBody)`, HMAC-SHA256 with `NEXION_PAYMENT_MOCK_SECRET`.
+- Payment ops write endpoints require `PERM_COMMERCE_WRITE`; anomaly reads require `PERM_COMMERCE_READ`.
 
 ## Main Chain Smoke Test
 
