@@ -9,6 +9,7 @@ public class OrderPaidPayload {
     private String orderNo;
     private Long userId;
     private Long productId;
+    private String productTier;
     private String productName;
     private String deviceType;
     private BigDecimal hashrate;

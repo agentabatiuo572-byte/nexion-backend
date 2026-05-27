@@ -8,6 +8,7 @@ public class ComputeDeviceActivateRequest {
     private Long userId;
     private String sourceOrderNo;
     private Long productId;
+    private String productTier;
     private String productName;
     private String deviceType;
     private BigDecimal hashrate;

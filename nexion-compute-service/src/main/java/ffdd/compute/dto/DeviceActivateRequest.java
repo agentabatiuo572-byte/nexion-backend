@@ -16,6 +16,8 @@ public class DeviceActivateRequest {
 
     private Long productId;
 
+    private String productTier;
+
     @NotBlank
     private String productName;
 

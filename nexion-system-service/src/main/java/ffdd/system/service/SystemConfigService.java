@@ -12,6 +12,8 @@ public interface SystemConfigService {
 
     List<ConfigItemResponse> batchGetActive(List<String> configKeys);
 
+    List<ConfigItemResponse> listPublicByGroup(String configGroup);
+
     ConfigItemResponse create(ConfigItemCreateRequest request);
 
     ConfigItemResponse update(Long id, ConfigItemUpdateRequest request);

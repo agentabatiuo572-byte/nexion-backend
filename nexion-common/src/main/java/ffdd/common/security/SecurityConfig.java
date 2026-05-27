@@ -28,6 +28,7 @@ public class SecurityConfig {
                                 "/auth/register",
                                 "/auth/users/login",
                                 "/auth/users/register",
+                                "/config/**",
                                 "/openapi/v1/**",
                                 "/actuator/**")
                         .permitAll()

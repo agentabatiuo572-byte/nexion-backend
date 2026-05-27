@@ -15,6 +15,7 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import ffdd.commerce.client.CommerceComplianceClient;
 import ffdd.commerce.client.CommerceWalletClient;
+import ffdd.commerce.client.SystemConfigClient;
 import ffdd.commerce.client.dto.ComplianceGateResponse;
 import ffdd.commerce.client.dto.WalletLedgerResponse;
 import ffdd.commerce.genesis.domain.GenesisHolding;
@@ -45,12 +46,14 @@ class GenesisServiceTest {
     private final GenesisHoldingMapper holdingMapper = mock(GenesisHoldingMapper.class);
     private final CommerceComplianceClient complianceClient = mock(CommerceComplianceClient.class);
     private final CommerceWalletClient walletClient = mock(CommerceWalletClient.class);
+    private final SystemConfigClient systemConfigClient = mock(SystemConfigClient.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final GenesisService service = new GenesisService(
-            seriesMapper, orderMapper, holdingMapper, complianceClient, walletClient, outboxService, CLOCK);
+            seriesMapper, orderMapper, holdingMapper, complianceClient, walletClient, systemConfigClient, outboxService, CLOCK);
 
     @Test
     void purchaseApprovedOrderDebitsWalletAllocatesHoldingsAndPublishesEvent() {
+        when(systemConfigClient.features()).thenReturn(ApiResult.ok(Map.of("genesis.enabled", true)));
         when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(null);
         when(seriesMapper.selectOne(any(Wrapper.class))).thenReturn(series("GENESIS-2026", 1000, 10, "9999.000000"));
         when(complianceClient.check(any())).thenReturn(ApiResult.ok(gate(77L, "APPROVE")));
@@ -88,6 +91,7 @@ class GenesisServiceTest {
 
     @Test
     void purchaseInReviewCreatesReviewOrderWithoutWalletDebitOrSupplyClaim() {
+        when(systemConfigClient.features()).thenReturn(ApiResult.ok(Map.of("genesis.enabled", true)));
         when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(null);
         when(seriesMapper.selectOne(any(Wrapper.class))).thenReturn(series("GENESIS-2026", 1000, 10, "9999.000000"));
         when(complianceClient.check(any())).thenReturn(ApiResult.ok(gate(78L, "REVIEW")));
@@ -105,6 +109,7 @@ class GenesisServiceTest {
 
     @Test
     void purchaseRejectsSoldOutSeriesBeforeWalletDebit() {
+        when(systemConfigClient.features()).thenReturn(ApiResult.ok(Map.of("genesis.enabled", true)));
         when(orderMapper.selectOne(any(Wrapper.class))).thenReturn(null);
         when(seriesMapper.selectOne(any(Wrapper.class))).thenReturn(series("GENESIS-2026", 1000, 1000, "9999.000000"));
 
@@ -117,6 +122,7 @@ class GenesisServiceTest {
 
     @Test
     void purchaseReusesExistingOrderForSameClientRequestNo() {
+        when(systemConfigClient.features()).thenReturn(ApiResult.ok(Map.of("genesis.enabled", true)));
         GenesisOrder existing = new GenesisOrder();
         existing.setOrderNo("GEN-EXISTING");
         existing.setUserId(9001L);
@@ -127,6 +133,17 @@ class GenesisServiceTest {
         GenesisOrder order = service.purchase(request("GENESIS-2026", 1, "client-dup"));
 
         assertThat(order).isSameAs(existing);
+        verifyNoInteractions(seriesMapper, complianceClient, walletClient, holdingMapper, outboxService);
+    }
+
+    @Test
+    void purchaseRejectsWhenGenesisFeatureIsDisabled() {
+        when(systemConfigClient.features()).thenReturn(ApiResult.ok(Map.of("genesis.enabled", false)));
+
+        assertThatThrownBy(() -> service.purchase(request("GENESIS-2026", 1, "client-disabled")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("disabled");
+
         verifyNoInteractions(seriesMapper, complianceClient, walletClient, holdingMapper, outboxService);
     }
 

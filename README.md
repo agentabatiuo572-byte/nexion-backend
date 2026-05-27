@@ -126,10 +126,16 @@ Commerce now owns the server-side Trade-in quote and application baseline. Price
 - `POST /commerce/tradeins`: creates a `SUBMITTED` trade-in application from a fresh server-side quote.
 - `GET /commerce/tradeins?userId=&status=&pageNum=&pageSize=`: pages trade-in applications, with `pageSize` capped at `100`.
 - `GET /commerce/tradeins/{tradeinNo}`: returns one trade-in application.
-- Table: `nx_tradein_application`.
+- `GET /api/config/tradein`: public trade-in rule config for clients.
+- Table: `nx_tradein_application`; rules live in `nx_tradein_rule`.
 - Seeded upgrade targets: `NX-PRO-V2` and `NX-RACK-P2`.
-- Salvage formula: `source price * current efficiency * 0.30`; trade-in discounts are `300` USDT for S1/Pro -> Pro v2 and `800` USDT for Rack -> Rack P2.
-- Device efficiency follows the product lifecycle curve: months 1-3 multiply by `0.96`, months 4-8 by `0.94`, months 9+ by `0.90`, floored at `0.22`.
+- Salvage formula: `source price * compute currentEfficiency * rule.salvageRate`; seeded discounts are `300` USDT for S1/Pro -> Pro v2 and `800` USDT for Rack -> Rack P2.
+- Device efficiency is resolved from Compute lifecycle rules, so Commerce no longer owns lifecycle decay constants.
+
+SKU and Genesis operations are also server-owned:
+
+- `POST /commerce/products` and `PATCH /commerce/products/{id}` maintain SKU price, reward baseline, stock, and sale status; writes require `PERM_COMMERCE_WRITE`.
+- `GET /genesis/series`, `POST /genesis/series`, and `PATCH /genesis/series/{id}` maintain Genesis sale series. Purchases read the public `feature.genesis.enabled` switch before accepting new orders.
 
 ## Commerce Payment Callback Baseline
 
@@ -278,9 +284,18 @@ Compute now keeps high-frequency device state in Redis instead of writing every 
 
 - `PATCH /compute/devices/{id}/status`: reports transient status and telemetry into `compute:device:state:{deviceId}` with TTL; requires `PERM_COMPUTE_WRITE`.
 - `GET /compute/devices/{id}/status`: reads Redis first and falls back to the device row when cache is empty or unavailable.
+- `GET /compute/devices/{id}/lifecycle`: returns `monthsOwned`, `currentEfficiency`, `effectiveDailyUsdt`, and `effectiveDailyNex`.
+- `GET /api/config/device-lifecycle`: public lifecycle rule config for clients.
+- `GET /api/config/device-fleet`: public fleet config for clients, currently `maxActiveSlots` from `compute.active_device_slots.default`.
+- `GET|POST|PATCH /compute/device-lifecycle/rules`: ops lifecycle rule management; writes require `PERM_COMPUTE_WRITE`.
+- `POST /compute/devices/{id}/activate`: activates an owned inventory device if configured slots are available.
+- `POST /compute/devices/{id}/deactivate`: immediately removes a device from active slots and fails any running task.
+- `POST /compute/devices/{id}/deactivation-schedule`: marks a busy device for automatic removal after its current task finishes.
 - `GET /compute/devices/node-map?limit=100`: reads cached device states and returns node-map points plus online/busy/degraded/offline counts; if Redis is unavailable it falls back to database device metadata.
 - Redis index key: `compute:device:state:index`.
 - TTL config: `NEXION_COMPUTE_DEVICE_STATE_TTL_SECONDS`, default `30`.
+- Active slot config: `compute.active_device_slots.default` is seeded as public System config with default `6`; Compute falls back to `NEXION_COMPUTE_DEFAULT_ACTIVE_SLOTS` when System config is unavailable.
+- Seeded lifecycle defaults are months 1-3 decay `0.04`, months 4-8 decay `0.06`, months 9+ decay `0.10`, floored at `0.22`; `MOBILE` and `CLOUD_SHARE` are exempt.
 
 Run the direct Compute smoke after applying `scripts/seed.sql` or `scripts/patch_business_api_permissions.sql` so admin/service tokens can include `PERM_COMPUTE_WRITE`:
 
@@ -529,10 +544,13 @@ The System service exposes operational configuration, i18n messages, content pag
 - `GET /api/system/help/articles/{articleCode}`: read one active help article.
 - `POST /api/system/help/articles`: create a help article.
 - `PATCH /api/system/help/articles/{id}`: update title, content, sort order, or status.
+- `GET /api/config/day-one`: public Day 0 onboarding config, including 90-second first receipt and welcome bonus display values.
+- `GET /api/config/features`: public feature switches such as `genesis.enabled`.
+- `GET /api/config/device-fleet`: public active-device slot config, currently `maxActiveSlots`.
 - `GET /api/system/ops/dashboard?days=7`: read the first Ops/KPI dashboard MVP with audit summary, top actions, top services, top users, and current module coverage. Requires `PERM_AUDIT_READ`.
 - Read endpoints require `PERM_SYSTEM_READ`; create/update endpoints require `PERM_SYSTEM_WRITE`.
 
-Supported value types are `STRING`, `NUMBER`, `BOOLEAN`, and `JSON`. Do not store credentials, private keys, or long-lived secrets in `nx_config_item`; use environment variables or a secret manager for those values.
+Supported value types are `STRING`, `NUMBER`, `BOOLEAN`, and `JSON`. Config items now have `config_group` and `visibility`; only active `PUBLIC` items are exposed through `/api/config/**`. Do not store credentials, private keys, or long-lived secrets in `nx_config_item`; use environment variables or a secret manager for those values.
 
 Content payloads are capped at 65,535 characters at the API layer. Message keys, page codes, and article codes only allow letters, numbers, dot, underscore, colon, and hyphen; locales are normalized from forms such as `en_US` to `en-US`. Clients that render content as HTML must sanitize or escape it before display.
 

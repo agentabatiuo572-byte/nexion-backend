@@ -10,7 +10,9 @@ import ffdd.commerce.domain.Product;
 import ffdd.commerce.dto.OrderCreateRequest;
 import ffdd.commerce.dto.OrderPayRequest;
 import ffdd.commerce.dto.OrderQueryRequest;
+import ffdd.commerce.dto.ProductCreateRequest;
 import ffdd.commerce.dto.ProductQueryRequest;
+import ffdd.commerce.dto.ProductUpdateRequest;
 import ffdd.commerce.mapper.CommerceOrderMapper;
 import ffdd.commerce.mapper.ProductMapper;
 import ffdd.commerce.service.CommerceService;
@@ -24,6 +26,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -76,6 +79,72 @@ public class CommerceServiceImpl implements CommerceService {
         if (product == null || Integer.valueOf(1).equals(product.getIsDeleted())) {
             throw new BizException("Product not found");
         }
+        return product;
+    }
+
+    @Override
+    public Product createProduct(ProductCreateRequest request) {
+        if (request == null) {
+            throw new BizException("Product request is required");
+        }
+        Product product = new Product();
+        product.setProductNo(requireText(request.getProductNo(), "Product no is required"));
+        product.setName(requireText(request.getName(), "Product name is required"));
+        product.setProductType(requireText(request.getProductType(), "Product type is required"));
+        product.setTier(trimToNull(request.getTier()));
+        product.setStatus(requireText(request.getStatus(), "Product status is required"));
+        product.setPriceUsdt(requirePositiveMoney(request.getPriceUsdt(), "Product price is required"));
+        product.setHashrate(defaultDecimal(request.getHashrate()));
+        product.setEstimatedDailyUsdt(defaultDecimal(request.getEstimatedDailyUsdt()));
+        product.setDailyNex(defaultDecimal(request.getDailyNex()));
+        product.setStock(request.getStock() == null ? 0 : request.getStock());
+        product.setCoverUrl(trimToNull(request.getCoverUrl()));
+        product.setIsDeleted(0);
+        try {
+            productMapper.insert(product);
+            return product;
+        } catch (DuplicateKeyException ex) {
+            throw new BizException(409, "Product no already exists");
+        }
+    }
+
+    @Override
+    public Product updateProduct(Long id, ProductUpdateRequest request) {
+        if (request == null) {
+            throw new BizException("Product request is required");
+        }
+        Product product = getProduct(id);
+        if (request.getName() != null) {
+            product.setName(requireText(request.getName(), "Product name is required"));
+        }
+        if (request.getProductType() != null) {
+            product.setProductType(requireText(request.getProductType(), "Product type is required"));
+        }
+        if (request.getTier() != null) {
+            product.setTier(trimToNull(request.getTier()));
+        }
+        if (request.getStatus() != null) {
+            product.setStatus(requireText(request.getStatus(), "Product status is required"));
+        }
+        if (request.getPriceUsdt() != null) {
+            product.setPriceUsdt(requirePositiveMoney(request.getPriceUsdt(), "Product price is required"));
+        }
+        if (request.getHashrate() != null) {
+            product.setHashrate(defaultDecimal(request.getHashrate()));
+        }
+        if (request.getEstimatedDailyUsdt() != null) {
+            product.setEstimatedDailyUsdt(defaultDecimal(request.getEstimatedDailyUsdt()));
+        }
+        if (request.getDailyNex() != null) {
+            product.setDailyNex(defaultDecimal(request.getDailyNex()));
+        }
+        if (request.getStock() != null) {
+            product.setStock(request.getStock());
+        }
+        if (request.getCoverUrl() != null) {
+            product.setCoverUrl(trimToNull(request.getCoverUrl()));
+        }
+        productMapper.updateById(product);
         return product;
     }
 
@@ -223,11 +292,34 @@ public class CommerceServiceImpl implements CommerceService {
         return "ORD-" + date + "-" + suffix;
     }
 
+    private String requireText(String value, String message) {
+        if (!StringUtils.hasText(value)) {
+            throw new BizException(message);
+        }
+        return value.trim();
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private BigDecimal requirePositiveMoney(BigDecimal value, String message) {
+        if (value == null || value.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BizException(message);
+        }
+        return value;
+    }
+
+    private BigDecimal defaultDecimal(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
     private ComputeDeviceActivateRequest buildActivateRequest(CommerceOrder order, Product product) {
         ComputeDeviceActivateRequest request = new ComputeDeviceActivateRequest();
         request.setUserId(order.getUserId());
         request.setSourceOrderNo(order.getOrderNo());
         request.setProductId(product.getId());
+        request.setProductTier(product.getTier());
         request.setProductName(product.getName());
         request.setDeviceType(product.getProductType());
         request.setHashrate(product.getHashrate());
@@ -243,6 +335,7 @@ public class CommerceServiceImpl implements CommerceService {
         payload.put("orderNo", order.getOrderNo());
         payload.put("userId", order.getUserId());
         payload.put("productId", order.getProductId());
+        payload.put("productTier", product.getTier());
         payload.put("productName", product.getName());
         payload.put("deviceType", product.getProductType());
         payload.put("hashrate", product.getHashrate());

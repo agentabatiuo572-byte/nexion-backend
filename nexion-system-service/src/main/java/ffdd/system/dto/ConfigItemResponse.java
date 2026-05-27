@@ -11,6 +11,8 @@ public class ConfigItemResponse {
     private String configKey;
     private String configValue;
     private String valueType;
+    private String configGroup;
+    private String visibility;
     private String remark;
     private Integer status;
     private LocalDateTime createdAt;

@@ -569,6 +569,29 @@ CREATE TABLE IF NOT EXISTS nx_tradein_application (
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_tradein_rule (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  source_product_no VARCHAR(64) NULL,
+  source_tier VARCHAR(32) NULL,
+  target_tier VARCHAR(32) NOT NULL,
+  discount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  salvage_rate DECIMAL(10,6) NOT NULL DEFAULT 0.30,
+  min_holding_months INT NOT NULL DEFAULT 1,
+  status TINYINT NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_tradein_rule_source_product (source_product_no, status),
+  KEY idx_tradein_rule_source_tier (source_tier, status),
+  CONSTRAINT chk_tradein_rule_amounts CHECK (
+    discount_usdt >= 0
+    AND salvage_rate >= 0
+    AND salvage_rate <= 1
+    AND min_holding_months >= 0
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_genesis_series (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   series_code VARCHAR(64) NOT NULL,
@@ -859,6 +882,7 @@ CREATE TABLE IF NOT EXISTS nx_user_device (
   user_id BIGINT NOT NULL,
   source_order_no VARCHAR(96) NULL,
   product_id BIGINT NULL,
+  product_tier VARCHAR(32) NULL,
   instance_no VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
   device_type VARCHAR(32) NOT NULL,
@@ -867,14 +891,17 @@ CREATE TABLE IF NOT EXISTS nx_user_device (
   daily_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   daily_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
   last_seen_at DATETIME NULL,
+  purchased_at DATETIME NULL,
   activated_at DATETIME NULL,
+  pending_deactivate TINYINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_device_instance_no (instance_no),
   KEY idx_user_device_user (user_id),
   KEY idx_user_device_order (source_order_no),
-  KEY idx_user_device_status (status, last_seen_at)
+  KEY idx_user_device_status (status, last_seen_at),
+  KEY idx_user_device_active (user_id, activated_at, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'source_order_no') = 0,
@@ -884,6 +911,11 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'product_id') = 0,
   'ALTER TABLE nx_user_device ADD COLUMN product_id BIGINT NULL AFTER source_order_no',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'product_tier') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN product_tier VARCHAR(32) NULL AFTER product_id',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -897,13 +929,51 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'purchased_at') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN purchased_at DATETIME NULL AFTER last_seen_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'pending_deactivate') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN pending_deactivate TINYINT NOT NULL DEFAULT 0 AFTER activated_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'device_id') > 0,
   'ALTER TABLE nx_user_device MODIFY COLUMN device_id BIGINT NULL',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+CREATE TABLE IF NOT EXISTS nx_device_lifecycle_rule (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  scope_type VARCHAR(32) NOT NULL,
+  scope_value VARCHAR(64) NULL,
+  start_month INT NOT NULL DEFAULT 0,
+  end_month INT NULL,
+  monthly_decay_rate DECIMAL(10,6) NOT NULL DEFAULT 0,
+  floor_efficiency DECIMAL(10,6) NOT NULL DEFAULT 0.22,
+  exempt TINYINT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_device_lifecycle_scope (scope_type, scope_value, status),
+  KEY idx_device_lifecycle_status (status, sort_order),
+  CONSTRAINT chk_device_lifecycle_month CHECK (start_month >= 0 AND (end_month IS NULL OR end_month >= start_month)),
+  CONSTRAINT chk_device_lifecycle_rates CHECK (
+    monthly_decay_rate >= 0 AND monthly_decay_rate <= 1
+    AND floor_efficiency >= 0 AND floor_efficiency <= 1
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND INDEX_NAME = 'idx_user_device_status') = 0,
   'ALTER TABLE nx_user_device ADD INDEX idx_user_device_status (status, last_seen_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND INDEX_NAME = 'idx_user_device_active') = 0,
+  'ALTER TABLE nx_user_device ADD INDEX idx_user_device_active (user_id, activated_at, status)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -1812,8 +1882,10 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 CREATE TABLE IF NOT EXISTS nx_config_item (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   config_key VARCHAR(128) NOT NULL,
-  config_value VARCHAR(1024) NOT NULL,
+  config_value TEXT NOT NULL,
   value_type VARCHAR(32) NOT NULL DEFAULT 'STRING',
+  config_group VARCHAR(64) NOT NULL DEFAULT 'general',
+  visibility VARCHAR(16) NOT NULL DEFAULT 'ADMIN',
   remark VARCHAR(255) NULL,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1821,6 +1893,21 @@ CREATE TABLE IF NOT EXISTS nx_config_item (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_config_key (config_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_config_item' AND COLUMN_NAME = 'config_value') <> 'text',
+  'ALTER TABLE nx_config_item MODIFY COLUMN config_value TEXT NOT NULL',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_config_item' AND COLUMN_NAME = 'config_group') = 0,
+  'ALTER TABLE nx_config_item ADD COLUMN config_group VARCHAR(64) NOT NULL DEFAULT ''general'' AFTER value_type',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_config_item' AND COLUMN_NAME = 'visibility') = 0,
+  'ALTER TABLE nx_config_item ADD COLUMN visibility VARCHAR(16) NOT NULL DEFAULT ''ADMIN'' AFTER config_group',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_i18n_message (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

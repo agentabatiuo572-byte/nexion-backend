@@ -25,6 +25,12 @@ public interface ComputeService {
 
     List<UserDevice> activateDevices(DeviceActivateRequest request);
 
+    UserDevice activateDevice(Long id, Long userId);
+
+    UserDevice deactivateDevice(Long id, Long userId);
+
+    UserDevice scheduleDeactivation(Long id, Long userId);
+
     PageResult<ComputeTask> pageTasks(TaskQueryRequest request);
 
     ComputeTask dispatchTask(TaskDispatchRequest request);

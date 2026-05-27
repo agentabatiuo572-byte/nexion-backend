@@ -18,6 +18,7 @@ import ffdd.compute.domain.ComputeReceipt;
 import ffdd.compute.domain.ComputeTask;
 import ffdd.compute.domain.UserDevice;
 import ffdd.compute.dto.ComputeTaskCompletedPayload;
+import ffdd.compute.dto.DeviceActivateRequest;
 import ffdd.compute.dto.ReceiptCreateRequest;
 import ffdd.compute.dto.TaskAckRequest;
 import ffdd.compute.dto.TaskCompleteRequest;
@@ -30,6 +31,7 @@ import ffdd.compute.mapper.ComputeReceiptMapper;
 import ffdd.compute.mapper.ComputeTaskMapper;
 import ffdd.compute.mapper.UserDeviceMapper;
 import ffdd.compute.service.ComputeTaskCompletedEventFactory;
+import ffdd.compute.service.DeviceFleetConfigService;
 import ffdd.compute.service.DeviceStatusService;
 import ffdd.compute.worker.ComputeOutboxRocketPublisher;
 import java.math.BigDecimal;
@@ -47,6 +49,7 @@ class ComputeServiceImplTest {
     private final EarningsClient earningsClient = mock(EarningsClient.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final DeviceStatusService deviceStatusService = mock(DeviceStatusService.class);
+    private final DeviceFleetConfigService fleetConfigService = mock(DeviceFleetConfigService.class);
 
     @Test
     void createReceiptWritesComputeTaskCompletedOutboxAndKeepsSynchronousSettlement() {
@@ -67,6 +70,7 @@ class ComputeServiceImplTest {
                 outboxService,
                 new ComputeTaskCompletedEventFactory(),
                 deviceStatusService,
+                fleetConfigService,
                 true,
                 true,
                 300,
@@ -143,6 +147,49 @@ class ComputeServiceImplTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("No available compute device");
         verify(taskMapper, never()).insert(any(ComputeTask.class));
+    }
+
+    @Test
+    void activateDevicesCreatesInactiveInventoryWhenActiveSlotsAreFull() {
+        when(userDeviceMapper.selectList(org.mockito.ArgumentMatchers.<Wrapper<UserDevice>>any()))
+                .thenReturn(List.of());
+        when(userDeviceMapper.selectCount(org.mockito.ArgumentMatchers.<Wrapper<UserDevice>>any())).thenReturn(1L);
+
+        ComputeServiceImpl service = newService(false, true);
+        when(fleetConfigService.maxActiveSlots()).thenReturn(1);
+
+        DeviceActivateRequest request = new DeviceActivateRequest();
+        request.setUserId(10001L);
+        request.setSourceOrderNo("ORD-SLOTS");
+        request.setProductId(1L);
+        request.setProductName("NexionBox S1");
+        request.setDeviceType("NEXION_BOX");
+        request.setQuantity(1);
+
+        List<UserDevice> devices = service.activateDevices(request);
+
+        assertThat(devices).hasSize(1);
+        assertThat(devices.get(0).getStatus()).isEqualTo("INACTIVE");
+        assertThat(devices.get(0).getActivatedAt()).isNull();
+        assertThat(devices.get(0).getPurchasedAt()).isNotNull();
+        verify(userDeviceMapper).insert(org.mockito.ArgumentMatchers.<UserDevice>argThat(inserted ->
+                "INACTIVE".equals(inserted.getStatus()) && inserted.getActivatedAt() == null));
+    }
+
+    @Test
+    void activateInventoryDeviceRejectsWhenConfiguredSlotsAreFull() {
+        UserDevice inactive = device(7L, 10001L, "INACTIVE");
+        inactive.setActivatedAt(null);
+        when(userDeviceMapper.selectById(7L)).thenReturn(inactive);
+        when(userDeviceMapper.selectCount(org.mockito.ArgumentMatchers.<Wrapper<UserDevice>>any())).thenReturn(1L);
+
+        ComputeServiceImpl service = newService(false, true);
+        when(fleetConfigService.maxActiveSlots()).thenReturn(1);
+
+        assertThatThrownBy(() -> service.activateDevice(7L, 10001L))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("Active device slots are full");
+        verify(userDeviceMapper, never()).updateById(any(UserDevice.class));
     }
 
     @Test
@@ -246,6 +293,34 @@ class ComputeServiceImplTest {
                 updated.getId().equals(7L) && "ONLINE".equals(updated.getStatus())));
         verify(deviceStatusService).writeTaskLifecycleState(
                 eq(device), eq("ONLINE"), eq(null), eq("scheduler-a"), any(LocalDateTime.class));
+    }
+
+    @Test
+    void completeRunningTaskWithPendingDeactivationReleasesDeviceAsInactive() {
+        UserDevice device = device(7L, 10001L, "BUSY");
+        device.setPendingDeactivate(1);
+        ComputeTask task = runningTask("TASK-RUN-PENDING", 7L, 10001L);
+        when(taskMapper.selectOne(org.mockito.ArgumentMatchers.<Wrapper<ComputeTask>>any())).thenReturn(task);
+        when(taskMapper.update(any(ComputeTask.class), org.mockito.ArgumentMatchers.<Wrapper<ComputeTask>>any()))
+                .thenReturn(1);
+        when(userDeviceMapper.selectById(7L)).thenReturn(device);
+        when(earningsClient.settleReceipt(any(EarningsReceiptSettleRequest.class)))
+                .thenReturn(ApiResult.ok(Map.of("settled", true)));
+
+        ComputeServiceImpl service = newService(true, true);
+
+        TaskCompleteRequest request = new TaskCompleteRequest();
+        request.setRewardUsdt(new BigDecimal("0.050000"));
+        request.setRewardNex(new BigDecimal("8.000000"));
+
+        service.completeTask("TASK-RUN-PENDING", request);
+
+        verify(userDeviceMapper).update(
+                org.mockito.ArgumentMatchers.<UserDevice>argThat(updated ->
+                        Long.valueOf(7L).equals(updated.getId()) && "INACTIVE".equals(updated.getStatus())),
+                org.mockito.ArgumentMatchers.<Wrapper<UserDevice>>any());
+        verify(deviceStatusService).writeTaskLifecycleState(
+                eq(device), eq("INACTIVE"), eq(null), eq("scheduler-a"), any(LocalDateTime.class));
     }
 
     @Test
@@ -450,6 +525,7 @@ class ComputeServiceImplTest {
     }
 
     private ComputeServiceImpl newService(boolean autoSettleEarnings, boolean taskCompletedOutboxEnabled) {
+        when(fleetConfigService.maxActiveSlots()).thenReturn(6);
         return new ComputeServiceImpl(
                 userDeviceMapper,
                 taskMapper,
@@ -458,6 +534,7 @@ class ComputeServiceImplTest {
                 outboxService,
                 new ComputeTaskCompletedEventFactory(),
                 deviceStatusService,
+                fleetConfigService,
                 autoSettleEarnings,
                 taskCompletedOutboxEnabled,
                 300,
@@ -477,6 +554,10 @@ class ComputeServiceImplTest {
         device.setDailyUsdt(new BigDecimal("2.500000"));
         device.setDailyNex(new BigDecimal("50.000000"));
         device.setLastSeenAt(LocalDateTime.of(2026, 5, 24, 23, 45));
+        device.setPurchasedAt(LocalDateTime.of(2026, 5, 1, 0, 0));
+        if (!"INACTIVE".equals(status)) {
+            device.setActivatedAt(LocalDateTime.of(2026, 5, 1, 0, 0));
+        }
         device.setIsDeleted(0);
         return device;
     }

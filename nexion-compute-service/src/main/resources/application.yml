@@ -39,6 +39,8 @@ nexion:
         fixed-delay-ms: ${NEXION_COMPUTE_TASK_MAINTENANCE_FIXED_DELAY_MS:10000}
     device-state:
       ttl-seconds: ${NEXION_COMPUTE_DEVICE_STATE_TTL_SECONDS:30}
+    device-fleet:
+      default-active-slots: ${NEXION_COMPUTE_DEFAULT_ACTIVE_SLOTS:6}
   outbox:
     rocketmq:
       enabled: ${NEXION_OUTBOX_ROCKETMQ_ENABLED:false}
@@ -56,3 +58,4 @@ nexion:
         max-retries: ${NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES:5}
   services:
     earnings-url: ${NEXION_EARNINGS_URL:http://localhost:8108}
+    system-url: ${NEXION_SYSTEM_URL:http://localhost:8110}

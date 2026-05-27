@@ -30,6 +30,7 @@ import ffdd.compute.mapper.ComputeTaskMapper;
 import ffdd.compute.mapper.UserDeviceMapper;
 import ffdd.compute.service.ComputeService;
 import ffdd.compute.service.ComputeTaskCompletedEventFactory;
+import ffdd.compute.service.DeviceFleetConfigService;
 import ffdd.compute.service.DeviceStatusService;
 import ffdd.compute.worker.ComputeOutboxRocketPublisher;
 import java.math.BigDecimal;
@@ -56,6 +57,7 @@ public class ComputeServiceImpl implements ComputeService {
     private static final Logger log = LoggerFactory.getLogger(ComputeServiceImpl.class);
     private static final String DEVICE_ONLINE = "ONLINE";
     private static final String DEVICE_BUSY = "BUSY";
+    private static final String DEVICE_INACTIVE = "INACTIVE";
     private static final String TASK_RUNNING = "RUNNING";
     private static final String TASK_RETRYING = "RETRYING";
     private static final String TASK_COMPLETED = "COMPLETED";
@@ -73,6 +75,7 @@ public class ComputeServiceImpl implements ComputeService {
     private final EventOutboxService outboxService;
     private final ComputeTaskCompletedEventFactory eventFactory;
     private final DeviceStatusService deviceStatusService;
+    private final DeviceFleetConfigService fleetConfigService;
     private final boolean autoSettleEarnings;
     private final boolean taskCompletedOutboxEnabled;
     private final long defaultTaskLeaseSeconds;
@@ -87,6 +90,7 @@ public class ComputeServiceImpl implements ComputeService {
             EventOutboxService outboxService,
             ComputeTaskCompletedEventFactory eventFactory,
             DeviceStatusService deviceStatusService,
+            DeviceFleetConfigService fleetConfigService,
             @Value("${nexion.compute.auto-settle-earnings:true}") boolean autoSettleEarnings,
             @Value("${nexion.compute.task-completed-outbox-enabled:true}") boolean taskCompletedOutboxEnabled,
             @Value("${nexion.compute.task.default-lease-seconds:300}") long defaultTaskLeaseSeconds,
@@ -99,6 +103,7 @@ public class ComputeServiceImpl implements ComputeService {
         this.outboxService = outboxService;
         this.eventFactory = eventFactory;
         this.deviceStatusService = deviceStatusService;
+        this.fleetConfigService = fleetConfigService;
         this.autoSettleEarnings = autoSettleEarnings;
         this.taskCompletedOutboxEnabled = taskCompletedOutboxEnabled;
         this.defaultTaskLeaseSeconds = Math.max(1, defaultTaskLeaseSeconds);
@@ -147,25 +152,95 @@ public class ComputeServiceImpl implements ComputeService {
 
         List<UserDevice> devices = new ArrayList<>(existing);
         LocalDateTime now = LocalDateTime.now();
+        long activeSlots = countActiveSlots(request.getUserId());
+        int maxActiveSlots = fleetConfigService.maxActiveSlots();
         for (int i = existing.size(); i < quantity; i++) {
+            boolean activateNow = activeSlots < maxActiveSlots;
             UserDevice device = new UserDevice();
             device.setUserId(request.getUserId());
             device.setSourceOrderNo(request.getSourceOrderNo());
             device.setProductId(request.getProductId());
+            device.setProductTier(trimToNull(request.getProductTier()));
             device.setInstanceNo(nextInstanceNo(request.getSourceOrderNo(), i + 1));
             device.setName(quantity > 1 ? request.getProductName() + " #" + (i + 1) : request.getProductName());
             device.setDeviceType(request.getDeviceType());
-            device.setStatus(DEVICE_ONLINE);
+            device.setStatus(activateNow ? DEVICE_ONLINE : DEVICE_INACTIVE);
             device.setHashrate(defaultDecimal(request.getHashrate()));
             device.setDailyUsdt(defaultDecimal(request.getDailyUsdt()));
             device.setDailyNex(defaultDecimal(request.getDailyNex()));
-            device.setLastSeenAt(now);
-            device.setActivatedAt(now);
+            device.setLastSeenAt(activateNow ? now : null);
+            device.setPurchasedAt(now);
+            device.setActivatedAt(activateNow ? now : null);
+            device.setPendingDeactivate(0);
             device.setIsDeleted(0);
             userDeviceMapper.insert(device);
+            if (activateNow) {
+                activeSlots++;
+            }
             devices.add(device);
         }
         return devices;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public UserDevice activateDevice(Long id, Long userId) {
+        UserDevice device = requireOwnedDevice(id, userId);
+        if (device.getActivatedAt() != null && !DEVICE_INACTIVE.equals(device.getStatus())) {
+            return device;
+        }
+        int maxActiveSlots = fleetConfigService.maxActiveSlots();
+        if (countActiveSlots(device.getUserId()) >= maxActiveSlots) {
+            throw new BizException("Active device slots are full");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        UserDevice patch = new UserDevice();
+        patch.setId(device.getId());
+        patch.setStatus(DEVICE_ONLINE);
+        patch.setLastSeenAt(now);
+        patch.setActivatedAt(now);
+        patch.setPendingDeactivate(0);
+        userDeviceMapper.updateById(patch);
+
+        device.setStatus(DEVICE_ONLINE);
+        device.setLastSeenAt(now);
+        device.setActivatedAt(now);
+        device.setPendingDeactivate(0);
+        return device;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public UserDevice deactivateDevice(Long id, Long userId) {
+        UserDevice device = requireOwnedDevice(id, userId);
+        if (DEVICE_INACTIVE.equals(device.getStatus()) && device.getActivatedAt() == null) {
+            return device;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        failRunningTaskForDevice(device.getId(), now, "Device deactivated");
+        deactivateDeviceRecord(device, now);
+        return device;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public UserDevice scheduleDeactivation(Long id, Long userId) {
+        UserDevice device = requireOwnedDevice(id, userId);
+        if (DEVICE_INACTIVE.equals(device.getStatus()) && device.getActivatedAt() == null) {
+            return device;
+        }
+        if (!DEVICE_BUSY.equals(device.getStatus())) {
+            return deactivateDevice(id, userId);
+        }
+        LocalDateTime now = LocalDateTime.now();
+        UserDevice patch = new UserDevice();
+        patch.setId(device.getId());
+        patch.setPendingDeactivate(1);
+        userDeviceMapper.updateById(patch);
+        device.setPendingDeactivate(1);
+        device.setLastSeenAt(now);
+        return device;
     }
 
     @Override
@@ -487,6 +562,64 @@ public class ComputeServiceImpl implements ComputeService {
         return value == null ? BigDecimal.ZERO : value;
     }
 
+    private long countActiveSlots(Long userId) {
+        Long count = userDeviceMapper.selectCount(new LambdaQueryWrapper<UserDevice>()
+                .eq(UserDevice::getIsDeleted, 0)
+                .eq(UserDevice::getUserId, userId)
+                .isNotNull(UserDevice::getActivatedAt)
+                .in(UserDevice::getStatus, DEVICE_ONLINE, DEVICE_BUSY));
+        return count == null ? 0 : count;
+    }
+
+    private UserDevice requireOwnedDevice(Long id, Long userId) {
+        if (id == null) {
+            throw new BizException("Device id is required");
+        }
+        UserDevice device = getDevice(id);
+        if (userId != null && !userId.equals(device.getUserId())) {
+            throw new BizException("Device does not belong to authenticated user");
+        }
+        return device;
+    }
+
+    private void deactivateDeviceRecord(UserDevice device, LocalDateTime now) {
+        UserDevice patch = new UserDevice();
+        patch.setId(device.getId());
+        patch.setStatus(DEVICE_INACTIVE);
+        patch.setLastSeenAt(now);
+        patch.setPendingDeactivate(0);
+        userDeviceMapper.update(patch, new UpdateWrapper<UserDevice>()
+                .set("activated_at", null)
+                .set("pending_deactivate", 0)
+                .set("last_seen_at", now)
+                .eq("id", device.getId())
+                .eq("is_deleted", 0));
+        device.setStatus(DEVICE_INACTIVE);
+        device.setLastSeenAt(now);
+        device.setActivatedAt(null);
+        device.setPendingDeactivate(0);
+    }
+
+    private void failRunningTaskForDevice(Long userDeviceId, LocalDateTime now, String reason) {
+        ComputeTask running = taskMapper.selectOne(new LambdaQueryWrapper<ComputeTask>()
+                .eq(ComputeTask::getUserDeviceId, userDeviceId)
+                .eq(ComputeTask::getStatus, TASK_RUNNING)
+                .eq(ComputeTask::getIsDeleted, 0)
+                .orderByDesc(ComputeTask::getStartedAt)
+                .last("LIMIT 1"));
+        if (running == null) {
+            return;
+        }
+        ComputeTask patch = new ComputeTask();
+        patch.setStatus(TASK_FAILED);
+        patch.setCompletedAt(now);
+        patch.setLastError(reason);
+        taskMapper.update(patch, new LambdaUpdateWrapper<ComputeTask>()
+                .eq(ComputeTask::getTaskNo, running.getTaskNo())
+                .eq(ComputeTask::getStatus, TASK_RUNNING)
+                .eq(ComputeTask::getIsDeleted, 0));
+    }
+
     private List<UserDevice> findDispatchCandidates(TaskDispatchRequest request) {
         if (request.getPreferredDeviceId() != null) {
             UserDevice device = getDevice(request.getPreferredDeviceId());
@@ -496,11 +629,22 @@ public class ComputeServiceImpl implements ComputeService {
             if (!DEVICE_ONLINE.equals(device.getStatus())) {
                 throw new BizException("Preferred device is not online");
             }
+            if (device.getActivatedAt() == null) {
+                throw new BizException("Preferred device is not activated");
+            }
+            if (Integer.valueOf(1).equals(device.getPendingDeactivate())) {
+                throw new BizException("Preferred device is pending deactivation");
+            }
             return List.of(device);
         }
         return userDeviceMapper.selectList(new LambdaQueryWrapper<UserDevice>()
                 .eq(UserDevice::getIsDeleted, 0)
                 .eq(UserDevice::getStatus, DEVICE_ONLINE)
+                .isNotNull(UserDevice::getActivatedAt)
+                .and(wrapper -> wrapper
+                        .isNull(UserDevice::getPendingDeactivate)
+                        .or()
+                        .eq(UserDevice::getPendingDeactivate, 0))
                 .eq(request.getUserId() != null, UserDevice::getUserId, request.getUserId())
                 .orderByDesc(UserDevice::getLastSeenAt)
                 .last("LIMIT " + DISPATCH_CANDIDATE_LIMIT));
@@ -513,6 +657,11 @@ public class ComputeServiceImpl implements ComputeService {
         int updated = userDeviceMapper.update(patch, new LambdaUpdateWrapper<UserDevice>()
                 .eq(UserDevice::getId, deviceId)
                 .eq(UserDevice::getStatus, DEVICE_ONLINE)
+                .isNotNull(UserDevice::getActivatedAt)
+                .and(wrapper -> wrapper
+                        .isNull(UserDevice::getPendingDeactivate)
+                        .or()
+                        .eq(UserDevice::getPendingDeactivate, 0))
                 .eq(UserDevice::getIsDeleted, 0));
         return updated == 1;
     }
@@ -549,6 +698,11 @@ public class ComputeServiceImpl implements ComputeService {
     }
 
     private void releaseDevice(UserDevice device, String clientName, LocalDateTime now) {
+        if (Integer.valueOf(1).equals(device.getPendingDeactivate())) {
+            deactivateDeviceRecord(device, now);
+            deviceStatusService.writeTaskLifecycleState(device, DEVICE_INACTIVE, null, clientName, now);
+            return;
+        }
         UserDevice patch = new UserDevice();
         patch.setId(device.getId());
         patch.setStatus(DEVICE_ONLINE);
@@ -640,6 +794,11 @@ public class ComputeServiceImpl implements ComputeService {
         return userDeviceMapper.selectList(new LambdaQueryWrapper<UserDevice>()
                 .eq(UserDevice::getIsDeleted, 0)
                 .eq(UserDevice::getStatus, DEVICE_ONLINE)
+                .isNotNull(UserDevice::getActivatedAt)
+                .and(wrapper -> wrapper
+                        .isNull(UserDevice::getPendingDeactivate)
+                        .or()
+                        .eq(UserDevice::getPendingDeactivate, 0))
                 .eq(UserDevice::getUserId, task.getUserId())
                 .orderByDesc(UserDevice::getLastSeenAt)
                 .last("LIMIT " + DISPATCH_CANDIDATE_LIMIT));
@@ -725,6 +884,10 @@ public class ComputeServiceImpl implements ComputeService {
             throw new BizException(message);
         }
         return value.trim();
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
 
     private void validateTaskClient(ComputeTask task, String clientName) {

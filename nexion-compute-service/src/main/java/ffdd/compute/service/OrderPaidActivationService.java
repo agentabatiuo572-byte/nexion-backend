@@ -29,6 +29,7 @@ public class OrderPaidActivationService {
         request.setUserId(payload.getUserId());
         request.setSourceOrderNo(payload.getOrderNo());
         request.setProductId(payload.getProductId());
+        request.setProductTier(payload.getProductTier());
         request.setProductName(productName(payload));
         request.setDeviceType(StringUtils.hasText(payload.getDeviceType())
                 ? payload.getDeviceType()

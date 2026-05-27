@@ -2,9 +2,12 @@ package ffdd.commerce.genesis;
 
 import ffdd.commerce.genesis.domain.GenesisHolding;
 import ffdd.commerce.genesis.domain.GenesisOrder;
+import ffdd.commerce.genesis.domain.GenesisSeries;
 import ffdd.commerce.genesis.dto.GenesisHoldingQueryRequest;
 import ffdd.commerce.genesis.dto.GenesisOrderQueryRequest;
 import ffdd.commerce.genesis.dto.GenesisPurchaseRequest;
+import ffdd.commerce.genesis.dto.GenesisSeriesCreateRequest;
+import ffdd.commerce.genesis.dto.GenesisSeriesUpdateRequest;
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.audit.AuditLogService;
@@ -16,6 +19,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -60,6 +64,28 @@ public class GenesisController {
     @PreAuthorize("hasAuthority('PERM_COMMERCE_READ') or hasAuthority('ROLE_USER')")
     public ApiResult<PageResult<GenesisHolding>> holdings(GenesisHoldingQueryRequest request) {
         return ApiResult.ok(genesisService.pageHoldings(request));
+    }
+
+    @GetMapping("/series")
+    public ApiResult<PageResult<GenesisSeries>> series(
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "1") Long pageNum,
+            @RequestParam(defaultValue = "20") Long pageSize) {
+        return ApiResult.ok(genesisService.pageSeries(pageNum, pageSize, status));
+    }
+
+    @PostMapping("/series")
+    @PreAuthorize("hasAuthority('PERM_COMMERCE_WRITE')")
+    public ApiResult<GenesisSeries> createSeries(@Valid @RequestBody GenesisSeriesCreateRequest request) {
+        return ApiResult.ok(genesisService.createSeries(request));
+    }
+
+    @PatchMapping("/series/{id}")
+    @PreAuthorize("hasAuthority('PERM_COMMERCE_WRITE')")
+    public ApiResult<GenesisSeries> updateSeries(
+            @PathVariable Long id,
+            @Valid @RequestBody GenesisSeriesUpdateRequest request) {
+        return ApiResult.ok(genesisService.updateSeries(id, request));
     }
 
     private void auditOrder(String action, GenesisOrder order) {

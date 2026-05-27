@@ -19,6 +19,9 @@ public interface ComputeClient {
     @GetMapping("/compute/devices/{id}")
     ApiResult<Map<String, Object>> getDevice(@PathVariable("id") Long id);
 
+    @GetMapping("/compute/devices/{id}/lifecycle")
+    ApiResult<Map<String, Object>> getDeviceLifecycle(@PathVariable("id") Long id);
+
     @PostMapping("/compute/devices/activate")
     ApiResult<List<Map<String, Object>>> activateDevices(@RequestBody ComputeDeviceActivateRequest request);
 }

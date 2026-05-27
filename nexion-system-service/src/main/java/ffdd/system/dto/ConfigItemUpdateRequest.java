@@ -7,11 +7,17 @@ import lombok.Data;
 
 @Data
 public class ConfigItemUpdateRequest {
-    @Size(max = 1024)
+    @Size(max = 65535)
     private String configValue;
 
     @Size(max = 32)
     private String valueType;
+
+    @Size(max = 64)
+    private String configGroup;
+
+    @Size(max = 16)
+    private String visibility;
 
     @Size(max = 255)
     private String remark;

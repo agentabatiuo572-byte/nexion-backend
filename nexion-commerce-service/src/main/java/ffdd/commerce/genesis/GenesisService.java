@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.commerce.client.CommerceComplianceClient;
 import ffdd.commerce.client.CommerceWalletClient;
+import ffdd.commerce.client.SystemConfigClient;
 import ffdd.commerce.client.dto.ComplianceGateRequest;
 import ffdd.commerce.client.dto.ComplianceGateResponse;
 import ffdd.commerce.client.dto.PostWalletDebitRequest;
@@ -15,6 +16,8 @@ import ffdd.commerce.genesis.domain.GenesisSeries;
 import ffdd.commerce.genesis.dto.GenesisHoldingQueryRequest;
 import ffdd.commerce.genesis.dto.GenesisOrderQueryRequest;
 import ffdd.commerce.genesis.dto.GenesisPurchaseRequest;
+import ffdd.commerce.genesis.dto.GenesisSeriesCreateRequest;
+import ffdd.commerce.genesis.dto.GenesisSeriesUpdateRequest;
 import ffdd.commerce.genesis.mapper.GenesisHoldingMapper;
 import ffdd.commerce.genesis.mapper.GenesisOrderMapper;
 import ffdd.commerce.genesis.mapper.GenesisSeriesMapper;
@@ -62,6 +65,7 @@ public class GenesisService {
     private final GenesisHoldingMapper holdingMapper;
     private final CommerceComplianceClient complianceClient;
     private final CommerceWalletClient walletClient;
+    private final SystemConfigClient systemConfigClient;
     private final EventOutboxService outboxService;
     private final Clock clock;
 
@@ -72,8 +76,9 @@ public class GenesisService {
             GenesisHoldingMapper holdingMapper,
             CommerceComplianceClient complianceClient,
             CommerceWalletClient walletClient,
+            SystemConfigClient systemConfigClient,
             EventOutboxService outboxService) {
-        this(seriesMapper, orderMapper, holdingMapper, complianceClient, walletClient, outboxService, Clock.systemDefaultZone());
+        this(seriesMapper, orderMapper, holdingMapper, complianceClient, walletClient, systemConfigClient, outboxService, Clock.systemDefaultZone());
     }
 
     GenesisService(
@@ -82,6 +87,7 @@ public class GenesisService {
             GenesisHoldingMapper holdingMapper,
             CommerceComplianceClient complianceClient,
             CommerceWalletClient walletClient,
+            SystemConfigClient systemConfigClient,
             EventOutboxService outboxService,
             Clock clock) {
         this.seriesMapper = seriesMapper;
@@ -89,6 +95,7 @@ public class GenesisService {
         this.holdingMapper = holdingMapper;
         this.complianceClient = complianceClient;
         this.walletClient = walletClient;
+        this.systemConfigClient = systemConfigClient;
         this.outboxService = outboxService;
         this.clock = clock;
     }
@@ -112,6 +119,7 @@ public class GenesisService {
     @Transactional(rollbackFor = Exception.class)
     public GenesisOrder purchase(GenesisPurchaseRequest request) {
         validatePurchase(request);
+        ensureGenesisEnabled();
         ensureAuthenticatedUserCanAct(request.getUserId());
         GenesisOrder existing = findExistingClientOrder(request.getUserId(), request.getClientRequestNo());
         if (existing != null) {
@@ -195,6 +203,87 @@ public class GenesisService {
         return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
     }
 
+    public PageResult<GenesisSeries> pageSeries(Long pageNum, Long pageSize, String status) {
+        Page<GenesisSeries> page = seriesMapper.selectPage(
+                Page.of(normalizePageNum(pageNum), normalizePageSize(pageSize)),
+                new LambdaQueryWrapper<GenesisSeries>()
+                        .eq(GenesisSeries::getIsDeleted, 0)
+                        .eq(StringUtils.hasText(status), GenesisSeries::getStatus, normalizeStatus(status))
+                        .orderByDesc(GenesisSeries::getCreatedAt));
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    public GenesisSeries createSeries(GenesisSeriesCreateRequest request) {
+        if (request == null) {
+            throw new BizException("Genesis series request is required");
+        }
+        GenesisSeries series = new GenesisSeries();
+        series.setSeriesCode(normalizeSeriesCode(requireText(request.getSeriesCode(), "Genesis series code is required")));
+        series.setName(requireText(request.getName(), "Genesis series name is required"));
+        series.setTotalSupply(requirePositiveInt(request.getTotalSupply(), "Genesis total supply must be positive"));
+        series.setSoldSupply(0);
+        series.setPriceUsdt(money(request.getPriceUsdt()));
+        series.setStatus(StringUtils.hasText(request.getStatus()) ? normalizeStatus(request.getStatus()) : SERIES_ACTIVE);
+        series.setSaleStartAt(request.getSaleStartAt());
+        series.setSaleEndAt(request.getSaleEndAt());
+        series.setRoyaltyBps(request.getRoyaltyBps() == null ? 0 : request.getRoyaltyBps());
+        series.setCoverUrl(trimToNull(request.getCoverUrl()));
+        series.setMetadataJson(trimToNull(request.getMetadataJson()));
+        series.setIsDeleted(0);
+        try {
+            seriesMapper.insert(series);
+            return series;
+        } catch (DuplicateKeyException ex) {
+            throw new BizException(409, "Genesis series code already exists");
+        }
+    }
+
+    public GenesisSeries updateSeries(Long id, GenesisSeriesUpdateRequest request) {
+        if (id == null) {
+            throw new BizException("Genesis series id is required");
+        }
+        if (request == null) {
+            throw new BizException("Genesis series request is required");
+        }
+        GenesisSeries series = seriesMapper.selectById(id);
+        if (series == null || Integer.valueOf(1).equals(series.getIsDeleted())) {
+            throw new BizException(404, "Genesis series not found");
+        }
+        if (request.getName() != null) {
+            series.setName(requireText(request.getName(), "Genesis series name is required"));
+        }
+        if (request.getTotalSupply() != null) {
+            int totalSupply = requirePositiveInt(request.getTotalSupply(), "Genesis total supply must be positive");
+            if (series.getSoldSupply() != null && totalSupply < series.getSoldSupply()) {
+                throw new BizException("Genesis total supply cannot be less than sold supply");
+            }
+            series.setTotalSupply(totalSupply);
+        }
+        if (request.getPriceUsdt() != null) {
+            series.setPriceUsdt(money(request.getPriceUsdt()));
+        }
+        if (request.getStatus() != null) {
+            series.setStatus(normalizeStatus(request.getStatus()));
+        }
+        if (request.getSaleStartAt() != null) {
+            series.setSaleStartAt(request.getSaleStartAt());
+        }
+        if (request.getSaleEndAt() != null) {
+            series.setSaleEndAt(request.getSaleEndAt());
+        }
+        if (request.getRoyaltyBps() != null) {
+            series.setRoyaltyBps(request.getRoyaltyBps());
+        }
+        if (request.getCoverUrl() != null) {
+            series.setCoverUrl(trimToNull(request.getCoverUrl()));
+        }
+        if (request.getMetadataJson() != null) {
+            series.setMetadataJson(trimToNull(request.getMetadataJson()));
+        }
+        seriesMapper.updateById(series);
+        return series;
+    }
+
     private void validatePurchase(GenesisPurchaseRequest request) {
         if (request == null) {
             throw new BizException("Genesis purchase request is required");
@@ -214,6 +303,29 @@ public class GenesisService {
                 && (!clientRequestNo.matches("[A-Za-z0-9._:-]+")
                 || clientRequestNo.length() > MAX_CLIENT_REQUEST_NO_LENGTH)) {
             throw new BizException("Client request no is invalid");
+        }
+    }
+
+    private void ensureGenesisEnabled() {
+        try {
+            ApiResult<Map<String, Object>> response = systemConfigClient.features();
+            if (response == null || response.getCode() != 0 || response.getData() == null) {
+                throw new BizException("Genesis feature switch unavailable");
+            }
+            Object enabled = response.getData().get("genesis.enabled");
+            if (enabled == null) {
+                enabled = response.getData().get("genesis");
+            }
+            if (enabled instanceof Boolean value && !value) {
+                throw new BizException("Genesis is disabled");
+            }
+            if (enabled instanceof String text && !"true".equalsIgnoreCase(text.trim())) {
+                throw new BizException("Genesis is disabled");
+            }
+        } catch (BizException ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            throw new BizException("Genesis feature switch unavailable");
         }
     }
 
@@ -475,6 +587,24 @@ public class GenesisService {
 
     private String normalizeClientRequestNo(String clientRequestNo) {
         return StringUtils.hasText(clientRequestNo) ? clientRequestNo.trim() : null;
+    }
+
+    private String requireText(String value, String message) {
+        if (!StringUtils.hasText(value)) {
+            throw new BizException(message);
+        }
+        return value.trim();
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private int requirePositiveInt(Integer value, String message) {
+        if (value == null || value < 1) {
+            throw new BizException(message);
+        }
+        return value;
     }
 
     private String nextOrderNo() {

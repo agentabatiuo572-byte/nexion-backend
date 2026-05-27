@@ -41,9 +41,9 @@ VALUES
   (10, 'PERM_MENU_WRITE', 'Write menus', 'API', '/auth/access-control/menus/**', NULL, 1),
   (101, 'PERM_BFF_READ', 'Read BFF aggregation', 'API', '/bff/**', NULL, 1),
   (102, 'PERM_COMPUTE_READ', 'Read compute operations', 'API', '/compute/**', NULL, 1),
-  (117, 'PERM_COMPUTE_WRITE', 'Write compute task and device status', 'API', '/compute/tasks/**,/compute/devices/*/status', NULL, 1),
+  (117, 'PERM_COMPUTE_WRITE', 'Write compute task, device status, activation, and lifecycle rules', 'API', '/compute/tasks/**,/compute/devices/*/status,/compute/devices/*/activate,/compute/devices/*/deactivate,/compute/devices/*/deactivation-schedule,/compute/device-lifecycle/rules/**', NULL, 1),
   (103, 'PERM_COMMERCE_READ', 'Read commerce operations', 'API', '/commerce/**,/genesis/**', NULL, 1),
-  (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**,/commerce/payments/ops/**,/genesis/**', NULL, 1),
+  (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**,/commerce/products/**,/commerce/payments/ops/**,/genesis/**', NULL, 1),
   (105, 'PERM_WALLET_READ', 'Read wallet operations', 'API', '/wallet/**', NULL, 1),
   (112, 'PERM_WALLET_WRITE', 'Write wallet operations', 'API', '/wallet/**', NULL, 1),
   (118, 'PERM_EARNINGS_WRITE', 'Write earnings tick and milestone operations', 'API', '/earnings/ticks/**,/earnings/milestones/**,/earnings/events/settle-receipt', NULL, 1),
@@ -264,17 +264,57 @@ ON DUPLICATE KEY UPDATE
   cover_url = VALUES(cover_url),
   metadata_json = VALUES(metadata_json);
 
-INSERT INTO nx_user_device (id, user_id, source_order_no, product_id, instance_no, name, device_type, status, hashrate, daily_usdt, daily_nex, last_seen_at, activated_at)
+INSERT INTO nx_tradein_rule
+  (id, source_product_no, source_tier, target_tier, discount_usdt, salvage_rate, min_holding_months, status, sort_order)
 VALUES
-  (1, 10001, NULL, NULL, 'UD-10001-PHONE', 'Mobile Compute', 'MOBILE', 'ONLINE', 0.250000, 0.060000, 12.000000, NOW(), NOW())
+  (1, 'NX-S1', 'S1', 'PRO_V2', 300.000000, 0.300000, 1, 1, 10),
+  (2, 'NX-PRO', 'PRO', 'PRO_V2', 300.000000, 0.300000, 1, 1, 20),
+  (3, 'NX-RACK', 'RACK', 'RACK_P2', 800.000000, 0.300000, 1, 1, 30),
+  (4, NULL, 'RACK_P1', 'RACK_P2', 800.000000, 0.300000, 1, 1, 40)
+ON DUPLICATE KEY UPDATE
+  source_product_no = VALUES(source_product_no),
+  source_tier = VALUES(source_tier),
+  target_tier = VALUES(target_tier),
+  discount_usdt = VALUES(discount_usdt),
+  salvage_rate = VALUES(salvage_rate),
+  min_holding_months = VALUES(min_holding_months),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);
+
+INSERT INTO nx_user_device (id, user_id, source_order_no, product_id, product_tier, instance_no, name, device_type, status, hashrate, daily_usdt, daily_nex, last_seen_at, purchased_at, activated_at, pending_deactivate)
+VALUES
+  (1, 10001, NULL, NULL, NULL, 'UD-10001-PHONE', 'Mobile Compute', 'MOBILE', 'ONLINE', 0.250000, 0.060000, 12.000000, NOW(), NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
+  product_tier = VALUES(product_tier),
   device_type = VALUES(device_type),
   status = VALUES(status),
   hashrate = VALUES(hashrate),
   daily_usdt = VALUES(daily_usdt),
   daily_nex = VALUES(daily_nex),
-  last_seen_at = VALUES(last_seen_at);
+  last_seen_at = VALUES(last_seen_at),
+  purchased_at = VALUES(purchased_at),
+  activated_at = VALUES(activated_at),
+  pending_deactivate = VALUES(pending_deactivate);
+
+INSERT INTO nx_device_lifecycle_rule
+  (id, scope_type, scope_value, start_month, end_month, monthly_decay_rate, floor_efficiency, exempt, status, sort_order)
+VALUES
+  (1, 'DEFAULT', NULL, 1, 3, 0.040000, 0.220000, 0, 1, 10),
+  (2, 'DEFAULT', NULL, 4, 8, 0.060000, 0.220000, 0, 1, 20),
+  (3, 'DEFAULT', NULL, 9, NULL, 0.100000, 0.220000, 0, 1, 30),
+  (4, 'PRODUCT_TYPE', 'MOBILE', 0, NULL, 0.000000, 1.000000, 1, 1, 100),
+  (5, 'PRODUCT_TYPE', 'CLOUD_SHARE', 0, NULL, 0.000000, 1.000000, 1, 1, 100)
+ON DUPLICATE KEY UPDATE
+  scope_type = VALUES(scope_type),
+  scope_value = VALUES(scope_value),
+  start_month = VALUES(start_month),
+  end_month = VALUES(end_month),
+  monthly_decay_rate = VALUES(monthly_decay_rate),
+  floor_efficiency = VALUES(floor_efficiency),
+  exempt = VALUES(exempt),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);
 
 INSERT INTO nx_compute_task (id, task_no, user_id, user_device_id, task_type, client_name, status, started_at, completed_at)
 VALUES
@@ -439,26 +479,34 @@ ON DUPLICATE KEY UPDATE
   submitted_by = VALUES(submitted_by),
   metadata_json = VALUES(metadata_json);
 
-INSERT INTO nx_config_item (id, config_key, config_value, value_type, remark, status)
+INSERT INTO nx_config_item (id, config_key, config_value, value_type, config_group, visibility, remark, status)
 VALUES
-  (1, 'product.phase', 'MVP', 'STRING', 'Current product phase.', 1),
-  (2, 'withdrawal.min_usdt', '10', 'NUMBER', 'Minimum USDT withdrawal amount.', 1),
-  (3, 'risk.withdrawal.kyc_required', 'true', 'BOOLEAN', 'Require KYC before withdrawal.', 1),
-  (4, 'openapi.default_qps_limit', '20', 'NUMBER', 'Default OpenAPI per-app QPS quota.', 1),
-  (5, 'openapi.default_daily_limit', '10000', 'NUMBER', 'Default OpenAPI per-app daily quota.', 1),
-  (6, 'risk.withdrawal.review_amount', '1000', 'NUMBER', 'Withdrawal amount that triggers manual review.', 1),
-  (7, 'risk.exchange.review_amount', '5000', 'NUMBER', 'Exchange amount that triggers manual review.', 1),
-  (8, 'feature.genesis.enabled', 'false', 'BOOLEAN', 'Genesis feature launch switch.', 1),
-  (9, 'risk.region.blocked', '', 'STRING', 'Comma-separated regions that should be rejected by Compliance gate.', 1),
-  (10, 'risk.region.review', '', 'STRING', 'Comma-separated regions that should enter manual Compliance review.', 1),
-  (11, 'risk.low_tier.review_amount', '100', 'NUMBER', 'Low-tier withdrawal amount that triggers manual review.', 1),
-  (12, 'risk.low_tier.levels', 'L0,L1', 'STRING', 'User levels subject to low-tier withdrawal review amount.', 1),
-  (13, 'risk.ip.daily_review_count', '10', 'NUMBER', 'Daily same-IP decision count that triggers manual review.', 1),
-  (14, 'risk.device.daily_review_count', '5', 'NUMBER', 'Daily same-device decision count that triggers manual review.', 1),
-  (15, 'risk.genesis.review_amount', '10000', 'NUMBER', 'Genesis purchase amount that triggers manual review.', 1)
+  (1, 'product.phase', 'MVP', 'STRING', 'product', 'PUBLIC', 'Current product phase.', 1),
+  (2, 'withdrawal.min_usdt', '10', 'NUMBER', 'withdrawal', 'ADMIN', 'Minimum USDT withdrawal amount.', 1),
+  (3, 'risk.withdrawal.kyc_required', 'true', 'BOOLEAN', 'risk', 'ADMIN', 'Require KYC before withdrawal.', 1),
+  (4, 'openapi.default_qps_limit', '20', 'NUMBER', 'openapi', 'ADMIN', 'Default OpenAPI per-app QPS quota.', 1),
+  (5, 'openapi.default_daily_limit', '10000', 'NUMBER', 'openapi', 'ADMIN', 'Default OpenAPI per-app daily quota.', 1),
+  (6, 'risk.withdrawal.review_amount', '1000', 'NUMBER', 'risk', 'ADMIN', 'Withdrawal amount that triggers manual review.', 1),
+  (7, 'risk.exchange.review_amount', '5000', 'NUMBER', 'risk', 'ADMIN', 'Exchange amount that triggers manual review.', 1),
+  (8, 'feature.genesis.enabled', 'true', 'BOOLEAN', 'feature', 'PUBLIC', 'Genesis feature launch switch.', 1),
+  (9, 'risk.region.blocked', '', 'STRING', 'risk', 'ADMIN', 'Comma-separated regions that should be rejected by Compliance gate.', 1),
+  (10, 'risk.region.review', '', 'STRING', 'risk', 'ADMIN', 'Comma-separated regions that should enter manual Compliance review.', 1),
+  (11, 'risk.low_tier.review_amount', '100', 'NUMBER', 'risk', 'ADMIN', 'Low-tier withdrawal amount that triggers manual review.', 1),
+  (12, 'risk.low_tier.levels', 'L0,L1', 'STRING', 'risk', 'ADMIN', 'User levels subject to low-tier withdrawal review amount.', 1),
+  (13, 'risk.ip.daily_review_count', '10', 'NUMBER', 'risk', 'ADMIN', 'Daily same-IP decision count that triggers manual review.', 1),
+  (14, 'risk.device.daily_review_count', '5', 'NUMBER', 'risk', 'ADMIN', 'Daily same-device decision count that triggers manual review.', 1),
+  (15, 'risk.genesis.review_amount', '10000', 'NUMBER', 'risk', 'ADMIN', 'Genesis purchase amount that triggers manual review.', 1),
+  (16, 'onboarding.day0', '{"firstReceiptTargetSeconds":90,"firstReceiptUsdt":"0.000300","welcomeBonusAsset":"USDT","welcomeBonusAmount":"5.000000"}', 'JSON', 'onboarding', 'PUBLIC', 'Day 0 onboarding visible economics.', 1),
+  (17, 'feature.trial.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'Free trial feature launch switch.', 1),
+  (18, 'feature.nex_swap.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'NEX swap feature launch switch.', 1),
+  (19, 'feature.premium.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'Premium subscription feature launch switch.', 1),
+  (20, 'feature.nex_lock.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'NEX lock feature launch switch.', 1),
+  (21, 'compute.active_device_slots.default', '6', 'NUMBER', 'compute', 'PUBLIC', 'Default max active compute devices per user.', 1)
 ON DUPLICATE KEY UPDATE
   config_value = VALUES(config_value),
   value_type = VALUES(value_type),
+  config_group = VALUES(config_group),
+  visibility = VALUES(visibility),
   remark = VALUES(remark),
   status = VALUES(status);
 

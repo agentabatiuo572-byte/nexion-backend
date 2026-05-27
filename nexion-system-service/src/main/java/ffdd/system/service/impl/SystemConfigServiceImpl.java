@@ -1,6 +1,8 @@
 package ffdd.system.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.exception.BizException;
 import ffdd.system.domain.ConfigItem;
 import ffdd.system.dto.ConfigItemCreateRequest;
@@ -25,10 +27,14 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     private static final int ACTIVE = 1;
     private static final int MAX_LIST_LIMIT = 200;
     private static final int MAX_BATCH_SIZE = 100;
+    private static final int MAX_CONFIG_VALUE_LENGTH = 65_535;
     private static final Pattern CONFIG_KEY_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{1,128}$");
+    private static final Pattern CONFIG_GROUP_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{1,64}$");
     private static final Set<String> VALUE_TYPES = Set.of("STRING", "NUMBER", "BOOLEAN", "JSON");
+    private static final Set<String> VISIBILITIES = Set.of("ADMIN", "PUBLIC");
 
     private final ConfigItemMapper configItemMapper;
+    private final ObjectMapper objectMapper;
 
     @Override
     public List<ConfigItemResponse> list(String query, Integer status, int limit) {
@@ -78,6 +84,20 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     }
 
     @Override
+    public List<ConfigItemResponse> listPublicByGroup(String configGroup) {
+        String normalizedGroup = normalizeConfigGroup(configGroup);
+        return configItemMapper.selectList(new LambdaQueryWrapper<ConfigItem>()
+                        .eq(ConfigItem::getConfigGroup, normalizedGroup)
+                        .eq(ConfigItem::getVisibility, "PUBLIC")
+                        .eq(ConfigItem::getStatus, ACTIVE)
+                        .eq(ConfigItem::getIsDeleted, 0)
+                        .orderByAsc(ConfigItem::getConfigKey))
+                .stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
+    @Override
     public ConfigItemResponse create(ConfigItemCreateRequest request) {
         if (request == null) {
             throw new BizException("Config item request is required");
@@ -92,8 +112,11 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
         ConfigItem item = new ConfigItem();
         item.setConfigKey(configKey);
-        item.setConfigValue(requireConfigValue(request.getConfigValue()));
-        item.setValueType(normalizeValueType(request.getValueType()));
+        String valueType = normalizeValueType(request.getValueType());
+        item.setConfigValue(requireConfigValue(request.getConfigValue(), valueType));
+        item.setValueType(valueType);
+        item.setConfigGroup(normalizeConfigGroupOrDefault(request.getConfigGroup(), configKey));
+        item.setVisibility(normalizeVisibility(request.getVisibility()));
         item.setRemark(trimToNull(request.getRemark()));
         item.setStatus(request.getStatus() == null ? ACTIVE : request.getStatus());
         item.setIsDeleted(0);
@@ -113,11 +136,21 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         if (item == null || Integer.valueOf(1).equals(item.getIsDeleted())) {
             throw new BizException(404, "Config item not found");
         }
-        if (request.getConfigValue() != null) {
-            item.setConfigValue(requireConfigValue(request.getConfigValue()));
-        }
+        String valueType = item.getValueType();
         if (request.getValueType() != null) {
-            item.setValueType(normalizeValueType(request.getValueType()));
+            valueType = normalizeValueType(request.getValueType());
+            item.setValueType(valueType);
+        }
+        if (request.getConfigValue() != null) {
+            item.setConfigValue(requireConfigValue(request.getConfigValue(), valueType));
+        } else if (request.getValueType() != null) {
+            requireConfigValue(item.getConfigValue(), valueType);
+        }
+        if (request.getConfigGroup() != null) {
+            item.setConfigGroup(normalizeConfigGroup(request.getConfigGroup()));
+        }
+        if (request.getVisibility() != null) {
+            item.setVisibility(normalizeVisibility(request.getVisibility()));
         }
         if (request.getRemark() != null) {
             item.setRemark(trimToNull(request.getRemark()));
@@ -135,6 +168,8 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                 item.getConfigKey(),
                 item.getConfigValue(),
                 item.getValueType(),
+                item.getConfigGroup(),
+                item.getVisibility(),
                 item.getRemark(),
                 item.getStatus(),
                 item.getCreatedAt(),
@@ -163,14 +198,54 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         return normalized;
     }
 
-    private String requireConfigValue(String value) {
+    private String normalizeConfigGroupOrDefault(String configGroup, String configKey) {
+        String normalized = trimToNull(configGroup);
+        if (StringUtils.hasText(normalized)) {
+            return normalizeConfigGroup(normalized);
+        }
+        int dot = configKey.indexOf('.');
+        return dot > 0 ? configKey.substring(0, dot) : "general";
+    }
+
+    private String normalizeConfigGroup(String configGroup) {
+        String normalized = trimToNull(configGroup);
+        if (!StringUtils.hasText(normalized) || !CONFIG_GROUP_PATTERN.matcher(normalized).matches()) {
+            throw new BizException("Invalid configGroup");
+        }
+        return normalized;
+    }
+
+    private String normalizeVisibility(String visibility) {
+        String normalized = trimToNull(visibility);
+        if (!StringUtils.hasText(normalized)) {
+            return "ADMIN";
+        }
+        normalized = normalized.toUpperCase(Locale.ROOT);
+        if (!VISIBILITIES.contains(normalized)) {
+            throw new BizException("Invalid visibility");
+        }
+        return normalized;
+    }
+
+    private String requireConfigValue(String value, String valueType) {
         if (value == null) {
             throw new BizException("configValue is required");
         }
-        if (value.length() > 1024) {
-            throw new BizException("configValue length must be <= 1024");
+        if (value.length() > MAX_CONFIG_VALUE_LENGTH) {
+            throw new BizException("configValue length must be <= " + MAX_CONFIG_VALUE_LENGTH);
+        }
+        if ("JSON".equals(valueType)) {
+            validateJson(value);
         }
         return value;
+    }
+
+    private void validateJson(String value) {
+        try {
+            objectMapper.readTree(value);
+        } catch (JsonProcessingException ex) {
+            throw new BizException("configValue must be valid JSON");
+        }
     }
 
     private String normalizeValueType(String valueType) {

@@ -14,6 +14,7 @@ public class UserDevice extends BaseEntity {
     private Long userId;
     private String sourceOrderNo;
     private Long productId;
+    private String productTier;
     private String instanceNo;
     private String name;
     private String deviceType;
@@ -22,5 +23,7 @@ public class UserDevice extends BaseEntity {
     private BigDecimal dailyUsdt;
     private BigDecimal dailyNex;
     private LocalDateTime lastSeenAt;
+    private LocalDateTime purchasedAt;
     private LocalDateTime activatedAt;
+    private Integer pendingDeactivate;
 }

@@ -5,12 +5,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.commerce.client.ComputeClient;
 import ffdd.commerce.domain.Product;
 import ffdd.commerce.domain.TradeinApplication;
+import ffdd.commerce.domain.TradeinRule;
 import ffdd.commerce.dto.TradeinApplicationQueryRequest;
 import ffdd.commerce.dto.TradeinQuoteRequest;
 import ffdd.commerce.dto.TradeinQuoteResponse;
 import ffdd.commerce.dto.TradeinSubmitRequest;
 import ffdd.commerce.mapper.ProductMapper;
 import ffdd.commerce.mapper.TradeinApplicationMapper;
+import ffdd.commerce.mapper.TradeinRuleMapper;
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
@@ -18,9 +20,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -34,14 +34,11 @@ import org.springframework.util.StringUtils;
 public class TradeinService {
     private static final String PRODUCT_ON_SALE = "ON_SALE";
     private static final String STATUS_SUBMITTED = "SUBMITTED";
-    private static final BigDecimal SALVAGE_RECOVERY_RATE = new BigDecimal("0.30");
-    private static final BigDecimal EFFICIENCY_FLOOR = new BigDecimal("0.22");
-    private static final BigDecimal MONTH_1_TO_3_FACTOR = new BigDecimal("0.96");
-    private static final BigDecimal MONTH_4_TO_8_FACTOR = new BigDecimal("0.94");
-    private static final BigDecimal MONTH_9_PLUS_FACTOR = new BigDecimal("0.90");
+    private static final int ACTIVE = 1;
 
     private final ProductMapper productMapper;
     private final TradeinApplicationMapper applicationMapper;
+    private final TradeinRuleMapper tradeinRuleMapper;
     private final ComputeClient computeClient;
     private final Clock clock;
 
@@ -49,17 +46,20 @@ public class TradeinService {
     public TradeinService(
             ProductMapper productMapper,
             TradeinApplicationMapper applicationMapper,
+            TradeinRuleMapper tradeinRuleMapper,
             ComputeClient computeClient) {
-        this(productMapper, applicationMapper, computeClient, Clock.systemDefaultZone());
+        this(productMapper, applicationMapper, tradeinRuleMapper, computeClient, Clock.systemDefaultZone());
     }
 
     TradeinService(
             ProductMapper productMapper,
             TradeinApplicationMapper applicationMapper,
+            TradeinRuleMapper tradeinRuleMapper,
             ComputeClient computeClient,
             Clock clock) {
         this.productMapper = productMapper;
         this.applicationMapper = applicationMapper;
+        this.tradeinRuleMapper = tradeinRuleMapper;
         this.computeClient = computeClient;
         this.clock = clock;
     }
@@ -80,19 +80,21 @@ public class TradeinService {
         Product sourceProduct = requireProduct(sourceProductId);
         TradeinRule rule = requireRule(sourceProduct);
         Product targetProduct = requireTargetProduct(rule);
-        LocalDateTime activatedAt = asLocalDateTime(device.get("activatedAt"));
-        if (activatedAt == null) {
-            throw new BizException("Source device activation time is missing");
+        Map<String, Object> lifecycle = requireLifecycle(sourceDeviceId);
+        Integer monthsOwned = asInteger(lifecycle.get("monthsOwned"));
+        BigDecimal rawEfficiency = asBigDecimal(lifecycle.get("currentEfficiency"));
+        if (monthsOwned == null || rawEfficiency == null) {
+            throw new BizException("Source device lifecycle is missing");
         }
-
-        LocalDateTime now = LocalDateTime.now(clock);
-        int monthsOwned = Math.max(0, (int) ChronoUnit.MONTHS.between(activatedAt, now));
-        BigDecimal rawEfficiency = efficiencyForMonths(monthsOwned);
+        int minHoldingMonths = rule.getMinHoldingMonths() == null ? 0 : rule.getMinHoldingMonths();
+        if (monthsOwned < minHoldingMonths) {
+            throw new BizException("Source device is not eligible for trade-in yet");
+        }
         BigDecimal efficiency = scale(rawEfficiency);
         BigDecimal sourcePrice = money(sourceProduct.getPriceUsdt());
         BigDecimal targetPrice = money(targetProduct.getPriceUsdt());
-        BigDecimal salvage = scale(sourcePrice.multiply(rawEfficiency).multiply(SALVAGE_RECOVERY_RATE));
-        BigDecimal discount = scale(rule.tradeinDiscountUsdt());
+        BigDecimal salvage = scale(sourcePrice.multiply(rawEfficiency).multiply(defaultDecimal(rule.getSalvageRate())));
+        BigDecimal discount = scale(defaultDecimal(rule.getDiscountUsdt()));
         BigDecimal netCost = scale(targetPrice.subtract(salvage).subtract(discount).max(BigDecimal.ZERO));
 
         return new TradeinQuoteResponse(
@@ -182,6 +184,14 @@ public class TradeinService {
         return response.getData();
     }
 
+    private Map<String, Object> requireLifecycle(Long sourceDeviceId) {
+        ApiResult<Map<String, Object>> response = computeClient.getDeviceLifecycle(sourceDeviceId);
+        if (response == null || response.getCode() != 0 || response.getData() == null) {
+            throw new BizException("Source device lifecycle not found");
+        }
+        return response.getData();
+    }
+
     private Product requireProduct(Long productId) {
         Product product = productMapper.selectById(productId);
         if (product == null || Integer.valueOf(1).equals(product.getIsDeleted())) {
@@ -192,7 +202,7 @@ public class TradeinService {
 
     private Product requireTargetProduct(TradeinRule rule) {
         Product product = productMapper.selectOne(new LambdaQueryWrapper<Product>()
-                .eq(Product::getTier, rule.targetTier())
+                .eq(Product::getTier, rule.getTargetTier())
                 .eq(Product::getStatus, PRODUCT_ON_SALE)
                 .eq(Product::getIsDeleted, 0)
                 .last("LIMIT 1"));
@@ -205,34 +215,15 @@ public class TradeinService {
     private TradeinRule requireRule(Product sourceProduct) {
         String tier = normalize(sourceProduct.getTier());
         String productNo = normalize(sourceProduct.getProductNo());
-        if ("S1".equals(tier) || "NX-S1".equals(productNo) || "PRO".equals(tier) || "NX-PRO".equals(productNo)) {
-            return new TradeinRule("PRO_V2", new BigDecimal("300.000000"));
-        }
-        if ("RACK".equals(tier) || "RACK_P1".equals(tier) || "NX-RACK".equals(productNo)) {
-            return new TradeinRule("RACK_P2", new BigDecimal("800.000000"));
-        }
-        throw new BizException("Source product is not eligible for trade-in");
-    }
-
-    private BigDecimal efficiencyForMonths(int monthsOwned) {
-        BigDecimal efficiency = BigDecimal.ONE;
-        int remaining = Math.max(0, monthsOwned);
-        int firstSegment = Math.min(remaining, 3);
-        efficiency = multiplyRepeated(efficiency, MONTH_1_TO_3_FACTOR, firstSegment);
-        remaining -= firstSegment;
-        int secondSegment = Math.min(remaining, 5);
-        efficiency = multiplyRepeated(efficiency, MONTH_4_TO_8_FACTOR, secondSegment);
-        remaining -= secondSegment;
-        efficiency = multiplyRepeated(efficiency, MONTH_9_PLUS_FACTOR, remaining);
-        return efficiency.max(EFFICIENCY_FLOOR);
-    }
-
-    private BigDecimal multiplyRepeated(BigDecimal value, BigDecimal factor, int times) {
-        BigDecimal result = value;
-        for (int i = 0; i < times; i++) {
-            result = result.multiply(factor);
-        }
-        return result;
+        return tradeinRuleMapper.selectList(new LambdaQueryWrapper<TradeinRule>()
+                        .eq(TradeinRule::getIsDeleted, 0)
+                        .eq(TradeinRule::getStatus, ACTIVE)
+                        .orderByDesc(TradeinRule::getSortOrder)
+                        .orderByAsc(TradeinRule::getId))
+                .stream()
+                .filter(rule -> matchesRule(rule, productNo, tier))
+                .findFirst()
+                .orElseThrow(() -> new BizException("Source product is not eligible for trade-in"));
     }
 
     private BigDecimal money(BigDecimal value) {
@@ -244,6 +235,19 @@ public class TradeinService {
 
     private BigDecimal scale(BigDecimal value) {
         return value.setScale(6, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal defaultDecimal(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private boolean matchesRule(TradeinRule rule, String productNo, String tier) {
+        String ruleProductNo = normalize(rule.getSourceProductNo());
+        if (StringUtils.hasText(ruleProductNo) && ruleProductNo.equals(productNo)) {
+            return true;
+        }
+        String ruleTier = normalize(rule.getSourceTier());
+        return StringUtils.hasText(ruleTier) && ruleTier.equals(tier);
     }
 
     private Long requirePositive(Long value, String message) {
@@ -288,23 +292,27 @@ public class TradeinService {
         return null;
     }
 
-    private LocalDateTime asLocalDateTime(Object value) {
-        if (value instanceof LocalDateTime localDateTime) {
-            return localDateTime;
-        }
-        if (value instanceof OffsetDateTime offsetDateTime) {
-            return offsetDateTime.toLocalDateTime();
+    private Integer asInteger(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
         }
         if (value instanceof String text && StringUtils.hasText(text)) {
-            String normalized = text.trim();
-            if (normalized.endsWith("Z") || normalized.contains("+")) {
-                return OffsetDateTime.parse(normalized).toLocalDateTime();
-            }
-            return LocalDateTime.parse(normalized);
+            return Integer.parseInt(text);
         }
         return null;
     }
 
-    private record TradeinRule(String targetTier, BigDecimal tradeinDiscountUsdt) {
+    private BigDecimal asBigDecimal(Object value) {
+        if (value instanceof BigDecimal decimal) {
+            return decimal;
+        }
+        if (value instanceof Number number) {
+            return BigDecimal.valueOf(number.doubleValue());
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            return new BigDecimal(text);
+        }
+        return null;
     }
+
 }
