@@ -1,6 +1,8 @@
 package ffdd.wallet.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import ffdd.common.exception.BizException;
 import ffdd.wallet.chain.WithdrawalChainBroadcaster;
 import ffdd.wallet.domain.WithdrawalOrder;
 import ffdd.wallet.mapper.WithdrawalOrderMapper;
@@ -84,6 +86,39 @@ public class WithdrawalBroadcastService {
                 .eq(WithdrawalOrder::getStatus, STATUS_DEAD)
                 .eq(WithdrawalOrder::getIsDeleted, 0));
         return Map.of("pending", pending, "submitted", submitted, "dead", dead);
+    }
+
+    public WithdrawalOrder getByWithdrawalNo(String withdrawalNo) {
+        if (!StringUtils.hasText(withdrawalNo)) {
+            throw new BizException("Withdrawal no is required");
+        }
+        WithdrawalOrder order = withdrawalOrderMapper.selectOne(new LambdaQueryWrapper<WithdrawalOrder>()
+                .eq(WithdrawalOrder::getWithdrawalNo, withdrawalNo.trim())
+                .eq(WithdrawalOrder::getIsDeleted, 0));
+        if (order == null) {
+            throw new BizException("Withdrawal order not found");
+        }
+        return order;
+    }
+
+    public WithdrawalOrder retryBroadcast(String withdrawalNo) {
+        WithdrawalOrder order = getByWithdrawalNo(withdrawalNo);
+        if (!STATUS_PENDING_CHAIN.equals(order.getStatus()) && !STATUS_DEAD.equals(order.getStatus())) {
+            throw new BizException("Withdrawal is not retryable");
+        }
+        withdrawalOrderMapper.update(null, new UpdateWrapper<WithdrawalOrder>()
+                .eq("id", order.getId())
+                .set("status", STATUS_PENDING_CHAIN)
+                .set("chain_broadcast_attempts", 0)
+                .set("next_broadcast_at", null)
+                .set("last_broadcast_error", null)
+                .set("broadcast_dead_at", null));
+        order.setStatus(STATUS_PENDING_CHAIN);
+        order.setChainBroadcastAttempts(0);
+        order.setNextBroadcastAt(null);
+        order.setLastBroadcastError(null);
+        order.setBroadcastDeadAt(null);
+        return order;
     }
 
     private List<WithdrawalOrder> listDuePending(int limit) {

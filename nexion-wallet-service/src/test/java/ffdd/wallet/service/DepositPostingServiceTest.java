@@ -158,6 +158,45 @@ class DepositPostingServiceTest {
         assertThat(result).containsExactly(order);
     }
 
+    @Test
+    void retryDeadDepositByNoCreditsWalletAndMarksSuccess() {
+        DepositOrder dead = pendingDeposit("DEP-USDT-dead", "0xtx-dead", "USDT", "2.500000");
+        dead.setStatus("DEAD");
+        WalletLedger ledger = new WalletLedger();
+        ledger.setId(501L);
+        ledger.setBizNo("DEP-USDT-dead");
+        ledger.setBizType("DEPOSIT");
+        ledger.setAsset("USDT");
+        ledger.setDirection("IN");
+        ledger.setAmount(new BigDecimal("2.500000"));
+        ledger.setBalanceAfter(new BigDecimal("2.500000"));
+        ledger.setStatus("SUCCESS");
+
+        when(depositOrderMapper.selectOne(any())).thenReturn(dead, dead);
+        when(chainProvider.confirm(any()))
+                .thenReturn(new DepositChainConfirmation("TRON", "0xtx-dead", "USDT", new BigDecimal("2.500000"), 20));
+        when(walletService.postCredit(any())).thenReturn(ledger);
+
+        DepositOrder result = service.retry("DEP-USDT-dead");
+
+        assertThat(result.getStatus()).isEqualTo("SUCCESS");
+        assertThat(result.getLedgerId()).isEqualTo(501L);
+        verify(walletService).postCredit(any(PostWalletCreditRequest.class));
+        verify(depositOrderMapper).updateById(any(DepositOrder.class));
+    }
+
+    @Test
+    void retryRejectsUnknownDepositNo() {
+        when(depositOrderMapper.selectOne(any())).thenReturn(null);
+
+        assertThatThrownBy(() -> service.retry("DEP-missing"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Deposit order not found");
+
+        verify(chainProvider, never()).confirm(any());
+        verify(walletService, never()).postCredit(any(PostWalletCreditRequest.class));
+    }
+
     private ConfirmDepositRequest confirmedRequest(String txHash, String asset, String amount) {
         ConfirmDepositRequest request = new ConfirmDepositRequest();
         request.setUserId(10001L);

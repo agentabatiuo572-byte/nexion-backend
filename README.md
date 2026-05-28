@@ -402,14 +402,21 @@ Wallet owns balance mutation and ledger idempotency. Internal services can post 
 - `POST /wallet/credits/post`: protected by `PERM_WALLET_WRITE`.
 - `POST /wallet/debits/post`: protected by `PERM_WALLET_WRITE`.
 - `POST /wallet/deposits/confirmed`: protected by `PERM_WALLET_WRITE`; records an idempotent deposit order by `(chainTxHash, asset)` and credits available balance through the wallet ledger.
+- `POST /wallet/ops/deposits/manual`: protected by `PERM_WALLET_WRITE`; operator-facing manual deposit posting with audit log detail and the same idempotent `(chainTxHash, asset)` fence.
+- `POST /wallet/ops/deposits/{depositNo}/retry`: protected by `PERM_WALLET_WRITE`; retries a pending/dead deposit through the configured chain confirmation provider and credits by the original deposit ledger biz no.
+- `GET /wallet/ops/deposits/{depositNo}`: protected by `PERM_WALLET_READ`; inspect one deposit order.
 - `GET /wallet/deposits/pending|success|dead`: protected by `PERM_WALLET_READ`; inspect deposit order states.
 - `GET /wallet/deposits/records?chainTxHash={tx}&asset={asset}`: protected by `PERM_WALLET_READ`; inspect deposit confirmation records.
 - `POST /wallet/withdrawals`: creates an idempotent USDT withdrawal order, checks Compliance, and moves available balance into `pending_withdraw` when approved. Compliance `REVIEW` leaves the order in `REVIEWING` without mutating balances.
 - `POST /wallet/withdrawals/{withdrawalNo}/chain-submitted`: records chain tx hash and moves the order to `CHAIN_SUBMITTED`.
 - `POST /wallet/withdrawals/{withdrawalNo}/succeeded`: finalizes an approved/submitted withdrawal and releases `pending_withdraw`.
 - `POST /wallet/withdrawals/{withdrawalNo}/failed`: marks the withdrawal failed, releases `pending_withdraw`, refunds available balance, and records a refund ledger.
-- `POST /wallet/withdrawals/broadcast/publish?limit=20`: ops trigger for the withdrawal broadcast batch.
+- `POST /wallet/withdrawals/broadcast/publish?limit=20`: protected by `PERM_WALLET_WRITE`; ops trigger for the withdrawal broadcast batch, with audit log detail for scanned/submitted/failed/dead counts.
 - `GET /wallet/withdrawals/broadcast/pending|dead|summary`: inspect withdrawal broadcast backlog and local DEAD rows.
+- `GET /wallet/ops/withdrawals/{withdrawalNo}`: protected by `PERM_WALLET_READ`; inspect one withdrawal order.
+- `POST /wallet/ops/withdrawals/{withdrawalNo}/retry-broadcast`: protected by `PERM_WALLET_WRITE`; moves `DEAD` or still-pending rows back to `PENDING_CHAIN`, resets broadcast attempts, clears local broadcast error fields, and records an audit log.
+- `POST /wallet/ops/withdrawals/{withdrawalNo}/mark-succeeded`: protected by `PERM_WALLET_WRITE`; operator-facing chain success repair, reusing the idempotent settlement service path.
+- `POST /wallet/ops/withdrawals/{withdrawalNo}/mark-failed`: protected by `PERM_WALLET_WRITE`; operator-facing failure/refund repair, reusing the same refund ledger path as chain failure callbacks.
 - `POST /wallet/exchanges`: creates an idempotent exchange order, checks Compliance, debits the source asset, and credits the target asset when approved. Compliance `REVIEW` leaves the order in `REVIEWING`.
 - `POST /compliance/gates/check`: protected by `PERM_COMPLIANCE_WRITE`; creates an idempotent `nx_risk_decision` from the KYC profile, blacklist, amount threshold, region, user tier, same-IP velocity, same-device velocity, and daily frequency checks.
 - Compliance gate requests require `userId`, `bizNo`, `bizType`, `asset`, and positive `amount`; optional `region`, `userLevel`, `clientIp`, and `deviceFingerprint` are persisted on the risk decision for ops traceability.

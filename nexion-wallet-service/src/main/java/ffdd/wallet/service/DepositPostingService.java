@@ -98,6 +98,30 @@ public class DepositPostingService {
                 .last("LIMIT " + normalizeLimit(limit)));
     }
 
+    public DepositOrder getByDepositNo(String depositNo) {
+        if (!StringUtils.hasText(depositNo)) {
+            throw new BizException("Deposit no is required");
+        }
+        DepositOrder order = findByDepositNo(depositNo.trim());
+        if (order == null) {
+            throw new BizException("Deposit order not found");
+        }
+        return order;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public DepositOrder retry(String depositNo) {
+        DepositOrder order = getByDepositNo(depositNo);
+        ConfirmDepositRequest request = new ConfirmDepositRequest();
+        request.setUserId(order.getUserId());
+        request.setChain(order.getChain());
+        request.setChainTxHash(order.getChainTxHash());
+        request.setAsset(order.getAsset());
+        request.setAmount(order.getAmount());
+        request.setConfirmations(order.getConfirmations());
+        return confirm(request);
+    }
+
     public List<DepositOrder> findRecords(String chainTxHash, String asset) {
         LambdaQueryWrapper<DepositOrder> wrapper = new LambdaQueryWrapper<DepositOrder>()
                 .eq(DepositOrder::getIsDeleted, 0)
@@ -181,6 +205,12 @@ public class DepositPostingService {
         return depositOrderMapper.selectOne(new LambdaQueryWrapper<DepositOrder>()
                 .eq(DepositOrder::getChainTxHash, txHash)
                 .eq(DepositOrder::getAsset, asset));
+    }
+
+    private DepositOrder findByDepositNo(String depositNo) {
+        return depositOrderMapper.selectOne(new LambdaQueryWrapper<DepositOrder>()
+                .eq(DepositOrder::getDepositNo, depositNo)
+                .eq(DepositOrder::getIsDeleted, 0));
     }
 
     private void validateRequest(ConfirmDepositRequest request) {
