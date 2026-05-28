@@ -336,6 +336,29 @@ Run the direct Compute task smoke after applying `scripts/schema.sql` and `scrip
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_compute_task_dispatch.ps1
 ```
 
+## Compute Worker Executor Baseline
+
+The worker executor baseline adds a local, configurable worker harness without adding another Spring Boot service.
+
+- `scripts/run_compute_worker.ps1`: leases tasks through `/compute/tasks/worker/lease`, immediately sends `/ack`, simulates work, then calls `/complete` or `/fail` based on `-FailRatePercent`.
+- The worker accepts `-BaseUrl`, `-GatewaySecret` or `-BearerToken`, `-ClientName`, `-TaskType`, `-PreferredDeviceId`, `-LeaseSeconds`, `-Iterations`, `-LeaseIntervalSeconds`, `-AckIntervalSeconds`, `-MockExecutionSeconds`, `-RewardUsdt`, `-RewardNex`, and `-FailRatePercent`.
+- It can target direct compute-service URLs such as `http://127.0.0.1:8102`, or Gateway-style URLs when the supplied base URL already includes the required route prefix.
+- HTTP failures are logged and skipped for that iteration, so a transient lease failure does not terminate a long-running worker loop.
+- `scripts/smoke_compute_worker_executor.ps1` verifies the worker complete path, forced fail path, and timeout -> retry maintenance path against the seeded device.
+- This baseline is a local adapter boundary only; real AI/GPU inference runtimes or external task queues remain downstream provider integrations.
+
+Run the worker once against direct compute-service:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\run_compute_worker.ps1 -BaseUrl "http://127.0.0.1:8102" -ClientName "local-worker-1" -TaskType "LOCAL_MOCK_INFERENCE" -PreferredDeviceId 1 -Iterations 1
+```
+
+Run the worker executor smoke:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_compute_worker_executor.ps1
+```
+
 ## Earnings Analytics Baseline
 
 Earnings exposes read-only derived analytics for the `/earn` experience without mutating wallet balances or settlement events.
