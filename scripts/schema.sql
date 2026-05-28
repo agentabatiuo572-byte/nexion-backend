@@ -1518,6 +1518,11 @@ CREATE TABLE IF NOT EXISTS nx_notification (
   KEY idx_notification_push_due (push_status, next_push_at, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'id' AND EXTRA LIKE '%auto_increment%') = 0,
+  'ALTER TABLE nx_notification MODIFY COLUMN id BIGINT NOT NULL AUTO_INCREMENT',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'biz_no') = 0,
   'ALTER TABLE nx_notification ADD COLUMN biz_no VARCHAR(128) NULL AFTER id',
   'SELECT 1');

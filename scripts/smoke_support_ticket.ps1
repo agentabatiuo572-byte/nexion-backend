@@ -36,7 +36,10 @@ function Invoke-Raw {
   $headers = @{}
   if ($Token) { $headers.Authorization = "Bearer $Token" }
   try {
-    Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -TimeoutSec 20 | Out-Null
+    $response = Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -TimeoutSec 20
+    if ($null -ne $response.code -and $response.code -ne 0) {
+      return [int]$response.code
+    }
     return 200
   } catch {
     if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
