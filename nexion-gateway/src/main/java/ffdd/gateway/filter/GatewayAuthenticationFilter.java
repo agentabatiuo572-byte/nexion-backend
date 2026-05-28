@@ -27,6 +27,7 @@ public class GatewayAuthenticationFilter implements GlobalFilter, Ordered {
             "/api/auth/register",
             "/api/auth/users/login",
             "/api/auth/users/register",
+            "/api/config/",
             "/api/openapi/v1/",
             "/actuator/");
 
