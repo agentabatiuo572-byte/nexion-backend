@@ -85,7 +85,14 @@ VALUES
   (213, 'MENU_OPENAPI_WEBHOOKS', 'Webhook', 210, '/openapi/webhooks', 'Position', 213, 'Webhook 投递', 1),
   (220, 'MENU_AUDIT', '审计', NULL, '/audit', 'DataLine', 220, '审计目录', 1),
   (221, 'MENU_AUDIT_LOGS', '审计日志', 220, '/audit/logs', 'Document', 221, '审计日志', 1),
-  (222, 'MENU_AUDIT_STATS', '审计统计', 220, '/audit/stats', 'DataAnalysis', 222, '审计统计', 1)
+  (222, 'MENU_AUDIT_STATS', '审计统计', 220, '/audit/stats', 'DataAnalysis', 222, '审计统计', 1),
+  (230, 'MENU_MISSION', '任务运营', NULL, '/mission', 'Flag', 230, '任务运营目录', 1),
+  (231, 'MENU_MISSION_OVERVIEW', '任务概览', 230, '/mission/overview', 'DataBoard', 231, '任务服务概览', 1),
+  (232, 'MENU_MISSION_CONSUMER', '消费事件', 230, '/mission/consumer', 'Connection', 232, 'Mission 消费事件治理', 1),
+  (240, 'MENU_NOTIFICATION', '通知触达', NULL, '/notification', 'Bell', 240, '通知触达目录', 1),
+  (241, 'MENU_NOTIFICATION_OVERVIEW', '通知概览', 240, '/notification/overview', 'DataBoard', 241, '通知服务概览', 1),
+  (242, 'MENU_NOTIFICATION_PUSH', '待推送处理', 240, '/notification/push', 'Position', 242, '待推送处理', 1),
+  (243, 'MENU_NOTIFICATION_CONSUMER', '消费事件', 240, '/notification/consumer', 'Connection', 243, 'Notification 消费事件治理', 1)
 ON DUPLICATE KEY UPDATE
   menu_name = VALUES(menu_name),
   parent_id = VALUES(parent_id),
