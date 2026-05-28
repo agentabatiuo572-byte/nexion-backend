@@ -118,6 +118,17 @@ Daily now exposes the product spec's Top Streakers social-proof list from `nx_us
 - Only active streaks with `last_check_in_date` today or yesterday are listed. `limit` is bounded to `1..100`.
 - Phone numbers and emails are not exposed; blank nicknames fall back to a generated `Nexion_####` display name.
 
+## Mission Monthly Challenge / Event Quest Baseline
+
+Mission now owns the product spec's long-tail Monthly Challenge and Event Quest MVP without adding a new service.
+
+- `GET /missions/monthly` and `POST /missions/monthly/{challengeCode}/claim`: list and claim current user's monthly challenges.
+- `GET /missions/events` and `POST /missions/events/{questCode}/claim`: list and claim current user's active event quests.
+- Ops APIs: `GET/POST/PATCH /missions/ops/monthly-challenges`, `GET/POST/PATCH /missions/ops/event-quests`, and progress updates at `/missions/ops/*/{code}/users/{userId}/progress`.
+- Tables: `nx_monthly_challenge`, `nx_user_monthly_challenge`, `nx_event_quest`, and `nx_user_event_quest`.
+- `POINTS` rewards write `nx_points_ledger`; `NEX`, `USDT`, `SPIN`, and `BADGE` remain claim-recorded for downstream integrations.
+- Smoke: `scripts/smoke_mission_campaigns.ps1` verifies ops config, progress update, user list, claim, duplicate claim, and points ledger.
+
 ## Commerce Trade-in Baseline
 
 Commerce now owns the server-side Trade-in quote and application baseline. Prices, product mapping, salvage value, and net upgrade cost are calculated on the server; clients only provide the current user and source device id.

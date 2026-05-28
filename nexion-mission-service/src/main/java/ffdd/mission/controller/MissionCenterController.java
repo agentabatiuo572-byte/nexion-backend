@@ -5,7 +5,10 @@ import ffdd.common.security.AuthHeaders;
 import ffdd.mission.dto.AchievementClaimResponse;
 import ffdd.mission.dto.AchievementItemResponse;
 import ffdd.mission.dto.DailyCheckInResponse;
+import ffdd.mission.dto.CampaignClaimResponse;
+import ffdd.mission.dto.EventQuestItemResponse;
 import ffdd.mission.dto.MissionListResponse;
+import ffdd.mission.dto.MonthlyChallengeItemResponse;
 import ffdd.mission.dto.PointsSummaryResponse;
 import ffdd.mission.dto.StreakLeaderboardEntryResponse;
 import ffdd.mission.dto.StreakMilestoneClaimResponse;
@@ -14,6 +17,7 @@ import ffdd.mission.dto.StreakPowerUpActivationResponse;
 import ffdd.mission.dto.StreakPowerUpItemResponse;
 import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
+import ffdd.mission.service.MissionCampaignService;
 import ffdd.mission.service.MissionCenterService;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,9 +32,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/missions")
 public class MissionCenterController {
     private final MissionCenterService missionCenterService;
+    private final MissionCampaignService missionCampaignService;
 
-    public MissionCenterController(MissionCenterService missionCenterService) {
+    public MissionCenterController(
+            MissionCenterService missionCenterService,
+            MissionCampaignService missionCampaignService) {
         this.missionCenterService = missionCenterService;
+        this.missionCampaignService = missionCampaignService;
     }
 
     @GetMapping
@@ -62,6 +70,32 @@ public class MissionCenterController {
     public ApiResult<List<StreakMilestoneItemResponse>> milestones(
             @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
         return ApiResult.ok(missionCenterService.listMilestones(userId));
+    }
+
+    @GetMapping("/monthly")
+    public ApiResult<List<MonthlyChallengeItemResponse>> monthly(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
+        return ApiResult.ok(missionCampaignService.listMonthly(userId));
+    }
+
+    @PostMapping("/monthly/{challengeCode}/claim")
+    public ApiResult<CampaignClaimResponse> claimMonthly(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @PathVariable String challengeCode) {
+        return ApiResult.ok(missionCampaignService.claimMonthly(userId, challengeCode));
+    }
+
+    @GetMapping("/events")
+    public ApiResult<List<EventQuestItemResponse>> events(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId) {
+        return ApiResult.ok(missionCampaignService.listEvents(userId));
+    }
+
+    @PostMapping("/events/{questCode}/claim")
+    public ApiResult<CampaignClaimResponse> claimEvent(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @PathVariable String questCode) {
+        return ApiResult.ok(missionCampaignService.claimEvent(userId, questCode));
     }
 
     @PostMapping("/milestones/{day}/claim")

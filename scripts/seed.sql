@@ -53,6 +53,7 @@ VALUES
   (119, 'PERM_NOTIFICATION_WRITE', 'Write notification operations', 'API', '/notifications/ops/**', NULL, 1),
   (108, 'PERM_EARNINGS_READ', 'Read earnings operations', 'API', '/earnings/**', NULL, 1),
   (109, 'PERM_MISSION_READ', 'Read mission operations', 'API', '/missions/**', NULL, 1),
+  (121, 'PERM_MISSION_WRITE', 'Write mission operations', 'API', '/missions/ops/**', NULL, 1),
   (110, 'PERM_COMPLIANCE_READ', 'Read compliance operations', 'API', '/compliance/**', NULL, 1),
   (113, 'PERM_COMPLIANCE_WRITE', 'Write compliance operations', 'API', '/compliance/**', NULL, 1),
   (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1),
@@ -124,6 +125,8 @@ VALUES
   (230, 'MENU_MISSION', 'Mission Ops', NULL, '/mission', 'Flag', 230, 'Mission operations group.', 1),
   (231, 'MENU_MISSION_OVERVIEW', 'Mission Overview', 230, '/mission/overview', 'DataBoard', 231, 'Mission service overview.', 1),
   (232, 'MENU_MISSION_CONSUMER', 'Mission Consumer Events', 230, '/mission/consumer', 'Connection', 232, 'Mission consumer delivery operations.', 1),
+  (233, 'MENU_MISSION_MONTHLY', 'Monthly Challenges', 230, '/mission/monthly-challenges', 'Calendar', 233, 'Monthly challenge configuration.', 1),
+  (234, 'MENU_MISSION_EVENTS', 'Event Quests', 230, '/mission/event-quests', 'Flag', 234, 'Event quest configuration.', 1),
   (240, 'MENU_NOTIFICATION', 'Notification Ops', NULL, '/notification', 'Bell', 240, 'Notification operations group.', 1),
   (241, 'MENU_NOTIFICATION_OVERVIEW', 'Notification Overview', 240, '/notification/overview', 'DataBoard', 241, 'Notification service overview.', 1),
   (242, 'MENU_NOTIFICATION_PUSH', 'Push Pending', 240, '/notification/push', 'Position', 242, 'Pending notification push operations.', 1),
@@ -166,6 +169,7 @@ WHERE permission_code IN (
   'PERM_NOTIFICATION_WRITE',
   'PERM_EARNINGS_READ',
   'PERM_MISSION_READ',
+  'PERM_MISSION_WRITE',
   'PERM_COMPLIANCE_READ',
   'PERM_COMPLIANCE_WRITE',
   'PERM_SYSTEM_READ',
@@ -224,6 +228,8 @@ SELECT 2, id FROM admin_menu WHERE menu_code IN (
   'MENU_MISSION',
   'MENU_MISSION_OVERVIEW',
   'MENU_MISSION_CONSUMER',
+  'MENU_MISSION_MONTHLY',
+  'MENU_MISSION_EVENTS',
   'MENU_NOTIFICATION',
   'MENU_NOTIFICATION_OVERVIEW',
   'MENU_NOTIFICATION_PUSH',
@@ -522,6 +528,48 @@ VALUES
   (7, 100, '100-Day Streak', 'BADGE', 1.000000, 'Streak Master Badge', 'STREAK_MASTER', 70, 1)
 ON DUPLICATE KEY UPDATE
   milestone_name = VALUES(milestone_name),
+  reward_type = VALUES(reward_type),
+  reward_amount = VALUES(reward_amount),
+  reward_name = VALUES(reward_name),
+  badge_achievement_code = VALUES(badge_achievement_code),
+  sort_order = VALUES(sort_order),
+  status = VALUES(status);
+
+INSERT INTO nx_monthly_challenge
+  (id, challenge_code, challenge_name, description, theme, months_from, months_to, target_type, target_value, reward_type, reward_amount, reward_name, badge_achievement_code, sort_order, status)
+VALUES
+  (1, 'MONTHLY_STARTER', 'Starter Month Challenge', 'Complete the first set of Mission Center actions.', 'STARTER', 0, 0, 'MISSION_ACTIONS', 5, 'POINTS', 1000.000000, '+1,000 Points', NULL, 10, 1),
+  (2, 'MONTHLY_GROWTH', 'Growth Month Challenge', 'Build the first stable earning and wallet routine.', 'GROWTH', 1, 2, 'MISSION_ACTIONS', 7, 'POINTS', 2000.000000, '+2,000 Points', NULL, 20, 1),
+  (3, 'MONTHLY_NETWORK', 'Network Month Challenge', 'Expand team and activity engagement.', 'NETWORK', 3, 5, 'MISSION_ACTIONS', 9, 'POINTS', 3000.000000, '+3,000 Points', NULL, 30, 1),
+  (4, 'MONTHLY_WEALTH', 'Wealth Month Challenge', 'Advance long-term wealth and reinvestment actions.', 'WEALTH', 6, 8, 'MISSION_ACTIONS', 10, 'POINTS', 5000.000000, '+5,000 Points', NULL, 40, 1),
+  (5, 'MONTHLY_MASTER', 'Master Month Challenge', 'Complete the senior monthly mission route.', 'MASTER', 9, 999, 'MISSION_ACTIONS', 12, 'POINTS', 10000.000000, '+10,000 Points', NULL, 50, 1)
+ON DUPLICATE KEY UPDATE
+  challenge_name = VALUES(challenge_name),
+  description = VALUES(description),
+  theme = VALUES(theme),
+  months_from = VALUES(months_from),
+  months_to = VALUES(months_to),
+  target_type = VALUES(target_type),
+  target_value = VALUES(target_value),
+  reward_type = VALUES(reward_type),
+  reward_amount = VALUES(reward_amount),
+  reward_name = VALUES(reward_name),
+  badge_achievement_code = VALUES(badge_achievement_code),
+  sort_order = VALUES(sort_order),
+  status = VALUES(status);
+
+INSERT INTO nx_event_quest
+  (id, quest_code, quest_name, description, starts_at, ends_at, target_type, target_value, reward_type, reward_amount, reward_name, badge_achievement_code, sort_order, status)
+VALUES
+  (1, 'EVENT_GENESIS_WEEK', 'Genesis Week Quest', 'Complete launch-week Genesis education and activity tasks.', NULL, NULL, 'EVENT_ACTIONS', 3, 'POINTS', 1500.000000, '+1,500 Points', NULL, 10, 1),
+  (2, 'EVENT_COMPUTE_SPRINT', 'Compute Sprint Quest', 'Complete a focused compute activity sprint.', NULL, NULL, 'EVENT_ACTIONS', 5, 'POINTS', 2500.000000, '+2,500 Points', NULL, 20, 1)
+ON DUPLICATE KEY UPDATE
+  quest_name = VALUES(quest_name),
+  description = VALUES(description),
+  starts_at = VALUES(starts_at),
+  ends_at = VALUES(ends_at),
+  target_type = VALUES(target_type),
+  target_value = VALUES(target_value),
   reward_type = VALUES(reward_type),
   reward_amount = VALUES(reward_amount),
   reward_name = VALUES(reward_name),

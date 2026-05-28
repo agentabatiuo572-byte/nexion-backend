@@ -1482,6 +1482,89 @@ CREATE TABLE IF NOT EXISTS nx_user_streak_milestone (
   KEY idx_user_streak_milestone_day (milestone_day, claimed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_monthly_challenge (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  challenge_code VARCHAR(64) NOT NULL,
+  challenge_name VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NULL,
+  theme VARCHAR(64) NULL,
+  months_from INT NOT NULL DEFAULT 0,
+  months_to INT NOT NULL DEFAULT 999,
+  target_type VARCHAR(64) NOT NULL,
+  target_value INT NOT NULL DEFAULT 1,
+  reward_type VARCHAR(32) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  reward_name VARCHAR(128) NOT NULL,
+  badge_achievement_code VARCHAR(64) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_monthly_challenge_code (challenge_code),
+  KEY idx_monthly_challenge_status (status, sort_order, id),
+  KEY idx_monthly_challenge_months (months_from, months_to, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_monthly_challenge (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  challenge_id BIGINT NOT NULL,
+  challenge_code VARCHAR(64) NOT NULL,
+  progress_value INT NOT NULL DEFAULT 0,
+  claim_status VARCHAR(32) NOT NULL,
+  reward_type VARCHAR(32) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  claimed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_monthly_challenge (user_id, challenge_code),
+  KEY idx_user_monthly_status (claim_status, updated_at),
+  KEY idx_user_monthly_challenge_id (challenge_id, claim_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_event_quest (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  quest_code VARCHAR(64) NOT NULL,
+  quest_name VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NULL,
+  starts_at DATETIME NULL,
+  ends_at DATETIME NULL,
+  target_type VARCHAR(64) NOT NULL,
+  target_value INT NOT NULL DEFAULT 1,
+  reward_type VARCHAR(32) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  reward_name VARCHAR(128) NOT NULL,
+  badge_achievement_code VARCHAR(64) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_event_quest_code (quest_code),
+  KEY idx_event_quest_status (status, sort_order, id),
+  KEY idx_event_quest_window (starts_at, ends_at, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_event_quest (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  quest_id BIGINT NOT NULL,
+  quest_code VARCHAR(64) NOT NULL,
+  progress_value INT NOT NULL DEFAULT 0,
+  claim_status VARCHAR(32) NOT NULL,
+  reward_type VARCHAR(32) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  claimed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_event_quest (user_id, quest_code),
+  KEY idx_user_event_status (claim_status, updated_at),
+  KEY idx_user_event_quest_id (quest_id, claim_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_points_ledger (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
