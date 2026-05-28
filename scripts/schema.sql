@@ -1947,6 +1947,61 @@ CREATE TABLE IF NOT EXISTS nx_help_article (
   KEY idx_help_article_sort (sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_support_ticket (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ticket_no VARCHAR(40) NOT NULL,
+  user_id BIGINT NOT NULL,
+  category VARCHAR(32) NOT NULL,
+  priority VARCHAR(32) NOT NULL DEFAULT 'NORMAL',
+  status VARCHAR(32) NOT NULL DEFAULT 'OPEN',
+  title VARCHAR(160) NOT NULL,
+  last_message VARCHAR(512) NULL,
+  assigned_admin_id BIGINT NULL,
+  assigned_admin_name VARCHAR(64) NULL,
+  user_unread_count INT NOT NULL DEFAULT 0,
+  ops_unread_count INT NOT NULL DEFAULT 0,
+  message_count INT NOT NULL DEFAULT 0,
+  last_message_at DATETIME NULL,
+  closed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_support_ticket_no (ticket_no),
+  KEY idx_support_ticket_user_time (user_id, last_message_at),
+  KEY idx_support_ticket_ops (status, priority, last_message_at),
+  KEY idx_support_ticket_assignee (assigned_admin_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_support_ticket_message (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ticket_id BIGINT NOT NULL,
+  ticket_no VARCHAR(40) NOT NULL,
+  sender_id BIGINT NULL,
+  sender_type VARCHAR(16) NOT NULL,
+  sender_name VARCHAR(64) NULL,
+  content TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_support_message_ticket (ticket_id, created_at),
+  KEY idx_support_message_ticket_no (ticket_no, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_support_ticket_attachment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ticket_id BIGINT NOT NULL,
+  message_id BIGINT NOT NULL,
+  object_key VARCHAR(512) NOT NULL,
+  file_name VARCHAR(255) NULL,
+  content_type VARCHAR(96) NULL,
+  file_size BIGINT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_support_attachment_ticket (ticket_id),
+  KEY idx_support_attachment_message (message_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_openapi_app (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   owner_user_id BIGINT NOT NULL,

@@ -4,16 +4,19 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.security.AuthHeaders;
 import ffdd.notification.domain.Notification;
+import ffdd.notification.dto.NotificationCreateRequest;
 import ffdd.notification.dto.NotificationMutationResponse;
 import ffdd.notification.dto.NotificationPushResult;
 import ffdd.notification.dto.NotificationUnreadCountResponse;
 import ffdd.notification.service.NotificationCenterService;
 import ffdd.notification.service.NotificationPushService;
+import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -72,5 +75,11 @@ public class NotificationCenterController {
     @PreAuthorize("hasAuthority('PERM_NOTIFICATION_WRITE')")
     public ApiResult<NotificationPushResult> pushPending(@RequestParam(defaultValue = "100") int limit) {
         return ApiResult.ok(notificationPushService.pushPending(limit));
+    }
+
+    @PostMapping("/internal")
+    @PreAuthorize("hasAuthority('PERM_NOTIFICATION_WRITE')")
+    public ApiResult<Notification> createInternal(@Valid @RequestBody NotificationCreateRequest request) {
+        return ApiResult.ok(notificationCenterService.create(request));
     }
 }

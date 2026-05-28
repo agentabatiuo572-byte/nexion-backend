@@ -531,7 +531,7 @@ The first service-native Ops/KPI layer stays inside the existing 13-service boun
 
 ## System Operations Baseline
 
-The System service exposes operational configuration, i18n messages, content pages, and help articles through Gateway at `/api/system/**`.
+The System service exposes operational configuration, i18n messages, content pages, help articles, and support tickets through Gateway at `/api/system/**`.
 
 - `GET /api/system/configs?query=&status=&limit=20`: query config items for operations screens.
 - `GET /api/system/configs/{configKey}`: read one active config item by key.
@@ -551,6 +551,15 @@ The System service exposes operational configuration, i18n messages, content pag
 - `GET /api/system/help/articles/{articleCode}`: read one active help article.
 - `POST /api/system/help/articles`: create a help article.
 - `PATCH /api/system/help/articles/{id}`: update title, content, sort order, or status.
+- `POST /api/system/support/tickets`: create a user support ticket with the first message and optional attachment metadata.
+- `GET /api/system/support/tickets?status=&pageNum=1&pageSize=20`: list the current user's tickets.
+- `GET /api/system/support/tickets/{ticketNo}`: read the current user's ticket detail and message thread.
+- `POST /api/system/support/tickets/{ticketNo}/messages`: append a user reply.
+- `PATCH /api/system/support/tickets/{ticketNo}/close|reopen`: close or reopen the current user's ticket.
+- `GET /api/system/support/ops/tickets?status=&category=&priority=&userId=&assignedAdminId=`: query tickets for operations. Requires `PERM_SYSTEM_READ`.
+- `GET /api/system/support/ops/tickets/{ticketNo}`: read ticket detail for operations. Requires `PERM_SYSTEM_READ`.
+- `POST /api/system/support/ops/tickets/{ticketNo}/messages`: append a support reply and create a user notification. Requires `PERM_SYSTEM_WRITE`.
+- `PATCH /api/system/support/ops/tickets/{ticketNo}`: update ticket status, priority, category, or assignee. Requires `PERM_SYSTEM_WRITE`.
 - `GET /api/config/day-one`: public Day 0 onboarding config, including 90-second first receipt and welcome bonus display values.
 - `GET /api/config/features`: public feature switches such as `genesis.enabled`.
 - `GET /api/config/device-fleet`: public active-device slot config, currently `maxActiveSlots`.
@@ -566,9 +575,10 @@ Seeded operational keys include product phase, withdrawal minimums, OpenAPI defa
 ```powershell
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_gateway_chain_services.ps1
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_system_config.ps1 -AdminPassword "<admin-password>"
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\smoke_support_ticket.ps1 -AdminPassword "<admin-password>"
 ```
 
-The smoke verifies anonymous rejection, normal-user permission denial, admin config create/list/get/batch/update, and disabled-config active lookup rejection. Pass `-AdminToken` or set `NEXION_SMOKE_ADMIN_PASSWORD` when you do not want to pass the admin password on the command line.
+The System config smoke verifies anonymous rejection, normal-user permission denial, admin config create/list/get/batch/update, and disabled-config active lookup rejection. The support ticket smoke verifies user ticket creation, ops reply, user thread detail, support notification creation, and cross-user access rejection. `smoke_system_config.ps1` also accepts `-AdminToken`; both scripts can read the admin password from `NEXION_SMOKE_ADMIN_PASSWORD`.
 
 ## OpenAPI Baseline
 

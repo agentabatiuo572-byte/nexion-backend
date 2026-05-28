@@ -6,15 +6,18 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
 import ffdd.notification.domain.Notification;
+import ffdd.notification.dto.NotificationCreateRequest;
 import ffdd.notification.dto.NotificationMutationResponse;
 import ffdd.notification.dto.NotificationUnreadCountResponse;
 import ffdd.notification.mapper.NotificationMapper;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
 public class NotificationCenterService {
     private static final int MAX_PAGE_SIZE = 100;
+    private static final String PUSH_PENDING = "PENDING";
 
     private final NotificationMapper notificationMapper;
     private final NotificationUnreadCounter unreadCounter;
@@ -55,6 +58,50 @@ public class NotificationCenterService {
                 .eq(Notification::getUserId, userId)
                 .eq(Notification::getReadFlag, 0)
                 .eq(Notification::getIsDeleted, 0)));
+    }
+
+    public Notification create(NotificationCreateRequest request) {
+        if (request == null) {
+            throw new BizException("Notification request is required");
+        }
+        requireUserId(request.getUserId());
+        String type = requireText(request.getType(), "type", 32);
+        String title = requireText(request.getTitle(), "title", 128);
+        String body = requireText(request.getBody(), "body", 512);
+        String bizNo = normalizeOptional(request.getBizNo(), 128);
+        if (StringUtils.hasText(bizNo)) {
+            Notification existing = notificationMapper.selectOne(new LambdaQueryWrapper<Notification>()
+                    .eq(Notification::getBizNo, bizNo)
+                    .eq(Notification::getIsDeleted, 0)
+                    .last("LIMIT 1"));
+            if (existing != null) {
+                return existing;
+            }
+        }
+
+        Notification notification = new Notification();
+        notification.setBizNo(bizNo);
+        notification.setUserId(request.getUserId());
+        notification.setType(type);
+        notification.setTitle(title);
+        notification.setBody(body);
+        notification.setReadFlag(0);
+        notification.setPushStatus(PUSH_PENDING);
+        notification.setPushAttempts(0);
+        notification.setIsDeleted(0);
+        try {
+            notificationMapper.insert(notification);
+            unreadCounter.increment(notification.getUserId());
+            return notification;
+        } catch (DuplicateKeyException ex) {
+            if (StringUtils.hasText(bizNo)) {
+                return notificationMapper.selectOne(new LambdaQueryWrapper<Notification>()
+                        .eq(Notification::getBizNo, bizNo)
+                        .eq(Notification::getIsDeleted, 0)
+                        .last("LIMIT 1"));
+            }
+            throw ex;
+        }
     }
 
     public Notification markRead(Long userId, Long notificationId) {
@@ -126,5 +173,24 @@ public class NotificationCenterService {
         if (userId == null || userId < 1) {
             throw new BizException("User id is required");
         }
+    }
+
+    private String requireText(String value, String fieldName, int maxLength) {
+        String normalized = normalizeOptional(value, maxLength);
+        if (!StringUtils.hasText(normalized)) {
+            throw new BizException(fieldName + " is required");
+        }
+        return normalized;
+    }
+
+    private String normalizeOptional(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.length() > maxLength) {
+            throw new BizException("Field length must be <= " + maxLength);
+        }
+        return normalized;
     }
 }

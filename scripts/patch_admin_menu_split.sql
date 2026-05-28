@@ -79,6 +79,7 @@ VALUES
   (193, 'MENU_SYSTEM_I18N', '多语言', 190, '/system/i18n', 'ChatLineSquare', 193, '多语言', 1),
   (194, 'MENU_SYSTEM_CONTENT', '内容页', 190, '/system/content', 'Document', 194, '内容页', 1),
   (195, 'MENU_SYSTEM_HELP', '帮助中心', 190, '/system/help', 'QuestionFilled', 195, '帮助中心', 1),
+  (196, 'MENU_SYSTEM_SUPPORT_TICKETS', '客服工单', 190, '/system/support-tickets', 'Service', 196, '客服工单运营', 1),
   (210, 'MENU_OPENAPI', 'OpenAPI', NULL, '/openapi', 'Connection', 210, 'OpenAPI 目录', 1),
   (211, 'MENU_OPENAPI_APPS', '应用管理', 210, '/openapi/apps', 'Key', 211, 'OpenAPI 应用', 1),
   (212, 'MENU_OPENAPI_CALL_AUDITS', '调用审计', 210, '/openapi/call-audits', 'DataLine', 212, 'OpenAPI 调用审计', 1),
