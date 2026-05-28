@@ -582,7 +582,7 @@ public class GenesisService {
     }
 
     private String normalizeSeriesCode(String seriesCode) {
-        return seriesCode.trim().toUpperCase(Locale.ROOT);
+        return StringUtils.hasText(seriesCode) ? seriesCode.trim().toUpperCase(Locale.ROOT) : "";
     }
 
     private String normalizeClientRequestNo(String clientRequestNo) {

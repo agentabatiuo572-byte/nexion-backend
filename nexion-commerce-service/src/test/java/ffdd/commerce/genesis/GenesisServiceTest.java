@@ -13,6 +13,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.commerce.client.CommerceComplianceClient;
 import ffdd.commerce.client.CommerceWalletClient;
 import ffdd.commerce.client.SystemConfigClient;
@@ -145,6 +146,15 @@ class GenesisServiceTest {
                 .hasMessageContaining("disabled");
 
         verifyNoInteractions(seriesMapper, complianceClient, walletClient, holdingMapper, outboxService);
+    }
+
+    @Test
+    void pageHoldingsAllowsEmptySeriesCodeFilter() {
+        when(holdingMapper.selectPage(any(), any(Wrapper.class))).thenReturn(Page.of(1, 10));
+
+        service.pageHoldings(null);
+
+        verify(holdingMapper).selectPage(any(), any(Wrapper.class));
     }
 
     private GenesisPurchaseRequest request(String seriesCode, int quantity, String clientRequestNo) {
