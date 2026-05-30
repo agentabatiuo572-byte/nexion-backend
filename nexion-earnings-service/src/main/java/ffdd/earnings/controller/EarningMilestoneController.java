@@ -27,7 +27,7 @@ public class EarningMilestoneController {
     @PreAuthorize("hasAuthority('PERM_EARNINGS_WRITE')")
     public ApiResult<EarningMilestoneRewardResult> scan(
             @RequestParam @Positive Long userId,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
                     LocalDateTime achievedAt) {
         return ApiResult.ok(milestoneRewardService.scanAndReward(userId, achievedAt));
     }

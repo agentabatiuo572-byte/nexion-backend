@@ -3,6 +3,7 @@ package ffdd.auth.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.auth.domain.Admin;
 import ffdd.auth.domain.AdminMenu;
+import ffdd.auth.dto.AdminMenuResponse;
 import ffdd.auth.dto.AdminChangePasswordRequest;
 import ffdd.auth.dto.AdminLoginRequest;
 import ffdd.auth.dto.AdminLoginResponse;
@@ -106,7 +107,10 @@ public class AdminAuthServiceImpl implements AdminAuthService {
                         .map(item -> item.getPermissionCode())
                         .toList()
                 : (roleIds.isEmpty() ? List.of() : rolePermissionMapper.selectActivePermissionCodesByRoleIds(roleIds));
-        List<String> menuPaths = buildMenuPaths(superAdmin, roleIds);
+        List<AdminMenu> menus = buildAllowedMenus(superAdmin, roleIds);
+        List<String> menuPaths = menus.stream()
+                .map(AdminMenu::getRoutePath)
+                .toList();
         return new AdminProfileResponse(
                 admin.getId(),
                 admin.getUsername(),
@@ -117,10 +121,11 @@ public class AdminAuthServiceImpl implements AdminAuthService {
                 admin.getStatus(),
                 roleIds,
                 authorities,
-                menuPaths);
+                menuPaths,
+                menus.stream().map(this::toMenuResponse).toList());
     }
 
-    private List<String> buildMenuPaths(boolean superAdmin, List<Long> roleIds) {
+    private List<AdminMenu> buildAllowedMenus(boolean superAdmin, List<Long> roleIds) {
         List<AdminMenu> menus = menuMapper.selectList(new LambdaQueryWrapper<AdminMenu>()
                 .eq(AdminMenu::getIsDeleted, 0));
         Map<Long, AdminMenu> menuById = menus.stream()
@@ -132,8 +137,23 @@ public class AdminAuthServiceImpl implements AdminAuthService {
                 .filter(menu -> allowedMenuIds.contains(menu.getId()))
                 .filter(menu -> StringUtils.hasText(menu.getRoutePath()))
                 .filter(menu -> isMenuAndAncestorsEnabled(menu, menuById))
-                .map(AdminMenu::getRoutePath)
+                .sorted(java.util.Comparator.comparing(AdminMenu::getSortOrder, java.util.Comparator.nullsLast(Integer::compareTo))
+                        .thenComparing(AdminMenu::getId, java.util.Comparator.nullsLast(Long::compareTo)))
                 .toList();
+    }
+
+    private AdminMenuResponse toMenuResponse(AdminMenu menu) {
+        return new AdminMenuResponse(
+                menu.getId(),
+                menu.getMenuCode(),
+                menu.getMenuName(),
+                StringUtils.hasText(menu.getMenuNameZh()) ? menu.getMenuNameZh() : menu.getMenuName(),
+                StringUtils.hasText(menu.getMenuNameEn()) ? menu.getMenuNameEn() : menu.getMenuName(),
+                menu.getParentId(),
+                menu.getRoutePath(),
+                menu.getIcon(),
+                menu.getSortOrder(),
+                menu.getStatus());
     }
 
     private boolean isMenuAndAncestorsEnabled(AdminMenu menu, Map<Long, AdminMenu> menuById) {

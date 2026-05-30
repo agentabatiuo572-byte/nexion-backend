@@ -7,7 +7,7 @@ param(
   [string]$CountryCode = "+1",
   [string]$Password = "Nexion123456",
   [string]$ReferralCode = "NX4892",
-  [string]$UnlockBefore = "2099-01-01T00:00:00"
+  [string]$UnlockBefore = "2099-01-01 00:00:00"
 )
 
 $ErrorActionPreference = "Stop"

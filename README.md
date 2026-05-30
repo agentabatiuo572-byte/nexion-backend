@@ -503,7 +503,8 @@ Team commission unlock uses `bizType=TEAM_COMMISSION` and `bizNo=TEAM-COMMISSION
 - `GET /{service}/outbox/consumer/events/{eventId}`: inspect one consumer delivery row, defaulting to the service's RocketMQ group.
 - `GET /{service}/outbox/consumer/aggregates/{aggregateType}/{aggregateId}`: inspect delivery rows for one aggregate.
 - Consumer delivery endpoints are available under `/team`, `/compute`, `/earnings`, `/wallet`, `/notifications`, and `/missions`.
-- `GET /team/outbox/broker/consumer/status?includeDlq=true`: inspect RocketMQ broker-side consumer offset lag, active consumer connections, and `%DLQ%{consumerGroup}` queue depth.
+- `GET /{service}/outbox/broker/consumer/status?includeDlq=true`: inspect RocketMQ broker-side consumer offset lag, active consumer connections, subscription, ACL diagnostics, and `%DLQ%{consumerGroup}` queue depth. Available under `/team`, `/compute`, `/earnings`, `/wallet`, `/notifications`, and `/missions`.
+- `GET /wallet/outbox/broker/consumer/statuses?includeDlq=true`: inspect both wallet consumer groups: `nexion-wallet-earning-generated` and `nexion-wallet-risk-decision-finalized`.
 
 RocketMQ broker delivery is optional and disabled by default. To switch the OrderPaid path to RocketMQ delivery, start commerce/team with:
 
@@ -514,17 +515,21 @@ RocketMQ broker delivery is optional and disabled by default. To switch the Orde
 - `NEXION_OUTBOX_ROCKETMQ_SECRET_KEY=<rocketmq-secret-key>`
 - `NEXION_OUTBOX_ROCKETMQ_SECURITY_TOKEN=<optional-security-token>`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_TOPIC=nexion-order-paid`
+- `NEXION_OUTBOX_ROCKETMQ_COMPUTE_TASK_COMPLETED_TOPIC=nexion-compute-task-completed`
+- `NEXION_OUTBOX_ROCKETMQ_EARNING_GENERATED_TOPIC=nexion-earning-generated`
+- `NEXION_OUTBOX_ROCKETMQ_RISK_DECISION_FINALIZED_TOPIC=nexion-risk-decision-finalized`
 - `NEXION_OUTBOX_ROCKETMQ_ORDER_PAID_GROUP=nexion-team-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_COMPUTE_GROUP=nexion-compute-order-paid`
 - `NEXION_OUTBOX_ROCKETMQ_EARNINGS_GROUP=nexion-earnings-compute-task-completed`
 - `NEXION_OUTBOX_ROCKETMQ_WALLET_GROUP=nexion-wallet-earning-generated`
+- `NEXION_OUTBOX_ROCKETMQ_WALLET_RISK_GROUP=nexion-wallet-risk-decision-finalized`
 - `NEXION_OUTBOX_ROCKETMQ_NOTIFICATION_GROUP=nexion-notification-earning-generated`
 - `NEXION_OUTBOX_ROCKETMQ_MISSION_GROUP=nexion-mission-earning-generated`
 - `NEXION_OUTBOX_ROCKETMQ_CONSUMER_MAX_RETRIES=5`
 
-For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Consumer delivery is tracked in `nx_event_consumer_delivery` for Team, Compute, Earnings, Wallet, Notification, and Mission consumers; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, malformed messages are recorded by `msgId`, and poison messages move to local `DEAD` after the configured max retry count. Broker-side lag and DLQ depth are available from `/team/outbox/broker/consumer/status`.
+For a broker-only Team path, also set `NEXION_TEAM_OUTBOX_WORKER_ENABLED=false`. The RocketMQ publisher marks the outbox row `PUBLISHED` only after RocketMQ returns `SEND_OK`; failed sends reuse the outbox exponential retry and `DEAD` handling. Consumer delivery is tracked in `nx_event_consumer_delivery` for Team, Compute, Earnings, Wallet, Notification, and Mission consumers; duplicate `consumer_group + event_id` deliveries are fenced, retry attempts are counted, malformed messages are recorded by `msgId`, and poison messages move to local `DEAD` after the configured max retry count. Broker-side lag and DLQ depth are available for all configured consumer groups through the broker monitor endpoints. `scripts/smoke_rocketmq_broker_groups.ps1` validates static topic/group declarations and can query all live broker monitor endpoints; pass `-RequireOk` when RocketMQ broker and all consumers are expected to be online.
 
-When RocketMQ ACL is enabled, all configured outbox producers, push consumers, and the Team broker monitor create RocketMQ clients with `AclClientRPCHook`. Startup fails fast if ACL is enabled but access key or secret key is blank; logs and diagnostics only expose masked key metadata, not the secret.
+When RocketMQ ACL is enabled, all configured outbox producers, push consumers, and broker monitors create RocketMQ clients with `AclClientRPCHook`. Startup fails fast if ACL is enabled but access key or secret key is blank; logs and diagnostics only expose masked key metadata, not the secret.
 
 Gateway chain startup supports the same switch:
 

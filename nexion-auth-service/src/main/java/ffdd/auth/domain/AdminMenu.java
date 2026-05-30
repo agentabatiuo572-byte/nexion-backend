@@ -11,6 +11,8 @@ import lombok.EqualsAndHashCode;
 public class AdminMenu extends BaseEntity {
     private String menuCode;
     private String menuName;
+    private String menuNameZh;
+    private String menuNameEn;
     private Long parentId;
     private String routePath;
     private String icon;

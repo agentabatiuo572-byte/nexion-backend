@@ -9,7 +9,7 @@ param(
   [string]$Password = "Nexion123456",
   [string]$ReferralCode = "NX4892",
   [long]$SponsorUserId = 10001,
-  [string]$UnlockBefore = "2099-01-01T00:00:00",
+  [string]$UnlockBefore = "2099-01-01 00:00:00",
   [switch]$RequireWorker,
   [switch]$CheckBrokerMonitor
 )

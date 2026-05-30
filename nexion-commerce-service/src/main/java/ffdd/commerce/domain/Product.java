@@ -21,4 +21,5 @@ public class Product extends BaseEntity {
     private BigDecimal dailyNex;
     private Integer stock;
     private String coverUrl;
+    private String detailImageUrls;
 }

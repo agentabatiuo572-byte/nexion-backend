@@ -46,7 +46,7 @@ try {
   throw "Compute service is not reachable at $ComputeUrl. Start nexion-compute-service before running this smoke script."
 }
 
-$reportedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss")
+$reportedAt = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
 Write-Host "Reporting device state for deviceId=$DeviceId..."
 $updated = Invoke-NexionJson -Method Patch -Uri "$ComputeUrl/compute/devices/$DeviceId/status" -Body @{
   status = "BUSY"

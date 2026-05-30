@@ -171,7 +171,7 @@ function Ensure-KycApproved {
   $approved = Invoke-NexionJson -Method Post -Uri "$GatewayUrl/api/compliance/kyc-profiles/$UserId/approve" -Token $script:AdminToken -Body @{
     reviewer = "smoke-wallet-ops"
     reason = "Wallet ops smoke KYC approval"
-    expiresAt = (Get-Date).AddYears(1).ToString("yyyy-MM-ddTHH:mm:ss")
+    expiresAt = (Get-Date).AddYears(1).ToString("yyyy-MM-dd HH:mm:ss")
   }
   if ($approved.status -ne "APPROVED") {
     throw "Expected KYC status APPROVED, got $($approved.status)."

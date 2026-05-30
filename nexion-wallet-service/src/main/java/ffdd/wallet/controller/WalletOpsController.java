@@ -5,6 +5,9 @@ import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
 import ffdd.common.outbox.EventConsumerDelivery;
 import ffdd.common.outbox.EventConsumerDeliveryService;
+import ffdd.common.rocketmq.monitor.RocketMqBrokerConsumerTarget;
+import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitor;
+import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitorService;
 import ffdd.wallet.domain.DepositOrder;
 import ffdd.wallet.domain.WithdrawalOrder;
 import ffdd.wallet.dto.ConfirmDepositRequest;
@@ -42,7 +45,11 @@ public class WalletOpsController {
     private final WalletService walletService;
     private final WalletOpsStatsService statsService;
     private final AuditLogService auditLogService;
+    private final RocketMqBrokerMonitorService brokerMonitorService;
     private final String defaultConsumerGroup;
+    private final String earningGeneratedTopic;
+    private final String riskDecisionFinalizedTopic;
+    private final String riskDecisionConsumerGroup;
 
     public WalletOpsController(
             EventConsumerDeliveryService deliveryService,
@@ -51,15 +58,26 @@ public class WalletOpsController {
             WalletService walletService,
             WalletOpsStatsService statsService,
             AuditLogService auditLogService,
+            RocketMqBrokerMonitorService brokerMonitorService,
+            @Value("${nexion.outbox.rocketmq.earning-generated-topic:nexion-earning-generated}")
+                    String earningGeneratedTopic,
+            @Value("${nexion.outbox.rocketmq.risk-decision-finalized-topic:nexion-risk-decision-finalized}")
+                    String riskDecisionFinalizedTopic,
             @Value("${nexion.outbox.rocketmq.wallet-consumer-group:nexion-wallet-earning-generated}")
-                    String defaultConsumerGroup) {
+                    String defaultConsumerGroup,
+            @Value("${nexion.outbox.rocketmq.wallet-risk-consumer-group:nexion-wallet-risk-decision-finalized}")
+                    String riskDecisionConsumerGroup) {
         this.deliveryService = deliveryService;
         this.withdrawalBroadcastService = withdrawalBroadcastService;
         this.depositPostingService = depositPostingService;
         this.walletService = walletService;
         this.statsService = statsService;
         this.auditLogService = auditLogService;
+        this.brokerMonitorService = brokerMonitorService;
+        this.earningGeneratedTopic = earningGeneratedTopic;
+        this.riskDecisionFinalizedTopic = riskDecisionFinalizedTopic;
         this.defaultConsumerGroup = defaultConsumerGroup;
+        this.riskDecisionConsumerGroup = riskDecisionConsumerGroup;
     }
 
     @GetMapping("/ops/overview")
@@ -107,6 +125,29 @@ public class WalletOpsController {
     public ApiResult<List<Map<String, Object>>> consumerSummary(
             @RequestParam(required = false) String consumerGroup) {
         return ApiResult.ok(deliveryService.summary(consumerGroup));
+    }
+
+    @GetMapping("/outbox/broker/consumer/status")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<RocketMqBrokerMonitor> brokerConsumerStatus(
+            @RequestParam(required = false) String topic,
+            @RequestParam(required = false) String consumerGroup,
+            @RequestParam(defaultValue = "true") boolean includeDlq) {
+        return ApiResult.ok(brokerMonitorService.inspectConsumer(
+                "wallet-earning-generated",
+                topic == null || topic.isBlank() ? earningGeneratedTopic : topic,
+                consumerGroup == null || consumerGroup.isBlank() ? defaultConsumerGroup : consumerGroup,
+                includeDlq));
+    }
+
+    @GetMapping("/outbox/broker/consumer/statuses")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<List<RocketMqBrokerMonitor>> brokerConsumerStatuses(
+            @RequestParam(defaultValue = "true") boolean includeDlq) {
+        return ApiResult.ok(brokerMonitorService.inspectConsumers(List.of(
+                new RocketMqBrokerConsumerTarget("wallet-earning-generated", earningGeneratedTopic, defaultConsumerGroup),
+                new RocketMqBrokerConsumerTarget("wallet-risk-decision-finalized", riskDecisionFinalizedTopic, riskDecisionConsumerGroup)),
+                includeDlq));
     }
 
     @PostMapping("/withdrawals/broadcast/publish")

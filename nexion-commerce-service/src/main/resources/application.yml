@@ -29,6 +29,15 @@ nexion:
     wallet-url: ${NEXION_WALLET_URL:http://localhost:8105}
     compliance-url: ${NEXION_COMPLIANCE_URL:http://localhost:8109}
     system-url: ${NEXION_SYSTEM_URL:http://localhost:8110}
+  storage:
+    endpoint: ${NEXION_STORAGE_ENDPOINT:http://127.0.0.1:9000}
+    access-key: "${NEXION_STORAGE_ACCESS_KEY:minioadmin}"
+    secret-key: "${NEXION_STORAGE_SECRET_KEY:A123456789Z!@#}"
+    bucket: ${NEXION_STORAGE_BUCKET:nexion}
+  commerce:
+    product-media:
+      max-upload-size-bytes: ${NEXION_COMMERCE_PRODUCT_MEDIA_MAX_UPLOAD_SIZE_BYTES:5242880}
+      preview-expiry-seconds: ${NEXION_COMMERCE_PRODUCT_MEDIA_PREVIEW_EXPIRY_SECONDS:900}
   payment:
     mock:
       secret: "${NEXION_PAYMENT_MOCK_SECRET:nexion-mock-payment-secret}"

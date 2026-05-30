@@ -9,6 +9,8 @@ public class MenuCreateRequest {
     private String menuCode;
     @NotBlank
     private String menuName;
+    private String menuNameZh;
+    private String menuNameEn;
     private Long parentId;
     @NotBlank
     private String routePath;

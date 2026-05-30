@@ -2,15 +2,15 @@ package ffdd.team.controller;
 
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
-import ffdd.common.security.AuthHeaders;
 import ffdd.common.outbox.EventConsumerDelivery;
+import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitor;
+import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitorService;
+import ffdd.common.security.AuthHeaders;
 import ffdd.team.dto.LeadershipPoolSnapshot;
-import ffdd.team.dto.RocketMqBrokerMonitor;
 import ffdd.team.dto.TeamBinarySettlementResult;
 import ffdd.team.dto.TeamCommissionConsumeResult;
 import ffdd.team.dto.TeamCommissionSettlementResult;
 import ffdd.team.dto.TeamCommissionUnlockResult;
-import ffdd.team.service.RocketMqBrokerMonitorService;
 import ffdd.team.service.TeamAdvancedCommissionService;
 import ffdd.team.service.TeamBinaryCommissionService;
 import ffdd.team.service.TeamCommissionService;
@@ -36,16 +36,22 @@ public class TeamCommissionController {
     private final TeamBinaryCommissionService binaryCommissionService;
     private final TeamAdvancedCommissionService advancedCommissionService;
     private final RocketMqBrokerMonitorService brokerMonitorService;
+    private final String brokerTopic;
+    private final String brokerConsumerGroup;
 
     public TeamCommissionController(
             TeamCommissionService commissionService,
             TeamBinaryCommissionService binaryCommissionService,
             TeamAdvancedCommissionService advancedCommissionService,
-            RocketMqBrokerMonitorService brokerMonitorService) {
+            RocketMqBrokerMonitorService brokerMonitorService,
+            @org.springframework.beans.factory.annotation.Value("${nexion.outbox.rocketmq.order-paid-topic:nexion-order-paid}") String brokerTopic,
+            @org.springframework.beans.factory.annotation.Value("${nexion.outbox.rocketmq.consumer-group:nexion-team-order-paid}") String brokerConsumerGroup) {
         this.commissionService = commissionService;
         this.binaryCommissionService = binaryCommissionService;
         this.advancedCommissionService = advancedCommissionService;
         this.brokerMonitorService = brokerMonitorService;
+        this.brokerTopic = brokerTopic;
+        this.brokerConsumerGroup = brokerConsumerGroup;
     }
 
     @PostMapping("/outbox/consume-order-paid")
@@ -82,11 +88,16 @@ public class TeamCommissionController {
     }
 
     @GetMapping("/outbox/broker/consumer/status")
+    @PreAuthorize("hasAuthority('PERM_TEAM_READ')")
     public ApiResult<RocketMqBrokerMonitor> brokerConsumerStatus(
             @RequestParam(required = false) String topic,
             @RequestParam(required = false) String consumerGroup,
             @RequestParam(defaultValue = "true") boolean includeDlq) {
-        return ApiResult.ok(brokerMonitorService.inspectConsumer(topic, consumerGroup, includeDlq));
+        return ApiResult.ok(brokerMonitorService.inspectConsumer(
+                "team-order-paid",
+                topic == null || topic.isBlank() ? brokerTopic : topic,
+                consumerGroup == null || consumerGroup.isBlank() ? brokerConsumerGroup : consumerGroup,
+                includeDlq));
     }
 
     @PostMapping("/commissions/unlock")
@@ -94,7 +105,7 @@ public class TeamCommissionController {
     public ApiResult<TeamCommissionUnlockResult> unlockCommissions(
             @RequestParam(defaultValue = "100") int limit,
             @RequestParam(required = false) String orderNo,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime unlockBefore) {
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime unlockBefore) {
         return ApiResult.ok(commissionService.unlockDueCommissions(limit, unlockBefore, orderNo));
     }
 

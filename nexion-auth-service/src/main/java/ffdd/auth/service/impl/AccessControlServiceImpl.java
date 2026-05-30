@@ -99,6 +99,7 @@ public class AccessControlServiceImpl implements AccessControlService {
     public AdminMenu createMenu(MenuCreateRequest request) {
         AdminMenu menu = new AdminMenu();
         BeanUtils.copyProperties(request, menu);
+        fillMenuNames(menu);
         menu.setIsDeleted(0);
         if (menu.getSortOrder() == null) {
             menu.setSortOrder(0);
@@ -113,7 +114,12 @@ public class AccessControlServiceImpl implements AccessControlService {
         wrapper.eq(AdminMenu::getIsDeleted, 0);
         if (query != null) {
             wrapper.eq(StringUtils.hasText(query.getMenuCode()), AdminMenu::getMenuCode, query.getMenuCode())
-                    .like(StringUtils.hasText(query.getMenuName()), AdminMenu::getMenuName, query.getMenuName())
+                    .and(StringUtils.hasText(query.getMenuName()), name -> name
+                            .like(AdminMenu::getMenuName, query.getMenuName())
+                            .or()
+                            .like(AdminMenu::getMenuNameZh, query.getMenuName())
+                            .or()
+                            .like(AdminMenu::getMenuNameEn, query.getMenuName()))
                     .like(StringUtils.hasText(query.getRoutePath()), AdminMenu::getRoutePath, query.getRoutePath())
                     .eq(query.getParentId() != null, AdminMenu::getParentId, query.getParentId())
                     .eq(query.getStatus() != null, AdminMenu::getStatus, query.getStatus());
@@ -130,11 +136,24 @@ public class AccessControlServiceImpl implements AccessControlService {
             throw new BizException("Menu does not exist");
         }
         BeanUtils.copyProperties(request, menu);
+        fillMenuNames(menu);
         if (menu.getParentId() != null && menu.getParentId().equals(id)) {
             throw new BizException("Menu cannot use itself as parent");
         }
         menuMapper.updateById(menu);
         return menuMapper.selectById(id);
+    }
+
+    private void fillMenuNames(AdminMenu menu) {
+        if (!StringUtils.hasText(menu.getMenuNameZh())) {
+            menu.setMenuNameZh(menu.getMenuName());
+        }
+        if (!StringUtils.hasText(menu.getMenuNameEn())) {
+            menu.setMenuNameEn(menu.getMenuName());
+        }
+        if (!StringUtils.hasText(menu.getMenuName())) {
+            menu.setMenuName(StringUtils.hasText(menu.getMenuNameZh()) ? menu.getMenuNameZh() : menu.getMenuNameEn());
+        }
     }
 
     @Override

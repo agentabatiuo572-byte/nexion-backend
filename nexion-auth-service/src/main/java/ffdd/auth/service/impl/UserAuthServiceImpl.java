@@ -2,6 +2,8 @@ package ffdd.auth.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.auth.domain.User;
+import ffdd.auth.dto.RegisterSmsCodeRequest;
+import ffdd.auth.dto.RegisterSmsCodeResponse;
 import ffdd.auth.dto.UserLoginRequest;
 import ffdd.auth.dto.UserLoginResponse;
 import ffdd.auth.dto.UserRegisterRequest;
@@ -23,13 +25,26 @@ import org.springframework.util.StringUtils;
 public class UserAuthServiceImpl implements UserAuthService {
     private static final String STATUS_ACTIVE = "ACTIVE";
     private static final List<String> USER_AUTHORITIES = List.of("ROLE_USER");
+    private static final String REGISTER_SMS_CODE = "123456";
+    private static final int REGISTER_SMS_CODE_TTL_SECONDS = 300;
 
     private final UserMapper userMapper;
     private final JwtTokenProvider tokenProvider;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     @Override
+    public RegisterSmsCodeResponse sendRegisterSmsCode(RegisterSmsCodeRequest request) {
+        if (findByPhone(request.getCountryCode(), request.getPhone()) != null) {
+            throw new BizException("Phone number is already registered");
+        }
+        return new RegisterSmsCodeResponse(REGISTER_SMS_CODE_TTL_SECONDS);
+    }
+
+    @Override
     public UserLoginResponse register(UserRegisterRequest request) {
+        if (!REGISTER_SMS_CODE.equals(request.getVerificationCode())) {
+            throw new BizException("Verification code is incorrect");
+        }
         User existing = findByPhone(request.getCountryCode(), request.getPhone());
         if (existing != null) {
             throw new BizException("Phone number is already registered");

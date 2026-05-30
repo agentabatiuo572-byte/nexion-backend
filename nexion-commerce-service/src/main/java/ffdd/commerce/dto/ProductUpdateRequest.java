@@ -37,4 +37,7 @@ public class ProductUpdateRequest {
 
     @Size(max = 512)
     private String coverUrl;
+
+    @Size(max = 2048)
+    private String detailImageUrls;
 }

@@ -1,5 +1,7 @@
 package ffdd.auth.controller;
 
+import ffdd.auth.dto.RegisterSmsCodeRequest;
+import ffdd.auth.dto.RegisterSmsCodeResponse;
 import ffdd.auth.dto.UserLoginRequest;
 import ffdd.auth.dto.UserLoginResponse;
 import ffdd.auth.dto.UserRegisterRequest;
@@ -18,6 +20,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class UserAuthController {
     private final UserAuthService userAuthService;
 
+    @PostMapping("/register/sms-code")
+    public ApiResult<RegisterSmsCodeResponse> sendRegisterSmsCode(@Valid @RequestBody RegisterSmsCodeRequest request) {
+        return ApiResult.ok(userAuthService.sendRegisterSmsCode(request));
+    }
+
     @PostMapping("/register")
     public ApiResult<UserLoginResponse> register(@Valid @RequestBody UserRegisterRequest request) {
         return ApiResult.ok(userAuthService.register(request));
@@ -28,4 +35,3 @@ public class UserAuthController {
         return ApiResult.ok(userAuthService.login(request));
     }
 }
-

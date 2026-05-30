@@ -36,7 +36,7 @@ public class EarningTickController {
     @PostMapping("/settle-device-snapshot")
     @PreAuthorize("hasAuthority('PERM_EARNINGS_WRITE')")
     public ApiResult<EarningTickBatchResult> settleDeviceSnapshot(
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
                     LocalDateTime tickAt,
             @RequestParam(required = false) @Min(1) @Max(500) Integer limit) {
         return ApiResult.ok(tickSettlementService.settleDeviceTicks(tickAt, limit));

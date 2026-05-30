@@ -99,6 +99,7 @@ public class CommerceServiceImpl implements CommerceService {
         product.setDailyNex(defaultDecimal(request.getDailyNex()));
         product.setStock(request.getStock() == null ? 0 : request.getStock());
         product.setCoverUrl(trimToNull(request.getCoverUrl()));
+        product.setDetailImageUrls(trimToNull(request.getDetailImageUrls()));
         product.setIsDeleted(0);
         try {
             productMapper.insert(product);
@@ -142,7 +143,10 @@ public class CommerceServiceImpl implements CommerceService {
             product.setStock(request.getStock());
         }
         if (request.getCoverUrl() != null) {
-            product.setCoverUrl(trimToNull(request.getCoverUrl()));
+            product.setCoverUrl(trimToEmpty(request.getCoverUrl()));
+        }
+        if (request.getDetailImageUrls() != null) {
+            product.setDetailImageUrls(trimToEmpty(request.getDetailImageUrls()));
         }
         productMapper.updateById(product);
         return product;
@@ -301,6 +305,10 @@ public class CommerceServiceImpl implements CommerceService {
 
     private String trimToNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private String trimToEmpty(String value) {
+        return StringUtils.hasText(value) ? value.trim() : "";
     }
 
     private BigDecimal requirePositiveMoney(BigDecimal value, String message) {

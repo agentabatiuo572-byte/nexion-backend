@@ -13,8 +13,9 @@ public class UserRegisterRequest {
     @Pattern(regexp = "\\d{6,15}")
     private String phone;
     @NotBlank
-    @Size(min = 6)
+    @Pattern(regexp = "^(?=.*[A-Za-z])(?=.*\\d).{8,}$", message = "Password must be at least 8 characters and include letters and numbers")
     private String password;
+    @NotBlank
+    private String verificationCode;
     private String referralCode;
 }
-

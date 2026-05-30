@@ -49,6 +49,8 @@ class CommerceProductServiceTest {
         request.setEstimatedDailyUsdt(new BigDecimal("38.560000"));
         request.setDailyNex(new BigDecimal("720.000000"));
         request.setStock(20);
+        request.setCoverUrl("commerce/products/cover/cover.png");
+        request.setDetailImageUrls("[\"commerce/products/detail/detail-1.png\"]");
 
         Product product = service.createProduct(request);
 
@@ -58,6 +60,8 @@ class CommerceProductServiceTest {
         assertThat(captor.getValue().getProductNo()).isEqualTo("NX-S1-OPS");
         assertThat(captor.getValue().getPriceUsdt()).isEqualByComparingTo("299.000000");
         assertThat(captor.getValue().getEstimatedDailyUsdt()).isEqualByComparingTo("38.560000");
+        assertThat(captor.getValue().getCoverUrl()).isEqualTo("commerce/products/cover/cover.png");
+        assertThat(captor.getValue().getDetailImageUrls()).isEqualTo("[\"commerce/products/detail/detail-1.png\"]");
         assertThat(captor.getValue().getIsDeleted()).isZero();
     }
 
@@ -95,6 +99,8 @@ class CommerceProductServiceTest {
         ProductUpdateRequest request = new ProductUpdateRequest();
         request.setPriceUsdt(new BigDecimal("399.000000"));
         request.setStock(8);
+        request.setCoverUrl("");
+        request.setDetailImageUrls("[\"commerce/products/detail/new.png\"]");
 
         Product updated = service.updateProduct(1L, request);
 
@@ -102,5 +108,7 @@ class CommerceProductServiceTest {
         assertThat(updated.getProductNo()).isEqualTo("NX-S1");
         assertThat(updated.getPriceUsdt()).isEqualByComparingTo("399.000000");
         assertThat(updated.getStock()).isEqualTo(8);
+        assertThat(updated.getCoverUrl()).isEmpty();
+        assertThat(updated.getDetailImageUrls()).isEqualTo("[\"commerce/products/detail/new.png\"]");
     }
 }

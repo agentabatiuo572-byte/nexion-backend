@@ -167,6 +167,8 @@ CREATE TABLE IF NOT EXISTS admin_menu (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   menu_code VARCHAR(96) NOT NULL,
   menu_name VARCHAR(96) NOT NULL,
+  menu_name_zh VARCHAR(96) NULL,
+  menu_name_en VARCHAR(96) NULL,
   parent_id BIGINT NULL,
   route_path VARCHAR(255) NOT NULL,
   icon VARCHAR(64) NULL,
@@ -446,12 +448,18 @@ CREATE TABLE IF NOT EXISTS nx_product (
   daily_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
   stock INT NOT NULL DEFAULT 0,
   cover_url VARCHAR(512) NULL,
+  detail_image_urls TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_product_no (product_no),
   KEY idx_product_sale (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'detail_image_urls') = 0,
+  'ALTER TABLE nx_product ADD COLUMN detail_image_urls TEXT NULL AFTER cover_url',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_order (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

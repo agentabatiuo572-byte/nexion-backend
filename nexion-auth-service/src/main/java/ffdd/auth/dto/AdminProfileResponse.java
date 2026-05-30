@@ -19,4 +19,5 @@ public class AdminProfileResponse {
     private List<Long> roleIds;
     private List<String> authorities;
     private List<String> menuPaths;
+    private List<AdminMenuResponse> menus;
 }

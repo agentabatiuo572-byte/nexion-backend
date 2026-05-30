@@ -6,10 +6,10 @@ import org.springframework.format.annotation.DateTimeFormat;
 
 @Data
 public class AuditStatsQueryRequest {
-    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime startAt;
 
-    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime endAt;
 
     private Integer days;

@@ -1,4 +1,5 @@
 USE nexion;
+SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 INSERT INTO admin (id, username, password_hash, nickname, email, phone, super_admin, status)
 VALUES
@@ -59,7 +60,9 @@ VALUES
   (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1),
   (115, 'PERM_SYSTEM_WRITE', 'Write system operations', 'API', '/system/**', NULL, 1),
   (114, 'PERM_OPENAPI_ADMIN', 'Admin OpenAPI apps, quotas, audits, and webhook delivery', 'API', '/openapi/ops/**,/openapi/webhooks/deliveries/**', NULL, 1),
-  (120, 'PERM_AUDIT_READ', 'Read cross-service audit logs', 'API', '/audit/**', NULL, 1)
+  (120, 'PERM_AUDIT_READ', 'Read cross-service audit logs', 'API', '/audit/**', NULL, 1),
+  (122, 'PERM_USER_READ', 'Read C-end user operations', 'API', '/auth/users/page,/auth/users/search,/auth/users/*', NULL, 1),
+  (123, 'PERM_USER_WRITE', 'Write C-end user operations', 'API', '/auth/users/*', NULL, 1)
 ON DUPLICATE KEY UPDATE
   permission_code = VALUES(permission_code),
   permission_name = VALUES(permission_name),
@@ -77,6 +80,8 @@ VALUES
   (22, 'MENU_UMS_ROLE', 'Roles', 20, '/ums/role', 'UserFilled', 22, 'Role management.', 1),
   (23, 'MENU_UMS_MENU', 'Menus', 20, '/ums/menu', 'Menu', 23, 'Menu management.', 1),
   (24, 'MENU_UMS_PERMISSION', 'API Permissions', 20, '/ums/permission', 'Key', 24, 'API permission management.', 1),
+  (250, 'MENU_USERS', 'User Ops', NULL, '/users', 'User', 250, 'C-end user operations group.', 1),
+  (251, 'MENU_USERS_LIST', 'User Management', 250, '/users/list', 'UserFilled', 251, 'C-end user management.', 1),
   (40, 'MENU_TEAM', 'Team', NULL, '/team', 'Share', 40, 'Team management group.', 1),
   (41, 'MENU_TEAM_RANK_CONFIG', 'Rank Config', 40, '/team/rank-config', 'Medal', 41, 'Rank configuration.', 1),
   (42, 'MENU_TEAM_RANK_EVALUATE', 'Rank Evaluate', 40, '/team/rank-evaluate', 'Trophy', 42, 'Rank evaluation.', 1),
@@ -142,6 +147,75 @@ ON DUPLICATE KEY UPDATE
   is_deleted = 0;
 
 UPDATE admin_menu
+SET menu_name_zh = CASE CAST(menu_code AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci
+  WHEN 'MENU_HOME' THEN '首页'
+  WHEN 'MENU_UMS' THEN '权限'
+  WHEN 'MENU_UMS_ADMIN' THEN '管理员列表'
+  WHEN 'MENU_UMS_ROLE' THEN '角色列表'
+  WHEN 'MENU_UMS_MENU' THEN '菜单管理'
+  WHEN 'MENU_UMS_PERMISSION' THEN 'API 权限'
+  WHEN 'MENU_USERS' THEN '用户运营'
+  WHEN 'MENU_USERS_LIST' THEN '用户管理'
+  WHEN 'MENU_TEAM' THEN '团队'
+  WHEN 'MENU_TEAM_RANK_CONFIG' THEN '等级配置'
+  WHEN 'MENU_TEAM_RANK_EVALUATE' THEN '等级评估'
+  WHEN 'MENU_TEAM_COMMISSION_RECORDS' THEN '佣金记录'
+  WHEN 'MENU_TEAM_COMMISSION_SETTLE' THEN '佣金结算'
+  WHEN 'MENU_COMMERCE' THEN '商城交易'
+  WHEN 'MENU_COMMERCE_PRODUCTS' THEN '商品 SKU'
+  WHEN 'MENU_COMMERCE_ORDERS' THEN '订单管理'
+  WHEN 'MENU_COMMERCE_PAYMENTS' THEN '支付对账'
+  WHEN 'MENU_COMMERCE_TRADEINS' THEN 'Trade-in'
+  WHEN 'MENU_GENESIS' THEN 'Genesis'
+  WHEN 'MENU_GENESIS_SERIES' THEN '系列配置'
+  WHEN 'MENU_GENESIS_ORDERS' THEN 'Genesis 订单'
+  WHEN 'MENU_GENESIS_HOLDINGS' THEN 'Genesis 持仓'
+  WHEN 'MENU_COMPUTE' THEN '设备算力'
+  WHEN 'MENU_COMPUTE_DEVICES' THEN '设备实例'
+  WHEN 'MENU_COMPUTE_LIFECYCLE' THEN '生命周期'
+  WHEN 'MENU_COMPUTE_TASKS' THEN '计算任务'
+  WHEN 'MENU_COMPUTE_RECEIPTS' THEN 'Receipt'
+  WHEN 'MENU_COMPUTE_NODE_MAP' THEN '节点地图'
+  WHEN 'MENU_WALLET' THEN '钱包运营'
+  WHEN 'MENU_WALLET_OVERVIEW' THEN '钱包概览'
+  WHEN 'MENU_WALLET_LEDGERS' THEN '钱包流水'
+  WHEN 'MENU_WALLET_DEPOSITS' THEN '充值记录'
+  WHEN 'MENU_WALLET_WITHDRAWALS' THEN '提现广播'
+  WHEN 'MENU_COMPLIANCE' THEN '合规风控'
+  WHEN 'MENU_COMPLIANCE_KYC' THEN 'KYC'
+  WHEN 'MENU_COMPLIANCE_RISK' THEN '风险决策'
+  WHEN 'MENU_COMPLIANCE_REVIEW' THEN '人工复核'
+  WHEN 'MENU_COMPLIANCE_BLACKLISTS' THEN '黑名单'
+  WHEN 'MENU_COMPLIANCE_PROOF' THEN 'Proof 资产'
+  WHEN 'MENU_SYSTEM' THEN '系统配置'
+  WHEN 'MENU_SYSTEM_CONFIGS' THEN '后台配置'
+  WHEN 'MENU_SYSTEM_PUBLIC_CONFIG' THEN '公共配置'
+  WHEN 'MENU_SYSTEM_I18N' THEN '多语言'
+  WHEN 'MENU_SYSTEM_CONTENT' THEN '内容页'
+  WHEN 'MENU_SYSTEM_HELP' THEN '帮助中心'
+  WHEN 'MENU_SYSTEM_SUPPORT_TICKETS' THEN '客服工单'
+  WHEN 'MENU_OPENAPI' THEN 'OpenAPI'
+  WHEN 'MENU_OPENAPI_APPS' THEN '应用管理'
+  WHEN 'MENU_OPENAPI_CALL_AUDITS' THEN '调用审计'
+  WHEN 'MENU_OPENAPI_WEBHOOKS' THEN 'Webhook'
+  WHEN 'MENU_AUDIT' THEN '审计'
+  WHEN 'MENU_AUDIT_LOGS' THEN '审计日志'
+  WHEN 'MENU_AUDIT_STATS' THEN '审计统计'
+  WHEN 'MENU_MISSION' THEN '任务运营'
+  WHEN 'MENU_MISSION_OVERVIEW' THEN '任务概览'
+  WHEN 'MENU_MISSION_CONSUMER' THEN '消费事件'
+  WHEN 'MENU_MISSION_MONTHLY' THEN '月度挑战'
+  WHEN 'MENU_MISSION_EVENTS' THEN '活动任务'
+  WHEN 'MENU_NOTIFICATION' THEN '通知触达'
+  WHEN 'MENU_NOTIFICATION_OVERVIEW' THEN '通知概览'
+  WHEN 'MENU_NOTIFICATION_PUSH' THEN '待推送处理'
+  WHEN 'MENU_NOTIFICATION_CONSUMER' THEN '消费事件'
+  ELSE CAST(menu_name AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci
+END,
+menu_name_en = CAST(menu_name AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci
+WHERE menu_code LIKE 'MENU_%';
+
+UPDATE admin_menu
 SET status = 0,
     is_deleted = 1,
     updated_at = NOW()
@@ -176,7 +250,9 @@ WHERE permission_code IN (
   'PERM_SYSTEM_WRITE',
   'PERM_EARNINGS_WRITE',
   'PERM_OPENAPI_ADMIN',
-  'PERM_AUDIT_READ'
+  'PERM_AUDIT_READ',
+  'PERM_USER_READ',
+  'PERM_USER_WRITE'
 );
 
 INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
@@ -185,6 +261,8 @@ SELECT 1, id FROM admin_menu;
 INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
 SELECT 2, id FROM admin_menu WHERE menu_code IN (
   'MENU_HOME',
+  'MENU_USERS',
+  'MENU_USERS_LIST',
   'MENU_COMMERCE',
   'MENU_COMMERCE_PRODUCTS',
   'MENU_COMMERCE_ORDERS',

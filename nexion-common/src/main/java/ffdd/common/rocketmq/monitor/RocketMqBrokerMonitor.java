@@ -1,4 +1,4 @@
-package ffdd.team.dto;
+package ffdd.common.rocketmq.monitor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -8,7 +8,9 @@ import lombok.Data;
 public class RocketMqBrokerMonitor {
     private boolean enabled;
     private boolean ok;
+    private String name;
     private String nameServer;
+    private String acl;
     private String topic;
     private String consumerGroup;
     private String dlqTopic;

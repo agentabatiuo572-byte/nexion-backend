@@ -4,6 +4,8 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.outbox.EventConsumerDelivery;
 import ffdd.common.outbox.EventConsumerDeliveryService;
+import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitor;
+import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitorService;
 import ffdd.mission.domain.EventQuest;
 import ffdd.mission.domain.MonthlyChallenge;
 import ffdd.mission.dto.EventQuestItemResponse;
@@ -33,15 +35,21 @@ import org.springframework.web.bind.annotation.RestController;
 public class MissionOpsController {
     private final EventConsumerDeliveryService deliveryService;
     private final MissionCampaignService missionCampaignService;
+    private final RocketMqBrokerMonitorService brokerMonitorService;
     private final String defaultConsumerGroup;
+    private final String brokerTopic;
 
     public MissionOpsController(
             EventConsumerDeliveryService deliveryService,
             MissionCampaignService missionCampaignService,
+            RocketMqBrokerMonitorService brokerMonitorService,
+            @Value("${nexion.outbox.rocketmq.earning-generated-topic:nexion-earning-generated}") String brokerTopic,
             @Value("${nexion.outbox.rocketmq.mission-consumer-group:nexion-mission-earning-generated}")
                     String defaultConsumerGroup) {
         this.deliveryService = deliveryService;
         this.missionCampaignService = missionCampaignService;
+        this.brokerMonitorService = brokerMonitorService;
+        this.brokerTopic = brokerTopic;
         this.defaultConsumerGroup = defaultConsumerGroup;
     }
 
@@ -149,5 +157,18 @@ public class MissionOpsController {
     public ApiResult<List<Map<String, Object>>> consumerSummary(
             @RequestParam(required = false) String consumerGroup) {
         return ApiResult.ok(deliveryService.summary(consumerGroup));
+    }
+
+    @GetMapping("/outbox/broker/consumer/status")
+    @PreAuthorize("hasAuthority('PERM_MISSION_READ')")
+    public ApiResult<RocketMqBrokerMonitor> brokerConsumerStatus(
+            @RequestParam(required = false) String topic,
+            @RequestParam(required = false) String consumerGroup,
+            @RequestParam(defaultValue = "true") boolean includeDlq) {
+        return ApiResult.ok(brokerMonitorService.inspectConsumer(
+                "mission-earning-generated",
+                topic == null || topic.isBlank() ? brokerTopic : topic,
+                consumerGroup == null || consumerGroup.isBlank() ? defaultConsumerGroup : consumerGroup,
+                includeDlq));
     }
 }

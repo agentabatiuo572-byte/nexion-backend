@@ -1,26 +1,20 @@
-package ffdd.team.service;
+package ffdd.common.rocketmq.monitor;
 
 import ffdd.common.rocketmq.RocketMqAclHookFactory;
 import ffdd.common.rocketmq.RocketMqAclProperties;
-import ffdd.team.dto.RocketMqBrokerMonitor;
-import ffdd.team.dto.RocketMqConsumerClient;
-import ffdd.team.dto.RocketMqConsumerConnection;
-import ffdd.team.dto.RocketMqQueueOffset;
-import ffdd.team.dto.RocketMqSubscription;
-import ffdd.team.dto.RocketMqTopicQueueStats;
-import ffdd.team.dto.RocketMqTopicStats;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.remoting.protocol.admin.ConsumeStats;
 import org.apache.rocketmq.remoting.protocol.admin.OffsetWrapper;
 import org.apache.rocketmq.remoting.protocol.admin.TopicOffset;
 import org.apache.rocketmq.remoting.protocol.admin.TopicStatsTable;
 import org.apache.rocketmq.remoting.protocol.body.Connection;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
-import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.tools.admin.DefaultMQAdminExt;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -28,37 +22,42 @@ import org.springframework.util.StringUtils;
 
 @Service
 public class RocketMqBrokerMonitorService {
+    private static final int MAX_TEXT = 256;
+
     private final boolean enabled;
     private final String nameServer;
-    private final String defaultTopic;
-    private final String defaultConsumerGroup;
     private final RocketMqAclProperties aclProperties;
 
     public RocketMqBrokerMonitorService(
             @Value("${nexion.outbox.rocketmq.enabled:false}") boolean enabled,
             @Value("${nexion.outbox.rocketmq.name-server:127.0.0.1:9876}") String nameServer,
-            @Value("${nexion.outbox.rocketmq.order-paid-topic:nexion-order-paid}") String defaultTopic,
-            @Value("${nexion.outbox.rocketmq.consumer-group:nexion-team-order-paid}") String defaultConsumerGroup,
             RocketMqAclProperties aclProperties) {
         this.enabled = enabled;
         this.nameServer = nameServer;
-        this.defaultTopic = defaultTopic;
-        this.defaultConsumerGroup = defaultConsumerGroup;
         this.aclProperties = aclProperties;
     }
 
-    public RocketMqBrokerMonitor inspectConsumer(String topic, String consumerGroup, boolean includeDlq) {
-        String resolvedTopic = StringUtils.hasText(topic) ? topic : defaultTopic;
-        String resolvedConsumerGroup = StringUtils.hasText(consumerGroup) ? consumerGroup : defaultConsumerGroup;
-
+    public RocketMqBrokerMonitor inspectConsumer(
+            String name,
+            String topic,
+            String consumerGroup,
+            boolean includeDlq) {
         RocketMqBrokerMonitor monitor = new RocketMqBrokerMonitor();
         monitor.setEnabled(enabled);
+        monitor.setName(name);
         monitor.setNameServer(nameServer);
-        monitor.setTopic(resolvedTopic);
-        monitor.setConsumerGroup(resolvedConsumerGroup);
-        monitor.setDlqTopic(MixAll.getDLQTopic(resolvedConsumerGroup));
+        monitor.setAcl(RocketMqAclHookFactory.describe(aclProperties));
+        monitor.setTopic(trim(topic));
+        monitor.setConsumerGroup(trim(consumerGroup));
+        monitor.setDlqTopic(MixAll.getDLQTopic(monitor.getConsumerGroup()));
 
-        DefaultMQAdminExt admin = createAdmin("nexion-team-monitor-" + UUID.randomUUID().toString().replace("-", ""));
+        if (!StringUtils.hasText(monitor.getTopic()) || !StringUtils.hasText(monitor.getConsumerGroup())) {
+            monitor.getErrors().add("topic and consumerGroup are required");
+            monitor.setOk(false);
+            return monitor;
+        }
+
+        DefaultMQAdminExt admin = createAdmin("nexion-broker-monitor-" + UUID.randomUUID().toString().replace("-", ""));
         admin.setNamesrvAddr(nameServer);
         try {
             admin.start();
@@ -68,12 +67,20 @@ public class RocketMqBrokerMonitorService {
                 loadDlq(admin, monitor);
             }
         } catch (Exception ex) {
-            monitor.getErrors().add("RocketMQ admin query failed: " + ex.getMessage());
+            monitor.getErrors().add("RocketMQ admin query failed: " + sanitize(ex.getMessage()));
         } finally {
             admin.shutdown();
         }
         monitor.setOk(monitor.getErrors().isEmpty());
         return monitor;
+    }
+
+    public List<RocketMqBrokerMonitor> inspectConsumers(
+            List<RocketMqBrokerConsumerTarget> targets,
+            boolean includeDlq) {
+        return targets.stream()
+                .map(target -> inspectConsumer(target.name(), target.topic(), target.consumerGroup(), includeDlq))
+                .toList();
     }
 
     private DefaultMQAdminExt createAdmin(String adminGroup) {
@@ -95,7 +102,14 @@ public class RocketMqBrokerMonitorService {
                     .map(entry -> mapQueueOffset(entry.getKey(), entry.getValue()))
                     .forEach(monitor.getOffsets()::add);
         } catch (Exception ex) {
-            monitor.getErrors().add("Failed to load consumer offsets: " + ex.getMessage());
+            String message = sanitize(ex.getMessage());
+            if (isNoRoute(message)) {
+                monitor.setTotalLag(0L);
+                monitor.setConsumeTps(0D);
+                monitor.getWarnings().add("Consumer offsets are not yet available: " + message);
+            } else {
+                monitor.getErrors().add("Failed to load consumer offsets: " + message);
+            }
         }
     }
 
@@ -135,7 +149,7 @@ public class RocketMqBrokerMonitorService {
             }
             monitor.setConnection(connection);
         } catch (Exception ex) {
-            monitor.getWarnings().add("Failed to load consumer connection info: " + ex.getMessage());
+            monitor.getWarnings().add("Failed to load consumer connection info: " + sanitize(ex.getMessage()));
         }
     }
 
@@ -181,7 +195,7 @@ public class RocketMqBrokerMonitorService {
             dlq.setAvailable(false);
             dlq.setTotalMessages(0L);
             monitor.setDlqMessages(0L);
-            monitor.getWarnings().add("DLQ topic is not readable or has no route: " + ex.getMessage());
+            monitor.getWarnings().add("DLQ topic is not readable or has no route: " + sanitize(ex.getMessage()));
         }
     }
 
@@ -199,5 +213,21 @@ public class RocketMqBrokerMonitorService {
 
     private String value(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    private String trim(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private String sanitize(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String sanitized = value.replaceAll("(?i)(secretKey|secret-key|password|token)=([^,\\s]+)", "$1=***");
+        return sanitized.length() > MAX_TEXT ? sanitized.substring(0, MAX_TEXT) : sanitized;
+    }
+
+    private boolean isNoRoute(String message) {
+        return message != null && message.contains("No topic route info in name server");
     }
 }

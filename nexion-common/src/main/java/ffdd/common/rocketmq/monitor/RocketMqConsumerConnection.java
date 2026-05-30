@@ -1,4 +1,4 @@
-package ffdd.team.dto;
+package ffdd.common.rocketmq.monitor;
 
 import java.util.ArrayList;
 import java.util.List;
