@@ -20,6 +20,8 @@ public class UserResponse {
     private String status;
     private String language;
     private String region;
+    private String bio;
+    private String timezone;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

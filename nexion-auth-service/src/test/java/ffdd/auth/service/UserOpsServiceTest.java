@@ -41,6 +41,8 @@ class UserOpsServiceTest {
 
         assertThat(result.getId()).isEqualTo(10001L);
         assertThat(result.getPhone()).isEqualTo("4150004892");
+        assertThat(result.getBio()).isEqualTo("Building mobile mining habits.");
+        assertThat(result.getTimezone()).isEqualTo("Asia/Singapore (UTC+8)");
         assertThat(result).hasNoNullFieldsOrPropertiesExcept("avatarUrl", "sponsorUserId", "sponsorCode", "region", "createdAt", "updatedAt");
     }
 
@@ -51,6 +53,8 @@ class UserOpsServiceTest {
         request.setNickname("New Name");
         request.setLanguage("zh-CN");
         request.setRegion("CN");
+        request.setBio("Updated profile bio");
+        request.setTimezone("Asia/Hong_Kong (UTC+8)");
 
         service.update(10001L, request);
 
@@ -59,6 +63,8 @@ class UserOpsServiceTest {
         assertThat(captor.getValue().getNickname()).isEqualTo("New Name");
         assertThat(captor.getValue().getLanguage()).isEqualTo("zh-CN");
         assertThat(captor.getValue().getRegion()).isEqualTo("CN");
+        assertThat(captor.getValue().getBio()).isEqualTo("Updated profile bio");
+        assertThat(captor.getValue().getTimezone()).isEqualTo("Asia/Hong_Kong (UTC+8)");
         assertThat(captor.getValue().getStatus()).isEqualTo("ACTIVE");
     }
 
@@ -99,6 +105,8 @@ class UserOpsServiceTest {
         user.setVRank("V0");
         user.setStatus("ACTIVE");
         user.setLanguage("en-US");
+        user.setBio("Building mobile mining habits.");
+        user.setTimezone("Asia/Singapore (UTC+8)");
         user.setIsDeleted(0);
         return user;
     }

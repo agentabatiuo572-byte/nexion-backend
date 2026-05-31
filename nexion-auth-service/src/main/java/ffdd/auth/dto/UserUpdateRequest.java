@@ -16,4 +16,10 @@ public class UserUpdateRequest {
 
     @Size(max = 32)
     private String region;
+
+    @Size(max = 512)
+    private String bio;
+
+    @Size(max = 64)
+    private String timezone;
 }

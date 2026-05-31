@@ -23,4 +23,6 @@ public class User extends BaseEntity {
     private String status;
     private String language;
     private String region;
+    private String bio;
+    private String timezone;
 }

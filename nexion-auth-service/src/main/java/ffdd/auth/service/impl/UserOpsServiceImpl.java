@@ -87,6 +87,12 @@ public class UserOpsServiceImpl implements UserOpsService {
         if (request.getRegion() != null) {
             user.setRegion(normalizedOptional(request.getRegion()));
         }
+        if (request.getBio() != null) {
+            user.setBio(normalizedOptional(request.getBio()));
+        }
+        if (request.getTimezone() != null) {
+            user.setTimezone(normalizedOptional(request.getTimezone()));
+        }
         userMapper.updateById(user);
         return detail(id);
     }
