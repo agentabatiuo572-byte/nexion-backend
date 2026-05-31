@@ -1,6 +1,6 @@
 package ffdd.gateway.filter;
 
-import com.alibaba.csp.sentinel.Entry;
+import com.alibaba.csp.sentinel.AsyncEntry;
 import com.alibaba.csp.sentinel.SphU;
 import com.alibaba.csp.sentinel.Tracer;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
@@ -37,18 +37,18 @@ public class GatewaySentinelFilter implements GlobalFilter, Ordered {
         }
 
         String resource = GatewaySentinelRuleLoader.resource(routeGroup(path));
-        Entry entry;
+        AsyncEntry entry;
         try {
-            entry = SphU.entry(resource);
+            entry = SphU.asyncEntry(resource);
         } catch (BlockException ex) {
             return blockResponder.block(exchange, resource, ex);
         }
 
-        AtomicReference<Entry> entryRef = new AtomicReference<>(entry);
+        AtomicReference<AsyncEntry> entryRef = new AtomicReference<>(entry);
         return chain.filter(exchange)
                 .doOnError(ex -> Tracer.trace(ex))
                 .doFinally(signalType -> {
-                    Entry current = entryRef.getAndSet(null);
+                    AsyncEntry current = entryRef.getAndSet(null);
                     if (current != null) {
                         current.exit();
                     }
