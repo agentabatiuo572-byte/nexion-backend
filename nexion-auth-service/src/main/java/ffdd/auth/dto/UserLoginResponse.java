@@ -9,8 +9,8 @@ public class UserLoginResponse {
     private String token;
     private Long userId;
     private String nickname;
+    private String avatarUrl;
     private String referralCode;
     private String userLevel;
     private String vRank;
 }
-

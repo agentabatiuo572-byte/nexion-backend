@@ -33,6 +33,22 @@ class GatewayAuthenticationFilterTest {
     }
 
     @Test
+    void publicRegisterSubRoutesBypassAuthentication() {
+        AtomicBoolean chainCalled = new AtomicBoolean(false);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/auth/users/register/sms-code").build());
+
+        StepVerifier.create(filter.filter(exchange, ignored -> {
+                    chainCalled.set(true);
+                    return Mono.empty();
+                }))
+                .verifyComplete();
+
+        assertThat(chainCalled).isTrue();
+        assertThat(exchange.getResponse().getStatusCode()).isNull();
+    }
+
+    @Test
     void protectedRoutesRequireBearerToken() {
         AtomicBoolean chainCalled = new AtomicBoolean(false);
         MockServerWebExchange exchange = MockServerWebExchange.from(

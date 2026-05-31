@@ -27,7 +27,7 @@ public class SecurityConfig {
                                 "/auth/login",
                                 "/auth/register",
                                 "/auth/users/login",
-                                "/auth/users/register/sms-code",
+                                "/auth/users/register/**",
                                 "/auth/users/register",
                                 "/config/**",
                                 "/openapi/v1/**",

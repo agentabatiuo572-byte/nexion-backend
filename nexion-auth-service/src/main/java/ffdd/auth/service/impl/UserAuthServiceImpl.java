@@ -119,6 +119,7 @@ public class UserAuthServiceImpl implements UserAuthService {
                 token,
                 user.getId(),
                 user.getNickname(),
+                user.getAvatarUrl(),
                 user.getReferralCode(),
                 user.getUserLevel(),
                 user.getVRank());

@@ -26,11 +26,21 @@ public class DateTimeFormatConfig {
 
     @Bean
     public Converter<String, LocalDateTime> stringToLocalDateTimeConverter() {
-        return source -> source == null || source.isBlank() ? null : LocalDateTime.parse(source, DATE_TIME_FORMATTER);
+        return new Converter<String, LocalDateTime>() {
+            @Override
+            public LocalDateTime convert(String source) {
+                return source == null || source.isBlank() ? null : LocalDateTime.parse(source, DATE_TIME_FORMATTER);
+            }
+        };
     }
 
     @Bean
     public Converter<LocalDateTime, String> localDateTimeToStringConverter() {
-        return source -> source == null ? null : DATE_TIME_FORMATTER.format(source);
+        return new Converter<LocalDateTime, String>() {
+            @Override
+            public String convert(LocalDateTime source) {
+                return source == null ? null : DATE_TIME_FORMATTER.format(source);
+            }
+        };
     }
 }
