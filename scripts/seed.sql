@@ -544,8 +544,35 @@ ON DUPLICATE KEY UPDATE
   lifetime_earned = VALUES(lifetime_earned);
 
 DELETE FROM nx_wallet_ledger
-WHERE biz_no IN ('EARN-20260522-USDT-0001', 'EARN-20260522-NEX-0001')
-  AND biz_type = 'EARNING';
+WHERE biz_no IN (
+  'EARN-20260522-USDT-0001',
+  'EARN-20260522-NEX-0001',
+  'DEMO-BILL-USDT-1',
+  'DEMO-BILL-NEX-1',
+  'DEMO-TOPUP-USDT-1',
+  'DEMO-WITHDRAW-USDT-1',
+  'DEMO-SWAP-NEX-1',
+  'DEMO-REFER-NEX-1'
+);
+
+INSERT INTO nx_wallet_ledger
+  (user_id, biz_no, biz_type, asset, direction, amount, balance_after, status, remark, created_at, updated_at, is_deleted)
+VALUES
+  (10001, 'DEMO-BILL-USDT-1', 'EARNING', 'USDT', 'IN', 2.310000, 128.640000, 'SUCCESS', 'Device earning · Phone node', DATE_SUB(NOW(), INTERVAL 15 MINUTE), NOW(), 0),
+  (10001, 'DEMO-BILL-NEX-1', 'EARNING', 'NEX', 'IN', 320.000000, 8420.000000, 'SUCCESS', 'NEX mining bonus', DATE_SUB(NOW(), INTERVAL 3 HOUR), NOW(), 0),
+  (10001, 'DEMO-TOPUP-USDT-1', 'DEPOSIT', 'USDT', 'IN', 50.000000, 126.330000, 'SUCCESS', 'TRC20 top up confirmed', DATE_SUB(NOW(), INTERVAL 1 DAY), NOW(), 0),
+  (10001, 'DEMO-WITHDRAW-USDT-1', 'WITHDRAWAL', 'USDT', 'OUT', 20.000000, 76.330000, 'PENDING', 'Withdrawal review', DATE_SUB(NOW(), INTERVAL 31 HOUR), NOW(), 0),
+  (10001, 'DEMO-SWAP-NEX-1', 'EXCHANGE', 'NEX', 'OUT', 120.000000, 8100.000000, 'SUCCESS', 'USDT ⇄ NEX exchange', DATE_SUB(NOW(), INTERVAL 4 DAY), NOW(), 0),
+  (10001, 'DEMO-REFER-NEX-1', 'REFERRAL_COMMISSION', 'NEX', 'IN', 200.000000, 8220.000000, 'SUCCESS', 'Referral network reward', DATE_SUB(NOW(), INTERVAL 6 DAY), NOW(), 0)
+ON DUPLICATE KEY UPDATE
+  biz_type = VALUES(biz_type),
+  amount = VALUES(amount),
+  balance_after = VALUES(balance_after),
+  status = VALUES(status),
+  remark = VALUES(remark),
+  created_at = VALUES(created_at),
+  updated_at = VALUES(updated_at),
+  is_deleted = VALUES(is_deleted);
 
 INSERT INTO nx_mission (id, mission_code, mission_name, mission_type, reward_points, status)
 VALUES
