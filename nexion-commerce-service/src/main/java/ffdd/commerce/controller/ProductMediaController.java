@@ -29,6 +29,18 @@ public class ProductMediaController {
         return ApiResult.ok(productMediaService.upload(mediaType, file));
     }
 
+    @PostMapping("/app/product-review")
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<ProductMediaUploadResponse> uploadAppProductReviewMedia(@RequestPart("file") MultipartFile file) {
+        return ApiResult.ok(productMediaService.upload("PRODUCT_REVIEW", file));
+    }
+
+    @PostMapping("/app/user-avatar")
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<ProductMediaUploadResponse> uploadAppUserAvatar(@RequestPart("file") MultipartFile file) {
+        return ApiResult.ok(productMediaService.upload("USER_AVATAR", file));
+    }
+
     @GetMapping("/preview-url")
     public ApiResult<ProductMediaUploadResponse> preview(@RequestParam String objectKey) {
         return ApiResult.ok(productMediaService.preview(objectKey));

@@ -27,8 +27,12 @@ public class SecurityConfig {
                                 "/auth/login",
                                 "/auth/register",
                                 "/auth/users/login",
+                                "/auth/users/referrals/**",
                                 "/auth/users/register/**",
                                 "/auth/users/register",
+                                "/commerce/app/store/**",
+                                "/commerce/app/price-index",
+                                "/commerce/app/payment-options",
                                 "/config/**",
                                 "/openapi/v1/**",
                                 "/actuator/**")

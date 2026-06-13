@@ -2,9 +2,11 @@ package ffdd.system.service;
 
 import ffdd.common.api.PageResult;
 import ffdd.system.dto.SupportTicketCreateRequest;
+import ffdd.system.dto.SupportTicketAttachmentResponse;
 import ffdd.system.dto.SupportTicketOpsUpdateRequest;
 import ffdd.system.dto.SupportTicketReplyRequest;
 import ffdd.system.dto.SupportTicketResponse;
+import org.springframework.web.multipart.MultipartFile;
 
 public interface SupportTicketService {
     SupportTicketResponse create(Long userId, SupportTicketCreateRequest request);
@@ -33,4 +35,6 @@ public interface SupportTicketService {
     SupportTicketResponse opsReply(Long adminId, String adminName, String ticketNo, SupportTicketReplyRequest request);
 
     SupportTicketResponse updateByOps(String ticketNo, SupportTicketOpsUpdateRequest request);
+
+    SupportTicketAttachmentResponse uploadAttachment(MultipartFile file);
 }

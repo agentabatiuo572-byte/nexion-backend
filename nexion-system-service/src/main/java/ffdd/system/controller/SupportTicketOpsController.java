@@ -3,6 +3,7 @@ package ffdd.system.controller;
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.security.AuthHeaders;
+import ffdd.system.dto.SupportTicketAttachmentResponse;
 import ffdd.system.dto.SupportTicketOpsUpdateRequest;
 import ffdd.system.dto.SupportTicketReplyRequest;
 import ffdd.system.dto.SupportTicketResponse;
@@ -17,7 +18,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/system/support/ops/tickets")
@@ -46,6 +49,12 @@ public class SupportTicketOpsController {
     @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
     public ApiResult<SupportTicketResponse> detail(@PathVariable String ticketNo) {
         return ApiResult.ok(supportTicketService.detailForOps(ticketNo));
+    }
+
+    @PostMapping("/attachments")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    public ApiResult<SupportTicketAttachmentResponse> uploadAttachment(@RequestPart("file") MultipartFile file) {
+        return ApiResult.ok(supportTicketService.uploadAttachment(file));
     }
 
     @PostMapping("/{ticketNo}/messages")

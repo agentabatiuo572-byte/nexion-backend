@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.auth.domain.Admin;
 import ffdd.auth.dto.AdminCreateRequest;
 import ffdd.auth.dto.AdminQueryRequest;
+import ffdd.auth.dto.AdminTwoFactorResetRequest;
+import ffdd.auth.dto.AdminTwoFactorResetResponse;
 import ffdd.auth.dto.AdminUpdateRequest;
 import ffdd.auth.dto.AssignAdminRolesRequest;
 import ffdd.auth.service.AdminService;
@@ -73,5 +75,13 @@ public class AdminController {
     public ApiResult<Void> assignRoles(@PathVariable Long id, @Valid @RequestBody AssignAdminRolesRequest request) {
         adminService.assignRoles(id, request.getRoleIds());
         return ApiResult.ok();
+    }
+
+    @PostMapping("/{id}/two-factor/reset")
+    @PreAuthorize("hasAuthority('PERM_ADMIN_WRITE')")
+    public ApiResult<AdminTwoFactorResetResponse> resetTwoFactor(
+            @PathVariable Long id,
+            @Valid @RequestBody AdminTwoFactorResetRequest request) {
+        return ApiResult.ok(adminService.resetTwoFactor(id, request));
     }
 }

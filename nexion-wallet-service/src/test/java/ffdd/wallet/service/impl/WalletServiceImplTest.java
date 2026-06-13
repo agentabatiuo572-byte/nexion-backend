@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 import ffdd.common.api.ApiResult;
 import ffdd.common.exception.BizException;
 import ffdd.wallet.client.ComplianceClient;
+import ffdd.wallet.client.SystemConfigClient;
 import ffdd.wallet.client.dto.ComplianceGateResponse;
 import ffdd.wallet.domain.EarningEvent;
 import ffdd.wallet.domain.ExchangeOrder;
@@ -36,6 +37,7 @@ import ffdd.wallet.mapper.UserWalletMapper;
 import ffdd.wallet.mapper.WalletLedgerMapper;
 import ffdd.wallet.mapper.WithdrawalOrderMapper;
 import java.math.BigDecimal;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DuplicateKeyException;
 
@@ -46,6 +48,7 @@ class WalletServiceImplTest {
     private final WithdrawalOrderMapper withdrawalOrderMapper = mock(WithdrawalOrderMapper.class);
     private final ExchangeOrderMapper exchangeOrderMapper = mock(ExchangeOrderMapper.class);
     private final ComplianceClient complianceClient = mock(ComplianceClient.class);
+    private final SystemConfigClient systemConfigClient = mock(SystemConfigClient.class);
 
     @Test
     void postEarningReturnsExistingLedgerWithoutCreditingAgain() {
@@ -167,6 +170,7 @@ class WalletServiceImplTest {
     @Test
     void createWithdrawalRecordsRejectedOrderWhenComplianceRejectsWithoutDebiting() {
         when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+        when(walletMapper.selectOne(any())).thenReturn(wallet(10001L, "10.000000", "0.000000"));
         when(complianceClient.check(any())).thenReturn(ApiResult.ok(complianceDecision(701L, "REJECT", "KYC_NOT_APPROVED")));
         doAnswer(invocation -> {
             WithdrawalOrder order = invocation.getArgument(0);
@@ -185,6 +189,7 @@ class WalletServiceImplTest {
     @Test
     void createWithdrawalRecordsReviewingOrderWhenComplianceNeedsManualReview() {
         when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+        when(walletMapper.selectOne(any())).thenReturn(wallet(10001L, "2000.000000", "0.000000"));
         when(complianceClient.check(any())).thenReturn(ApiResult.ok(complianceDecision(704L, "REVIEW", "AMOUNT_REVIEW")));
         doAnswer(invocation -> {
             WithdrawalOrder order = invocation.getArgument(0);
@@ -198,6 +203,127 @@ class WalletServiceImplTest {
         assertThat(result.getRiskDecisionId()).isEqualTo(704L);
         verify(ledgerMapper, never()).insert(any(WalletLedger.class));
         verify(walletMapper, never()).update(any(), any());
+    }
+
+    @Test
+    void createWithdrawalRejectsAmountBelowConfiguredMinimum() {
+        when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+
+        assertThatThrownBy(() -> serviceWithWalletConfig("20", "0.02")
+                .createWithdrawal(withdrawalRequest("WD-MIN", "USDT", "0.600000", "0.000000")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Withdrawal amount is below minimum");
+
+        verify(complianceClient, never()).check(any());
+        verify(withdrawalOrderMapper, never()).insert(any(WithdrawalOrder.class));
+    }
+
+    @Test
+    void createWithdrawalRejectsMissingResolvedUserId() {
+        CreateWithdrawalRequest request = withdrawalRequest("WD-NO-USER", "USDT", "0.600000", "0.000000");
+        request.setUserId(null);
+
+        assertThatThrownBy(() -> service().createWithdrawal(request))
+                .isInstanceOf(BizException.class)
+                .hasMessage("User id is required");
+
+        verify(withdrawalOrderMapper, never()).insert(any(WithdrawalOrder.class));
+    }
+
+    @Test
+    void createExchangeRejectsMissingResolvedUserId() {
+        CreateExchangeRequest request = exchangeRequest("EX-NO-USER");
+        request.setUserId(null);
+
+        assertThatThrownBy(() -> service().createExchange(request))
+                .isInstanceOf(BizException.class)
+                .hasMessage("User id is required");
+
+        verify(exchangeOrderMapper, never()).insert(any(ExchangeOrder.class));
+    }
+
+    @Test
+    void createWithdrawalUsesConfiguredFeeInsteadOfClientSuppliedFee() {
+        when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+        when(walletMapper.selectOne(any())).thenReturn(wallet(10001L, "10.000000", "0.000000"));
+        when(complianceClient.check(any())).thenReturn(ApiResult.ok(complianceDecision(706L, "REJECT", "KYC_NOT_APPROVED")));
+        doAnswer(invocation -> {
+            WithdrawalOrder order = invocation.getArgument(0);
+            order.setId(76L);
+            return 1;
+        }).when(withdrawalOrderMapper).insert(any(WithdrawalOrder.class));
+
+        WithdrawalOrder result = serviceWithWalletConfig("0.100000", "0.02")
+                .createWithdrawal(withdrawalRequest("WD-FEE", "USDT", "0.600000", "0.000001"));
+
+        assertThat(result.getFee()).isEqualByComparingTo("0.012000");
+        assertThat(result.getStatus()).isEqualTo("REJECTED");
+        verify(ledgerMapper, never()).insert(any(WalletLedger.class));
+    }
+
+    @Test
+    void createWithdrawalPersistsRequestedChainAndDefaultsLegacyRequests() {
+        when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+        when(walletMapper.selectOne(any())).thenReturn(wallet(10001L, "10.000000", "0.000000"));
+        when(complianceClient.check(any())).thenReturn(ApiResult.ok(complianceDecision(707L, "REJECT", "KYC_NOT_APPROVED")));
+        doAnswer(invocation -> {
+            WithdrawalOrder order = invocation.getArgument(0);
+            order.setId(77L);
+            return 1;
+        }).when(withdrawalOrderMapper).insert(any(WithdrawalOrder.class));
+
+        WithdrawalOrder erc20 = serviceWithWalletConfig("0.100000", "0.02")
+                .createWithdrawal(withdrawalRequest("WD-CHAIN", "USDT", "USDT-ERC20", "0.600000", "0.000001"));
+        WithdrawalOrder defaulted = serviceWithWalletConfig("0.100000", "0.02")
+                .createWithdrawal(withdrawalRequest("WD-CHAIN-DEFAULT", "USDT", "0.600000", "0.000001"));
+
+        assertThat(erc20.getChain()).isEqualTo("USDT-ERC20");
+        assertThat(defaulted.getChain()).isEqualTo("USDT-TRC20");
+    }
+
+    @Test
+    void createWithdrawalRejectsDisabledConfiguredChain() {
+        when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+
+        assertThatThrownBy(() -> serviceWithWalletConfig(
+                        "0.100000",
+                        "0.02",
+                        "1.00",
+                        "99",
+                        Map.of("withdrawal.erc20.enabled", "false"))
+                .createWithdrawal(withdrawalRequest("WD-ERC20-OFF", "USDT", "USDT-ERC20", "0.600000", "0.000001")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Unsupported withdrawal chain");
+
+        verify(complianceClient, never()).check(any());
+        verify(withdrawalOrderMapper, never()).insert(any(WithdrawalOrder.class));
+    }
+
+    @Test
+    void createWithdrawalRejectsWhenDailyCountLimitReached() {
+        when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+        when(withdrawalOrderMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> serviceWithWalletConfig("0.100000", "0.02", "1.00", "1")
+                .createWithdrawal(withdrawalRequest("WD-DAILY", "USDT", "0.600000", "0.000001")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Daily withdrawal limit reached");
+
+        verify(complianceClient, never()).check(any());
+    }
+
+    @Test
+    void createWithdrawalRejectsWhenAmountExceedsConfiguredBalancePercent() {
+        when(withdrawalOrderMapper.selectOne(any())).thenReturn(null);
+        when(withdrawalOrderMapper.selectCount(any())).thenReturn(0L);
+        when(walletMapper.selectOne(any())).thenReturn(wallet(10001L, "1.000000", "0.000000"));
+
+        assertThatThrownBy(() -> serviceWithWalletConfig("0.100000", "0.02", "0.80", "99")
+                .createWithdrawal(withdrawalRequest("WD-PCT", "USDT", "0.900000", "0.000001")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Withdrawal amount exceeds balance percentage limit");
+
+        verify(complianceClient, never()).check(any());
     }
 
     @Test
@@ -350,6 +476,7 @@ class WalletServiceImplTest {
         duplicate.setIsDeleted(0);
 
         when(withdrawalOrderMapper.selectOne(any())).thenReturn(null).thenReturn(duplicate);
+        when(walletMapper.selectOne(any())).thenReturn(wallet(10001L, "10.000000", "0.000000"));
         when(complianceClient.check(any())).thenReturn(ApiResult.ok(complianceDecision(703L, "APPROVE", "KYC_APPROVED")));
         doThrow(new DuplicateKeyException("duplicate")).when(withdrawalOrderMapper).insert(any(WithdrawalOrder.class));
 
@@ -424,6 +551,60 @@ class WalletServiceImplTest {
     }
 
     @Test
+    void createExchangeRejectsBelowConfiguredMinimumUsdtValue() {
+        when(exchangeOrderMapper.selectOne(any())).thenReturn(null);
+
+        assertThatThrownBy(() -> serviceWithWalletConfig(
+                        "0.100000",
+                        "0.02",
+                        "1.00",
+                        "99",
+                        Map.of("exchange.min_usdt_value", "2.00"))
+                .createExchange(exchangeRequest("EX-MIN")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Exchange amount is below minimum");
+
+        verify(complianceClient, never()).check(any());
+        verify(exchangeOrderMapper, never()).insert(any(ExchangeOrder.class));
+    }
+
+    @Test
+    void createExchangeRejectsAboveConfiguredMaximumUsdtValue() {
+        when(exchangeOrderMapper.selectOne(any())).thenReturn(null);
+
+        assertThatThrownBy(() -> serviceWithWalletConfig(
+                        "0.100000",
+                        "0.02",
+                        "1.00",
+                        "99",
+                        Map.of("exchange.max_usdt_value", "0.50"))
+                .createExchange(exchangeRequest("EX-MAX")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Exchange amount exceeds single limit");
+
+        verify(complianceClient, never()).check(any());
+        verify(exchangeOrderMapper, never()).insert(any(ExchangeOrder.class));
+    }
+
+    @Test
+    void createExchangeRejectsWhenDailyCountLimitReached() {
+        when(exchangeOrderMapper.selectOne(any())).thenReturn(null);
+        when(exchangeOrderMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> serviceWithWalletConfig(
+                        "0.100000",
+                        "0.02",
+                        "1.00",
+                        "99",
+                        Map.of("exchange.daily_count_limit", "1"))
+                .createExchange(exchangeRequest("EX-DAILY")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Daily exchange limit reached");
+
+        verify(complianceClient, never()).check(any());
+    }
+
+    @Test
     void applyApprovedRiskDecisionCompletesReviewingExchangeWithLedgers() {
         ExchangeOrder reviewing = exchangeOrder("EX-REVIEW-APPROVE", "REVIEWING");
         when(exchangeOrderMapper.selectOne(any())).thenReturn(reviewing);
@@ -467,13 +648,34 @@ class WalletServiceImplTest {
 
 
     private WalletServiceImpl service() {
+        return serviceWithWalletConfig("0.100000", "0.016666667");
+    }
+
+    private WalletServiceImpl serviceWithWalletConfig(String minUsdt, String feeRate) {
+        return serviceWithWalletConfig(minUsdt, feeRate, "1.00", "99");
+    }
+
+    private WalletServiceImpl serviceWithWalletConfig(String minUsdt, String feeRate, String maxBalancePct, String dailyCountLimit) {
+        return serviceWithWalletConfig(minUsdt, feeRate, maxBalancePct, dailyCountLimit, Map.of());
+    }
+
+    private WalletServiceImpl serviceWithWalletConfig(
+            String minUsdt, String feeRate, String maxBalancePct, String dailyCountLimit, Map<String, Object> extraConfig) {
+        Map<String, Object> config = new java.util.HashMap<>();
+        config.put("withdrawal.min_usdt", minUsdt);
+        config.put("withdrawal.fee_rate", feeRate);
+        config.put("withdrawal.max_balance_pct", maxBalancePct);
+        config.put("withdrawal.daily_count_limit", dailyCountLimit);
+        config.putAll(extraConfig);
+        when(systemConfigClient.wallet()).thenReturn(ApiResult.ok(config));
         return new WalletServiceImpl(
                 walletMapper,
                 ledgerMapper,
                 earningEventMapper,
                 withdrawalOrderMapper,
                 exchangeOrderMapper,
-                complianceClient);
+                complianceClient,
+                systemConfigClient);
     }
 
     private PostWalletCreditRequest creditRequest(String bizNo, String asset, String amount) {
@@ -499,12 +701,16 @@ class WalletServiceImplTest {
     }
 
     private CreateWithdrawalRequest withdrawalRequest(String withdrawalNo, String asset, String amount, String fee) {
+        return withdrawalRequest(withdrawalNo, asset, null, amount, fee);
+    }
+
+    private CreateWithdrawalRequest withdrawalRequest(String withdrawalNo, String asset, String chain, String amount, String fee) {
         CreateWithdrawalRequest request = new CreateWithdrawalRequest();
         request.setUserId(10001L);
         request.setWithdrawalNo(withdrawalNo);
         request.setAsset(asset);
+        request.setChain(chain);
         request.setAmount(new BigDecimal(amount));
-        request.setFee(new BigDecimal(fee));
         request.setTargetAddress("TTargetAddress111111111111111111111111");
         return request;
     }
@@ -534,8 +740,6 @@ class WalletServiceImplTest {
         request.setFromAsset("USDT");
         request.setToAsset("NEX");
         request.setFromAmount(new BigDecimal("1.000000"));
-        request.setToAmount(new BigDecimal("100.000000"));
-        request.setRate(new BigDecimal("100.00000000"));
         return request;
     }
 

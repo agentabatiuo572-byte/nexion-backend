@@ -28,7 +28,7 @@ spring:
         - id: mission-service
           uri: http://localhost:8103
           predicates:
-            - Path=/api/missions/**
+            - Path=/api/missions/**,/api/daily/**
           filters:
             - StripPrefix=1
         - id: commerce-service
@@ -64,7 +64,7 @@ spring:
         - id: config-system-service
           uri: http://localhost:8110
           predicates:
-            - Path=/api/config/day-one,/api/config/features
+            - Path=/api/config/day-one,/api/config/features,/api/config/wallet,/api/config/team,/api/config/commerce,/api/config/growth,/api/config/platform-phase,/api/config/generation-gates,/api/config/content/**,/api/config/help/**
           filters:
             - StripPrefix=1
         - id: wallet-service

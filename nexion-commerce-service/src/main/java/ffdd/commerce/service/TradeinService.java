@@ -9,6 +9,8 @@ import ffdd.commerce.domain.TradeinRule;
 import ffdd.commerce.dto.TradeinApplicationQueryRequest;
 import ffdd.commerce.dto.TradeinQuoteRequest;
 import ffdd.commerce.dto.TradeinQuoteResponse;
+import ffdd.commerce.dto.TradeinReviewRequest;
+import ffdd.commerce.dto.TradeinRuleRequest;
 import ffdd.commerce.dto.TradeinSubmitRequest;
 import ffdd.commerce.mapper.ProductMapper;
 import ffdd.commerce.mapper.TradeinApplicationMapper;
@@ -34,6 +36,10 @@ import org.springframework.util.StringUtils;
 public class TradeinService {
     private static final String PRODUCT_ON_SALE = "ON_SALE";
     private static final String STATUS_SUBMITTED = "SUBMITTED";
+    private static final String STATUS_APPROVED = "APPROVED";
+    private static final String STATUS_REJECTED = "REJECTED";
+    private static final String STATUS_CANCELLED = "CANCELLED";
+    private static final String STATUS_COMPLETED = "COMPLETED";
     private static final int ACTIVE = 1;
 
     private final ProductMapper productMapper;
@@ -157,6 +163,7 @@ public class TradeinService {
         LambdaQueryWrapper<TradeinApplication> wrapper = new LambdaQueryWrapper<TradeinApplication>()
                 .eq(TradeinApplication::getIsDeleted, 0)
                 .eq(request.getUserId() != null, TradeinApplication::getUserId, request.getUserId())
+                .eq(StringUtils.hasText(request.getTradeinNo()), TradeinApplication::getTradeinNo, request.getTradeinNo())
                 .eq(StringUtils.hasText(request.getStatus()), TradeinApplication::getStatus, request.getStatus())
                 .orderByDesc(TradeinApplication::getCreatedAt);
         Page<TradeinApplication> page = applicationMapper.selectPage(Page.of(pageNum, pageSize), wrapper);
@@ -173,6 +180,65 @@ public class TradeinService {
         if (application == null) {
             throw new BizException("Trade-in application not found");
         }
+        return application;
+    }
+
+    public PageResult<TradeinRule> pageRules(Long pageNum, Long pageSize, String sourceTier, String targetTier, Integer status) {
+        long normalizedPageNum = normalizePageNum(pageNum);
+        long normalizedPageSize = normalizePageSize(pageSize);
+        LambdaQueryWrapper<TradeinRule> wrapper = new LambdaQueryWrapper<TradeinRule>()
+                .eq(TradeinRule::getIsDeleted, 0)
+                .eq(StringUtils.hasText(sourceTier), TradeinRule::getSourceTier, trimToNull(sourceTier))
+                .eq(StringUtils.hasText(targetTier), TradeinRule::getTargetTier, trimToNull(targetTier))
+                .eq(status != null, TradeinRule::getStatus, status)
+                .orderByDesc(TradeinRule::getStatus)
+                .orderByDesc(TradeinRule::getSortOrder)
+                .orderByAsc(TradeinRule::getId);
+        Page<TradeinRule> page = tradeinRuleMapper.selectPage(Page.of(normalizedPageNum, normalizedPageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    public TradeinRule createRule(TradeinRuleRequest request) {
+        TradeinRule rule = new TradeinRule();
+        applyRule(rule, request);
+        rule.setIsDeleted(0);
+        tradeinRuleMapper.insert(rule);
+        return rule;
+    }
+
+    public TradeinRule updateRule(Long id, TradeinRuleRequest request) {
+        TradeinRule rule = getRule(id);
+        applyRule(rule, request);
+        tradeinRuleMapper.updateById(rule);
+        return rule;
+    }
+
+    public void deleteRule(Long id) {
+        TradeinRule rule = getRule(id);
+        rule.setIsDeleted(1);
+        rule.setStatus(0);
+        tradeinRuleMapper.updateById(rule);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public TradeinApplication review(String tradeinNo, TradeinReviewRequest request, String reviewer) {
+        TradeinApplication application = get(tradeinNo);
+        String status = normalize(request.getStatus());
+        if (!STATUS_SUBMITTED.equals(application.getStatus())
+                && !(STATUS_APPROVED.equals(application.getStatus()) && STATUS_COMPLETED.equals(status))) {
+            throw new BizException("Only submitted trade-in applications can be reviewed");
+        }
+        if (!STATUS_APPROVED.equals(status)
+                && !STATUS_REJECTED.equals(status)
+                && !STATUS_CANCELLED.equals(status)
+                && !STATUS_COMPLETED.equals(status)) {
+            throw new BizException("Unsupported trade-in review status");
+        }
+        application.setStatus(status);
+        application.setReviewNote(trimToNull(request.getReviewNote()));
+        application.setReviewer(trimToNull(reviewer));
+        application.setReviewedAt(LocalDateTime.now(clock));
+        applicationMapper.updateById(application);
         return application;
     }
 
@@ -226,6 +292,31 @@ public class TradeinService {
                 .orElseThrow(() -> new BizException("Source product is not eligible for trade-in"));
     }
 
+    private TradeinRule getRule(Long id) {
+        if (id == null || id < 1) {
+            throw new BizException("Trade-in rule id is required");
+        }
+        TradeinRule rule = tradeinRuleMapper.selectById(id);
+        if (rule == null || Integer.valueOf(1).equals(rule.getIsDeleted())) {
+            throw new BizException("Trade-in rule not found");
+        }
+        return rule;
+    }
+
+    private void applyRule(TradeinRule rule, TradeinRuleRequest request) {
+        if (!StringUtils.hasText(request.getSourceProductNo()) && !StringUtils.hasText(request.getSourceTier())) {
+            throw new BizException("Source product no or source tier is required");
+        }
+        rule.setSourceProductNo(trimToNull(request.getSourceProductNo()));
+        rule.setSourceTier(trimToNull(request.getSourceTier()));
+        rule.setTargetTier(requireText(request.getTargetTier(), "Target tier is required"));
+        rule.setDiscountUsdt(defaultDecimal(request.getDiscountUsdt()));
+        rule.setSalvageRate(defaultDecimal(request.getSalvageRate()));
+        rule.setMinHoldingMonths(request.getMinHoldingMonths() == null ? 0 : request.getMinHoldingMonths());
+        rule.setStatus(request.getStatus() == null ? ACTIVE : request.getStatus());
+        rule.setSortOrder(request.getSortOrder() == null ? 0 : request.getSortOrder());
+    }
+
     private BigDecimal money(BigDecimal value) {
         if (value == null || value.compareTo(BigDecimal.ZERO) < 0) {
             return BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP);
@@ -276,6 +367,17 @@ public class TradeinService {
 
     private String normalize(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private String requireText(String value, String message) {
+        if (!StringUtils.hasText(value)) {
+            throw new BizException(message);
+        }
+        return value.trim();
     }
 
     private String asString(Object value) {

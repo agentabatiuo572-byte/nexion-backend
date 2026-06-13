@@ -1,6 +1,8 @@
 package ffdd.wallet.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
 import ffdd.wallet.chain.DepositChainConfirmation;
 import ffdd.wallet.chain.DepositChainProvider;
@@ -8,6 +10,7 @@ import ffdd.wallet.domain.DepositOrder;
 import ffdd.wallet.domain.WalletLedger;
 import ffdd.wallet.dto.ConfirmDepositRequest;
 import ffdd.wallet.dto.PostWalletCreditRequest;
+import ffdd.wallet.dto.WalletOrderQueryRequest;
 import ffdd.wallet.mapper.DepositOrderMapper;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -109,6 +112,18 @@ public class DepositPostingService {
         return order;
     }
 
+    public PageResult<DepositOrder> pageRecords(WalletOrderQueryRequest request) {
+        long pageNum = normalizePageNum(request.getPageNum());
+        long pageSize = normalizePageSize(request.getPageSize());
+        LambdaQueryWrapper<DepositOrder> wrapper = new LambdaQueryWrapper<DepositOrder>()
+                .eq(DepositOrder::getIsDeleted, 0)
+                .eq(request.getUserId() != null, DepositOrder::getUserId, request.getUserId())
+                .eq(StringUtils.hasText(request.getStatus()), DepositOrder::getStatus, request.getStatus())
+                .orderByDesc(DepositOrder::getCreatedAt);
+        Page<DepositOrder> page = depositOrderMapper.selectPage(Page.of(pageNum, pageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public DepositOrder retry(String depositNo) {
         DepositOrder order = getByDepositNo(depositNo);
@@ -122,9 +137,10 @@ public class DepositPostingService {
         return confirm(request);
     }
 
-    public List<DepositOrder> findRecords(String chainTxHash, String asset) {
+    public List<DepositOrder> findRecords(Long userId, String chainTxHash, String asset) {
         LambdaQueryWrapper<DepositOrder> wrapper = new LambdaQueryWrapper<DepositOrder>()
                 .eq(DepositOrder::getIsDeleted, 0)
+                .eq(userId != null, DepositOrder::getUserId, userId)
                 .eq(StringUtils.hasText(chainTxHash), DepositOrder::getChainTxHash, trim(chainTxHash))
                 .eq(StringUtils.hasText(asset), DepositOrder::getAsset, trim(asset))
                 .orderByDesc(DepositOrder::getCreatedAt);
@@ -262,6 +278,17 @@ public class DepositPostingService {
             return 20;
         }
         return Math.min(limit, 100);
+    }
+
+    private long normalizePageNum(Long pageNum) {
+        return pageNum == null || pageNum < 1 ? 1 : pageNum;
+    }
+
+    private long normalizePageSize(Long pageSize) {
+        if (pageSize == null || pageSize < 1) {
+            return 10;
+        }
+        return Math.min(pageSize, 200);
     }
 
     private int normalizeConfirmations(Integer confirmations) {

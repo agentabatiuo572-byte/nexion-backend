@@ -12,6 +12,8 @@ public class DeviceStatusResponse {
     private String instanceNo;
     private String name;
     private String deviceType;
+    private String productCode;
+    private Integer generation;
     private String status;
     private BigDecimal hashrate;
     private BigDecimal dailyUsdt;
@@ -24,8 +26,15 @@ public class DeviceStatusResponse {
     private BigDecimal temperatureC;
     private BigDecimal powerW;
     private BigDecimal gpuUsage;
+    private BigDecimal vramUsedGb;
+    private Integer batteryLevel;
+    private Boolean isCharging;
+    private Boolean networkReachable;
+    private String thermalState;
+    private String pausedReason;
     private String activeTaskNo;
     private String clientName;
+    private String agentVersion;
     private LocalDateTime reportedAt;
     private LocalDateTime lastSeenAt;
     private String cacheStatus;
@@ -37,6 +46,8 @@ public class DeviceStatusResponse {
         response.setInstanceNo(device.getInstanceNo());
         response.setName(device.getName());
         response.setDeviceType(device.getDeviceType());
+        response.setProductCode(device.getProductCode());
+        response.setGeneration(device.getGeneration());
         response.setStatus(device.getStatus());
         response.setHashrate(device.getHashrate());
         response.setDailyUsdt(device.getDailyUsdt());

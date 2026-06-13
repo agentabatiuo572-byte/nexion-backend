@@ -7,6 +7,7 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
 import ffdd.wallet.client.ComplianceClient;
+import ffdd.wallet.client.SystemConfigClient;
 import ffdd.wallet.client.dto.ComplianceGateRequest;
 import ffdd.wallet.client.dto.ComplianceGateResponse;
 import ffdd.wallet.domain.EarningEvent;
@@ -27,6 +28,7 @@ import ffdd.wallet.dto.PostWalletDebitRequest;
 import ffdd.wallet.dto.RiskDecisionApplyResult;
 import ffdd.wallet.dto.SubmitWithdrawalChainRequest;
 import ffdd.wallet.dto.SucceedWithdrawalRequest;
+import ffdd.wallet.dto.WalletOrderQueryRequest;
 import ffdd.wallet.mapper.EarningEventMapper;
 import ffdd.wallet.mapper.ExchangeOrderMapper;
 import ffdd.wallet.mapper.UserWalletMapper;
@@ -34,9 +36,13 @@ import ffdd.wallet.mapper.WalletLedgerMapper;
 import ffdd.wallet.mapper.WithdrawalOrderMapper;
 import ffdd.wallet.service.WalletService;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,6 +74,17 @@ public class WalletServiceImpl implements WalletService {
     private static final String WITHDRAWAL_FAILED = "FAILED";
     private static final String WITHDRAWAL_DEAD = "DEAD";
     private static final String EXCHANGE_COMPLETED = "COMPLETED";
+    private static final String DEFAULT_WITHDRAWAL_CHAIN = "USDT-TRC20";
+    private static final BigDecimal DEFAULT_WITHDRAWAL_MIN_USDT = new BigDecimal("20");
+    private static final BigDecimal DEFAULT_WITHDRAWAL_FEE_RATE = new BigDecimal("0.02");
+    private static final BigDecimal DEFAULT_WITHDRAWAL_MAX_BALANCE_PCT = new BigDecimal("0.80");
+    private static final int DEFAULT_WITHDRAWAL_DAILY_COUNT_LIMIT = 1;
+    private static final BigDecimal DEFAULT_EXCHANGE_MIN_USDT_VALUE = BigDecimal.ZERO;
+    private static final BigDecimal DEFAULT_EXCHANGE_MAX_USDT_VALUE = BigDecimal.ZERO;
+    private static final BigDecimal DEFAULT_EXCHANGE_NEX_USDT_PRICE = new BigDecimal("0.171");
+    private static final int DEFAULT_EXCHANGE_DAILY_COUNT_LIMIT = 99;
+    private static final String WITHDRAWAL_CHAIN_TRC20 = "USDT-TRC20";
+    private static final String WITHDRAWAL_CHAIN_ERC20 = "USDT-ERC20";
 
     private final UserWalletMapper walletMapper;
     private final WalletLedgerMapper ledgerMapper;
@@ -75,6 +92,7 @@ public class WalletServiceImpl implements WalletService {
     private final WithdrawalOrderMapper withdrawalOrderMapper;
     private final ExchangeOrderMapper exchangeOrderMapper;
     private final ComplianceClient complianceClient;
+    private final SystemConfigClient systemConfigClient;
 
     public WalletServiceImpl(
             UserWalletMapper walletMapper,
@@ -82,13 +100,15 @@ public class WalletServiceImpl implements WalletService {
             EarningEventMapper earningEventMapper,
             WithdrawalOrderMapper withdrawalOrderMapper,
             ExchangeOrderMapper exchangeOrderMapper,
-            ComplianceClient complianceClient) {
+            ComplianceClient complianceClient,
+            SystemConfigClient systemConfigClient) {
         this.walletMapper = walletMapper;
         this.ledgerMapper = ledgerMapper;
         this.earningEventMapper = earningEventMapper;
         this.withdrawalOrderMapper = withdrawalOrderMapper;
         this.exchangeOrderMapper = exchangeOrderMapper;
         this.complianceClient = complianceClient;
+        this.systemConfigClient = systemConfigClient;
     }
 
     @Override
@@ -128,6 +148,37 @@ public class WalletServiceImpl implements WalletService {
                 .orderByDesc(WalletLedger::getCreatedAt);
         Page<WalletLedger> page = ledgerMapper.selectPage(Page.of(pageNum, pageSize), wrapper);
         return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    @Override
+    public PageResult<WithdrawalOrder> pageWithdrawals(WalletOrderQueryRequest request) {
+        long pageNum = normalizePageNum(request.getPageNum());
+        long pageSize = normalizePageSize(request.getPageSize());
+        LambdaQueryWrapper<WithdrawalOrder> wrapper = new LambdaQueryWrapper<WithdrawalOrder>()
+                .eq(WithdrawalOrder::getIsDeleted, 0)
+                .eq(request.getUserId() != null, WithdrawalOrder::getUserId, request.getUserId())
+                .eq(StringUtils.hasText(request.getStatus()), WithdrawalOrder::getStatus, request.getStatus())
+                .orderByDesc(WithdrawalOrder::getCreatedAt);
+        Page<WithdrawalOrder> page = withdrawalOrderMapper.selectPage(Page.of(pageNum, pageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    @Override
+    public PageResult<ExchangeOrder> pageExchanges(WalletOrderQueryRequest request) {
+        long pageNum = normalizePageNum(request.getPageNum());
+        long pageSize = normalizePageSize(request.getPageSize());
+        LambdaQueryWrapper<ExchangeOrder> wrapper = new LambdaQueryWrapper<ExchangeOrder>()
+                .eq(ExchangeOrder::getIsDeleted, 0)
+                .eq(request.getUserId() != null, ExchangeOrder::getUserId, request.getUserId())
+                .eq(StringUtils.hasText(request.getStatus()), ExchangeOrder::getStatus, request.getStatus())
+                .orderByDesc(ExchangeOrder::getCreatedAt);
+        Page<ExchangeOrder> page = exchangeOrderMapper.selectPage(Page.of(pageNum, pageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    @Override
+    public ExchangeOrder getExchange(String exchangeNo) {
+        return requireExchange(exchangeNo);
     }
 
     @Override
@@ -187,14 +238,44 @@ public class WalletServiceImpl implements WalletService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public WalletLedger reverseLedger(Long ledgerId, String reason) {
+        WalletLedger original = ledgerMapper.selectById(ledgerId);
+        if (original == null || Integer.valueOf(1).equals(original.getIsDeleted())) {
+            throw new BizException("Wallet ledger not found");
+        }
+        if (StringUtils.hasText(original.getBizType()) && original.getBizType().endsWith("_REVERSAL")) {
+            throw new BizException("Reversal ledger cannot be reversed again");
+        }
+        String reverseBizNo = original.getBizNo() + "-REV-" + original.getId();
+        String reverseBizType = (StringUtils.hasText(original.getBizType()) ? original.getBizType() : "WALLET") + "_REVERSAL";
+        String remark = "Reverse ledger " + original.getId() + ": " + reason;
+        if (DIRECTION_IN.equals(original.getDirection())) {
+            return postDebit(original.getUserId(), reverseBizNo, reverseBizType, original.getAsset(), original.getAmount(), remark);
+        }
+        if (DIRECTION_OUT.equals(original.getDirection())) {
+            return postCredit(original.getUserId(), reverseBizNo, reverseBizType, original.getAsset(), original.getAmount(), remark);
+        }
+        throw new BizException("Unsupported ledger direction");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public WithdrawalOrder createWithdrawal(CreateWithdrawalRequest request) {
-        validateWithdrawal(request);
+        WithdrawalConfig config = withdrawalConfig();
+        validateWithdrawal(request, config);
+        String withdrawalNo = resolveWithdrawalNo(request);
+        request.setWithdrawalNo(withdrawalNo);
         WithdrawalOrder existing = findWithdrawal(request.getWithdrawalNo());
         if (existing != null) {
             return existing;
         }
 
-        BigDecimal fee = normalizeMoney(request.getFee());
+        if (request.getAmount().compareTo(config.minUsdt()) < 0) {
+            throw new BizException("Withdrawal amount is below minimum");
+        }
+        ensureDailyWithdrawalLimit(request, config);
+        ensureWithdrawalBalanceLimit(request, config);
+        BigDecimal fee = withdrawalFee(request.getAmount(), config.feeRate());
         BigDecimal totalDebit = request.getAmount().add(fee);
         ComplianceGateResponse gate = checkCompliance(
                 request.getUserId(), BIZ_TYPE_WITHDRAWAL, request.getWithdrawalNo(), request.getAsset(), totalDebit);
@@ -203,6 +284,7 @@ public class WalletServiceImpl implements WalletService {
         order.setUserId(request.getUserId());
         order.setWithdrawalNo(request.getWithdrawalNo());
         order.setAsset(request.getAsset());
+        order.setChain(withdrawalChain(request.getChain()));
         order.setAmount(request.getAmount());
         order.setFee(fee);
         order.setTargetAddress(request.getTargetAddress());
@@ -334,10 +416,22 @@ public class WalletServiceImpl implements WalletService {
     @Transactional(rollbackFor = Exception.class)
     public ExchangeOrder createExchange(CreateExchangeRequest request) {
         validateExchange(request);
+        String exchangeNo = resolveExchangeNo(request);
+        request.setExchangeNo(exchangeNo);
         ExchangeOrder existing = findExchange(request.getExchangeNo());
         if (existing != null) {
             return existing;
         }
+
+        ExchangeConfig config = exchangeConfig();
+        ExchangeQuote quote = quoteExchange(request, config);
+        if (config.minUsdtValue().compareTo(BigDecimal.ZERO) > 0 && quote.usdtValue().compareTo(config.minUsdtValue()) < 0) {
+            throw new BizException("Exchange amount is below minimum");
+        }
+        if (config.maxUsdtValue().compareTo(BigDecimal.ZERO) > 0 && quote.usdtValue().compareTo(config.maxUsdtValue()) > 0) {
+            throw new BizException("Exchange amount exceeds single limit");
+        }
+        ensureDailyExchangeLimit(request, config);
 
         ComplianceGateResponse gate = checkCompliance(
                 request.getUserId(), BIZ_TYPE_EXCHANGE, request.getExchangeNo(), request.getFromAsset(), request.getFromAmount());
@@ -348,8 +442,8 @@ public class WalletServiceImpl implements WalletService {
         order.setFromAsset(request.getFromAsset());
         order.setToAsset(request.getToAsset());
         order.setFromAmount(request.getFromAmount());
-        order.setToAmount(request.getToAmount());
-        order.setRate(request.getRate());
+        order.setToAmount(quote.toAmount());
+        order.setRate(quote.rate());
         order.setStatus(exchangeStatus(gate));
         order.setIsDeleted(0);
         boolean inserted = insertExchange(order);
@@ -369,7 +463,7 @@ public class WalletServiceImpl implements WalletService {
                 request.getExchangeNo(),
                 BIZ_TYPE_EXCHANGE_IN,
                 request.getToAsset(),
-                request.getToAmount(),
+                quote.toAmount(),
                 "Exchange credit " + request.getExchangeNo());
         return order;
     }
@@ -927,22 +1021,20 @@ public class WalletServiceImpl implements WalletService {
         }
     }
 
-    private void validateWithdrawal(CreateWithdrawalRequest request) {
+    private void validateWithdrawal(CreateWithdrawalRequest request, WithdrawalConfig config) {
         if (request.getUserId() == null) {
             throw new BizException("User id is required");
         }
-        if (!StringUtils.hasText(request.getWithdrawalNo())) {
-            throw new BizException("Withdrawal no is required");
+        if (StringUtils.hasText(request.getWithdrawalNo()) && request.getWithdrawalNo().length() > 64) {
+            throw new BizException("Withdrawal no is too long");
         }
         validateAsset(request.getAsset());
         if (!ASSET_USDT.equals(request.getAsset())) {
             throw new BizException("Withdrawal only supports USDT");
         }
+        validateWithdrawalChain(request.getChain(), config);
         if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BizException("Withdrawal amount must be positive");
-        }
-        if (request.getFee() != null && request.getFee().compareTo(BigDecimal.ZERO) < 0) {
-            throw new BizException("Withdrawal fee must not be negative");
         }
         if (!StringUtils.hasText(request.getTargetAddress())) {
             throw new BizException("Target address is required");
@@ -956,8 +1048,8 @@ public class WalletServiceImpl implements WalletService {
         if (request.getUserId() == null) {
             throw new BizException("User id is required");
         }
-        if (!StringUtils.hasText(request.getExchangeNo())) {
-            throw new BizException("Exchange no is required");
+        if (StringUtils.hasText(request.getExchangeNo()) && request.getExchangeNo().length() > 64) {
+            throw new BizException("Exchange no is too long");
         }
         validateAsset(request.getFromAsset());
         validateAsset(request.getToAsset());
@@ -966,12 +1058,6 @@ public class WalletServiceImpl implements WalletService {
         }
         if (request.getFromAmount() == null || request.getFromAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BizException("Exchange from amount must be positive");
-        }
-        if (request.getToAmount() == null || request.getToAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BizException("Exchange to amount must be positive");
-        }
-        if (request.getRate() == null || request.getRate().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BizException("Exchange rate must be positive");
         }
     }
 
@@ -1000,8 +1086,195 @@ public class WalletServiceImpl implements WalletService {
         return amount == null ? BigDecimal.ZERO : amount;
     }
 
+    private String withdrawalChain(String chain) {
+        return StringUtils.hasText(chain) ? chain.trim().toUpperCase() : DEFAULT_WITHDRAWAL_CHAIN;
+    }
+
+    private void validateWithdrawalChain(String chain, WithdrawalConfig config) {
+        String normalized = withdrawalChain(chain);
+        boolean supported = (WITHDRAWAL_CHAIN_TRC20.equals(normalized) && config.trc20Enabled())
+                || (WITHDRAWAL_CHAIN_ERC20.equals(normalized) && config.erc20Enabled());
+        if (!supported) {
+            throw new BizException("Unsupported withdrawal chain");
+        }
+    }
+
+    private WithdrawalConfig withdrawalConfig() {
+        try {
+            Map<String, Object> data = walletConfigData();
+            return new WithdrawalConfig(
+                    configDecimal(data, "withdrawal.min_usdt", DEFAULT_WITHDRAWAL_MIN_USDT),
+                    configDecimal(data, "withdrawal.fee_rate", DEFAULT_WITHDRAWAL_FEE_RATE),
+                    configDecimal(data, "withdrawal.max_balance_pct", DEFAULT_WITHDRAWAL_MAX_BALANCE_PCT),
+                    configInt(data, "withdrawal.daily_count_limit", DEFAULT_WITHDRAWAL_DAILY_COUNT_LIMIT),
+                    configBoolean(data, "withdrawal.trc20.enabled", true),
+                    configBoolean(data, "withdrawal.erc20.enabled", true));
+        } catch (RuntimeException ex) {
+            return new WithdrawalConfig(
+                    DEFAULT_WITHDRAWAL_MIN_USDT,
+                    DEFAULT_WITHDRAWAL_FEE_RATE,
+                    DEFAULT_WITHDRAWAL_MAX_BALANCE_PCT,
+                    DEFAULT_WITHDRAWAL_DAILY_COUNT_LIMIT,
+                    true,
+                    true);
+        }
+    }
+
+    private ExchangeConfig exchangeConfig() {
+        try {
+            Map<String, Object> data = walletConfigData();
+            return new ExchangeConfig(
+                    configDecimal(data, "exchange.nex_usdt_price", DEFAULT_EXCHANGE_NEX_USDT_PRICE),
+                    configDecimal(data, "exchange.min_usdt_value", DEFAULT_EXCHANGE_MIN_USDT_VALUE),
+                    configDecimal(data, "exchange.max_usdt_value", DEFAULT_EXCHANGE_MAX_USDT_VALUE),
+                    configInt(data, "exchange.daily_count_limit", DEFAULT_EXCHANGE_DAILY_COUNT_LIMIT));
+        } catch (RuntimeException ex) {
+            return new ExchangeConfig(
+                    DEFAULT_EXCHANGE_NEX_USDT_PRICE,
+                    DEFAULT_EXCHANGE_MIN_USDT_VALUE,
+                    DEFAULT_EXCHANGE_MAX_USDT_VALUE,
+                    DEFAULT_EXCHANGE_DAILY_COUNT_LIMIT);
+        }
+    }
+
+    private Map<String, Object> walletConfigData() {
+        ApiResult<Map<String, Object>> response = systemConfigClient.wallet();
+        return response == null ? null : response.getData();
+    }
+
+    private BigDecimal configDecimal(Map<String, Object> data, String key, BigDecimal fallback) {
+        if (data == null || !data.containsKey(key)) {
+            return fallback;
+        }
+        Object value = data.get(key);
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            BigDecimal decimal = new BigDecimal(String.valueOf(value));
+            return decimal.compareTo(BigDecimal.ZERO) < 0 ? fallback : decimal;
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
+    }
+
+    private int configInt(Map<String, Object> data, String key, int fallback) {
+        if (data == null || !data.containsKey(key) || data.get(key) == null) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(String.valueOf(data.get(key)));
+            return parsed < 1 ? fallback : parsed;
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
+    }
+
+    private boolean configBoolean(Map<String, Object> data, String key, boolean fallback) {
+        if (data == null || !data.containsKey(key) || data.get(key) == null) {
+            return fallback;
+        }
+        String value = String.valueOf(data.get(key)).trim();
+        if ("true".equalsIgnoreCase(value) || "1".equals(value) || "yes".equalsIgnoreCase(value)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(value) || "0".equals(value) || "no".equalsIgnoreCase(value)) {
+            return false;
+        }
+        return fallback;
+    }
+
+    private void ensureDailyWithdrawalLimit(CreateWithdrawalRequest request, WithdrawalConfig config) {
+        LocalDateTime since = LocalDateTime.now().toLocalDate().atStartOfDay();
+        Long count = withdrawalOrderMapper.selectCount(new LambdaQueryWrapper<WithdrawalOrder>()
+                .eq(WithdrawalOrder::getUserId, request.getUserId())
+                .eq(WithdrawalOrder::getIsDeleted, 0)
+                .ge(WithdrawalOrder::getCreatedAt, since)
+                .notIn(WithdrawalOrder::getStatus, ORDER_REJECTED));
+        if (count != null && count >= config.dailyCountLimit()) {
+            throw new BizException("Daily withdrawal limit reached");
+        }
+    }
+
+    private void ensureWithdrawalBalanceLimit(CreateWithdrawalRequest request, WithdrawalConfig config) {
+        if (config.maxBalancePct().compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        UserWallet wallet = getOrCreateWallet(request.getUserId());
+        BigDecimal available = normalizeMoney(wallet.getUsdtAvailable());
+        BigDecimal maxAmount = available.multiply(config.maxBalancePct()).setScale(6, RoundingMode.DOWN);
+        if (request.getAmount().compareTo(maxAmount) > 0) {
+            throw new BizException("Withdrawal amount exceeds balance percentage limit");
+        }
+    }
+
+    private void ensureDailyExchangeLimit(CreateExchangeRequest request, ExchangeConfig config) {
+        LocalDateTime since = LocalDateTime.now().toLocalDate().atStartOfDay();
+        Long count = exchangeOrderMapper.selectCount(new LambdaQueryWrapper<ExchangeOrder>()
+                .eq(ExchangeOrder::getUserId, request.getUserId())
+                .eq(ExchangeOrder::getIsDeleted, 0)
+                .ge(ExchangeOrder::getCreatedAt, since)
+                .notIn(ExchangeOrder::getStatus, ORDER_REJECTED));
+        if (count != null && count >= config.dailyCountLimit()) {
+            throw new BizException("Daily exchange limit reached");
+        }
+    }
+
+    private ExchangeQuote quoteExchange(CreateExchangeRequest request, ExchangeConfig config) {
+        BigDecimal price = config.nexUsdtPrice();
+        if (price.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BizException("Exchange price is not configured");
+        }
+        if (ASSET_USDT.equals(request.getFromAsset()) && ASSET_NEX.equals(request.getToAsset())) {
+            BigDecimal toAmount = request.getFromAmount().divide(price, 8, RoundingMode.HALF_UP);
+            BigDecimal rate = BigDecimal.ONE.divide(price, 8, RoundingMode.HALF_UP);
+            return new ExchangeQuote(toAmount, rate, request.getFromAmount());
+        }
+        if (ASSET_NEX.equals(request.getFromAsset()) && ASSET_USDT.equals(request.getToAsset())) {
+            BigDecimal toAmount = request.getFromAmount().multiply(price).setScale(8, RoundingMode.HALF_UP);
+            BigDecimal rate = price.setScale(8, RoundingMode.HALF_UP);
+            return new ExchangeQuote(toAmount, rate, toAmount);
+        }
+        throw new BizException("Exchange pair is not supported");
+    }
+
+    private BigDecimal withdrawalFee(BigDecimal amount, BigDecimal feeRate) {
+        return amount.multiply(feeRate).setScale(6, RoundingMode.HALF_UP);
+    }
+
+    private String resolveWithdrawalNo(CreateWithdrawalRequest request) {
+        return StringUtils.hasText(request.getWithdrawalNo()) ? request.getWithdrawalNo().trim() : generateOrderNo("WD");
+    }
+
+    private String resolveExchangeNo(CreateExchangeRequest request) {
+        return StringUtils.hasText(request.getExchangeNo()) ? request.getExchangeNo().trim() : generateOrderNo("EX");
+    }
+
+    private String generateOrderNo(String prefix) {
+        return prefix + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase(Locale.ROOT);
+    }
+
     private BigDecimal withdrawalTotal(WithdrawalOrder order) {
         return order.getAmount().add(normalizeMoney(order.getFee()));
+    }
+
+    private record WithdrawalConfig(
+            BigDecimal minUsdt,
+            BigDecimal feeRate,
+            BigDecimal maxBalancePct,
+            int dailyCountLimit,
+            boolean trc20Enabled,
+            boolean erc20Enabled) {
+    }
+
+    private record ExchangeConfig(
+            BigDecimal nexUsdtPrice,
+            BigDecimal minUsdtValue,
+            BigDecimal maxUsdtValue,
+            int dailyCountLimit) {
+    }
+
+    private record ExchangeQuote(BigDecimal toAmount, BigDecimal rate, BigDecimal usdtValue) {
     }
 
     private String assetColumn(String asset) {

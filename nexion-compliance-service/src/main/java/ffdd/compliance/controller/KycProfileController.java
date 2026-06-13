@@ -3,6 +3,7 @@ package ffdd.compliance.controller;
 import ffdd.common.api.ApiResult;
 import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
+import ffdd.common.exception.BizException;
 import ffdd.compliance.domain.KycProfile;
 import ffdd.compliance.dto.KycExpiryResult;
 import ffdd.compliance.dto.KycProfileReviewRequest;
@@ -13,6 +14,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -47,11 +51,26 @@ public class KycProfileController {
         return ApiResult.ok(kycProfileService.getByUserId(userId));
     }
 
+    @GetMapping("/app/me")
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<KycProfile> getMyKycProfile() {
+        return ApiResult.ok(kycProfileService.getByUserId(currentRoleUserId()));
+    }
+
     @PostMapping
     @PreAuthorize("hasAuthority('PERM_COMPLIANCE_WRITE')")
     public ApiResult<KycProfile> submit(@Valid @RequestBody KycProfileSubmitRequest request) {
         KycProfile profile = kycProfileService.submit(request);
         auditKyc("KYC_SUBMIT", profile);
+        return ApiResult.ok(profile);
+    }
+
+    @PostMapping("/app/me")
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<KycProfile> submitMyKycProfile(@RequestBody KycProfileSubmitRequest request) {
+        request.setUserId(currentRoleUserId());
+        KycProfile profile = kycProfileService.submit(request);
+        auditKyc("KYC_APP_SUBMIT", profile);
         return ApiResult.ok(profile);
     }
 
@@ -127,5 +146,22 @@ public class KycProfileController {
             }
         }
         return detail;
+    }
+
+    private Long currentRoleUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication.getAuthorities().stream().noneMatch(a -> "ROLE_USER".equals(a.getAuthority()))) {
+            throw new BizException("Authenticated user is required");
+        }
+        String subject = String.valueOf(authentication.getPrincipal());
+        if (!StringUtils.hasText(subject)) {
+            throw new BizException("Authenticated user id is invalid");
+        }
+        try {
+            return Long.valueOf(subject);
+        } catch (NumberFormatException ignored) {
+            throw new BizException("Authenticated user id is invalid");
+        }
     }
 }

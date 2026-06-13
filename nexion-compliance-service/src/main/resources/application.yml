@@ -1,6 +1,10 @@
 spring:
   application:
     name: nexion-compliance-service
+  servlet:
+    multipart:
+      max-file-size: ${NEXION_COMPLIANCE_MULTIPART_MAX_FILE_SIZE:50MB}
+      max-request-size: ${NEXION_COMPLIANCE_MULTIPART_MAX_REQUEST_SIZE:50MB}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:nexion}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
@@ -31,7 +35,7 @@ nexion:
     bucket: ${NEXION_STORAGE_BUCKET:nexion}
   compliance:
     evidence:
-      max-upload-size-bytes: ${NEXION_COMPLIANCE_EVIDENCE_MAX_UPLOAD_SIZE_BYTES:10485760}
+      max-upload-size-bytes: ${NEXION_COMPLIANCE_EVIDENCE_MAX_UPLOAD_SIZE_BYTES:52428800}
       presign-expiry-seconds: ${NEXION_COMPLIANCE_EVIDENCE_PRESIGN_EXPIRY_SECONDS:900}
     kyc-expiry:
       enabled: ${NEXION_COMPLIANCE_KYC_EXPIRY_ENABLED:false}

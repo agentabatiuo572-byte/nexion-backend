@@ -19,8 +19,17 @@ class OrderPaidActivationServiceTest {
         payload.setOrderNo("ORD-1");
         payload.setUserId(10001L);
         payload.setProductId(1L);
+        payload.setProductCode("stellarbox-s1");
+        payload.setProductTier("Entry");
         payload.setProductName("NexionBox S1");
         payload.setDeviceType("EDGE_BOX");
+        payload.setGeneration(1);
+        payload.setGpuModel("4x RTX 4090");
+        payload.setVramTotalGb(96);
+        payload.setBasePowerW(new BigDecimal("1200"));
+        payload.setDcLocation("Singapore DC");
+        payload.setPriceUsdtSnapshot(new BigDecimal("1299"));
+        payload.setSourceChannel("ORDER");
         payload.setHashrate(new BigDecimal("12.5"));
         payload.setDailyUsdt(new BigDecimal("0.2"));
         payload.setDailyNex(new BigDecimal("8"));
@@ -30,8 +39,17 @@ class OrderPaidActivationServiceTest {
 
         assertThat(request.getUserId()).isEqualTo(10001L);
         assertThat(request.getSourceOrderNo()).isEqualTo("ORD-1");
+        assertThat(request.getProductCode()).isEqualTo("stellarbox-s1");
+        assertThat(request.getProductTier()).isEqualTo("Entry");
         assertThat(request.getProductName()).isEqualTo("NexionBox S1");
         assertThat(request.getDeviceType()).isEqualTo("EDGE_BOX");
+        assertThat(request.getGeneration()).isEqualTo(1);
+        assertThat(request.getGpuModel()).isEqualTo("4x RTX 4090");
+        assertThat(request.getVramTotalGb()).isEqualTo(96);
+        assertThat(request.getBasePowerW()).isEqualByComparingTo("1200");
+        assertThat(request.getDcLocation()).isEqualTo("Singapore DC");
+        assertThat(request.getPriceUsdtSnapshot()).isEqualByComparingTo("1299");
+        assertThat(request.getSourceChannel()).isEqualTo("ORDER");
         assertThat(request.getHashrate()).isEqualByComparingTo("12.5");
         assertThat(request.getDailyUsdt()).isEqualByComparingTo("0.2");
         assertThat(request.getDailyNex()).isEqualByComparingTo("8");

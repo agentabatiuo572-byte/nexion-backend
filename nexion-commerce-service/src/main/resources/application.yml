@@ -6,6 +6,10 @@ spring:
     url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:nexion}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USERNAME:root}
     password: "${MYSQL_PASSWORD:A123456789Z!@#}"
+  servlet:
+    multipart:
+      max-file-size: ${NEXION_COMMERCE_MULTIPART_MAX_FILE_SIZE:50MB}
+      max-request-size: ${NEXION_COMMERCE_MULTIPART_MAX_REQUEST_SIZE:50MB}
   config:
     import:
       - optional:nacos:nexion-common.yaml
@@ -36,7 +40,7 @@ nexion:
     bucket: ${NEXION_STORAGE_BUCKET:nexion}
   commerce:
     product-media:
-      max-upload-size-bytes: ${NEXION_COMMERCE_PRODUCT_MEDIA_MAX_UPLOAD_SIZE_BYTES:5242880}
+      max-upload-size-bytes: ${NEXION_COMMERCE_PRODUCT_MEDIA_MAX_UPLOAD_SIZE_BYTES:52428800}
       preview-expiry-seconds: ${NEXION_COMMERCE_PRODUCT_MEDIA_PREVIEW_EXPIRY_SECONDS:900}
   payment:
     mock:

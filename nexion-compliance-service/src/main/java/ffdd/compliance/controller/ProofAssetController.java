@@ -3,6 +3,7 @@ package ffdd.compliance.controller;
 import ffdd.common.api.ApiResult;
 import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
+import ffdd.common.exception.BizException;
 import ffdd.compliance.domain.ProofAsset;
 import ffdd.compliance.dto.ProofAssetCreateRequest;
 import ffdd.compliance.dto.ProofAssetReviewRequest;
@@ -12,6 +13,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,6 +44,15 @@ public class ProofAssetController {
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "20") int limit) {
         return ApiResult.ok(proofAssetService.list(userId, proofType, status, limit));
+    }
+
+    @GetMapping("/app/mine")
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<List<ProofAsset>> listMine(
+            @RequestParam(required = false) String proofType,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(proofAssetService.list(currentRoleUserId(), proofType, status, limit));
     }
 
     @GetMapping("/{proofNo}")
@@ -113,5 +126,22 @@ public class ProofAssetController {
             }
         }
         return detail;
+    }
+
+    private Long currentRoleUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication.getAuthorities().stream().noneMatch(a -> "ROLE_USER".equals(a.getAuthority()))) {
+            throw new BizException("Authenticated user is required");
+        }
+        String subject = String.valueOf(authentication.getPrincipal());
+        if (!StringUtils.hasText(subject)) {
+            throw new BizException("Authenticated user id is invalid");
+        }
+        try {
+            return Long.valueOf(subject);
+        } catch (NumberFormatException ignored) {
+            throw new BizException("Authenticated user id is invalid");
+        }
     }
 }

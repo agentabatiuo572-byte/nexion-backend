@@ -71,6 +71,11 @@ $services = @(
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "logs") | Out-Null
 
+& $Maven -f (Join-Path $Root "pom.xml") -pl nexion-common -am -DskipTests install
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to install nexion-common before starting services."
+}
+
 foreach ($service in $services) {
   $existing = Get-NetTCPConnection -LocalPort $service.Port -State Listen -ErrorAction SilentlyContinue
   if ($existing) {

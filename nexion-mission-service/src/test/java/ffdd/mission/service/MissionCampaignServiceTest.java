@@ -188,6 +188,21 @@ class MissionCampaignServiceTest {
     }
 
     @Test
+    void opsSoftDeletesMonthlyChallengeConfigOnly() {
+        when(monthlyChallengeMapper.selectOne(any())).thenReturn(monthly(1L, "MONTHLY_STARTER", 5, "1000.000000"));
+
+        service.deleteMonthly(1L);
+
+        ArgumentCaptor<MonthlyChallenge> patchCaptor = ArgumentCaptor.forClass(MonthlyChallenge.class);
+        verify(monthlyChallengeMapper).updateById(patchCaptor.capture());
+        assertThat(patchCaptor.getValue().getId()).isEqualTo(1L);
+        assertThat(patchCaptor.getValue().getStatus()).isZero();
+        assertThat(patchCaptor.getValue().getIsDeleted()).isEqualTo(1);
+        verify(userMonthlyChallengeMapper, never()).updateById(any(UserMonthlyChallenge.class));
+        verify(pointsLedgerMapper, never()).insert(any(PointsLedger.class));
+    }
+
+    @Test
     void opsUpdatesMonthlyProgressAndDerivesUnlockedStatus() {
         MonthlyChallenge challenge = monthly(1L, "MONTHLY_STARTER", 5, "1000.000000");
         when(monthlyChallengeMapper.selectOne(any())).thenReturn(challenge);
@@ -219,6 +234,21 @@ class MissionCampaignServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessage("Event quest time window is invalid");
         verify(eventQuestMapper, never()).insert(any(EventQuest.class));
+    }
+
+    @Test
+    void opsSoftDeletesEventQuestConfigOnly() {
+        when(eventQuestMapper.selectOne(any())).thenReturn(event(1L, "EVENT_GENESIS_WEEK", 3, "1500.000000"));
+
+        service.deleteEvent(1L);
+
+        ArgumentCaptor<EventQuest> patchCaptor = ArgumentCaptor.forClass(EventQuest.class);
+        verify(eventQuestMapper).updateById(patchCaptor.capture());
+        assertThat(patchCaptor.getValue().getId()).isEqualTo(1L);
+        assertThat(patchCaptor.getValue().getStatus()).isZero();
+        assertThat(patchCaptor.getValue().getIsDeleted()).isEqualTo(1);
+        verify(userEventQuestMapper, never()).updateById(any(UserEventQuest.class));
+        verify(pointsLedgerMapper, never()).insert(any(PointsLedger.class));
     }
 
     private MonthlyChallenge monthly(Long id, String code, int targetValue, String rewardAmount) {

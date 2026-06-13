@@ -19,16 +19,22 @@ import ffdd.wallet.dto.PostPendingEarningsRequest;
 import ffdd.wallet.dto.PostWalletCreditRequest;
 import ffdd.wallet.dto.PostWalletDebitRequest;
 import ffdd.wallet.dto.RiskDecisionApplyResult;
+import ffdd.wallet.dto.ReverseLedgerRequest;
 import ffdd.wallet.dto.SubmitWithdrawalChainRequest;
 import ffdd.wallet.dto.SucceedWithdrawalRequest;
+import ffdd.wallet.dto.WalletOrderQueryRequest;
 import ffdd.wallet.service.DepositPostingService;
 import ffdd.wallet.service.WalletService;
 import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
+import ffdd.common.exception.BizException;
 import jakarta.validation.Valid;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -53,12 +59,32 @@ public class UserWalletController {
     }
 
     @GetMapping("/users/{userId}")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ') or hasAuthority('ROLE_USER')")
     public ApiResult<UserWallet> wallet(@PathVariable Long userId) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null) {
+            userId = roleUserId;
+        }
         return ApiResult.ok(walletService.getOrCreateWallet(userId));
     }
 
+    @GetMapping("/users/me")
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<UserWallet> myWallet() {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId == null) {
+            throw new BizException("Authenticated user id is required");
+        }
+        return ApiResult.ok(walletService.getOrCreateWallet(roleUserId));
+    }
+
     @GetMapping("/ledgers")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ') or hasAuthority('ROLE_USER')")
     public ApiResult<PageResult<WalletLedger>> ledgers(LedgerQueryRequest request) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null) {
+            request.setUserId(roleUserId);
+        }
         return ApiResult.ok(walletService.pageLedgers(request));
     }
 
@@ -84,30 +110,61 @@ public class UserWalletController {
         return ApiResult.ok(walletService.postDebit(request));
     }
 
+    @PostMapping("/ledgers/{ledgerId}/reverse")
+    @PreAuthorize("hasAuthority('PERM_WALLET_WRITE')")
+    public ApiResult<WalletLedger> reverseLedger(
+            @PathVariable Long ledgerId,
+            @Valid @RequestBody ReverseLedgerRequest request) {
+        WalletLedger ledger = walletService.reverseLedger(ledgerId, request.getReason());
+        audit("LEDGER_REVERSE", "WALLET_LEDGER", String.valueOf(ledgerId), ledger.getUserId(), detail(
+                "reverseLedgerId", ledger.getId(),
+                "reverseBizNo", ledger.getBizNo(),
+                "reason", request.getReason()));
+        return ApiResult.ok(ledger);
+    }
+
     @PostMapping("/deposits/confirmed")
     @PreAuthorize("hasAuthority('PERM_WALLET_WRITE')")
     public ApiResult<DepositOrder> confirmDeposit(@Valid @RequestBody ConfirmDepositRequest request) {
         DepositOrder order = depositPostingService.confirm(request);
         audit("DEPOSIT_CONFIRM", "DEPOSIT", order.getDepositNo(), order.getUserId(), detail(
                 "asset", order.getAsset(),
-                "amount", order.getAmount(),
                 "chain", order.getChain(),
+                "amount", order.getAmount(),
                 "confirmations", order.getConfirmations(),
                 "status", order.getStatus()));
         return ApiResult.ok(order);
     }
 
     @PostMapping("/withdrawals")
-    @PreAuthorize("hasAuthority('PERM_WALLET_WRITE')")
+    @PreAuthorize("hasAuthority('PERM_WALLET_WRITE') or hasAuthority('ROLE_USER')")
     public ApiResult<WithdrawalOrder> createWithdrawal(@Valid @RequestBody CreateWithdrawalRequest request) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null) {
+            request.setUserId(roleUserId);
+        }
         WithdrawalOrder order = walletService.createWithdrawal(request);
         auditWithdrawal("WITHDRAWAL_CREATE", order);
         return ApiResult.ok(order);
     }
 
+    @GetMapping("/withdrawals")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ') or hasAuthority('ROLE_USER')")
+    public ApiResult<PageResult<WithdrawalOrder>> withdrawals(WalletOrderQueryRequest request) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null) {
+            request.setUserId(roleUserId);
+        }
+        return ApiResult.ok(walletService.pageWithdrawals(request));
+    }
+
     @PostMapping("/exchanges")
-    @PreAuthorize("hasAuthority('PERM_WALLET_WRITE')")
+    @PreAuthorize("hasAuthority('PERM_WALLET_WRITE') or hasAuthority('ROLE_USER')")
     public ApiResult<ExchangeOrder> createExchange(@Valid @RequestBody CreateExchangeRequest request) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null) {
+            request.setUserId(roleUserId);
+        }
         ExchangeOrder order = walletService.createExchange(request);
         audit("EXCHANGE_CREATE", "EXCHANGE", order.getExchangeNo(), order.getUserId(), detail(
                 "fromAsset", order.getFromAsset(),
@@ -116,6 +173,16 @@ public class UserWalletController {
                 "toAmount", order.getToAmount(),
                 "status", order.getStatus()));
         return ApiResult.ok(order);
+    }
+
+    @GetMapping("/exchanges")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ') or hasAuthority('ROLE_USER')")
+    public ApiResult<PageResult<ExchangeOrder>> exchanges(WalletOrderQueryRequest request) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null) {
+            request.setUserId(roleUserId);
+        }
+        return ApiResult.ok(walletService.pageExchanges(request));
     }
 
     @PostMapping("/risk-decisions/apply")
@@ -163,6 +230,7 @@ public class UserWalletController {
     private void auditWithdrawal(String action, WithdrawalOrder order) {
         audit(action, "WITHDRAWAL", order.getWithdrawalNo(), order.getUserId(), detail(
                 "asset", order.getAsset(),
+                "chain", order.getChain(),
                 "amount", order.getAmount(),
                 "fee", order.getFee(),
                 "riskDecisionId", order.getRiskDecisionId(),
@@ -193,5 +261,22 @@ public class UserWalletController {
             }
         }
         return detail;
+    }
+
+    private Long currentRoleUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication.getAuthorities().stream().noneMatch(a -> "ROLE_USER".equals(a.getAuthority()))) {
+            return null;
+        }
+        String subject = String.valueOf(authentication.getPrincipal());
+        if (!StringUtils.hasText(subject)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(subject);
+        } catch (NumberFormatException ignored) {
+            throw new BizException("Authenticated user id is invalid");
+        }
     }
 }

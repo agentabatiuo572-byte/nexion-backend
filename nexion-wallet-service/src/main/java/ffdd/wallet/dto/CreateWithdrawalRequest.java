@@ -9,21 +9,20 @@ import lombok.Data;
 
 @Data
 public class CreateWithdrawalRequest {
-    @NotNull
     private Long userId;
 
-    @NotBlank
+    @Size(max = 64)
     private String withdrawalNo;
 
     @NotBlank
     private String asset;
 
+    @Size(max = 32)
+    private String chain;
+
     @NotNull
     @DecimalMin("0.000001")
     private BigDecimal amount;
-
-    @DecimalMin("0.000000")
-    private BigDecimal fee;
 
     @NotBlank
     @Size(max = 128)

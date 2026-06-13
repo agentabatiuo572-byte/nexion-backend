@@ -1,14 +1,17 @@
 package ffdd.wallet.controller;
 
 import ffdd.common.api.ApiResult;
+import ffdd.common.api.PageResult;
 import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
+import ffdd.common.exception.BizException;
 import ffdd.common.outbox.EventConsumerDelivery;
 import ffdd.common.outbox.EventConsumerDeliveryService;
 import ffdd.common.rocketmq.monitor.RocketMqBrokerConsumerTarget;
 import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitor;
 import ffdd.common.rocketmq.monitor.RocketMqBrokerMonitorService;
 import ffdd.wallet.domain.DepositOrder;
+import ffdd.wallet.domain.ExchangeOrder;
 import ffdd.wallet.domain.WithdrawalOrder;
 import ffdd.wallet.dto.ConfirmDepositRequest;
 import ffdd.wallet.dto.FailWithdrawalRequest;
@@ -17,6 +20,7 @@ import ffdd.wallet.dto.WalletOpsDepositRequest;
 import ffdd.wallet.dto.WalletOpsReasonRequest;
 import ffdd.wallet.dto.WalletOpsWithdrawalFailureRequest;
 import ffdd.wallet.dto.WalletOpsWithdrawalSuccessRequest;
+import ffdd.wallet.dto.WalletOrderQueryRequest;
 import ffdd.wallet.service.DepositPostingService;
 import ffdd.wallet.service.WalletService;
 import ffdd.wallet.service.WalletOpsStatsService;
@@ -28,6 +32,9 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -92,6 +99,12 @@ public class WalletOpsController {
     @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
     public ApiResult<Map<String, Object>> stats(@RequestParam(defaultValue = "7") int days) {
         return ApiResult.ok(statsService.summary(days));
+    }
+
+    @GetMapping("/ops/dual-ledger")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<Map<String, Object>> dualLedger() {
+        return ApiResult.ok(statsService.dualLedger());
     }
 
     @GetMapping("/outbox/consumer/dead")
@@ -184,6 +197,12 @@ public class WalletOpsController {
         return ApiResult.ok(withdrawalBroadcastService.summary());
     }
 
+    @GetMapping("/ops/deposits")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<PageResult<DepositOrder>> deposits(WalletOrderQueryRequest request) {
+        return ApiResult.ok(depositPostingService.pageRecords(request));
+    }
+
     @GetMapping("/ops/deposits/{depositNo}")
     @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
     public ApiResult<DepositOrder> depositDetail(@PathVariable String depositNo) {
@@ -196,8 +215,8 @@ public class WalletOpsController {
         DepositOrder order = depositPostingService.confirm(toConfirmDepositRequest(request));
         audit("DEPOSIT_MANUAL_POST", "DEPOSIT", order.getDepositNo(), order.getUserId(), detail(
                 "asset", order.getAsset(),
-                "amount", order.getAmount(),
                 "chain", order.getChain(),
+                "amount", order.getAmount(),
                 "chainTxHash", order.getChainTxHash(),
                 "confirmations", order.getConfirmations(),
                 "status", order.getStatus(),
@@ -225,6 +244,24 @@ public class WalletOpsController {
     @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
     public ApiResult<WithdrawalOrder> withdrawalDetail(@PathVariable String withdrawalNo) {
         return ApiResult.ok(withdrawalBroadcastService.getByWithdrawalNo(withdrawalNo));
+    }
+
+    @GetMapping("/ops/withdrawals")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<PageResult<WithdrawalOrder>> withdrawals(WalletOrderQueryRequest request) {
+        return ApiResult.ok(walletService.pageWithdrawals(request));
+    }
+
+    @GetMapping("/ops/exchanges")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<PageResult<ExchangeOrder>> exchanges(WalletOrderQueryRequest request) {
+        return ApiResult.ok(walletService.pageExchanges(request));
+    }
+
+    @GetMapping("/ops/exchanges/{exchangeNo}")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    public ApiResult<ExchangeOrder> exchangeDetail(@PathVariable String exchangeNo) {
+        return ApiResult.ok(walletService.getExchange(exchangeNo));
     }
 
     @PostMapping("/ops/withdrawals/{withdrawalNo}/retry-broadcast")
@@ -282,11 +319,31 @@ public class WalletOpsController {
     }
 
     @GetMapping("/deposits/records")
-    @PreAuthorize("hasAuthority('PERM_WALLET_READ')")
+    @PreAuthorize("hasAuthority('PERM_WALLET_READ') or hasAuthority('ROLE_USER')")
     public ApiResult<List<DepositOrder>> depositRecords(
+            @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String chainTxHash,
             @RequestParam(required = false) String asset) {
-        return ApiResult.ok(depositPostingService.findRecords(chainTxHash, asset));
+        Long roleUserId = currentRoleUserId();
+        Long effectiveUserId = roleUserId != null ? roleUserId : userId;
+        return ApiResult.ok(depositPostingService.findRecords(effectiveUserId, chainTxHash, asset));
+    }
+
+    private Long currentRoleUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication.getAuthorities().stream().noneMatch(a -> "ROLE_USER".equals(a.getAuthority()))) {
+            return null;
+        }
+        String subject = String.valueOf(authentication.getPrincipal());
+        if (!StringUtils.hasText(subject)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(subject);
+        } catch (NumberFormatException ignored) {
+            throw new BizException("Authenticated user id is invalid");
+        }
     }
 
     private ConfirmDepositRequest toConfirmDepositRequest(WalletOpsDepositRequest source) {
@@ -303,6 +360,7 @@ public class WalletOpsController {
     private void auditWithdrawal(String action, WithdrawalOrder order, String reason) {
         audit(action, "WITHDRAWAL", order.getWithdrawalNo(), order.getUserId(), detail(
                 "asset", order.getAsset(),
+                "chain", order.getChain(),
                 "amount", order.getAmount(),
                 "fee", order.getFee(),
                 "chainTxHash", order.getChainTxHash(),

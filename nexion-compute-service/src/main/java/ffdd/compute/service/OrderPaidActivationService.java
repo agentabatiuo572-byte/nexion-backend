@@ -29,11 +29,19 @@ public class OrderPaidActivationService {
         request.setUserId(payload.getUserId());
         request.setSourceOrderNo(payload.getOrderNo());
         request.setProductId(payload.getProductId());
+        request.setProductCode(trimToNull(payload.getProductCode()));
         request.setProductTier(payload.getProductTier());
         request.setProductName(productName(payload));
         request.setDeviceType(StringUtils.hasText(payload.getDeviceType())
                 ? payload.getDeviceType()
                 : DEFAULT_DEVICE_TYPE);
+        request.setGeneration(payload.getGeneration());
+        request.setGpuModel(trimToNull(payload.getGpuModel()));
+        request.setVramTotalGb(payload.getVramTotalGb());
+        request.setBasePowerW(payload.getBasePowerW());
+        request.setDcLocation(trimToNull(payload.getDcLocation()));
+        request.setPriceUsdtSnapshot(payload.getPriceUsdtSnapshot());
+        request.setSourceChannel(trimToNull(payload.getSourceChannel()));
         request.setHashrate(defaultDecimal(payload.getHashrate()));
         request.setDailyUsdt(defaultDecimal(payload.getDailyUsdt()));
         request.setDailyNex(defaultDecimal(payload.getDailyNex()));
@@ -65,5 +73,9 @@ public class OrderPaidActivationService {
 
     private BigDecimal defaultDecimal(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
 }

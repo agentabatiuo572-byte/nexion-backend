@@ -14,6 +14,7 @@ public class WithdrawalOrder extends BaseEntity {
     private Long userId;
     private String withdrawalNo;
     private String asset;
+    private String chain;
     private BigDecimal amount;
     private BigDecimal fee;
     private String targetAddress;

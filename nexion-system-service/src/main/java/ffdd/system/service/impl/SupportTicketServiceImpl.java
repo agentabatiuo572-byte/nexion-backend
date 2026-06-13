@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
+import ffdd.common.storage.ObjectStorageService;
+import ffdd.common.storage.StoredObject;
 import ffdd.system.client.NotificationClient;
 import ffdd.system.domain.SupportTicket;
 import ffdd.system.domain.SupportTicketAttachment;
@@ -21,12 +23,17 @@ import ffdd.system.mapper.SupportTicketAttachmentMapper;
 import ffdd.system.mapper.SupportTicketMapper;
 import ffdd.system.mapper.SupportTicketMessageMapper;
 import ffdd.system.service.SupportTicketService;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -34,12 +41,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class SupportTicketServiceImpl implements SupportTicketService {
     private static final int MAX_PAGE_SIZE = 100;
+    private static final long MAX_ATTACHMENT_SIZE_BYTES = 50L * 1024L * 1024L;
+    private static final int ATTACHMENT_PREVIEW_EXPIRY_SECONDS = 900;
     private static final String SENDER_USER = "USER";
     private static final String SENDER_AGENT = "AGENT";
     private static final String STATUS_OPEN = "OPEN";
@@ -49,11 +59,35 @@ public class SupportTicketServiceImpl implements SupportTicketService {
     private static final String STATUS_RESOLVED = "RESOLVED";
     private static final String STATUS_CLOSED = "CLOSED";
     private static final String TYPE_SUPPORT = "SUPPORT";
+    private static final Pattern SAFE_TOKEN = Pattern.compile("[A-Za-z0-9._-]+");
+    private static final DateTimeFormatter ATTACHMENT_KEY_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+    private static final Set<String> ALLOWED_ATTACHMENT_CONTENT_TYPES = Set.of(
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "video/mp4",
+            "video/webm",
+            "video/quicktime");
+    private static final Map<String, String> DEFAULT_ATTACHMENT_EXTENSIONS = Map.of(
+            "image/jpeg", ".jpg",
+            "image/png", ".png",
+            "image/webp", ".webp",
+            "video/mp4", ".mp4",
+            "video/webm", ".webm",
+            "video/quicktime", ".mov");
+    private static final Map<String, Set<String>> ALLOWED_ATTACHMENT_EXTENSIONS = Map.of(
+            "image/jpeg", Set.of(".jpg", ".jpeg"),
+            "image/png", Set.of(".png"),
+            "image/webp", Set.of(".webp"),
+            "video/mp4", Set.of(".mp4", ".m4v"),
+            "video/webm", Set.of(".webm"),
+            "video/quicktime", Set.of(".mov", ".qt"));
 
     private final SupportTicketMapper ticketMapper;
     private final SupportTicketMessageMapper messageMapper;
     private final SupportTicketAttachmentMapper attachmentMapper;
     private final NotificationClient notificationClient;
+    private final ObjectStorageService storageService;
 
     @Override
     @Transactional
@@ -239,6 +273,25 @@ public class SupportTicketServiceImpl implements SupportTicketService {
         return detailForOps(ticketNo);
     }
 
+    @Override
+    public SupportTicketAttachmentResponse uploadAttachment(MultipartFile file) {
+        AttachmentPayload payload = readAndValidateAttachment(file);
+        String objectKey = supportObjectKey(payload.extension());
+        StoredObject storedObject = storageService.put(
+                objectKey,
+                payload.contentType(),
+                new ByteArrayInputStream(payload.bytes()),
+                payload.sizeBytes());
+        storageService.presignGet(storedObject.getObjectKey(), Duration.ofSeconds(ATTACHMENT_PREVIEW_EXPIRY_SECONDS));
+        return new SupportTicketAttachmentResponse(
+                null,
+                storedObject.getObjectKey(),
+                payload.fileName(),
+                storedObject.getContentType(),
+                storedObject.getSizeBytes(),
+                LocalDateTime.now());
+    }
+
     private SupportTicketReplyRequest requireReply(SupportTicketReplyRequest request) {
         if (request == null) {
             throw new BizException("Support ticket reply request is required");
@@ -272,7 +325,7 @@ public class SupportTicketServiceImpl implements SupportTicketService {
                 SupportTicketAttachment attachment = new SupportTicketAttachment();
                 attachment.setTicketId(ticket.getId());
                 attachment.setMessageId(message.getId());
-                attachment.setObjectKey(requireText(request.getObjectKey(), "objectKey", 512));
+                attachment.setObjectKey(validateAttachmentObjectKey(request.getObjectKey()));
                 attachment.setFileName(optionalText(request.getFileName(), 255));
                 attachment.setContentType(optionalText(request.getContentType(), 96));
                 attachment.setFileSize(normalizeFileSize(request.getFileSize()));
@@ -506,6 +559,90 @@ public class SupportTicketServiceImpl implements SupportTicketService {
         return fileSize;
     }
 
+    private AttachmentPayload readAndValidateAttachment(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BizException("Support ticket attachment is required");
+        }
+        try {
+            byte[] bytes = file.getBytes();
+            String contentType = normalizeAttachmentContentType(file.getContentType());
+            if (bytes.length <= 0 || bytes.length > MAX_ATTACHMENT_SIZE_BYTES) {
+                throw new BizException("Support ticket attachment size is invalid");
+            }
+            String fileName = safeAttachmentFileName(file.getOriginalFilename());
+            String extension = attachmentExtension(fileName, contentType);
+            return new AttachmentPayload(fileName, contentType, extension, bytes.length, bytes);
+        } catch (IOException ex) {
+            throw new BizException("Support ticket attachment cannot be read");
+        }
+    }
+
+    private String supportObjectKey(String extension) {
+        return "support/tickets/"
+                + ATTACHMENT_KEY_TIME_FORMAT.format(LocalDateTime.now())
+                + "-"
+                + UUID.randomUUID().toString().replace("-", "")
+                + extension;
+    }
+
+    private String validateAttachmentObjectKey(String objectKey) {
+        String key = requireText(objectKey, "objectKey", 512);
+        String lower = key.toLowerCase(Locale.ROOT);
+        if (!key.startsWith("support/tickets/")
+                || key.startsWith("/")
+                || key.endsWith("/")
+                || lower.startsWith("http://")
+                || lower.startsWith("https://")
+                || lower.contains("..")
+                || key.indexOf('\\') >= 0
+                || containsControlCharacters(key)
+                || !SAFE_TOKEN.matcher(key.substring(key.lastIndexOf('/') + 1)).matches()) {
+            throw new BizException("Support ticket attachment objectKey must use support/tickets object storage key");
+        }
+        return key;
+    }
+
+    private String normalizeAttachmentContentType(String contentType) {
+        String normalized = requireText(contentType, "contentType", 128).toLowerCase(Locale.ROOT);
+        if (!ALLOWED_ATTACHMENT_CONTENT_TYPES.contains(normalized) || containsControlCharacters(normalized)) {
+            throw new BizException("Unsupported support ticket attachment content type");
+        }
+        return normalized;
+    }
+
+    private String safeAttachmentFileName(String fileName) {
+        if (!StringUtils.hasText(fileName)) {
+            return "support-attachment";
+        }
+        String normalized = fileName.trim().replace('\\', '/');
+        int slash = normalized.lastIndexOf('/');
+        if (slash >= 0) {
+            normalized = normalized.substring(slash + 1);
+        }
+        if (!StringUtils.hasText(normalized) || normalized.length() > 255 || containsControlCharacters(normalized)) {
+            throw new BizException("Support ticket attachment file name contains invalid characters");
+        }
+        return normalized;
+    }
+
+    private String attachmentExtension(String fileName, String contentType) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot >= 0 && dot < fileName.length() - 1) {
+            String extension = fileName.substring(dot).toLowerCase(Locale.ROOT);
+            if (extension.length() <= 16
+                    && extension.matches("\\.[a-z0-9]+")
+                    && ALLOWED_ATTACHMENT_EXTENSIONS.getOrDefault(contentType, Set.of()).contains(extension)) {
+                return extension;
+            }
+            throw new BizException("Unsupported support ticket attachment file extension");
+        }
+        return DEFAULT_ATTACHMENT_EXTENSIONS.getOrDefault(contentType, ".bin");
+    }
+
+    private boolean containsControlCharacters(String value) {
+        return value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\t') >= 0;
+    }
+
     private String truncate(String value, int maxLength) {
         if (value == null || value.length() <= maxLength) {
             return value;
@@ -515,5 +652,8 @@ public class SupportTicketServiceImpl implements SupportTicketService {
 
     private int safe(Integer value) {
         return value == null ? 0 : Math.max(0, value);
+    }
+
+    private record AttachmentPayload(String fileName, String contentType, String extension, long sizeBytes, byte[] bytes) {
     }
 }

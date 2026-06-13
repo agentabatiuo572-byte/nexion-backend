@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.bff.client.CommerceClient;
 import ffdd.bff.client.ComputeClient;
 import ffdd.bff.client.EarningsClient;
+import ffdd.bff.client.MissionClient;
 import ffdd.bff.client.TeamClient;
 import ffdd.bff.client.WalletClient;
 import ffdd.bff.dto.BffSnapshot;
@@ -28,6 +29,7 @@ public class BffAggregationService {
     private final ComputeClient computeClient;
     private final EarningsClient earningsClient;
     private final CommerceClient commerceClient;
+    private final MissionClient missionClient;
     private final TeamClient teamClient;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
@@ -39,8 +41,11 @@ public class BffAggregationService {
         return cached("home", userId, () -> Map.of(
                 "wallet", data(walletClient.wallet(userId)),
                 "devices", records(computeClient.devices(userId, 1L, 5L)),
+                "ledgers", records(walletClient.ledgers(userId, 1L, 8L)),
                 "earningEvents", records(earningsClient.events(userId, 1L, 6L)),
                 "recentOrders", records(commerceClient.orders(userId, 1L, 5L)),
+                "missions", data(missionClient.missions(userId)),
+                "priceIndex", listData(commerceClient.priceIndex()),
                 "summary", Map.of(
                         "deviceCount", total(computeClient.devices(userId, 1L, 1L)),
                         "recentOrderCount", total(commerceClient.orders(userId, 1L, 1L)))));
@@ -125,6 +130,11 @@ public class BffAggregationService {
         ensureSuccess(result);
         PageResult<Map<String, Object>> page = result.getData();
         return page == null || page.getRecords() == null ? List.of() : page.getRecords();
+    }
+
+    private List<Map<String, Object>> listData(ApiResult<List<Map<String, Object>>> result) {
+        ensureSuccess(result);
+        return result.getData() == null ? List.of() : result.getData();
     }
 
     private long total(ApiResult<PageResult<Map<String, Object>>> result) {

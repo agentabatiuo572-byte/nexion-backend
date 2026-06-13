@@ -1,5 +1,6 @@
 package ffdd.commerce.controller;
 
+import ffdd.commerce.domain.CommerceOrder;
 import ffdd.commerce.domain.PaymentRecord;
 import ffdd.commerce.dto.PaymentAnomalyResponse;
 import ffdd.commerce.dto.PaymentCallbackResponse;
@@ -8,16 +9,21 @@ import ffdd.commerce.dto.PaymentCheckoutResponse;
 import ffdd.commerce.dto.PaymentOpsResult;
 import ffdd.commerce.dto.PaymentRecordQueryRequest;
 import ffdd.commerce.dto.PaymentReconcileResponse;
+import ffdd.commerce.service.CommerceService;
 import ffdd.commerce.service.PaymentService;
 import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
+import ffdd.common.exception.BizException;
 import jakarta.validation.Valid;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,16 +36,24 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/commerce/payments")
 public class PaymentController {
+    private final CommerceService commerceService;
     private final PaymentService paymentService;
     private final AuditLogService auditLogService;
 
-    public PaymentController(PaymentService paymentService, AuditLogService auditLogService) {
+    public PaymentController(
+            CommerceService commerceService,
+            PaymentService paymentService,
+            AuditLogService auditLogService) {
+        this.commerceService = commerceService;
         this.paymentService = paymentService;
         this.auditLogService = auditLogService;
     }
 
     @PostMapping("/checkout")
+    @PreAuthorize("hasAuthority('PERM_COMMERCE_WRITE') or hasAuthority('ROLE_USER')")
     public ApiResult<PaymentCheckoutResponse> checkout(@Valid @RequestBody PaymentCheckoutRequest request) {
+        CommerceOrder order = commerceService.getOrder(request.getOrderNo());
+        assertVisibleToCurrentUser(order.getUserId(), "Order does not belong to authenticated user");
         PaymentCheckoutResponse response = paymentService.checkout(request);
         auditPayment("PAYMENT_CHECKOUT", response.getPaymentNo(), response.getOrderNo(), null, detail(
                 "provider", response.getProvider(),
@@ -66,13 +80,21 @@ public class PaymentController {
     }
 
     @GetMapping
+    @PreAuthorize("hasAuthority('PERM_COMMERCE_READ') or hasAuthority('ROLE_USER')")
     public ApiResult<PageResult<PaymentRecord>> page(PaymentRecordQueryRequest request) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null) {
+            request.setUserId(roleUserId);
+        }
         return ApiResult.ok(paymentService.pageRecords(request));
     }
 
     @GetMapping("/{paymentNo}")
+    @PreAuthorize("hasAuthority('PERM_COMMERCE_READ') or hasAuthority('ROLE_USER')")
     public ApiResult<PaymentRecord> detail(@PathVariable String paymentNo) {
-        return ApiResult.ok(paymentService.getRecord(paymentNo));
+        PaymentRecord record = paymentService.getRecord(paymentNo);
+        assertVisibleToCurrentUser(record.getUserId(), "Payment does not belong to authenticated user");
+        return ApiResult.ok(record);
     }
 
     @PostMapping("/ops/expire-pending")
@@ -132,6 +154,30 @@ public class PaymentController {
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
+    }
+
+    private void assertVisibleToCurrentUser(Long ownerUserId, String message) {
+        Long roleUserId = currentRoleUserId();
+        if (roleUserId != null && !roleUserId.equals(ownerUserId)) {
+            throw new BizException(message);
+        }
+    }
+
+    private Long currentRoleUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication.getAuthorities().stream().noneMatch(a -> "ROLE_USER".equals(a.getAuthority()))) {
+            return null;
+        }
+        String subject = String.valueOf(authentication.getPrincipal());
+        if (!StringUtils.hasText(subject)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(subject);
+        } catch (NumberFormatException ignored) {
+            throw new BizException("Authenticated user id is invalid");
+        }
     }
 
     private Map<String, Object> detail(Object... pairs) {

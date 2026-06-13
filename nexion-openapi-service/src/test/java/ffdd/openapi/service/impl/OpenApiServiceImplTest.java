@@ -18,9 +18,11 @@ import ffdd.common.exception.BizException;
 import ffdd.openapi.client.ComputeClient;
 import ffdd.openapi.domain.OpenApiApp;
 import ffdd.openapi.domain.OpenApiCallAudit;
+import ffdd.openapi.domain.WebhookSubscription;
 import ffdd.openapi.dto.OpenApiAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppCreateResponse;
 import ffdd.openapi.dto.OpenApiAppOpsResponse;
+import ffdd.openapi.dto.OpenApiOpsAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
 import ffdd.openapi.dto.OpenApiCallAuditResponse;
 import ffdd.openapi.dto.OpenApiReceiptCreateRequest;
@@ -82,6 +84,31 @@ class OpenApiServiceImplTest {
         assertThat(response.getAppKey()).startsWith("nxak_");
         assertThat(response.getQpsLimit()).isEqualTo(20);
         assertThat(response.getDailyLimit()).isEqualTo(10000);
+    }
+
+    @Test
+    void createOpsAppUsesRequestedOwnerAndQuotas() {
+        doAnswer(invocation -> {
+                    OpenApiApp app = invocation.getArgument(0);
+                    app.setId(7L);
+                    return 1;
+                })
+                .when(appMapper)
+                .insert(any(OpenApiApp.class));
+        OpenApiOpsAppCreateRequest request = new OpenApiOpsAppCreateRequest();
+        request.setOwnerUserId(10001L);
+        request.setAppName("Ops Partner");
+        request.setQpsLimit(40);
+        request.setDailyLimit(40000);
+
+        OpenApiAppCreateResponse response = service.createOpsApp(request);
+
+        ArgumentCaptor<OpenApiApp> appCaptor = ArgumentCaptor.forClass(OpenApiApp.class);
+        verify(appMapper).insert(appCaptor.capture());
+        assertThat(appCaptor.getValue().getOwnerUserId()).isEqualTo(10001L);
+        assertThat(response.getAppName()).isEqualTo("Ops Partner");
+        assertThat(response.getQpsLimit()).isEqualTo(40);
+        assertThat(response.getDailyLimit()).isEqualTo(40000);
     }
 
     @Test
@@ -219,6 +246,97 @@ class OpenApiServiceImplTest {
         assertThatThrownBy(() -> service.createWebhook(10001L, request))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("callback URL is not allowed");
+    }
+
+    @Test
+    void createOpsWebhookUsesExistingAppAndReturnsSecret() {
+        OpenApiApp app = app("ACTIVE");
+        when(appMapper.selectById(1L)).thenReturn(app);
+        doAnswer(invocation -> {
+                    WebhookSubscription subscription = invocation.getArgument(0);
+                    subscription.setId(9L);
+                    return 1;
+                })
+                .when(webhookMapper)
+                .insert(any(WebhookSubscription.class));
+        WebhookCreateRequest request = new WebhookCreateRequest();
+        request.setAppId(1L);
+        request.setEventType("COMPUTE_RECEIPT_CREATED");
+        request.setCallbackUrl("https://partner.example.com/nexion/webhooks");
+
+        WebhookSubscription response = service.createOpsWebhook(request);
+
+        assertThat(response.getId()).isEqualTo(9L);
+        assertThat(response.getSecret()).startsWith("nxwh_");
+        assertThat(response.getStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void createOpsWebhookBuildsCallbackUrlFromStructuredFields() {
+        OpenApiApp app = app("ACTIVE");
+        when(appMapper.selectById(1L)).thenReturn(app);
+        WebhookCreateRequest request = new WebhookCreateRequest();
+        request.setAppId(1L);
+        request.setEventType("COMPUTE_RECEIPT_CREATED");
+        request.setCallbackScheme("https");
+        request.setCallbackHost("Partner.Example.com");
+        request.setCallbackPath("/nexion/webhooks");
+        request.setCallbackQuery("tenant=alpha");
+
+        WebhookSubscription response = service.createOpsWebhook(request);
+
+        assertThat(response.getCallbackUrl()).isEqualTo("https://partner.example.com/nexion/webhooks?tenant=alpha");
+    }
+
+    @Test
+    void rejectsStructuredWebhookCallbackWithUrlInHost() {
+        OpenApiApp app = app("ACTIVE");
+        when(appMapper.selectById(1L)).thenReturn(app);
+        WebhookCreateRequest request = new WebhookCreateRequest();
+        request.setAppId(1L);
+        request.setEventType("COMPUTE_RECEIPT_CREATED");
+        request.setCallbackScheme("https");
+        request.setCallbackHost("https://partner.example.com");
+        request.setCallbackPath("/nexion/webhooks");
+
+        assertThatThrownBy(() -> service.createOpsWebhook(request))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("callback host is not allowed");
+    }
+
+    @Test
+    void listOpsWebhooksFiltersByAppAndStatus() {
+        OpenApiApp app = app("ACTIVE");
+        when(appMapper.selectById(1L)).thenReturn(app);
+        WebhookSubscription subscription = new WebhookSubscription();
+        subscription.setId(9L);
+        subscription.setAppId(1L);
+        subscription.setEventType("COMPUTE_RECEIPT_CREATED");
+        subscription.setStatus("ACTIVE");
+        when(webhookMapper.selectList(any(Wrapper.class))).thenReturn(List.of(subscription));
+
+        List<WebhookSubscription> responses = service.listOpsWebhooks(1L, "COMPUTE_RECEIPT_CREATED", "ACTIVE", 20);
+
+        assertThat(responses).hasSize(1);
+        assertThat(responses.get(0).getAppId()).isEqualTo(1L);
+    }
+
+    @Test
+    void enableAndDisableWebhookUpdatesStatus() {
+        WebhookSubscription subscription = new WebhookSubscription();
+        subscription.setId(9L);
+        subscription.setStatus("ACTIVE");
+        subscription.setIsDeleted(0);
+        when(webhookMapper.selectById(9L)).thenReturn(subscription);
+
+        WebhookSubscription disabled = service.disableWebhook(9L);
+
+        assertThat(disabled.getStatus()).isEqualTo("DISABLED");
+        verify(webhookMapper).updateById(subscription);
+
+        WebhookSubscription enabled = service.enableWebhook(9L);
+
+        assertThat(enabled.getStatus()).isEqualTo("ACTIVE");
     }
 
     private OpenApiApp app(String status) {

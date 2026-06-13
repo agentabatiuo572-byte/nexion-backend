@@ -2,10 +2,13 @@ package ffdd.team.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ffdd.team.dto.LeadershipPoolHistoryItem;
+import ffdd.team.dto.LeadershipPoolRankWeight;
 import ffdd.team.dto.LeadershipPoolSnapshot;
 import ffdd.team.dto.TeamCommissionSettlementResult;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -105,6 +108,26 @@ class TeamAdvancedCommissionServiceTest {
     }
 
     @Test
+    void settlesLeadershipPoolFromCurrentWeekOrderVolumeWhenNotProvided() {
+        service.leadershipRule = new TeamAdvancedCommissionService.LeadershipRule(new BigDecimal("0.050000"), 0);
+        service.defaultLeadershipPlatformVolume = new BigDecimal("12000.000000");
+        service.leadershipCandidates = List.of(
+                new TeamAdvancedCommissionService.LeadershipCandidate(10001L, "V3", 1),
+                new TeamAdvancedCommissionService.LeadershipCandidate(10002L, "V4", 2));
+
+        TeamCommissionSettlementResult result = service.settleLeadership(
+                LocalDate.of(2026, 5, 18),
+                null,
+                50);
+
+        assertThat(result.getSourceVolumeUsdt()).isEqualByComparingTo("12000.000000");
+        assertThat(result.getPoolUsdt()).isEqualByComparingTo("600.000000");
+        assertThat(result.getCreated()).isEqualTo(2);
+        assertThat(service.createdCommissions).extracting(CreatedCommission::amountUsdt)
+                .containsExactly(new BigDecimal("200.000000"), new BigDecimal("400.000000"));
+    }
+
+    @Test
     void returnsLeadershipPoolSnapshotForCurrentUserVotes() {
         service.leadershipRule = new TeamAdvancedCommissionService.LeadershipRule(new BigDecimal("0.050000"), 0);
         service.leadershipCandidates = List.of(
@@ -112,6 +135,17 @@ class TeamAdvancedCommissionServiceTest {
                 new TeamAdvancedCommissionService.LeadershipCandidate(10002L, "V4", 2));
         service.currentUserRank = "V4";
         service.currentUserVotes = 2;
+        service.rankWeights = List.of(
+                new LeadershipPoolRankWeight("V3", "Captain", "Captain", 1, 1, 1, new BigDecimal("33.333333"), new BigDecimal("166.666667")),
+                new LeadershipPoolRankWeight("V4", "Commander", "Commander", 2, 1, 2, new BigDecimal("66.666667"), new BigDecimal("333.333333")));
+        service.history = List.of(new LeadershipPoolHistoryItem(
+                9108L,
+                "LEADERSHIP-2026-05-18",
+                new BigDecimal("333.333333"),
+                "PENDING",
+                LocalDateTime.of(2026, 5, 25, 0, 0),
+                LocalDateTime.of(2026, 5, 18, 0, 0),
+                "Pool 500.000000 split by 2 votes"));
 
         LeadershipPoolSnapshot snapshot = service.leadershipPoolSnapshot(10002L, new BigDecimal("10000.000000"));
 
@@ -123,6 +157,25 @@ class TeamAdvancedCommissionServiceTest {
         assertThat(snapshot.getUserVotes()).isEqualTo(2);
         assertThat(snapshot.getEstimatedShareUsdt()).isEqualByComparingTo("333.333333");
         assertThat(snapshot.getParticipants()).hasSize(2);
+        assertThat(snapshot.getRankWeights()).extracting(LeadershipPoolRankWeight::getRankCode)
+                .containsExactly("V3", "V4");
+        assertThat(snapshot.getHistory()).extracting(LeadershipPoolHistoryItem::getOrderNo)
+                .containsExactly("LEADERSHIP-2026-05-18");
+    }
+
+    @Test
+    void returnsLeadershipPoolSnapshotFromCurrentWeekOrderVolumeWhenZeroProvided() {
+        service.leadershipRule = new TeamAdvancedCommissionService.LeadershipRule(new BigDecimal("0.050000"), 0);
+        service.defaultLeadershipPlatformVolume = new BigDecimal("8000.000000");
+        service.leadershipCandidates = List.of(new TeamAdvancedCommissionService.LeadershipCandidate(10002L, "V4", 2));
+        service.currentUserRank = "V4";
+        service.currentUserVotes = 2;
+
+        LeadershipPoolSnapshot snapshot = service.leadershipPoolSnapshot(10002L, BigDecimal.ZERO);
+
+        assertThat(snapshot.getPlatformVolumeUsdt()).isEqualByComparingTo("8000.000000");
+        assertThat(snapshot.getPoolUsdt()).isEqualByComparingTo("400.000000");
+        assertThat(snapshot.getEstimatedShareUsdt()).isEqualByComparingTo("400.000000");
     }
 
     private static class TestableTeamAdvancedCommissionService extends TeamAdvancedCommissionService {
@@ -130,8 +183,11 @@ class TeamAdvancedCommissionServiceTest {
         private List<CultivationCandidate> cultivationCandidates = List.of();
         private List<LeadershipCandidate> leadershipCandidates = List.of();
         private LeadershipRule leadershipRule = new LeadershipRule(new BigDecimal("0.050000"), 0);
+        private List<LeadershipPoolRankWeight> rankWeights = List.of();
+        private List<LeadershipPoolHistoryItem> history = List.of();
         private String currentUserRank = "V0";
         private int currentUserVotes;
+        private BigDecimal defaultLeadershipPlatformVolume = BigDecimal.ZERO;
         private final Set<String> existingKeys = new HashSet<>();
         private final List<CreatedCommission> createdCommissions = new ArrayList<>();
         private long nextCommissionId = 9101L;
@@ -163,6 +219,21 @@ class TeamAdvancedCommissionServiceTest {
         @Override
         protected int totalLeadershipVotes() {
             return leadershipCandidates.stream().mapToInt(LeadershipCandidate::votes).sum();
+        }
+
+        @Override
+        protected BigDecimal weeklyPlatformVolumeUsdt(LocalDate weekStart) {
+            return defaultLeadershipPlatformVolume;
+        }
+
+        @Override
+        protected List<LeadershipPoolRankWeight> leadershipRankWeights(BigDecimal poolUsdt, int totalVotes) {
+            return rankWeights;
+        }
+
+        @Override
+        protected List<LeadershipPoolHistoryItem> leadershipHistory(Long userId, int limit) {
+            return history;
         }
 
         @Override

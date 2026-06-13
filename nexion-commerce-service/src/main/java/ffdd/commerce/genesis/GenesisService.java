@@ -3,6 +3,8 @@ package ffdd.commerce.genesis;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.commerce.client.CommerceComplianceClient;
 import ffdd.commerce.client.CommerceWalletClient;
 import ffdd.commerce.client.SystemConfigClient;
@@ -46,6 +48,7 @@ import org.springframework.util.StringUtils;
 
 @Service
 public class GenesisService {
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String ASSET_USDT = "USDT";
     private static final String BIZ_TYPE_GENESIS = "GENESIS";
     private static final String BIZ_TYPE_GENESIS_PURCHASE = "GENESIS_PURCHASE";
@@ -227,8 +230,15 @@ public class GenesisService {
         series.setSaleStartAt(request.getSaleStartAt());
         series.setSaleEndAt(request.getSaleEndAt());
         series.setRoyaltyBps(request.getRoyaltyBps() == null ? 0 : request.getRoyaltyBps());
-        series.setCoverUrl(trimToNull(request.getCoverUrl()));
-        series.setMetadataJson(trimToNull(request.getMetadataJson()));
+        series.setCoverUrl(normalizeMediaObjectKey(request.getCoverUrl(), "Genesis cover object key"));
+        series.setMetadataJson(buildSeriesMetadataJson(
+                request.getMetadataJson(),
+                request.getDescription(),
+                request.getDividendLabel(),
+                request.getUtilityLabel(),
+                request.getRarityLabel(),
+                request.getTraits(),
+                request.getMediaObjectKeys()));
         series.setIsDeleted(0);
         try {
             seriesMapper.insert(series);
@@ -275,10 +285,20 @@ public class GenesisService {
             series.setRoyaltyBps(request.getRoyaltyBps());
         }
         if (request.getCoverUrl() != null) {
-            series.setCoverUrl(trimToNull(request.getCoverUrl()));
+            series.setCoverUrl(normalizeMediaObjectKey(request.getCoverUrl(), "Genesis cover object key"));
         }
-        if (request.getMetadataJson() != null) {
-            series.setMetadataJson(trimToNull(request.getMetadataJson()));
+        String metadataJson = buildSeriesMetadataJson(
+                request.getMetadataJson(),
+                request.getDescription(),
+                request.getDividendLabel(),
+                request.getUtilityLabel(),
+                request.getRarityLabel(),
+                request.getTraits(),
+                request.getMediaObjectKeys());
+        if (metadataJson != null || request.getMetadataJson() != null || request.getDescription() != null
+                || request.getDividendLabel() != null || request.getUtilityLabel() != null
+                || request.getRarityLabel() != null || request.getTraits() != null || request.getMediaObjectKeys() != null) {
+            series.setMetadataJson(metadataJson);
         }
         seriesMapper.updateById(series);
         return series;
@@ -598,6 +618,87 @@ public class GenesisService {
 
     private String trimToNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private String buildSeriesMetadataJson(
+            String fallbackJson,
+            String description,
+            String dividendLabel,
+            String utilityLabel,
+            String rarityLabel,
+            List<String> traits,
+            List<String> mediaObjectKeys) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        putText(metadata, "description", description);
+        putText(metadata, "dividendLabel", dividendLabel);
+        putText(metadata, "utilityLabel", utilityLabel);
+        putText(metadata, "rarityLabel", rarityLabel);
+        putTextList(metadata, "traits", traits, 96, false);
+        putTextList(metadata, "mediaObjectKeys", mediaObjectKeys, 255, true);
+        if (metadata.isEmpty()) {
+            return trimToNull(fallbackJson);
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(metadata);
+        } catch (JsonProcessingException ex) {
+            throw new BizException("Genesis metadata cannot be serialized");
+        }
+    }
+
+    private void putText(Map<String, Object> metadata, String key, String value) {
+        String text = trimToNull(value);
+        if (text != null) {
+            metadata.put(key, text);
+        }
+    }
+
+    private void putTextList(Map<String, Object> metadata, String key, List<String> values, int maxLength, boolean mediaObjectKey) {
+        if (values == null) {
+            return;
+        }
+        List<String> normalized = values.stream()
+                .map(value -> mediaObjectKey ? normalizeMediaObjectKey(value, "Genesis media object key") : normalizeBoundedText(value, key, maxLength))
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (!normalized.isEmpty()) {
+            metadata.put(key, normalized);
+        }
+    }
+
+    private String normalizeBoundedText(String value, String label, int maxLength) {
+        String text = trimToNull(value);
+        if (text == null) {
+            return null;
+        }
+        if (text.length() > maxLength || containsControlCharacters(text)) {
+            throw new BizException(label + " is invalid");
+        }
+        return text;
+    }
+
+    private String normalizeMediaObjectKey(String value, String label) {
+        String text = trimToNull(value);
+        if (text == null) {
+            return null;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        if (text.length() > 255
+                || !text.startsWith("commerce/genesis/")
+                || text.startsWith("/")
+                || text.endsWith("/")
+                || lower.startsWith("http://")
+                || lower.startsWith("https://")
+                || lower.contains("..")
+                || text.indexOf('\\') >= 0
+                || containsControlCharacters(text)) {
+            throw new BizException(label + " must be a MinIO object key under commerce/genesis");
+        }
+        return text;
+    }
+
+    private boolean containsControlCharacters(String value) {
+        return value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\t') >= 0;
     }
 
     private int requirePositiveInt(Integer value, String message) {

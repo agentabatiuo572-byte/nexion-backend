@@ -24,17 +24,23 @@ public class JwtTokenProvider {
     }
 
     public String createToken(Long subjectId, String subjectType, String username, Collection<String> authorities) {
+        return createToken(subjectId, subjectType, username, authorities, null);
+    }
+
+    public String createToken(Long subjectId, String subjectType, String username, Collection<String> authorities, String sessionId) {
         Date now = new Date();
         Date expiresAt = new Date(now.getTime() + expiration.toMillis());
-        return Jwts.builder()
+        var builder = Jwts.builder()
                 .subject(String.valueOf(subjectId))
                 .claim("subjectType", subjectType)
                 .claim("username", username)
                 .claim("authorities", authorities)
                 .issuedAt(now)
-                .expiration(expiresAt)
-                .signWith(secretKey)
-                .compact();
+                .expiration(expiresAt);
+        if (sessionId != null && !sessionId.isBlank()) {
+            builder.claim("sessionId", sessionId);
+        }
+        return builder.signWith(secretKey).compact();
     }
 
     public Claims parse(String token) {

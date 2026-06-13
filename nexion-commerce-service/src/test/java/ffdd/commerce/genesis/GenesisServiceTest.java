@@ -23,6 +23,7 @@ import ffdd.commerce.genesis.domain.GenesisHolding;
 import ffdd.commerce.genesis.domain.GenesisOrder;
 import ffdd.commerce.genesis.domain.GenesisSeries;
 import ffdd.commerce.genesis.dto.GenesisPurchaseRequest;
+import ffdd.commerce.genesis.dto.GenesisSeriesCreateRequest;
 import ffdd.commerce.genesis.mapper.GenesisHoldingMapper;
 import ffdd.commerce.genesis.mapper.GenesisOrderMapper;
 import ffdd.commerce.genesis.mapper.GenesisSeriesMapper;
@@ -33,6 +34,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -155,6 +157,51 @@ class GenesisServiceTest {
         service.pageHoldings(null);
 
         verify(holdingMapper).selectPage(any(), any(Wrapper.class));
+    }
+
+    @Test
+    void createSeriesBuildsMetadataFromStructuredFieldsAndObjectKeys() {
+        GenesisSeriesCreateRequest request = new GenesisSeriesCreateRequest();
+        request.setSeriesCode("genesis-2027");
+        request.setName("Genesis 2027");
+        request.setTotalSupply(500);
+        request.setPriceUsdt(new BigDecimal("12000"));
+        request.setCoverUrl("commerce/genesis/cover/cover.webp");
+        request.setDescription("Priority holder access");
+        request.setDividendLabel("Daily pool share");
+        request.setUtilityLabel("Whitelist priority");
+        request.setRarityLabel("Founder");
+        request.setTraits(List.of("priority", "dividend", "priority"));
+        request.setMediaObjectKeys(List.of("commerce/genesis/media/teaser.mp4", " commerce/genesis/media/detail.webp "));
+
+        service.createSeries(request);
+
+        ArgumentCaptor<GenesisSeries> captor = ArgumentCaptor.forClass(GenesisSeries.class);
+        verify(seriesMapper).insert(captor.capture());
+        assertThat(captor.getValue().getCoverUrl()).isEqualTo("commerce/genesis/cover/cover.webp");
+        assertThat(captor.getValue().getMetadataJson())
+                .contains("\"description\":\"Priority holder access\"")
+                .contains("\"dividendLabel\":\"Daily pool share\"")
+                .contains("\"utilityLabel\":\"Whitelist priority\"")
+                .contains("\"rarityLabel\":\"Founder\"")
+                .contains("\"traits\":[\"priority\",\"dividend\"]")
+                .contains("\"mediaObjectKeys\":[\"commerce/genesis/media/teaser.mp4\",\"commerce/genesis/media/detail.webp\"]");
+    }
+
+    @Test
+    void createSeriesRejectsManualCoverUrl() {
+        GenesisSeriesCreateRequest request = new GenesisSeriesCreateRequest();
+        request.setSeriesCode("genesis-url");
+        request.setName("Genesis URL");
+        request.setTotalSupply(100);
+        request.setPriceUsdt(new BigDecimal("9999"));
+        request.setCoverUrl("https://cdn.example.com/genesis.png");
+
+        assertThatThrownBy(() -> service.createSeries(request))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("MinIO object key");
+
+        verify(seriesMapper, never()).insert(any(GenesisSeries.class));
     }
 
     private GenesisPurchaseRequest request(String seriesCode, int quantity, String clientRequestNo) {

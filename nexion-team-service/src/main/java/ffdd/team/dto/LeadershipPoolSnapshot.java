@@ -18,4 +18,6 @@ public class LeadershipPoolSnapshot {
     private int userVotes;
     private BigDecimal estimatedShareUsdt;
     private List<LeadershipPoolParticipant> participants;
+    private List<LeadershipPoolRankWeight> rankWeights;
+    private List<LeadershipPoolHistoryItem> history;
 }

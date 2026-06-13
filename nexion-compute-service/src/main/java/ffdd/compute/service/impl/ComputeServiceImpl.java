@@ -135,6 +135,19 @@ public class ComputeServiceImpl implements ComputeService {
     }
 
     @Override
+    public ComputeTask currentTaskForDevice(Long userDeviceId) {
+        if (userDeviceId == null) {
+            return null;
+        }
+        return taskMapper.selectOne(new LambdaQueryWrapper<ComputeTask>()
+                .eq(ComputeTask::getUserDeviceId, userDeviceId)
+                .in(ComputeTask::getStatus, TASK_RUNNING, TASK_RETRYING)
+                .eq(ComputeTask::getIsDeleted, 0)
+                .orderByDesc(ComputeTask::getStartedAt)
+                .last("LIMIT 1"));
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public List<UserDevice> activateDevices(DeviceActivateRequest request) {
         int quantity = request.getQuantity() == null ? 1 : request.getQuantity();
@@ -160,10 +173,19 @@ public class ComputeServiceImpl implements ComputeService {
             device.setUserId(request.getUserId());
             device.setSourceOrderNo(request.getSourceOrderNo());
             device.setProductId(request.getProductId());
+            device.setProductCode(trimToNull(request.getProductCode()));
             device.setProductTier(trimToNull(request.getProductTier()));
             device.setInstanceNo(nextInstanceNo(request.getSourceOrderNo(), i + 1));
             device.setName(quantity > 1 ? request.getProductName() + " #" + (i + 1) : request.getProductName());
             device.setDeviceType(request.getDeviceType());
+            device.setGeneration(request.getGeneration() == null ? 1 : request.getGeneration());
+            device.setGpuModel(trimToNull(request.getGpuModel()));
+            device.setVramTotalGb(request.getVramTotalGb());
+            device.setBasePowerW(defaultDecimal(request.getBasePowerW()));
+            device.setDcLocation(trimToNull(request.getDcLocation()));
+            device.setPriceUsdtSnapshot(defaultDecimal(request.getPriceUsdtSnapshot()));
+            device.setOwnershipStatus(defaultOwnershipStatus(request.getOwnershipStatus()));
+            device.setSourceChannel(defaultSourceChannel(request.getSourceChannel()));
             device.setStatus(activateNow ? DEVICE_ONLINE : DEVICE_INACTIVE);
             device.setHashrate(defaultDecimal(request.getHashrate()));
             device.setDailyUsdt(defaultDecimal(request.getDailyUsdt()));
@@ -587,9 +609,11 @@ public class ComputeServiceImpl implements ComputeService {
         patch.setId(device.getId());
         patch.setStatus(DEVICE_INACTIVE);
         patch.setLastSeenAt(now);
+        patch.setDeactivatedAt(now);
         patch.setPendingDeactivate(0);
         userDeviceMapper.update(patch, new UpdateWrapper<UserDevice>()
                 .set("activated_at", null)
+                .set("deactivated_at", now)
                 .set("pending_deactivate", 0)
                 .set("last_seen_at", now)
                 .eq("id", device.getId())
@@ -597,6 +621,7 @@ public class ComputeServiceImpl implements ComputeService {
         device.setStatus(DEVICE_INACTIVE);
         device.setLastSeenAt(now);
         device.setActivatedAt(null);
+        device.setDeactivatedAt(now);
         device.setPendingDeactivate(0);
     }
 
@@ -888,6 +913,16 @@ public class ComputeServiceImpl implements ComputeService {
 
     private String trimToNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private String defaultSourceChannel(String value) {
+        String trimmed = trimToNull(value);
+        return trimmed == null ? "ORDER" : trimmed;
+    }
+
+    private String defaultOwnershipStatus(String value) {
+        String trimmed = trimToNull(value);
+        return trimmed == null ? "OWNED" : trimmed.toUpperCase();
     }
 
     private void validateTaskClient(ComputeTask task, String clientName) {

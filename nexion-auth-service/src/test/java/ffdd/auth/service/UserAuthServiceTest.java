@@ -16,12 +16,15 @@ import ffdd.common.exception.BizException;
 import ffdd.common.security.JwtTokenProvider;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 class UserAuthServiceTest {
     private final UserMapper userMapper = org.mockito.Mockito.mock(UserMapper.class);
+    private final JdbcTemplate jdbcTemplate = org.mockito.Mockito.mock(JdbcTemplate.class);
     private final UserAuthService service = new UserAuthServiceImpl(
             userMapper,
-            new JwtTokenProvider("nexion-development-secret-key-change-me-please", 1440));
+            new JwtTokenProvider("nexion-development-secret-key-change-me-please", 1440),
+            jdbcTemplate);
 
     @Test
     void sendRegisterSmsCodeReturnsTtlWhenPhoneIsAvailable() {
@@ -67,6 +70,14 @@ class UserAuthServiceTest {
         assertThat(result.getToken()).isNotBlank();
         assertThat(result.getUserId()).isEqualTo(10001L);
         assertThat(result.getUserLevel()).isEqualTo("L1");
+        assertThat(result.getSessionId()).startsWith("US-10001-");
+        verify(jdbcTemplate).update(
+                org.mockito.ArgumentMatchers.contains("INSERT INTO nx_user_session"),
+                org.mockito.ArgumentMatchers.eq(10001L),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq("uniapp / mobile app"),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.any());
         ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
         verify(userMapper).insert(captor.capture());
         assertThat(captor.getValue().getPhone()).isEqualTo("590530123456");
@@ -92,6 +103,25 @@ class UserAuthServiceTest {
         assertThatThrownBy(() -> service.register(request))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("Referral code does not exist");
+    }
+
+    @Test
+    void referralSponsorReturnsPublicSponsorSummary() {
+        User sponsor = existingUser();
+        sponsor.setId(10001L);
+        sponsor.setNickname("Avery Sponsor");
+        sponsor.setUserLevel("L3");
+        sponsor.setVRank("V2");
+        when(userMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(sponsor);
+        when(userMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(8L);
+
+        var result = service.referralSponsor("NX3456");
+
+        assertThat(result.getReferralCode()).isEqualTo("NX3456");
+        assertThat(result.getSponsorUserId()).isEqualTo(10001L);
+        assertThat(result.getSponsorName()).isEqualTo("Avery Sponsor");
+        assertThat(result.getVRank()).isEqualTo("V2");
+        assertThat(result.getDirectReferrals()).isEqualTo(8L);
     }
 
     private RegisterSmsCodeRequest smsRequest() {

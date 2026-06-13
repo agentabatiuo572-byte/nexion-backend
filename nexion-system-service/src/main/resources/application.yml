@@ -1,6 +1,10 @@
 spring:
   application:
     name: nexion-system-service
+  servlet:
+    multipart:
+      max-file-size: ${NEXION_SYSTEM_MULTIPART_MAX_FILE_SIZE:50MB}
+      max-request-size: ${NEXION_SYSTEM_MULTIPART_MAX_REQUEST_SIZE:50MB}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:nexion}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true

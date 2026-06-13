@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS nx_maker_checker_task (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  action_type VARCHAR(64) NOT NULL,
+  resource_type VARCHAR(64) NOT NULL,
+  resource_id VARCHAR(128) NULL,
+  title VARCHAR(160) NOT NULL,
+  detail VARCHAR(512) NULL,
+  payload_json JSON NULL,
+  maker VARCHAR(128) NOT NULL,
+  checker VARCHAR(128) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  reason VARCHAR(512) NULL,
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_mc_status_time (status, created_at),
+  KEY idx_mc_resource (resource_type, resource_id, created_at),
+  KEY idx_mc_maker_time (maker, created_at),
+  KEY idx_mc_checker_time (checker, reviewed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

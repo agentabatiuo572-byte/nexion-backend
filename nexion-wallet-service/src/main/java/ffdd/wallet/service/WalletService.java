@@ -18,6 +18,7 @@ import ffdd.wallet.dto.PostWalletDebitRequest;
 import ffdd.wallet.dto.RiskDecisionApplyResult;
 import ffdd.wallet.dto.SubmitWithdrawalChainRequest;
 import ffdd.wallet.dto.SucceedWithdrawalRequest;
+import ffdd.wallet.dto.WalletOrderQueryRequest;
 
 public interface WalletService {
     UserWallet getOrCreateWallet(Long userId);
@@ -32,9 +33,17 @@ public interface WalletService {
 
     WalletLedger postDebit(PostWalletDebitRequest request);
 
+    WalletLedger reverseLedger(Long ledgerId, String reason);
+
     WithdrawalOrder createWithdrawal(CreateWithdrawalRequest request);
 
+    PageResult<WithdrawalOrder> pageWithdrawals(WalletOrderQueryRequest request);
+
     ExchangeOrder createExchange(CreateExchangeRequest request);
+
+    PageResult<ExchangeOrder> pageExchanges(WalletOrderQueryRequest request);
+
+    ExchangeOrder getExchange(String exchangeNo);
 
     RiskDecisionApplyResult applyRiskDecision(ApplyRiskDecisionRequest request);
 

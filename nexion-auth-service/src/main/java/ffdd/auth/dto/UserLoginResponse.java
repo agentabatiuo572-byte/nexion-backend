@@ -13,4 +13,5 @@ public class UserLoginResponse {
     private String referralCode;
     private String userLevel;
     private String vRank;
+    private String sessionId;
 }

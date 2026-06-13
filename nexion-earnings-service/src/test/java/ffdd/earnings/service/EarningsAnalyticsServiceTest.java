@@ -23,7 +23,8 @@ import org.junit.jupiter.api.Test;
 
 class EarningsAnalyticsServiceTest {
     private final EarningSummaryMapper summaryMapper = mock(EarningSummaryMapper.class);
-    private final EarningsAnalyticsServiceImpl service = new EarningsAnalyticsServiceImpl(summaryMapper);
+    private final EarningMilestoneRuleService milestoneRuleService = mock(EarningMilestoneRuleService.class);
+    private final EarningsAnalyticsServiceImpl service = new EarningsAnalyticsServiceImpl(summaryMapper, milestoneRuleService);
 
     @Test
     void trendFillsMissingDaysAndCalculatesTotals() {
@@ -66,6 +67,7 @@ class EarningsAnalyticsServiceTest {
     @Test
     void milestonesMarksAchievedThresholdsAndNextTarget() {
         when(summaryMapper.sumLifetimeUsdtByUser(10001L)).thenReturn(new BigDecimal("650.000000"));
+        when(milestoneRuleService.activeRules()).thenReturn(EarningMilestoneRules.rules());
 
         EarningMilestonesResponse response = service.milestones(10001L);
 
@@ -77,6 +79,25 @@ class EarningsAnalyticsServiceTest {
         assertThat(response.getNextMilestone().getMilestoneId()).isEqualTo("earn-1000");
         assertThat(response.getNextMilestone().getRemainingUsdt()).isEqualByComparingTo("350.000000");
         assertThat(response.getProgressPercent()).isEqualByComparingTo("65.0000");
+    }
+
+    @Test
+    void milestonesUsesConfiguredRules() {
+        when(summaryMapper.sumLifetimeUsdtByUser(10001L)).thenReturn(new BigDecimal("250.000000"));
+        when(milestoneRuleService.activeRules()).thenReturn(List.of(
+                new EarningMilestoneRules.Rule(
+                        "earn-200",
+                        "Configured $200",
+                        new BigDecimal("200.000000"),
+                        new BigDecimal("88.000000"))));
+
+        EarningMilestonesResponse response = service.milestones(10001L);
+
+        assertThat(response.getMilestones()).hasSize(1);
+        assertThat(response.getMilestones().get(0).getMilestoneId()).isEqualTo("earn-200");
+        assertThat(response.getMilestones().get(0).getRewardNex()).isEqualByComparingTo("88.000000");
+        assertThat(response.getMilestones().get(0).isAchieved()).isTrue();
+        assertThat(response.getProgressPercent()).isEqualByComparingTo("100.0000");
     }
 
     @Test

@@ -5,7 +5,6 @@ import lombok.Data;
 
 @Data
 public class TradeinSubmitRequest {
-    @NotNull
     private Long userId;
 
     @NotNull

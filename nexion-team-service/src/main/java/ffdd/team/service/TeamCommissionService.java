@@ -12,6 +12,7 @@ import ffdd.team.client.CommerceOutboxClient;
 import ffdd.team.client.WalletClient;
 import ffdd.team.dto.OrderPaidPayload;
 import ffdd.team.dto.TeamCommissionConsumeResult;
+import ffdd.team.dto.TeamCommissionStatusUpdateRequest;
 import ffdd.team.dto.TeamCommissionUnlockResult;
 import ffdd.team.dto.WalletCreditRequest;
 import java.math.BigDecimal;
@@ -34,6 +35,8 @@ public class TeamCommissionService {
     private static final String COMMISSION_UNILEVEL = "UNILEVEL";
     private static final String STATUS_PENDING = "PENDING";
     private static final String STATUS_POSTED = "POSTED";
+    private static final String STATUS_FROZEN = "FROZEN";
+    private static final String STATUS_REJECTED = "REJECTED";
     private static final String ASSET_USDT = "USDT";
     private static final String ASSET_NEX = "NEX";
     private static final String BIZ_TYPE_TEAM_COMMISSION = "TEAM_COMMISSION";
@@ -229,15 +232,72 @@ public class TeamCommissionService {
         summary.put("userId", userId);
         summary.put("directCount", countTeamMembers(userId, 1));
         summary.put("teamCount", countTeamMembers(userId, null));
+        summary.put("todayInviteCount", countTodayInvites(userId));
         summary.put("commissionCount", countCommissions(userId));
+        summary.put("leaderboardRankedCount", countLeaderboardRanked(userId, "week"));
         summary.put("pendingUsdt", sumCommission(userId, "amount_usdt"));
         summary.put("pendingNex", sumCommission(userId, "amount_nex"));
+        summary.putAll(teamVolumeSummary(userId));
+        summary.putAll(commissionAmountSummary(userId));
         summary.put("recentCommissions", recentCommissions(userId, 1, 10).getRecords());
         return summary;
     }
 
     public PageResult<Map<String, Object>> pageCommissions(Long userId, long pageNum, long pageSize) {
         return recentCommissions(userId, pageNum, pageSize);
+    }
+
+    public PageResult<Map<String, Object>> pageCommissionAudit(long pageNum, long pageSize) {
+        return recentAllCommissions(pageNum, pageSize);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> updateCommissionStatus(Long id, TeamCommissionStatusUpdateRequest request) {
+        if (id == null || id <= 0) {
+            throw new BizException("Commission id is required");
+        }
+        if (request == null || !StringUtils.hasText(request.getStatus())) {
+            throw new BizException("Commission status is required");
+        }
+        String target = request.getStatus().trim().toUpperCase();
+        String reason = StringUtils.hasText(request.getReason()) ? request.getReason().trim() : "PC commission audit";
+        if (STATUS_POSTED.equals(target)) {
+            CommissionCandidate candidate = commissionCandidateById(id);
+            if (isZero(candidate.amountUsdt()) && isZero(candidate.amountNex())) {
+                throw new BizException("Commission amount is zero");
+            }
+            int updated = jdbcTemplate.update("""
+                    UPDATE nx_commission_event
+                       SET status = ?,
+                           remark = ?,
+                           updated_at = NOW()
+                     WHERE id = ?
+                       AND status IN (?, ?)
+                       AND is_deleted = 0
+                    """, STATUS_POSTED, auditRemark(reason), id, STATUS_PENDING, STATUS_FROZEN);
+            if (updated == 0) {
+                throw new BizException("Commission cannot be unlocked from current status");
+            }
+            postCommissionAsset(candidate, ASSET_USDT, candidate.amountUsdt());
+            postCommissionAsset(candidate, ASSET_NEX, candidate.amountNex());
+            return commissionById(id);
+        }
+        if (!List.of(STATUS_PENDING, STATUS_FROZEN, STATUS_REJECTED).contains(target)) {
+            throw new BizException("Unsupported commission status: " + target);
+        }
+        int updated = jdbcTemplate.update("""
+                UPDATE nx_commission_event
+                   SET status = ?,
+                       remark = ?,
+                       updated_at = NOW()
+                 WHERE id = ?
+                   AND status IN (?, ?)
+                   AND is_deleted = 0
+                """, target, auditRemark(reason), id, STATUS_PENDING, STATUS_FROZEN);
+        if (updated == 0) {
+            throw new BizException("Commission cannot be updated from current status");
+        }
+        return commissionById(id);
     }
 
     public List<EventConsumerDelivery> listConsumerDead(String consumerGroup, int limit) {
@@ -441,6 +501,17 @@ public class TeamCommissionService {
         return count == null ? 0 : count;
     }
 
+    private long countTodayInvites(Long userId) {
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM nx_sponsorship
+                 WHERE sponsor_user_id = ?
+                   AND DATE(COALESCE(bound_at, created_at)) = CURRENT_DATE
+                   AND is_deleted = 0
+                """, Long.class, userId);
+        return count == null ? 0 : count;
+    }
+
     private long countCommissions(Long userId) {
         Long count = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*)
@@ -448,6 +519,25 @@ public class TeamCommissionService {
                  WHERE user_id = ?
                    AND is_deleted = 0
                 """, Long.class, userId);
+        return count == null ? 0 : count;
+    }
+
+    private long countLeaderboardRanked(Long userId, String period) {
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM nx_team_member tm
+                 WHERE tm.user_id = ?
+                   AND tm.is_deleted = 0
+                   AND NOT EXISTS (
+                        SELECT 1
+                          FROM nx_team_leaderboard_action act
+                         WHERE act.user_id = tm.user_id
+                           AND act.member_user_id = tm.member_user_id
+                           AND act.period = ?
+                           AND act.action_type = 'DISQUALIFIED'
+                           AND act.is_deleted = 0
+                   )
+                """, Long.class, userId, period);
         return count == null ? 0 : count;
     }
 
@@ -460,6 +550,52 @@ public class TeamCommissionService {
                    AND is_deleted = 0
                 """.formatted(column), BigDecimal.class, userId);
         return amount == null ? BigDecimal.ZERO : amount;
+    }
+
+    private Map<String, Object> teamVolumeSummary(Long userId) {
+        return jdbcTemplate.queryForObject("""
+                SELECT COALESCE(SUM(volume), 0) AS teamVolumeUsd,
+                       COALESCE(SUM(CASE WHEN level = 1 THEN volume ELSE 0 END), 0) AS directVolumeUsd,
+                       COALESCE(SUM(CASE WHEN level > 1 THEN volume ELSE 0 END), 0) AS extendedVolumeUsd
+                  FROM nx_team_member
+                 WHERE user_id = ?
+                   AND is_deleted = 0
+                """, (rs, rowNum) -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("teamVolumeUsd", rs.getBigDecimal("teamVolumeUsd"));
+            row.put("directVolumeUsd", rs.getBigDecimal("directVolumeUsd"));
+            row.put("extendedVolumeUsd", rs.getBigDecimal("extendedVolumeUsd"));
+            return row;
+        }, userId);
+    }
+
+    private Map<String, Object> commissionAmountSummary(Long userId) {
+        return jdbcTemplate.queryForObject("""
+                SELECT COALESCE(SUM(CASE WHEN created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01') THEN amount_usdt ELSE 0 END), 0) AS monthUsdt,
+                       COALESCE(SUM(CASE WHEN created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01') THEN amount_nex ELSE 0 END), 0) AS monthNex,
+                       COALESCE(SUM(amount_usdt), 0) AS lifetimeUsdt,
+                       COALESCE(SUM(amount_nex), 0) AS lifetimeNex,
+                       COALESCE(SUM(CASE WHEN created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01') AND layer_no = 1 THEN amount_usdt ELSE 0 END), 0) AS directUsdt,
+                       COALESCE(SUM(CASE WHEN created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01') AND COALESCE(layer_no, 0) <> 1 THEN amount_usdt ELSE 0 END), 0) AS extendedUsdt,
+                       COALESCE(SUM(CASE WHEN status IN ('POSTED', 'UNLOCKED') THEN amount_usdt ELSE 0 END), 0) AS settledUsdt,
+                       COALESCE(SUM(CASE WHEN status = 'PENDING' THEN amount_usdt ELSE 0 END), 0) AS coolingUsdt,
+                       COALESCE(SUM(CASE WHEN created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01') THEN 1 ELSE 0 END), 0) AS monthCommissionCount
+                  FROM nx_commission_event
+                 WHERE user_id = ?
+                   AND is_deleted = 0
+                """, (rs, rowNum) -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("monthUsdt", rs.getBigDecimal("monthUsdt"));
+            row.put("monthNex", rs.getBigDecimal("monthNex"));
+            row.put("lifetimeUsdt", rs.getBigDecimal("lifetimeUsdt"));
+            row.put("lifetimeNex", rs.getBigDecimal("lifetimeNex"));
+            row.put("directUsdt", rs.getBigDecimal("directUsdt"));
+            row.put("extendedUsdt", rs.getBigDecimal("extendedUsdt"));
+            row.put("settledUsdt", rs.getBigDecimal("settledUsdt"));
+            row.put("coolingUsdt", rs.getBigDecimal("coolingUsdt"));
+            row.put("monthCommissionCount", rs.getLong("monthCommissionCount"));
+            return row;
+        }, userId);
     }
 
     private PageResult<Map<String, Object>> recentCommissions(Long userId, long pageNum, long pageSize) {
@@ -485,12 +621,77 @@ public class TeamCommissionService {
         return new PageResult<>(total == null ? 0 : total, normalizedPageNum, normalizedPageSize, records);
     }
 
+    private PageResult<Map<String, Object>> recentAllCommissions(long pageNum, long pageSize) {
+        long normalizedPageNum = pageNum < 1 ? 1 : pageNum;
+        long normalizedPageSize = pageSize < 1 ? 10 : Math.min(pageSize, 100);
+        long offset = (normalizedPageNum - 1) * normalizedPageSize;
+        Long total = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                  FROM nx_commission_event
+                 WHERE is_deleted = 0
+                """, Long.class);
+        List<Map<String, Object>> records = jdbcTemplate.query("""
+                SELECT id, user_id, commission_type, source_user_id, source_user_name,
+                       layer_no, order_no, order_amount_usd, amount_usdt, amount_nex,
+                       currency, status, unlock_at, remark, created_at
+                  FROM nx_commission_event
+                 WHERE is_deleted = 0
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ? OFFSET ?
+                """, this::mapCommission, normalizedPageSize, offset);
+        return new PageResult<>(total == null ? 0 : total, normalizedPageNum, normalizedPageSize, records);
+    }
+
+    private Map<String, Object> commissionById(Long id) {
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                SELECT id, user_id, commission_type, source_user_id, source_user_name,
+                       layer_no, order_no, order_amount_usd, amount_usdt, amount_nex,
+                       currency, status, unlock_at, remark, created_at
+                  FROM nx_commission_event
+                 WHERE id = ?
+                   AND is_deleted = 0
+                 LIMIT 1
+                """, this::mapCommission, id);
+        if (rows.isEmpty()) {
+            throw new BizException(404, "Commission not found");
+        }
+        return rows.get(0);
+    }
+
+    private CommissionCandidate commissionCandidateById(Long id) {
+        List<CommissionCandidate> rows = jdbcTemplate.query("""
+                SELECT id, user_id, commission_type, layer_no, order_no, amount_usdt, amount_nex
+                  FROM nx_commission_event
+                 WHERE id = ?
+                   AND status IN (?, ?)
+                   AND is_deleted = 0
+                 LIMIT 1
+                """, this::mapCommissionCandidate, id, STATUS_PENDING, STATUS_FROZEN);
+        if (rows.isEmpty()) {
+            throw new BizException("Commission cannot be unlocked from current status");
+        }
+        return rows.get(0);
+    }
+
+    private String auditRemark(String reason) {
+        String trimmed = reason == null ? "" : reason.trim();
+        if (trimmed.length() > 220) {
+            trimmed = trimmed.substring(0, 220);
+        }
+        return "PC audit: " + trimmed;
+    }
+
+    private boolean isZero(BigDecimal value) {
+        return value == null || value.compareTo(BigDecimal.ZERO) == 0;
+    }
+
     private Map<String, Object> mapCommission(ResultSet rs, int rowNum) throws SQLException {
         Map<String, Object> row = new LinkedHashMap<>();
+        long sourceUserId = rs.getLong("source_user_id");
         row.put("id", rs.getLong("id"));
         row.put("userId", rs.getLong("user_id"));
         row.put("commissionType", rs.getString("commission_type"));
-        row.put("sourceUserId", rs.getLong("source_user_id"));
+        row.put("sourceUserId", rs.wasNull() ? null : sourceUserId);
         row.put("sourceUserName", rs.getString("source_user_name"));
         row.put("layerNo", rs.getInt("layer_no"));
         row.put("orderNo", rs.getString("order_no"));
@@ -499,7 +700,8 @@ public class TeamCommissionService {
         row.put("amountNex", rs.getBigDecimal("amount_nex"));
         row.put("currency", rs.getString("currency"));
         row.put("status", rs.getString("status"));
-        row.put("unlockAt", rs.getTimestamp("unlock_at").toLocalDateTime());
+        java.sql.Timestamp unlockAt = rs.getTimestamp("unlock_at");
+        row.put("unlockAt", unlockAt == null ? null : unlockAt.toLocalDateTime());
         row.put("remark", rs.getString("remark"));
         row.put("createdAt", rs.getTimestamp("created_at").toLocalDateTime());
         return row;

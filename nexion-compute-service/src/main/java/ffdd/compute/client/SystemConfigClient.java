@@ -11,4 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 public interface SystemConfigClient {
     @GetMapping("/config/device-fleet")
     ApiResult<Map<String, Object>> deviceFleet();
+
+    @GetMapping("/config/growth")
+    ApiResult<Map<String, Object>> growth();
 }

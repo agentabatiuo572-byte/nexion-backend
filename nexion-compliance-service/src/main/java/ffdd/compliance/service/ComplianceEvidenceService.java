@@ -1,5 +1,7 @@
 package ffdd.compliance.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.exception.BizException;
 import ffdd.common.storage.ObjectStorageService;
 import ffdd.compliance.domain.KycProfile;
@@ -18,6 +20,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
@@ -37,21 +40,34 @@ public class ComplianceEvidenceService {
     private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
             "image/jpeg",
             "image/png",
+            "image/webp",
+            "video/mp4",
+            "video/webm",
+            "video/quicktime",
             "application/pdf",
             "application/json",
             "text/plain");
     private static final Map<String, String> DEFAULT_EXTENSIONS = Map.of(
             "image/jpeg", ".jpg",
             "image/png", ".png",
+            "image/webp", ".webp",
+            "video/mp4", ".mp4",
+            "video/webm", ".webm",
+            "video/quicktime", ".mov",
             "application/pdf", ".pdf",
             "application/json", ".json",
             "text/plain", ".txt");
     private static final Map<String, Set<String>> ALLOWED_EXTENSIONS = Map.of(
             "image/jpeg", Set.of(".jpg", ".jpeg"),
             "image/png", Set.of(".png"),
+            "image/webp", Set.of(".webp"),
+            "video/mp4", Set.of(".mp4", ".m4v"),
+            "video/webm", Set.of(".webm"),
+            "video/quicktime", Set.of(".mov", ".qt"),
             "application/pdf", Set.of(".pdf"),
             "application/json", Set.of(".json"),
             "text/plain", Set.of(".txt"));
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final ObjectStorageService storageService;
     private final KycProfileService kycProfileService;
@@ -63,7 +79,7 @@ public class ComplianceEvidenceService {
             ObjectStorageService storageService,
             KycProfileService kycProfileService,
             ProofAssetService proofAssetService,
-            @Value("${nexion.compliance.evidence.max-upload-size-bytes:10485760}") long maxUploadSizeBytes,
+            @Value("${nexion.compliance.evidence.max-upload-size-bytes:52428800}") long maxUploadSizeBytes,
             @Value("${nexion.compliance.evidence.presign-expiry-seconds:900}") int presignExpirySeconds) {
         this.storageService = storageService;
         this.kycProfileService = kycProfileService;
@@ -110,7 +126,7 @@ public class ComplianceEvidenceService {
         create.setRelatedBizType(normalizedOptionalText(request.getRelatedBizType()));
         create.setRelatedBizNo(normalizedOptionalText(request.getRelatedBizNo()));
         create.setSubmittedBy(normalizedOptionalText(request.getSubmittedBy()));
-        create.setMetadataJson(normalizedOptionalText(request.getMetadataJson()));
+        create.setMetadataJson(buildProofMetadataJson(request));
         return proofAssetService.create(create);
     }
 
@@ -219,7 +235,42 @@ public class ComplianceEvidenceService {
         validateOptionalToken("Related biz type", request.getRelatedBizType(), 64);
         validateOptionalToken("Related biz no", request.getRelatedBizNo(), 96);
         validateOptionalToken("Submitted by", request.getSubmittedBy(), 64);
+        validateOptionalToken("Metadata variant", request.getMetadataVariant(), 32);
+        validateOptionalToken("Referral code", request.getReferralCode(), 64);
+        validateOptionalToken("Receipt no", request.getReceiptNo(), 96);
         validateOptionalText("Metadata json", request.getMetadataJson(), 2048);
+    }
+
+    private String buildProofMetadataJson(ProofAssetUploadRequest request) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        putText(metadata, "variant", request.getMetadataVariant());
+        putNumber(metadata, "totalEarnings", request.getTotalEarnings());
+        putNumber(metadata, "currentStreak", request.getCurrentStreak());
+        putNumber(metadata, "longestStreak", request.getLongestStreak());
+        putNumber(metadata, "teamMembers", request.getTeamMembers());
+        putText(metadata, "referralCode", request.getReferralCode());
+        putText(metadata, "receiptNo", request.getReceiptNo());
+        if (metadata.isEmpty()) {
+            return normalizedOptionalText(request.getMetadataJson());
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(metadata);
+        } catch (JsonProcessingException ex) {
+            throw new BizException("Proof metadata cannot be serialized");
+        }
+    }
+
+    private void putText(Map<String, Object> metadata, String key, String value) {
+        String text = normalizedOptionalText(value);
+        if (text != null) {
+            metadata.put(key, text);
+        }
+    }
+
+    private void putNumber(Map<String, Object> metadata, String key, Number value) {
+        if (value != null) {
+            metadata.put(key, value);
+        }
     }
 
     private void validateUploadPolicy(EvidenceUploadPolicyRequest request) {

@@ -258,6 +258,16 @@ public class MissionCampaignService {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public void deleteMonthly(Long id) {
+        requireMonthlyById(id);
+        MonthlyChallenge patch = new MonthlyChallenge();
+        patch.setId(id);
+        patch.setStatus(0);
+        patch.setIsDeleted(1);
+        monthlyChallengeMapper.updateById(patch);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public EventQuest createEvent(EventQuestRequest request) {
         validateEventWindow(request.getStartsAt(), request.getEndsAt());
         String code = normalizeCode(request.getQuestCode(), "quest code");
@@ -327,6 +337,16 @@ public class MissionCampaignService {
         }
         eventQuestMapper.updateById(patch);
         return requireEventById(id);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteEvent(Long id) {
+        requireEventById(id);
+        EventQuest patch = new EventQuest();
+        patch.setId(id);
+        patch.setStatus(0);
+        patch.setIsDeleted(1);
+        eventQuestMapper.updateById(patch);
     }
 
     @Transactional(rollbackFor = Exception.class)

@@ -10,6 +10,7 @@ import ffdd.earnings.dto.EarningTrendResponse;
 import ffdd.earnings.dto.MissedIncomeQueryRequest;
 import ffdd.earnings.dto.MissedIncomeResponse;
 import ffdd.earnings.mapper.EarningSummaryMapper;
+import ffdd.earnings.service.EarningMilestoneRuleService;
 import ffdd.earnings.service.EarningMilestoneRules;
 import ffdd.earnings.service.EarningsAnalyticsService;
 import java.math.BigDecimal;
@@ -37,19 +38,22 @@ public class EarningsAnalyticsServiceImpl implements EarningsAnalyticsService {
     private static final BigDecimal SECONDS_PER_DAY = new BigDecimal("86400");
 
     private final EarningSummaryMapper summaryMapper;
+    private final EarningMilestoneRuleService milestoneRuleService;
     private final BigDecimal phoneDailyUsdt;
     private final BigDecimal s1DailyUsdt;
 
-    public EarningsAnalyticsServiceImpl(EarningSummaryMapper summaryMapper) {
-        this(summaryMapper, new BigDecimal("0.06"), new BigDecimal("38.50"));
+    public EarningsAnalyticsServiceImpl(EarningSummaryMapper summaryMapper, EarningMilestoneRuleService milestoneRuleService) {
+        this(summaryMapper, milestoneRuleService, new BigDecimal("0.06"), new BigDecimal("38.50"));
     }
 
     @Autowired
     public EarningsAnalyticsServiceImpl(
             EarningSummaryMapper summaryMapper,
+            EarningMilestoneRuleService milestoneRuleService,
             @Value("${nexion.earnings.analytics.phone-daily-usdt:0.06}") BigDecimal phoneDailyUsdt,
             @Value("${nexion.earnings.analytics.s1-daily-usdt:38.50}") BigDecimal s1DailyUsdt) {
         this.summaryMapper = summaryMapper;
+        this.milestoneRuleService = milestoneRuleService;
         this.phoneDailyUsdt = scaled(phoneDailyUsdt);
         this.s1DailyUsdt = scaled(s1DailyUsdt);
     }
@@ -112,7 +116,7 @@ public class EarningsAnalyticsServiceImpl implements EarningsAnalyticsService {
             throw new BizException("userId is required");
         }
         BigDecimal lifetimeUsdt = scaled(summaryMapper.sumLifetimeUsdtByUser(userId));
-        List<EarningMilestoneResponse> milestones = EarningMilestoneRules.rules().stream()
+        List<EarningMilestoneResponse> milestones = milestoneRuleService.activeRules().stream()
                 .map(rule -> toMilestone(rule, lifetimeUsdt))
                 .toList();
         EarningMilestoneResponse nextMilestone = milestones.stream()

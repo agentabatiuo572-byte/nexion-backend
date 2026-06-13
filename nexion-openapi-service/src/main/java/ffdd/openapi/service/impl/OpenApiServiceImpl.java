@@ -16,6 +16,7 @@ import ffdd.openapi.domain.WebhookSubscription;
 import ffdd.openapi.dto.OpenApiAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppCreateResponse;
 import ffdd.openapi.dto.OpenApiAppOpsResponse;
+import ffdd.openapi.dto.OpenApiOpsAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
 import ffdd.openapi.dto.OpenApiAppSummaryResponse;
 import ffdd.openapi.dto.OpenApiCallAuditResponse;
@@ -30,6 +31,7 @@ import ffdd.openapi.service.OpenApiNonceService;
 import ffdd.openapi.service.OpenApiQuotaService;
 import ffdd.openapi.service.OpenApiService;
 import jakarta.annotation.PostConstruct;
+import java.net.URISyntaxException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -102,15 +104,27 @@ public class OpenApiServiceImpl implements OpenApiService {
 
     @Override
     public OpenApiAppCreateResponse createApp(Long ownerUserId, OpenApiAppCreateRequest request) {
+        return createAppInternal(ownerUserId, request.getAppName(), request.getQpsLimit(), request.getDailyLimit(), request.getRemark());
+    }
+
+    @Override
+    public OpenApiAppCreateResponse createOpsApp(OpenApiOpsAppCreateRequest request) {
+        if (request == null || request.getOwnerUserId() == null) {
+            throw new BizException("OpenAPI app owner user is required");
+        }
+        return createAppInternal(request.getOwnerUserId(), request.getAppName(), request.getQpsLimit(), request.getDailyLimit(), request.getRemark());
+    }
+
+    private OpenApiAppCreateResponse createAppInternal(Long ownerUserId, String appName, Integer qpsLimit, Integer dailyLimit, String remark) {
         OpenApiApp app = new OpenApiApp();
         app.setOwnerUserId(ownerUserId);
-        app.setAppName(request.getAppName());
+        app.setAppName(appName);
         app.setAppKey("nxak_" + randomHex(16));
         app.setAppSecret("nxsk_" + randomHex(32));
         app.setStatus(STATUS_ACTIVE);
-        app.setQpsLimit(positiveOrDefault(request.getQpsLimit(), defaultQpsLimit));
-        app.setDailyLimit(positiveOrDefault(request.getDailyLimit(), defaultDailyLimit));
-        app.setRemark(request.getRemark());
+        app.setQpsLimit(positiveOrDefault(qpsLimit, defaultQpsLimit));
+        app.setDailyLimit(positiveOrDefault(dailyLimit, defaultDailyLimit));
+        app.setRemark(remark);
         app.setIsDeleted(0);
         appMapper.insert(app);
         return new OpenApiAppCreateResponse(
@@ -206,11 +220,22 @@ public class OpenApiServiceImpl implements OpenApiService {
     @Override
     public WebhookSubscription createWebhook(Long ownerUserId, WebhookCreateRequest request) {
         OpenApiApp app = getOwnedApp(ownerUserId, request.getAppId());
-        validateCallbackUrl(request.getCallbackUrl());
+        return createWebhookForApp(app, request);
+    }
+
+    @Override
+    public WebhookSubscription createOpsWebhook(WebhookCreateRequest request) {
+        OpenApiApp app = getExistingApp(request.getAppId());
+        return createWebhookForApp(app, request);
+    }
+
+    private WebhookSubscription createWebhookForApp(OpenApiApp app, WebhookCreateRequest request) {
+        String callbackUrl = buildCallbackUrl(request);
+        validateCallbackUrl(callbackUrl);
         WebhookSubscription webhook = new WebhookSubscription();
         webhook.setAppId(app.getId());
-        webhook.setEventType(request.getEventType());
-        webhook.setCallbackUrl(request.getCallbackUrl());
+        webhook.setEventType(request.getEventType().trim());
+        webhook.setCallbackUrl(callbackUrl);
         webhook.setSecret("nxwh_" + randomHex(24));
         webhook.setStatus(STATUS_ACTIVE);
         webhook.setIsDeleted(0);
@@ -221,10 +246,45 @@ public class OpenApiServiceImpl implements OpenApiService {
     @Override
     public List<WebhookSubscription> listWebhooks(Long ownerUserId, Long appId) {
         OpenApiApp app = getOwnedApp(ownerUserId, appId);
+        return listWebhooksForApp(app.getId(), null, null, MAX_LIST_LIMIT);
+    }
+
+    @Override
+    public List<WebhookSubscription> listOpsWebhooks(Long appId, String eventType, String status, int limit) {
+        if (appId != null) {
+            getExistingApp(appId);
+        }
+        return listWebhooksForApp(appId, eventType, status, normalizeLimit(limit));
+    }
+
+    @Override
+    public WebhookSubscription enableWebhook(Long id) {
+        return updateWebhookStatus(id, STATUS_ACTIVE);
+    }
+
+    @Override
+    public WebhookSubscription disableWebhook(Long id) {
+        return updateWebhookStatus(id, STATUS_DISABLED);
+    }
+
+    private List<WebhookSubscription> listWebhooksForApp(Long appId, String eventType, String status, int limit) {
         return webhookMapper.selectList(new LambdaQueryWrapper<WebhookSubscription>()
-                .eq(WebhookSubscription::getAppId, app.getId())
+                .eq(appId != null, WebhookSubscription::getAppId, appId)
+                .eq(StringUtils.hasText(eventType), WebhookSubscription::getEventType, eventType)
+                .eq(StringUtils.hasText(status), WebhookSubscription::getStatus, normalizeStatus(status))
                 .eq(WebhookSubscription::getIsDeleted, 0)
-                .orderByDesc(WebhookSubscription::getCreatedAt));
+                .orderByDesc(WebhookSubscription::getCreatedAt)
+                .last("LIMIT " + limit));
+    }
+
+    private WebhookSubscription updateWebhookStatus(Long id, String status) {
+        WebhookSubscription row = webhookMapper.selectById(id);
+        if (row == null || Integer.valueOf(1).equals(row.getIsDeleted())) {
+            throw new BizException("Webhook subscription not found");
+        }
+        row.setStatus(status);
+        webhookMapper.updateById(row);
+        return row;
     }
 
     @Override
@@ -380,6 +440,102 @@ public class OpenApiServiceImpl implements OpenApiService {
             delivery.setIsDeleted(0);
             deliveryMapper.insert(delivery);
         }
+    }
+
+    private String buildCallbackUrl(WebhookCreateRequest request) {
+        if (hasStructuredCallback(request)) {
+            String scheme = normalizeCallbackScheme(request.getCallbackScheme());
+            String host = normalizeCallbackHost(request.getCallbackHost());
+            int port = normalizeCallbackPort(request.getCallbackPort());
+            String path = normalizeCallbackPath(request.getCallbackPath());
+            String query = normalizeCallbackQuery(request.getCallbackQuery());
+            try {
+                return new URI(scheme, null, host, port, path, query, null).toString();
+            } catch (URISyntaxException ex) {
+                throw new BizException("Webhook callback endpoint is not allowed");
+            }
+        }
+        if (!StringUtils.hasText(request.getCallbackUrl())) {
+            throw new BizException("Webhook callback endpoint is required");
+        }
+        return request.getCallbackUrl().trim();
+    }
+
+    private boolean hasStructuredCallback(WebhookCreateRequest request) {
+        return StringUtils.hasText(request.getCallbackScheme())
+                || StringUtils.hasText(request.getCallbackHost())
+                || request.getCallbackPort() != null
+                || StringUtils.hasText(request.getCallbackPath())
+                || StringUtils.hasText(request.getCallbackQuery());
+    }
+
+    private String normalizeCallbackScheme(String value) {
+        String scheme = StringUtils.hasText(value) ? value.trim().toLowerCase(Locale.ROOT) : "https";
+        if (!"https".equals(scheme) && !"http".equals(scheme)) {
+            throw new BizException("Webhook callback scheme is not allowed");
+        }
+        return scheme;
+    }
+
+    private String normalizeCallbackHost(String value) {
+        if (!StringUtils.hasText(value)) {
+            throw new BizException("Webhook callback host is required");
+        }
+        String host = value.trim().toLowerCase(Locale.ROOT);
+        if (host.length() > 255
+                || host.startsWith(".")
+                || host.endsWith(".")
+                || host.contains("/")
+                || host.contains(":")
+                || host.contains("@")
+                || containsControlCharacters(host)
+                || !host.matches("^[a-z0-9.-]+$")) {
+            throw new BizException("Webhook callback host is not allowed");
+        }
+        return host;
+    }
+
+    private int normalizeCallbackPort(Integer value) {
+        if (value == null) {
+            return -1;
+        }
+        if (value < 1 || value > 65535) {
+            throw new BizException("Webhook callback port is not allowed");
+        }
+        return value;
+    }
+
+    private String normalizeCallbackPath(String value) {
+        String path = StringUtils.hasText(value) ? value.trim() : "/";
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+        if (path.length() > 512
+                || path.contains("..")
+                || path.contains("//")
+                || path.contains("#")
+                || containsControlCharacters(path)) {
+            throw new BizException("Webhook callback path is not allowed");
+        }
+        return path;
+    }
+
+    private String normalizeCallbackQuery(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String query = value.trim();
+        if (query.startsWith("?")) {
+            query = query.substring(1);
+        }
+        if (query.length() > 512 || query.contains("#") || containsControlCharacters(query)) {
+            throw new BizException("Webhook callback query is not allowed");
+        }
+        return query;
+    }
+
+    private boolean containsControlCharacters(String value) {
+        return value.chars().anyMatch(ch -> ch <= 31 || ch == 127);
     }
 
     private void validateCallbackUrl(String callbackUrl) {

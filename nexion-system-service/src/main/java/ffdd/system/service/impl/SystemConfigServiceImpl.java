@@ -31,7 +31,8 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     private static final Pattern CONFIG_KEY_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{1,128}$");
     private static final Pattern CONFIG_GROUP_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{1,64}$");
     private static final Set<String> VALUE_TYPES = Set.of("STRING", "NUMBER", "BOOLEAN", "JSON");
-    private static final Set<String> VISIBILITIES = Set.of("ADMIN", "PUBLIC");
+    private static final Set<String> VISIBILITIES = Set.of("ADMIN", "PUBLIC", "PRIVATE");
+    private static final Set<String> SPECIALIZED_CONFIG_KEYS = Set.of("platform.phase.config");
 
     private final ConfigItemMapper configItemMapper;
     private final ObjectMapper objectMapper;
@@ -41,6 +42,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         String normalizedQuery = trimToNull(query);
         LambdaQueryWrapper<ConfigItem> wrapper = new LambdaQueryWrapper<ConfigItem>()
                 .eq(ConfigItem::getIsDeleted, 0)
+                .notIn(ConfigItem::getConfigKey, SPECIALIZED_CONFIG_KEYS)
                 .eq(status != null, ConfigItem::getStatus, status)
                 .and(StringUtils.hasText(normalizedQuery), nested -> nested
                         .like(ConfigItem::getConfigKey, normalizedQuery)

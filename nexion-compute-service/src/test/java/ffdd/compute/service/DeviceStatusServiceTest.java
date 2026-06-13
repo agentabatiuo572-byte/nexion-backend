@@ -11,9 +11,11 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.compute.domain.UserDevice;
+import ffdd.compute.domain.UserDeviceRuntime;
 import ffdd.compute.dto.DeviceStatusResponse;
 import ffdd.compute.dto.DeviceStatusUpdateRequest;
 import ffdd.compute.dto.NodeMapResponse;
+import ffdd.compute.mapper.UserDeviceRuntimeMapper;
 import ffdd.compute.mapper.UserDeviceMapper;
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -28,12 +30,13 @@ import org.springframework.data.redis.core.ValueOperations;
 
 class DeviceStatusServiceTest {
     private final UserDeviceMapper userDeviceMapper = mock(UserDeviceMapper.class);
+    private final UserDeviceRuntimeMapper runtimeMapper = mock(UserDeviceRuntimeMapper.class);
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
     private final ValueOperations<String, String> valueOps = mock(ValueOperations.class);
     private final SetOperations<String, String> setOps = mock(SetOperations.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
     private final DeviceStatusService service =
-            new DeviceStatusService(userDeviceMapper, redisTemplate, objectMapper, 45);
+            new DeviceStatusService(userDeviceMapper, runtimeMapper, redisTemplate, objectMapper, 45);
 
     @Test
     void reportStatusWritesRealtimeStateToRedisWithoutPersistingEveryMetric() throws Exception {
@@ -63,6 +66,18 @@ class DeviceStatusServiceTest {
         assertThat(cached.getRegion()).isEqualTo("North America");
         assertThat(cached.getGpuUsage()).isEqualByComparingTo("87.5");
         verify(setOps).add("compute:device:state:index", "7");
+        verify(runtimeMapper).upsert(org.mockito.ArgumentMatchers.<UserDeviceRuntime>argThat(runtime ->
+                Long.valueOf(7L).equals(runtime.getUserDeviceId())
+                        && "BUSY".equals(runtime.getOnlineStatus())
+                        && "North America".equals(runtime.getRegion())
+                        && "US".equals(runtime.getCountry())
+                        && "San Jose".equals(runtime.getCity())
+                        && runtime.getGpuTempC().compareTo(new BigDecimal("61.5")) == 0
+                        && runtime.getGpuPowerW().compareTo(new BigDecimal("320.0")) == 0
+                        && runtime.getGpuUsage().compareTo(new BigDecimal("87.5")) == 0
+                        && "TASK-1".equals(runtime.getActiveTaskNo())
+                        && "worker-a".equals(runtime.getClientName())
+                        && runtime.getHeartbeatAt().equals(LocalDateTime.of(2026, 5, 24, 23, 50))));
         verify(userDeviceMapper, never()).updateById(org.mockito.ArgumentMatchers.any(UserDevice.class));
     }
 

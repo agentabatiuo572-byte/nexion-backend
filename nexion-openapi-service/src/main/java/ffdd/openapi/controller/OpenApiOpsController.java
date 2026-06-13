@@ -4,9 +4,13 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
 import ffdd.openapi.domain.WebhookDelivery;
+import ffdd.openapi.domain.WebhookSubscription;
 import ffdd.openapi.dto.OpenApiAppOpsResponse;
+import ffdd.openapi.dto.OpenApiAppCreateResponse;
+import ffdd.openapi.dto.OpenApiOpsAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
 import ffdd.openapi.dto.OpenApiCallAuditResponse;
+import ffdd.openapi.dto.WebhookCreateRequest;
 import ffdd.openapi.service.OpenApiOpsStatsService;
 import ffdd.openapi.service.OpenApiService;
 import ffdd.openapi.service.WebhookDeliveryPublishResponse;
@@ -67,6 +71,24 @@ public class OpenApiOpsController {
         return ApiResult.ok(openApiService.listOpsApps(status, appKey, ownerUserId, limit));
     }
 
+    @PostMapping("/ops/apps")
+    public ApiResult<OpenApiAppCreateResponse> createApp(@Valid @RequestBody OpenApiOpsAppCreateRequest request) {
+        OpenApiAppCreateResponse response = openApiService.createOpsApp(request);
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("OPENAPI_APP_CREATE")
+                .resourceType("OPENAPI_APP")
+                .resourceId(String.valueOf(response.getId()))
+                .bizNo(response.getAppKey())
+                .userId(request.getOwnerUserId())
+                .riskLevel("HIGH")
+                .detail(detail(
+                        "appName", response.getAppName(),
+                        "qpsLimit", response.getQpsLimit(),
+                        "dailyLimit", response.getDailyLimit()))
+                .build());
+        return ApiResult.ok(response);
+    }
+
     @PostMapping("/ops/apps/{appId}/enable")
     public ApiResult<OpenApiAppOpsResponse> enableApp(@PathVariable Long appId) {
         OpenApiAppOpsResponse response = openApiService.enableApp(appId);
@@ -100,6 +122,60 @@ public class OpenApiOpsController {
             @RequestParam(required = false) Integer responseCode,
             @RequestParam(defaultValue = "20") int limit) {
         return ApiResult.ok(openApiService.listCallAudits(appId, appKey, apiPath, responseCode, limit));
+    }
+
+    @GetMapping("/ops/webhooks")
+    public ApiResult<List<WebhookSubscription>> webhookSubscriptions(
+            @RequestParam(required = false) Long appId,
+            @RequestParam(required = false) String eventType,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(openApiService.listOpsWebhooks(appId, eventType, status, limit));
+    }
+
+    @PostMapping("/ops/webhooks")
+    public ApiResult<WebhookSubscription> createWebhook(@Valid @RequestBody WebhookCreateRequest request) {
+        WebhookSubscription response = openApiService.createOpsWebhook(request);
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("OPENAPI_WEBHOOK_CREATE")
+                .resourceType("WEBHOOK_SUBSCRIPTION")
+                .resourceId(String.valueOf(response.getId()))
+                .bizNo(response.getEventType())
+                .riskLevel("HIGH")
+                .detail(detail(
+                        "appId", response.getAppId(),
+                        "eventType", response.getEventType(),
+                        "callbackUrl", response.getCallbackUrl()))
+                .build());
+        return ApiResult.ok(response);
+    }
+
+    @PostMapping("/ops/webhooks/{id}/enable")
+    public ApiResult<WebhookSubscription> enableWebhook(@PathVariable Long id) {
+        WebhookSubscription response = openApiService.enableWebhook(id);
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("OPENAPI_WEBHOOK_ENABLE")
+                .resourceType("WEBHOOK_SUBSCRIPTION")
+                .resourceId(String.valueOf(response.getId()))
+                .bizNo(response.getEventType())
+                .riskLevel("MEDIUM")
+                .detail(detail("status", response.getStatus()))
+                .build());
+        return ApiResult.ok(response);
+    }
+
+    @PostMapping("/ops/webhooks/{id}/disable")
+    public ApiResult<WebhookSubscription> disableWebhook(@PathVariable Long id) {
+        WebhookSubscription response = openApiService.disableWebhook(id);
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("OPENAPI_WEBHOOK_DISABLE")
+                .resourceType("WEBHOOK_SUBSCRIPTION")
+                .resourceId(String.valueOf(response.getId()))
+                .bizNo(response.getEventType())
+                .riskLevel("MEDIUM")
+                .detail(detail("status", response.getStatus()))
+                .build());
+        return ApiResult.ok(response);
     }
 
     @PostMapping("/webhooks/deliveries/publish")

@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import lombok.Data;
 
 @Data
@@ -41,4 +42,22 @@ public class GenesisSeriesCreateRequest {
 
     @Size(max = 2048)
     private String metadataJson;
+
+    @Size(max = 512)
+    private String description;
+
+    @Size(max = 96)
+    private String dividendLabel;
+
+    @Size(max = 96)
+    private String utilityLabel;
+
+    @Size(max = 96)
+    private String rarityLabel;
+
+    @Size(max = 8)
+    private List<@Size(max = 96) String> traits;
+
+    @Size(max = 8)
+    private List<@Size(max = 255) String> mediaObjectKeys;
 }

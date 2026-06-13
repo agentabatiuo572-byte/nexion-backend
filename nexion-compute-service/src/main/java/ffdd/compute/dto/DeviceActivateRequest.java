@@ -16,6 +16,8 @@ public class DeviceActivateRequest {
 
     private Long productId;
 
+    private String productCode;
+
     private String productTier;
 
     @NotBlank
@@ -23,6 +25,15 @@ public class DeviceActivateRequest {
 
     @NotBlank
     private String deviceType;
+
+    private Integer generation;
+    private String gpuModel;
+    private Integer vramTotalGb;
+    private BigDecimal basePowerW;
+    private String dcLocation;
+    private BigDecimal priceUsdtSnapshot;
+    private String ownershipStatus;
+    private String sourceChannel;
 
     private BigDecimal hashrate = BigDecimal.ZERO;
     private BigDecimal dailyUsdt = BigDecimal.ZERO;

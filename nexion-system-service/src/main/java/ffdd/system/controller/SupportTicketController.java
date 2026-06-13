@@ -4,6 +4,7 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.security.AuthHeaders;
 import ffdd.system.dto.SupportTicketCreateRequest;
+import ffdd.system.dto.SupportTicketAttachmentResponse;
 import ffdd.system.dto.SupportTicketReplyRequest;
 import ffdd.system.dto.SupportTicketResponse;
 import ffdd.system.service.SupportTicketService;
@@ -16,7 +17,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/system/support/tickets")
@@ -32,6 +35,13 @@ public class SupportTicketController {
             @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
             @Valid @RequestBody SupportTicketCreateRequest request) {
         return ApiResult.ok(supportTicketService.create(userId, request));
+    }
+
+    @PostMapping("/attachments")
+    public ApiResult<SupportTicketAttachmentResponse> uploadAttachment(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @RequestPart("file") MultipartFile file) {
+        return ApiResult.ok(supportTicketService.uploadAttachment(file));
     }
 
     @GetMapping

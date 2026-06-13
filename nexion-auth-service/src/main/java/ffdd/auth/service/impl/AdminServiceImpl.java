@@ -6,6 +6,8 @@ import ffdd.auth.domain.Admin;
 import ffdd.auth.domain.AdminRoleRelation;
 import ffdd.auth.dto.AdminCreateRequest;
 import ffdd.auth.dto.AdminQueryRequest;
+import ffdd.auth.dto.AdminTwoFactorResetRequest;
+import ffdd.auth.dto.AdminTwoFactorResetResponse;
 import ffdd.auth.dto.AdminUpdateRequest;
 import ffdd.auth.mapper.AdminMapper;
 import ffdd.auth.mapper.AdminRoleRelationMapper;
@@ -109,6 +111,16 @@ public class AdminServiceImpl implements AdminService {
                 adminRoleRelationMapper.upsertActive(adminId, roleId);
             }
         }
+    }
+
+    @Override
+    public AdminTwoFactorResetResponse resetTwoFactor(Long adminId, AdminTwoFactorResetRequest request) {
+        Admin admin = detail(adminId);
+        return new AdminTwoFactorResetResponse(
+                admin.getId(),
+                admin.getUsername(),
+                false,
+                "NEXT_LOGIN_BIND_2FA");
     }
 
     private LambdaQueryWrapper<Admin> buildQuery(AdminQueryRequest query) {

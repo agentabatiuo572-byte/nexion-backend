@@ -4,10 +4,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.common.exception.BizException;
+import ffdd.compute.domain.UserDeviceRuntime;
 import ffdd.compute.domain.UserDevice;
 import ffdd.compute.dto.DeviceStatusResponse;
 import ffdd.compute.dto.DeviceStatusUpdateRequest;
 import ffdd.compute.dto.NodeMapResponse;
+import ffdd.compute.mapper.UserDeviceRuntimeMapper;
 import ffdd.compute.mapper.UserDeviceMapper;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -29,16 +31,19 @@ public class DeviceStatusService {
     private static final int MAX_NODE_MAP_LIMIT = 500;
 
     private final UserDeviceMapper userDeviceMapper;
+    private final UserDeviceRuntimeMapper runtimeMapper;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final Duration stateTtl;
 
     public DeviceStatusService(
             UserDeviceMapper userDeviceMapper,
+            UserDeviceRuntimeMapper runtimeMapper,
             StringRedisTemplate redisTemplate,
             ObjectMapper objectMapper,
             @Value("${nexion.compute.device-state.ttl-seconds:30}") long ttlSeconds) {
         this.userDeviceMapper = userDeviceMapper;
+        this.runtimeMapper = runtimeMapper;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.stateTtl = Duration.ofSeconds(Math.max(5, ttlSeconds));
@@ -57,10 +62,18 @@ public class DeviceStatusService {
         response.setTemperatureC(request.getTemperatureC());
         response.setPowerW(request.getPowerW());
         response.setGpuUsage(request.getGpuUsage());
+        response.setVramUsedGb(request.getVramUsedGb());
+        response.setBatteryLevel(request.getBatteryLevel());
+        response.setIsCharging(request.getIsCharging());
+        response.setNetworkReachable(request.getNetworkReachable());
+        response.setThermalState(trimToNull(request.getThermalState()));
+        response.setPausedReason(trimToNull(request.getPausedReason()));
         response.setActiveTaskNo(trimToNull(request.getActiveTaskNo()));
         response.setClientName(trimToNull(request.getClientName()));
+        response.setAgentVersion(trimToNull(request.getAgentVersion()));
         response.setReportedAt(request.getReportedAt() == null ? LocalDateTime.now() : request.getReportedAt());
         response.setLastSeenAt(response.getReportedAt());
+        persistRuntime(response);
         writeState(response);
         return response;
     }
@@ -129,6 +142,38 @@ public class DeviceStatusService {
         } catch (JsonProcessingException ex) {
             throw new BizException("Unable to serialize device state");
         }
+    }
+
+    private void persistRuntime(DeviceStatusResponse response) {
+        UserDeviceRuntime runtime = new UserDeviceRuntime();
+        runtime.setUserDeviceId(response.getUserDeviceId());
+        runtime.setOnlineStatus(response.getStatus());
+        runtime.setRegion(response.getRegion());
+        runtime.setCountry(response.getCountry());
+        runtime.setCity(response.getCity());
+        runtime.setLatitude(response.getLatitude());
+        runtime.setLongitude(response.getLongitude());
+        runtime.setGpuUsage(response.getGpuUsage());
+        runtime.setGpuTempC(response.getTemperatureC());
+        runtime.setGpuPowerW(response.getPowerW());
+        runtime.setVramUsedGb(response.getVramUsedGb());
+        runtime.setBatteryLevel(response.getBatteryLevel());
+        runtime.setIsCharging(toFlag(response.getIsCharging()));
+        runtime.setNetworkReachable(toFlag(response.getNetworkReachable()));
+        runtime.setThermalState(response.getThermalState());
+        runtime.setPausedReason(response.getPausedReason());
+        runtime.setActiveTaskNo(response.getActiveTaskNo());
+        runtime.setClientName(response.getClientName());
+        runtime.setHeartbeatAt(response.getReportedAt());
+        runtime.setAgentVersion(response.getAgentVersion());
+        runtimeMapper.upsert(runtime);
+    }
+
+    private Integer toFlag(Boolean value) {
+        if (value == null) {
+            return null;
+        }
+        return value ? 1 : 0;
     }
 
     private void addCachedPoint(List<DeviceStatusResponse> points, String id) {

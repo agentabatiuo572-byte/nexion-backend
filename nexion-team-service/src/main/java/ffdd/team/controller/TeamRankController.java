@@ -4,6 +4,7 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.security.AuthHeaders;
 import ffdd.team.dto.TeamRankEvaluateRequest;
 import ffdd.team.dto.TeamUserSearchResponse;
+import ffdd.team.dto.VRankConfigUpdateRequest;
 import ffdd.team.service.TeamRankService;
 import java.util.List;
 import java.util.Map;
@@ -11,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -34,6 +36,14 @@ public class TeamRankController {
     @PreAuthorize("hasAuthority('PERM_TEAM_READ')")
     public ApiResult<List<Map<String, Object>>> vRanks() {
         return ApiResult.ok(teamRankService.vRanks());
+    }
+
+    @PatchMapping("/v-ranks/{id}")
+    @PreAuthorize("hasAuthority('PERM_TEAM_WRITE')")
+    public ApiResult<Map<String, Object>> updateVRank(
+            @PathVariable Long id,
+            @RequestBody VRankConfigUpdateRequest request) {
+        return ApiResult.ok(teamRankService.updateVRank(id, request));
     }
 
     @GetMapping("/users/search")

@@ -7,11 +7,16 @@ import static org.mockito.Mockito.when;
 
 import ffdd.wallet.mapper.DepositOrderMapper;
 import ffdd.wallet.mapper.ExchangeOrderMapper;
+import ffdd.wallet.mapper.NexLockOrderMapper;
+import ffdd.wallet.mapper.StakingPositionMapper;
+import ffdd.wallet.mapper.UserWalletMapper;
 import ffdd.wallet.mapper.WalletLedgerMapper;
 import ffdd.wallet.mapper.WithdrawalOrderMapper;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -22,9 +27,23 @@ class WalletOpsStatsServiceTest {
     private final DepositOrderMapper depositOrderMapper = mock(DepositOrderMapper.class);
     private final WithdrawalOrderMapper withdrawalOrderMapper = mock(WithdrawalOrderMapper.class);
     private final ExchangeOrderMapper exchangeOrderMapper = mock(ExchangeOrderMapper.class);
+    private final UserWalletMapper userWalletMapper = mock(UserWalletMapper.class);
+    private final StakingPositionMapper stakingPositionMapper = mock(StakingPositionMapper.class);
+    private final NexLockOrderMapper nexLockOrderMapper = mock(NexLockOrderMapper.class);
     private final WalletLedgerMapper ledgerMapper = mock(WalletLedgerMapper.class);
     private final WalletOpsStatsService service = new WalletOpsStatsService(
-            depositOrderMapper, withdrawalOrderMapper, exchangeOrderMapper, ledgerMapper, CLOCK);
+            depositOrderMapper,
+            withdrawalOrderMapper,
+            exchangeOrderMapper,
+            userWalletMapper,
+            stakingPositionMapper,
+            nexLockOrderMapper,
+            ledgerMapper,
+            CLOCK,
+            BigDecimal.valueOf(5000),
+            BigDecimal.valueOf(0.17),
+            BigDecimal.valueOf(85),
+            BigDecimal.valueOf(100));
 
     @Test
     @SuppressWarnings("unchecked")
@@ -77,5 +96,39 @@ class WalletOpsStatsServiceTest {
                 .containsEntry("total", 20L)
                 .containsEntry("credits", 12L)
                 .containsEntry("debits", 8L);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void dualLedgerAggregatesServerCanonicalBalancesAndRisk() {
+        when(userWalletMapper.sumUsdtAvailable()).thenReturn(BigDecimal.valueOf(1000));
+        when(userWalletMapper.sumPendingWithdraw()).thenReturn(BigDecimal.valueOf(150));
+        when(userWalletMapper.sumNexAvailable()).thenReturn(BigDecimal.valueOf(2000));
+        when(stakingPositionMapper.sumActivePrincipalUsdt()).thenReturn(BigDecimal.valueOf(500));
+        when(stakingPositionMapper.sumActiveInterestUsdt()).thenReturn(BigDecimal.valueOf(50));
+        when(nexLockOrderMapper.sumActiveAmountNex()).thenReturn(BigDecimal.valueOf(1000));
+        when(nexLockOrderMapper.sumActiveRewardNex()).thenReturn(BigDecimal.valueOf(100));
+        when(withdrawalOrderMapper.sumActiveQueueUsdt()).thenReturn(BigDecimal.valueOf(300));
+        when(withdrawalOrderMapper.countActiveQueue()).thenReturn(3L);
+        when(withdrawalOrderMapper.avgActiveQueueRiskScore()).thenReturn(BigDecimal.valueOf(42.4));
+        when(ledgerMapper.sumPendingCommissionUsdt()).thenReturn(BigDecimal.valueOf(80));
+        when(ledgerMapper.sumNetUsdtFlowBetween(any(), any())).thenReturn(BigDecimal.valueOf(-20));
+
+        Map<String, Object> overview = service.dualLedger();
+
+        Map<String, Object> snapshot = (Map<String, Object>) overview.get("snapshot");
+        assertThat(snapshot)
+                .containsEntry("reserveUsd", BigDecimal.valueOf(5000).setScale(2))
+                .containsEntry("liabilitiesUsd", BigDecimal.valueOf(2607).setScale(2))
+                .containsEntry("queueBacklogCount", 3L)
+                .containsEntry("avgRiskScore", 42L);
+        assertThat((List<BigDecimal>) snapshot.get("coverageSeries")).hasSize(8);
+
+        List<Map<String, Object>> accounts = (List<Map<String, Object>>) overview.get("accounts");
+        assertThat(accounts).hasSize(8);
+        assertThat(accounts.get(0))
+                .containsEntry("key", "balance")
+                .containsEntry("amount", BigDecimal.valueOf(1000).setScale(2));
+        assertThat((List<String>) overview.get("sources")).contains("nx_user_wallet", "nexion.wallet.dual-ledger.* config");
     }
 }

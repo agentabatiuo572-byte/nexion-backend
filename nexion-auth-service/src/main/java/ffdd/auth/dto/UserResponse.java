@@ -16,12 +16,26 @@ public class UserResponse {
     private String sponsorCode;
     private String kycStatus;
     private String userLevel;
+    private String userLevelName;
+    private String nextUserLevel;
+    private String nextUserLevelName;
+    private Integer userLevelProgressPercent;
     private String vRank;
     private String status;
     private String language;
     private String region;
     private String bio;
     private String timezone;
+    private Boolean soundEnabled;
+    private Boolean hapticsEnabled;
+    private Boolean notifyCommission;
+    private Boolean notifyTeam;
+    private Boolean notifyStaking;
+    private Boolean notifyMarket;
+    private Boolean notifyGenesis;
+    private Boolean notifySystem;
+    private String walletAddress;
+    private Boolean walletPaired;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

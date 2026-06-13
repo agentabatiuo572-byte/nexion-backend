@@ -162,8 +162,16 @@ class ComputeServiceImplTest {
         request.setUserId(10001L);
         request.setSourceOrderNo("ORD-SLOTS");
         request.setProductId(1L);
+        request.setProductCode("stellarbox-s1");
         request.setProductName("NexionBox S1");
         request.setDeviceType("NEXION_BOX");
+        request.setGeneration(1);
+        request.setGpuModel("4x RTX 4090");
+        request.setVramTotalGb(96);
+        request.setBasePowerW(new BigDecimal("1200"));
+        request.setDcLocation("Singapore DC");
+        request.setPriceUsdtSnapshot(new BigDecimal("1299"));
+        request.setSourceChannel("ORDER");
         request.setQuantity(1);
 
         List<UserDevice> devices = service.activateDevices(request);
@@ -173,7 +181,17 @@ class ComputeServiceImplTest {
         assertThat(devices.get(0).getActivatedAt()).isNull();
         assertThat(devices.get(0).getPurchasedAt()).isNotNull();
         verify(userDeviceMapper).insert(org.mockito.ArgumentMatchers.<UserDevice>argThat(inserted ->
-                "INACTIVE".equals(inserted.getStatus()) && inserted.getActivatedAt() == null));
+                "INACTIVE".equals(inserted.getStatus())
+                        && inserted.getActivatedAt() == null
+                        && "stellarbox-s1".equals(inserted.getProductCode())
+                        && Integer.valueOf(1).equals(inserted.getGeneration())
+                        && "4x RTX 4090".equals(inserted.getGpuModel())
+                        && Integer.valueOf(96).equals(inserted.getVramTotalGb())
+                        && inserted.getBasePowerW().compareTo(new BigDecimal("1200")) == 0
+                        && "Singapore DC".equals(inserted.getDcLocation())
+                        && inserted.getPriceUsdtSnapshot().compareTo(new BigDecimal("1299")) == 0
+                        && "OWNED".equals(inserted.getOwnershipStatus())
+                        && "ORDER".equals(inserted.getSourceChannel())));
     }
 
     @Test

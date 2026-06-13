@@ -31,14 +31,17 @@ public class EarningMilestoneRewardService {
 
     private final EarningSummaryMapper summaryMapper;
     private final EarningMilestoneMapper milestoneMapper;
+    private final EarningMilestoneRuleService milestoneRuleService;
     private final EarningsService earningsService;
 
     public EarningMilestoneRewardService(
             EarningSummaryMapper summaryMapper,
             EarningMilestoneMapper milestoneMapper,
+            EarningMilestoneRuleService milestoneRuleService,
             EarningsService earningsService) {
         this.summaryMapper = summaryMapper;
         this.milestoneMapper = milestoneMapper;
+        this.milestoneRuleService = milestoneRuleService;
         this.earningsService = earningsService;
     }
 
@@ -70,7 +73,7 @@ public class EarningMilestoneRewardService {
         BigDecimal lifetimeUsdt = scaled(summaryMapper.sumLifetimeUsdtByUser(userId));
         EarningMilestoneRewardResult result = new EarningMilestoneRewardResult();
 
-        for (EarningMilestoneRules.Rule rule : EarningMilestoneRules.rules()) {
+        for (EarningMilestoneRules.Rule rule : milestoneRuleService.activeRules()) {
             result.setScanned(result.getScanned() + 1);
             if (lifetimeUsdt.compareTo(rule.thresholdUsdt()) < 0) {
                 continue;

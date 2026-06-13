@@ -23,6 +23,8 @@ public interface ComputeService {
 
     UserDevice getDevice(Long id);
 
+    ComputeTask currentTaskForDevice(Long userDeviceId);
+
     List<UserDevice> activateDevices(DeviceActivateRequest request);
 
     UserDevice activateDevice(Long id, Long userId);

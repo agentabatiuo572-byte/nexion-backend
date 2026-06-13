@@ -49,6 +49,38 @@ class GatewayAuthenticationFilterTest {
     }
 
     @Test
+    void publicCommercePriceIndexBypassesAuthentication() {
+        AtomicBoolean chainCalled = new AtomicBoolean(false);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/commerce/app/price-index").build());
+
+        StepVerifier.create(filter.filter(exchange, ignored -> {
+                    chainCalled.set(true);
+                    return Mono.empty();
+                }))
+                .verifyComplete();
+
+        assertThat(chainCalled).isTrue();
+        assertThat(exchange.getResponse().getStatusCode()).isNull();
+    }
+
+    @Test
+    void publicCommercePaymentOptionsBypassesAuthentication() {
+        AtomicBoolean chainCalled = new AtomicBoolean(false);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/commerce/app/payment-options").build());
+
+        StepVerifier.create(filter.filter(exchange, ignored -> {
+                    chainCalled.set(true);
+                    return Mono.empty();
+                }))
+                .verifyComplete();
+
+        assertThat(chainCalled).isTrue();
+        assertThat(exchange.getResponse().getStatusCode()).isNull();
+    }
+
+    @Test
     void protectedRoutesRequireBearerToken() {
         AtomicBoolean chainCalled = new AtomicBoolean(false);
         MockServerWebExchange exchange = MockServerWebExchange.from(

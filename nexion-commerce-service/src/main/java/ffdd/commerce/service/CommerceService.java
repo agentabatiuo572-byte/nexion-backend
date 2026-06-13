@@ -8,7 +8,9 @@ import ffdd.commerce.dto.OrderQueryRequest;
 import ffdd.commerce.dto.ProductCreateRequest;
 import ffdd.commerce.dto.ProductQueryRequest;
 import ffdd.commerce.dto.ProductUpdateRequest;
+import ffdd.commerce.dto.StoreProductResponse;
 import ffdd.common.api.PageResult;
+import java.util.List;
 
 public interface CommerceService {
     PageResult<Product> pageProducts(ProductQueryRequest request);
@@ -18,6 +20,16 @@ public interface CommerceService {
     Product createProduct(ProductCreateRequest request);
 
     Product updateProduct(Long id, ProductUpdateRequest request);
+
+    void deleteProduct(Long id);
+
+    List<Product> listFeaturedProductCandidates(String currentPhase);
+
+    Product featureProduct(Long id, String currentPhase);
+
+    Product syncGenerationPhase(String currentPhase);
+
+    List<StoreProductResponse> listStoreProducts();
 
     CommerceOrder createOrder(OrderCreateRequest request);
 

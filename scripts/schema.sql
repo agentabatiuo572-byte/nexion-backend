@@ -60,6 +60,141 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+CREATE TABLE IF NOT EXISTS nx_product_review (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  product_id BIGINT NOT NULL,
+  user_id BIGINT NULL,
+  order_id BIGINT NULL,
+  active_order_id BIGINT GENERATED ALWAYS AS (CASE WHEN is_deleted = 0 THEN order_id ELSE NULL END) STORED,
+  rating DECIMAL(3,2) NOT NULL,
+  title VARCHAR(128) NULL,
+  content VARCHAR(1000) NULL,
+  media_object_keys JSON NULL,
+  avatar_object_key VARCHAR(512) NULL,
+  avatar_color VARCHAR(32) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'VISIBLE',
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_product_review_product (product_id, status, sort_order),
+  KEY idx_product_review_user (user_id, created_at),
+  UNIQUE KEY uk_product_review_active_order_user (active_order_id, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product_review' AND COLUMN_NAME = 'avatar_object_key') = 0,
+  'ALTER TABLE nx_product_review ADD COLUMN avatar_object_key VARCHAR(512) NULL AFTER media_object_keys',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product_review' AND COLUMN_NAME = 'avatar_color') = 0,
+  'ALTER TABLE nx_product_review ADD COLUMN avatar_color VARCHAR(32) NULL AFTER avatar_object_key',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product_review' AND COLUMN_NAME = 'active_order_id') = 0,
+  'ALTER TABLE nx_product_review ADD COLUMN active_order_id BIGINT GENERATED ALWAYS AS (CASE WHEN is_deleted = 0 THEN order_id ELSE NULL END) STORED AFTER order_id',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product_review' AND INDEX_NAME = 'uk_product_review_active_order_user') = 0,
+  'ALTER TABLE nx_product_review ADD UNIQUE KEY uk_product_review_active_order_user (active_order_id, user_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_product_waitlist (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  product_id BIGINT NOT NULL,
+  active_product_id BIGINT GENERATED ALWAYS AS (CASE WHEN is_deleted = 0 AND status = 'ACTIVE' THEN product_id ELSE NULL END) STORED,
+  product_no VARCHAR(64) NULL,
+  product_name VARCHAR(128) NULL,
+  user_id BIGINT NOT NULL,
+  unlock_phase VARCHAR(32) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  notified_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_product_waitlist_product (product_id, status, created_at),
+  KEY idx_product_waitlist_user (user_id, created_at),
+  UNIQUE KEY uk_product_waitlist_active_product_user (active_product_id, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product_waitlist' AND COLUMN_NAME = 'active_product_id') = 0,
+  'ALTER TABLE nx_product_waitlist ADD COLUMN active_product_id BIGINT GENERATED ALWAYS AS (CASE WHEN is_deleted = 0 AND status = ''ACTIVE'' THEN product_id ELSE NULL END) STORED AFTER product_id',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product_waitlist' AND INDEX_NAME = 'uk_product_waitlist_active_product_user') = 0,
+  'ALTER TABLE nx_product_waitlist ADD UNIQUE KEY uk_product_waitlist_active_product_user (active_product_id, user_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_product_faq (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  product_id BIGINT NOT NULL,
+  question VARCHAR(255) NOT NULL,
+  answer VARCHAR(1200) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'VISIBLE',
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_product_faq_product (product_id, status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_product_spec (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  product_id BIGINT NOT NULL,
+  spec_group VARCHAR(64) NOT NULL DEFAULT 'GENERAL',
+  spec_key VARCHAR(96) NOT NULL,
+  spec_value VARCHAR(512) NOT NULL,
+  unit VARCHAR(32) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'VISIBLE',
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_product_spec_product (product_id, status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_price_index (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  metric_code VARCHAR(96) NOT NULL,
+  metric_label VARCHAR(128) NOT NULL,
+  unit_label VARCHAR(64) NOT NULL,
+  price_usdt DECIMAL(18,8) NOT NULL DEFAULT 0,
+  delta_percent DECIMAL(9,4) NOT NULL DEFAULT 0,
+  volume_24h_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  sparkline JSON NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  sampled_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_price_index_metric (metric_code, status, sampled_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_price_index' AND COLUMN_NAME = 'volume_24h_usdt') = 0,
+  'ALTER TABLE nx_price_index ADD COLUMN volume_24h_usdt DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER delta_percent',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_page_snapshot (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  page_code VARCHAR(128) NOT NULL,
+  locale VARCHAR(16) NOT NULL DEFAULT 'en',
+  snapshot_key VARCHAR(128) NOT NULL,
+  snapshot_value JSON NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  published_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_page_snapshot_key (page_code, locale, snapshot_key),
+  KEY idx_page_snapshot_status (page_code, status, published_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user' AND COLUMN_NAME = 'bio') = 0,
   'ALTER TABLE nx_user ADD COLUMN bio VARCHAR(512) NULL AFTER region',
   'SELECT 1');
@@ -91,6 +226,24 @@ CREATE TABLE IF NOT EXISTS nx_user_profile (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_profile_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_preference (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  sound_enabled TINYINT NOT NULL DEFAULT 1,
+  haptics_enabled TINYINT NOT NULL DEFAULT 1,
+  notify_commission TINYINT NOT NULL DEFAULT 1,
+  notify_team TINYINT NOT NULL DEFAULT 1,
+  notify_staking TINYINT NOT NULL DEFAULT 1,
+  notify_market TINYINT NOT NULL DEFAULT 1,
+  notify_genesis TINYINT NOT NULL DEFAULT 1,
+  notify_system TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_preference_user (user_id),
+  KEY idx_user_preference_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_user_security (
@@ -279,6 +432,30 @@ CREATE TABLE IF NOT EXISTS nx_wallet_ledger (
   CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_wallet_asset_adjustment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  adjustment_no VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  asset VARCHAR(16) NOT NULL,
+  direction VARCHAR(16) NOT NULL,
+  amount DECIMAL(18,6) NOT NULL,
+  reason_code VARCHAR(64) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  maker VARCHAR(64) NOT NULL,
+  checker VARCHAR(64) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  ledger_id BIGINT NULL,
+  review_reason VARCHAR(255) NULL,
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_wallet_asset_adjustment_no (adjustment_no),
+  KEY idx_wallet_asset_adjustment_user_time (user_id, created_at),
+  KEY idx_wallet_asset_adjustment_status_time (status, created_at),
+  CONSTRAINT chk_wallet_asset_adjustment_amount CHECK (amount > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_ledger' AND INDEX_NAME = 'uk_wallet_ledger_biz') = 0,
   'ALTER TABLE nx_wallet_ledger ADD UNIQUE KEY uk_wallet_ledger_biz (biz_no, asset, direction)',
   'SELECT 1');
@@ -288,6 +465,89 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE C
   'ALTER TABLE nx_wallet_ledger ADD CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_wallet_bank_card (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  card_token VARCHAR(96) NOT NULL,
+  cardholder_name VARCHAR(80) NOT NULL,
+  brand VARCHAR(32) NOT NULL,
+  last4 VARCHAR(4) NOT NULL,
+  country_code VARCHAR(8) NULL,
+  status VARCHAR(32) NOT NULL,
+  is_default TINYINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_wallet_card_token (card_token),
+  KEY idx_wallet_card_user (user_id, status, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_nex_lock_order (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  lock_no VARCHAR(96) NOT NULL,
+  amount_nex DECIMAL(18,6) NOT NULL,
+  apy_bps DECIMAL(18,6) NOT NULL,
+  term_months INT NOT NULL,
+  locked_at DATETIME NOT NULL,
+  unlock_at DATETIME NOT NULL,
+  estimated_reward_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_nex_lock_no (lock_no),
+  KEY idx_nex_lock_user_status (user_id, status, unlock_at),
+  CONSTRAINT chk_nex_lock_positive_amount CHECK (amount_nex > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_staking_product (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  product_code VARCHAR(64) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  asset VARCHAR(16) NOT NULL DEFAULT 'USDT',
+  term_days INT NOT NULL,
+  apy_bps DECIMAL(18,6) NOT NULL,
+  early_penalty_bps DECIMAL(18,6) NOT NULL DEFAULT 0,
+  min_amount DECIMAL(18,6) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_staking_product_code (product_code),
+  KEY idx_staking_product_status (asset, status, sort_order),
+  CONSTRAINT chk_staking_product_positive_term CHECK (term_days > 0),
+  CONSTRAINT chk_staking_product_positive_apy CHECK (apy_bps > 0),
+  CONSTRAINT chk_staking_product_positive_min CHECK (min_amount > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_staking_position (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  position_no VARCHAR(96) NOT NULL,
+  product_id BIGINT NOT NULL,
+  product_code VARCHAR(64) NOT NULL,
+  product_name VARCHAR(120) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  apy_bps DECIMAL(18,6) NOT NULL,
+  early_penalty_bps DECIMAL(18,6) NOT NULL DEFAULT 0,
+  term_days INT NOT NULL,
+  locked_at DATETIME NOT NULL,
+  unlock_at DATETIME NOT NULL,
+  estimated_interest_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL,
+  claimed_at DATETIME NULL,
+  early_withdrawn_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_staking_position_no (position_no),
+  KEY idx_staking_position_user_status (user_id, status, unlock_at),
+  KEY idx_staking_position_product (product_id, status),
+  CONSTRAINT chk_staking_position_positive_amount CHECK (amount_usdt > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_deposit_order (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -334,6 +594,7 @@ CREATE TABLE IF NOT EXISTS nx_withdrawal_order (
   user_id BIGINT NOT NULL,
   withdrawal_no VARCHAR(96) NOT NULL,
   asset VARCHAR(16) NOT NULL,
+  chain VARCHAR(32) NOT NULL DEFAULT 'USDT-TRC20',
   amount DECIMAL(18,6) NOT NULL,
   fee DECIMAL(18,6) NOT NULL DEFAULT 0,
   target_address VARCHAR(128) NOT NULL,
@@ -361,6 +622,11 @@ CREATE TABLE IF NOT EXISTS nx_withdrawal_order (
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'chain_tx_hash') = 0,
   'ALTER TABLE nx_withdrawal_order ADD COLUMN chain_tx_hash VARCHAR(128) NULL AFTER risk_decision_id',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'chain') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN chain VARCHAR(32) NOT NULL DEFAULT ''USDT-TRC20'' AFTER asset',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -461,15 +727,139 @@ CREATE TABLE IF NOT EXISTS nx_product (
   stock INT NOT NULL DEFAULT 0,
   cover_url VARCHAR(512) NULL,
   detail_image_urls TEXT NULL,
+  badge VARCHAR(64) NULL,
+  tagline VARCHAR(255) NULL,
+  store_status VARCHAR(32) NULL,
+  store_visible TINYINT NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  generation INT NOT NULL DEFAULT 1,
+  gpu_model VARCHAR(128) NULL,
+  vram_total_gb INT NULL,
+  ai_performance_json VARCHAR(2048) NULL,
+  detail_metrics_json TEXT NULL,
+  hardware_specs_json TEXT NULL,
+  review_summary_json TEXT NULL,
+  reviews_json TEXT NULL,
+  trust_json TEXT NULL,
+  faq_json TEXT NULL,
+  phone_compare_json TEXT NULL,
+  share_yield_min DECIMAL(10,4) NULL,
+  share_yield_max DECIMAL(10,4) NULL,
+  superseded_by_product_no VARCHAR(64) NULL,
+  unlock_phase VARCHAR(16) NULL,
+  sold_count INT NOT NULL DEFAULT 0,
+  rating_value DECIMAL(3,2) NOT NULL DEFAULT 0,
+  review_count INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_product_no (product_no),
-  KEY idx_product_sale (status)
+  KEY idx_product_sale (status),
+  KEY idx_product_store (store_visible, store_status, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'detail_image_urls') = 0,
   'ALTER TABLE nx_product ADD COLUMN detail_image_urls TEXT NULL AFTER cover_url',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'badge') = 0,
+  'ALTER TABLE nx_product ADD COLUMN badge VARCHAR(64) NULL AFTER detail_image_urls',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'tagline') = 0,
+  'ALTER TABLE nx_product ADD COLUMN tagline VARCHAR(255) NULL AFTER badge',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'store_status') = 0,
+  'ALTER TABLE nx_product ADD COLUMN store_status VARCHAR(32) NULL AFTER tagline',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'store_visible') = 0,
+  'ALTER TABLE nx_product ADD COLUMN store_visible TINYINT NOT NULL DEFAULT 1 AFTER store_status',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'store_featured') = 0,
+  'ALTER TABLE nx_product ADD COLUMN store_featured TINYINT NOT NULL DEFAULT 0 AFTER store_visible',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'sort_order') = 0,
+  'ALTER TABLE nx_product ADD COLUMN sort_order INT NOT NULL DEFAULT 0 AFTER store_featured',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'generation') = 0,
+  'ALTER TABLE nx_product ADD COLUMN generation INT NOT NULL DEFAULT 1 AFTER sort_order',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'gpu_model') = 0,
+  'ALTER TABLE nx_product ADD COLUMN gpu_model VARCHAR(128) NULL AFTER generation',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'vram_total_gb') = 0,
+  'ALTER TABLE nx_product ADD COLUMN vram_total_gb INT NULL AFTER gpu_model',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'ai_performance_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN ai_performance_json VARCHAR(2048) NULL AFTER vram_total_gb',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'detail_metrics_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN detail_metrics_json TEXT NULL AFTER ai_performance_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'hardware_specs_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN hardware_specs_json TEXT NULL AFTER detail_metrics_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'review_summary_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN review_summary_json TEXT NULL AFTER hardware_specs_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'reviews_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN reviews_json TEXT NULL AFTER review_summary_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'trust_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN trust_json TEXT NULL AFTER reviews_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'faq_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN faq_json TEXT NULL AFTER trust_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'phone_compare_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN phone_compare_json TEXT NULL AFTER faq_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'share_yield_min') = 0,
+  'ALTER TABLE nx_product ADD COLUMN share_yield_min DECIMAL(10,4) NULL AFTER phone_compare_json',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'share_yield_max') = 0,
+  'ALTER TABLE nx_product ADD COLUMN share_yield_max DECIMAL(10,4) NULL AFTER share_yield_min',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'superseded_by_product_no') = 0,
+  'ALTER TABLE nx_product ADD COLUMN superseded_by_product_no VARCHAR(64) NULL AFTER share_yield_max',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'unlock_phase') = 0,
+  'ALTER TABLE nx_product ADD COLUMN unlock_phase VARCHAR(16) NULL AFTER superseded_by_product_no',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+UPDATE nx_product
+SET unlock_phase = CONCAT('P', GREATEST(COALESCE(generation, 1), 1))
+WHERE unlock_phase IS NULL OR unlock_phase = '';
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'sold_count') = 0,
+  'ALTER TABLE nx_product ADD COLUMN sold_count INT NOT NULL DEFAULT 0 AFTER unlock_phase',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'rating_value') = 0,
+  'ALTER TABLE nx_product ADD COLUMN rating_value DECIMAL(3,2) NOT NULL DEFAULT 0 AFTER sold_count',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'review_count') = 0,
+  'ALTER TABLE nx_product ADD COLUMN review_count INT NOT NULL DEFAULT 0 AFTER rating_value',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -479,6 +869,10 @@ CREATE TABLE IF NOT EXISTS nx_order (
   order_no VARCHAR(96) NOT NULL,
   product_id BIGINT NOT NULL,
   quantity INT NOT NULL DEFAULT 1,
+  order_type VARCHAR(32) NOT NULL DEFAULT 'SINGLE',
+  item_count INT NOT NULL DEFAULT 1,
+  subtotal_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  discount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   amount_usdt DECIMAL(18,6) NOT NULL,
   payment_no VARCHAR(96) NULL,
   payment_status VARCHAR(32) NOT NULL,
@@ -491,6 +885,24 @@ CREATE TABLE IF NOT EXISTS nx_order (
   UNIQUE KEY uk_order_no (order_no),
   KEY idx_order_user_time (user_id, created_at),
   KEY idx_order_status (order_status, payment_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_order_item (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  order_no VARCHAR(96) NOT NULL,
+  product_id BIGINT NOT NULL,
+  product_no VARCHAR(64) NULL,
+  product_name VARCHAR(128) NOT NULL,
+  quantity INT NOT NULL DEFAULT 1,
+  unit_price_usdt DECIMAL(18,6) NOT NULL,
+  line_amount_usdt DECIMAL(18,6) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_order_item_order (order_no, sort_order),
+  KEY idx_order_item_product (product_id, created_at),
+  CONSTRAINT chk_order_item_positive CHECK (quantity > 0 AND unit_price_usdt > 0 AND line_amount_usdt > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_payment_record (
@@ -709,6 +1121,26 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'order_type') = 0,
+  'ALTER TABLE nx_order ADD COLUMN order_type VARCHAR(32) NOT NULL DEFAULT ''SINGLE'' AFTER quantity',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'item_count') = 0,
+  'ALTER TABLE nx_order ADD COLUMN item_count INT NOT NULL DEFAULT 1 AFTER order_type',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'subtotal_usdt') = 0,
+  'ALTER TABLE nx_order ADD COLUMN subtotal_usdt DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER item_count',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'discount_usdt') = 0,
+  'ALTER TABLE nx_order ADD COLUMN discount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER subtotal_usdt',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_order' AND COLUMN_NAME = 'payment_no') = 0,
   'ALTER TABLE nx_order ADD COLUMN payment_no VARCHAR(96) NULL AFTER amount_usdt',
   'SELECT 1');
@@ -897,15 +1329,46 @@ CREATE TABLE IF NOT EXISTS nx_audit_log (
   KEY idx_audit_actor_time (actor_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_maker_checker_task (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  action_type VARCHAR(64) NOT NULL,
+  resource_type VARCHAR(64) NOT NULL,
+  resource_id VARCHAR(128) NULL,
+  title VARCHAR(160) NOT NULL,
+  detail VARCHAR(512) NULL,
+  payload_json JSON NULL,
+  maker VARCHAR(128) NOT NULL,
+  checker VARCHAR(128) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  reason VARCHAR(512) NULL,
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_mc_status_time (status, created_at),
+  KEY idx_mc_resource (resource_type, resource_id, created_at),
+  KEY idx_mc_maker_time (maker, created_at),
+  KEY idx_mc_checker_time (checker, reviewed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_user_device (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
   source_order_no VARCHAR(96) NULL,
   product_id BIGINT NULL,
+  product_code VARCHAR(64) NULL,
   product_tier VARCHAR(32) NULL,
   instance_no VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
   device_type VARCHAR(32) NOT NULL,
+  generation INT NOT NULL DEFAULT 1,
+  gpu_model VARCHAR(128) NULL,
+  vram_total_gb INT NULL,
+  base_power_w DECIMAL(18,6) NOT NULL DEFAULT 0,
+  dc_location VARCHAR(128) NULL,
+  price_usdt_snapshot DECIMAL(18,6) NOT NULL DEFAULT 0,
+  ownership_status VARCHAR(32) NOT NULL DEFAULT 'OWNED',
+  source_channel VARCHAR(32) NOT NULL DEFAULT 'ORDER',
   status VARCHAR(32) NOT NULL,
   hashrate DECIMAL(18,6) NOT NULL DEFAULT 0,
   daily_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
@@ -913,15 +1376,44 @@ CREATE TABLE IF NOT EXISTS nx_user_device (
   last_seen_at DATETIME NULL,
   purchased_at DATETIME NULL,
   activated_at DATETIME NULL,
+  deactivated_at DATETIME NULL,
   pending_deactivate TINYINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_device_instance_no (instance_no),
   KEY idx_user_device_user (user_id),
+  KEY idx_user_device_product_code (product_code),
+  KEY idx_user_device_ownership (ownership_status, created_at),
   KEY idx_user_device_order (source_order_no),
   KEY idx_user_device_status (status, last_seen_at),
   KEY idx_user_device_active (user_id, activated_at, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_trial_claim (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  claim_no VARCHAR(96) NOT NULL,
+  client_request_no VARCHAR(96) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'CLAIMED',
+  user_device_id BIGINT NULL,
+  device_name VARCHAR(128) NOT NULL,
+  duration_days INT NOT NULL DEFAULT 3,
+  daily_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  daily_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  seats_left_today INT NOT NULL DEFAULT 0,
+  offset_cap_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  price_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  claimed_at DATETIME NOT NULL,
+  expires_at DATETIME NOT NULL,
+  quota_snapshot VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_trial_claim_user_once (user_id),
+  UNIQUE KEY uk_trial_claim_no (claim_no),
+  KEY idx_trial_claim_user (user_id, status, created_at),
+  KEY idx_trial_claim_device (user_device_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'source_order_no') = 0,
@@ -934,6 +1426,11 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'product_code') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN product_code VARCHAR(64) NULL AFTER product_id',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'product_tier') = 0,
   'ALTER TABLE nx_user_device ADD COLUMN product_tier VARCHAR(32) NULL AFTER product_id',
   'SELECT 1');
@@ -941,6 +1438,46 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'device_type') = 0,
   'ALTER TABLE nx_user_device ADD COLUMN device_type VARCHAR(32) NOT NULL DEFAULT ''MOBILE'' AFTER name',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'generation') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN generation INT NOT NULL DEFAULT 1 AFTER device_type',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'gpu_model') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN gpu_model VARCHAR(128) NULL AFTER generation',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'vram_total_gb') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN vram_total_gb INT NULL AFTER gpu_model',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'base_power_w') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN base_power_w DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER vram_total_gb',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'dc_location') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN dc_location VARCHAR(128) NULL AFTER base_power_w',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'price_usdt_snapshot') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN price_usdt_snapshot DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER dc_location',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'ownership_status') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN ownership_status VARCHAR(32) NOT NULL DEFAULT ''OWNED'' AFTER price_usdt_snapshot',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'source_channel') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN source_channel VARCHAR(32) NOT NULL DEFAULT ''ORDER'' AFTER ownership_status',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -959,10 +1496,56 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'deactivated_at') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN deactivated_at DATETIME NULL AFTER activated_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'device_id') > 0,
   'ALTER TABLE nx_user_device MODIFY COLUMN device_id BIGINT NULL',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND INDEX_NAME = 'idx_user_device_product_code') = 0,
+  'ALTER TABLE nx_user_device ADD INDEX idx_user_device_product_code (product_code)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND INDEX_NAME = 'idx_user_device_ownership') = 0,
+  'ALTER TABLE nx_user_device ADD INDEX idx_user_device_ownership (ownership_status, created_at)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_user_device_runtime (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_device_id BIGINT NOT NULL,
+  online_status VARCHAR(32) NOT NULL,
+  region VARCHAR(64) NULL,
+  country VARCHAR(64) NULL,
+  city VARCHAR(64) NULL,
+  latitude DECIMAL(10,6) NULL,
+  longitude DECIMAL(10,6) NULL,
+  gpu_usage DECIMAL(10,6) NULL,
+  gpu_temp_c DECIMAL(10,6) NULL,
+  gpu_power_w DECIMAL(18,6) NULL,
+  vram_used_gb DECIMAL(10,3) NULL,
+  battery_level INT NULL,
+  is_charging TINYINT NULL,
+  network_reachable TINYINT NULL,
+  thermal_state VARCHAR(32) NULL,
+  paused_reason VARCHAR(64) NULL,
+  active_task_no VARCHAR(96) NULL,
+  client_name VARCHAR(96) NULL,
+  heartbeat_at DATETIME NOT NULL,
+  agent_version VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_device_runtime_device (user_device_id),
+  KEY idx_device_runtime_status_time (online_status, heartbeat_at),
+  KEY idx_device_runtime_geo (country, city),
+  KEY idx_device_runtime_heartbeat (heartbeat_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_device_lifecycle_rule (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1151,6 +1734,22 @@ CREATE TABLE IF NOT EXISTS nx_earning_summary (
   UNIQUE KEY uk_earning_summary_user_date (user_id, summary_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_earning_milestone_rule (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  milestone_id VARCHAR(64) NOT NULL,
+  label VARCHAR(128) NOT NULL,
+  threshold_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  reward_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 100,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_earning_milestone_rule_id (milestone_id),
+  KEY idx_earning_milestone_rule_status (status, threshold_usdt, sort_order),
+  CONSTRAINT chk_earning_milestone_rule_amount CHECK (threshold_usdt >= 0 AND reward_nex >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_earning_milestone (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -1166,6 +1765,22 @@ CREATE TABLE IF NOT EXISTS nx_earning_milestone (
   UNIQUE KEY uk_earning_milestone_user (user_id, milestone_id),
   KEY idx_earning_milestone_status (status, achieved_at),
   CONSTRAINT chk_earning_milestone_amount CHECK (threshold_usdt >= 0 AND reward_nex >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_earning_goal (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  target_usdt DECIMAL(18,6) NOT NULL,
+  deadline_at DATETIME NOT NULL,
+  achieved TINYINT NOT NULL DEFAULT 0,
+  achieved_at DATETIME NULL,
+  deleted_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_earning_goal_user (user_id, is_deleted, achieved, deadline_at),
+  KEY idx_earning_goal_deadline (deadline_at, achieved),
+  CONSTRAINT chk_earning_goal_target CHECK (target_usdt >= 100)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_earning_milestone' AND INDEX_NAME = 'uk_earning_milestone_user') = 0,
@@ -1193,6 +1808,118 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'ALTER TABLE nx_team_member ADD INDEX idx_team_user_rank (user_id, v_rank)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  applicant_name VARCHAR(64) NOT NULL,
+  region VARCHAR(64) NOT NULL,
+  city VARCHAR(64) NULL,
+  event_date DATE NULL,
+  contact_method VARCHAR(128) NULL,
+  application_reason VARCHAR(255) NULL,
+  event_plan TEXT NULL,
+  expected_attendees INT NOT NULL DEFAULT 0,
+  current_rank VARCHAR(16) NOT NULL DEFAULT 'V0',
+  requested_budget_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  kol_budget_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  reviewer VARCHAR(64) NULL,
+  review_reason VARCHAR(255) NULL,
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_ambassador_status_time (status, created_at),
+  KEY idx_ambassador_user (user_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'city') = 0,
+  'ALTER TABLE nx_team_ambassador_application ADD COLUMN city VARCHAR(64) NULL AFTER region',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'event_date') = 0,
+  'ALTER TABLE nx_team_ambassador_application ADD COLUMN event_date DATE NULL AFTER city',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'contact_method') = 0,
+  'ALTER TABLE nx_team_ambassador_application ADD COLUMN contact_method VARCHAR(128) NULL AFTER event_date',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'application_reason') = 0,
+  'ALTER TABLE nx_team_ambassador_application ADD COLUMN application_reason VARCHAR(255) NULL AFTER contact_method',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'event_plan') = 0,
+  'ALTER TABLE nx_team_ambassador_application ADD COLUMN event_plan TEXT NULL AFTER application_reason',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'expected_attendees') = 0,
+  'ALTER TABLE nx_team_ambassador_application ADD COLUMN expected_attendees INT NOT NULL DEFAULT 0 AFTER event_plan',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_team_hardware_quota_tier (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  quota_code VARCHAR(32) NOT NULL,
+  product_no VARCHAR(64) NOT NULL,
+  display_name VARCHAR(128) NULL,
+  note VARCHAR(255) NULL,
+  direct_refs INT NOT NULL DEFAULT 0,
+  month_volume_usd DECIMAL(18,6) NOT NULL DEFAULT 0,
+  monthly_quota INT NOT NULL DEFAULT 0,
+  unlock_mode VARCHAR(16) NOT NULL DEFAULT 'ALL',
+  status TINYINT NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_team_hardware_quota_code (quota_code),
+  KEY idx_team_hardware_quota_product (product_no, status),
+  KEY idx_team_hardware_quota_sort (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_team_hardware_quota_usage (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  quota_tier_id BIGINT NOT NULL,
+  quota_code VARCHAR(32) NOT NULL,
+  product_no VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  order_no VARCHAR(64) NULL,
+  usage_type VARCHAR(32) NOT NULL DEFAULT 'RESERVED',
+  quantity INT NOT NULL DEFAULT 1,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  remark VARCHAR(255) NULL,
+  occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_team_hardware_quota_usage_tier (quota_tier_id, status, occurred_at),
+  KEY idx_team_hardware_quota_usage_user (user_id, occurred_at),
+  KEY idx_team_hardware_quota_usage_order (order_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_team_leaderboard_action (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  period VARCHAR(32) NOT NULL DEFAULT 'week',
+  user_id BIGINT NOT NULL,
+  member_user_id BIGINT NOT NULL,
+  member_no VARCHAR(64) NULL,
+  nickname VARCHAR(64) NULL,
+  action_type VARCHAR(32) NOT NULL,
+  reason VARCHAR(255) NULL,
+  operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_leaderboard_action_member (period, user_id, member_user_id, action_type),
+  KEY idx_leaderboard_action_period (period, action_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_user_level_config (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1404,17 +2131,47 @@ CREATE TABLE IF NOT EXISTS nx_achievement (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   achievement_code VARCHAR(64) NOT NULL,
   achievement_name VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NULL,
   category VARCHAR(32) NOT NULL,
+  icon_key VARCHAR(64) NULL,
+  accent_color VARCHAR(32) NULL,
   trigger_type VARCHAR(32) NOT NULL,
   trigger_value INT NOT NULL DEFAULT 0,
   reward_points INT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_achievement_code (achievement_code),
+  KEY idx_achievement_display (category, sort_order),
   KEY idx_achievement_trigger (trigger_type, trigger_value)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_achievement' AND COLUMN_NAME = 'description') = 0,
+  'ALTER TABLE nx_achievement ADD COLUMN description VARCHAR(512) NULL AFTER achievement_name',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_achievement' AND COLUMN_NAME = 'icon_key') = 0,
+  'ALTER TABLE nx_achievement ADD COLUMN icon_key VARCHAR(64) NULL AFTER category',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_achievement' AND COLUMN_NAME = 'accent_color') = 0,
+  'ALTER TABLE nx_achievement ADD COLUMN accent_color VARCHAR(32) NULL AFTER icon_key',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_achievement' AND COLUMN_NAME = 'sort_order') = 0,
+  'ALTER TABLE nx_achievement ADD COLUMN sort_order INT NOT NULL DEFAULT 0 AFTER reward_points',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_achievement' AND INDEX_NAME = 'idx_achievement_display') = 0,
+  'ALTER TABLE nx_achievement ADD KEY idx_achievement_display (category, sort_order)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_user_achievement (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -2046,12 +2803,23 @@ CREATE TABLE IF NOT EXISTS nx_help_article (
   article_code VARCHAR(96) NOT NULL,
   title VARCHAR(128) NOT NULL,
   content MEDIUMTEXT NULL,
+  category VARCHAR(32) NOT NULL DEFAULT 'help',
+  level VARCHAR(32) NOT NULL DEFAULT 'beginner',
+  format VARCHAR(32) NOT NULL DEFAULT 'article',
+  duration_min INT NOT NULL DEFAULT 5,
+  reward_nex DECIMAL(18,6) NOT NULL DEFAULT 0.000000,
+  progress_pct INT NOT NULL DEFAULT 0,
+  featured TINYINT NOT NULL DEFAULT 0,
+  emoji VARCHAR(16) NOT NULL DEFAULT '📘',
+  tint VARCHAR(32) NOT NULL DEFAULT '#c6ff3a',
   sort_order INT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_help_article_code (article_code),
+  KEY idx_help_article_category (category, status, sort_order),
+  KEY idx_help_article_featured (featured, status),
   KEY idx_help_article_sort (sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -2108,6 +2876,40 @@ CREATE TABLE IF NOT EXISTS nx_support_ticket_attachment (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   KEY idx_support_attachment_ticket (ticket_id),
   KEY idx_support_attachment_message (message_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_tamper_gate (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  gate_key VARCHAR(64) NOT NULL,
+  gate_name VARCHAR(128) NOT NULL,
+  event_count_24h INT NOT NULL DEFAULT 0,
+  verdict VARCHAR(32) NULL,
+  review_reason VARCHAR(500) NULL,
+  reviewed_by VARCHAR(64) NULL,
+  reviewed_at DATETIME NULL,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_emergency_tamper_gate (gate_key),
+  KEY idx_emergency_tamper_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_sop_step (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  sop_id VARCHAR(64) NOT NULL,
+  step_order INT NOT NULL,
+  step_title VARCHAR(255) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  status_reason VARCHAR(500) NULL,
+  operator VARCHAR(64) NULL,
+  operated_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_emergency_sop_id (sop_id),
+  KEY idx_emergency_sop_order (step_order),
+  KEY idx_emergency_sop_status (status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_openapi_app (

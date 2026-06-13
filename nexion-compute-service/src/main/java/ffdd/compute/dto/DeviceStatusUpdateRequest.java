@@ -43,11 +43,32 @@ public class DeviceStatusUpdateRequest {
     @DecimalMax("100.0")
     private BigDecimal gpuUsage;
 
+    @DecimalMin("0.0")
+    @DecimalMax("2048.0")
+    private BigDecimal vramUsedGb;
+
+    @DecimalMin("0")
+    @DecimalMax("100")
+    private Integer batteryLevel;
+
+    private Boolean isCharging;
+
+    private Boolean networkReachable;
+
+    @Size(max = 32)
+    private String thermalState;
+
+    @Size(max = 64)
+    private String pausedReason;
+
     @Size(max = 96)
     private String activeTaskNo;
 
     @Size(max = 96)
     private String clientName;
+
+    @Size(max = 64)
+    private String agentVersion;
 
     private LocalDateTime reportedAt;
 }

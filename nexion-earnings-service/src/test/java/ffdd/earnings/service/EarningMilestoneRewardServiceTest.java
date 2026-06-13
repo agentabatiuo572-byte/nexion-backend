@@ -25,13 +25,15 @@ import org.mockito.ArgumentCaptor;
 class EarningMilestoneRewardServiceTest {
     private final EarningSummaryMapper summaryMapper = mock(EarningSummaryMapper.class);
     private final EarningMilestoneMapper milestoneMapper = mock(EarningMilestoneMapper.class);
+    private final EarningMilestoneRuleService milestoneRuleService = mock(EarningMilestoneRuleService.class);
     private final EarningsService earningsService = mock(EarningsService.class);
     private final EarningMilestoneRewardService service =
-            new EarningMilestoneRewardService(summaryMapper, milestoneMapper, earningsService);
+            new EarningMilestoneRewardService(summaryMapper, milestoneMapper, milestoneRuleService, earningsService);
 
     @Test
     void rewardsAllNewlyAchievedMilestonesOnce() {
         when(summaryMapper.sumLifetimeUsdtByUser(10001L)).thenReturn(new BigDecimal("650.000000"));
+        when(milestoneRuleService.activeRules()).thenReturn(EarningMilestoneRules.rules());
         when(milestoneMapper.selectOne(any())).thenReturn(null);
         when(earningsService.settleReceipt(any(ReceiptSettleRequest.class)))
                 .thenAnswer(invocation -> responseFor(invocation.getArgument(0)));
@@ -58,6 +60,7 @@ class EarningMilestoneRewardServiceTest {
     @Test
     void skipsAlreadyRecordedMilestones() {
         when(summaryMapper.sumLifetimeUsdtByUser(10001L)).thenReturn(new BigDecimal("650.000000"));
+        when(milestoneRuleService.activeRules()).thenReturn(EarningMilestoneRules.rules());
         when(milestoneMapper.selectOne(any(Wrapper.class))).thenReturn(existing("earn-100"));
 
         EarningMilestoneRewardResult result =

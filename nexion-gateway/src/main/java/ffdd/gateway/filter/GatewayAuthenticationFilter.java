@@ -26,8 +26,12 @@ public class GatewayAuthenticationFilter implements GlobalFilter, Ordered {
             "/api/auth/login",
             "/api/auth/register",
             "/api/auth/users/login",
+            "/api/auth/users/referrals/",
             "/api/auth/users/register/",
             "/api/auth/users/register",
+            "/api/commerce/app/store/",
+            "/api/commerce/app/price-index",
+            "/api/commerce/app/payment-options",
             "/api/config/",
             "/api/openapi/v1/",
             "/actuator/");

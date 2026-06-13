@@ -11,9 +11,13 @@ import lombok.EqualsAndHashCode;
 public class Achievement extends BaseEntity {
     private String achievementCode;
     private String achievementName;
+    private String description;
     private String category;
+    private String iconKey;
+    private String accentColor;
     private String triggerType;
     private Integer triggerValue;
     private Integer rewardPoints;
+    private Integer sortOrder;
     private Integer status;
 }

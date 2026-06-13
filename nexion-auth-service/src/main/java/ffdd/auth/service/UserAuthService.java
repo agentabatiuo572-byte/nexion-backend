@@ -5,6 +5,7 @@ import ffdd.auth.dto.UserLoginResponse;
 import ffdd.auth.dto.UserRegisterRequest;
 import ffdd.auth.dto.RegisterSmsCodeRequest;
 import ffdd.auth.dto.RegisterSmsCodeResponse;
+import ffdd.auth.dto.ReferralSponsorResponse;
 
 public interface UserAuthService {
     RegisterSmsCodeResponse sendRegisterSmsCode(RegisterSmsCodeRequest request);
@@ -12,4 +13,6 @@ public interface UserAuthService {
     UserLoginResponse register(UserRegisterRequest request);
 
     UserLoginResponse login(UserLoginRequest request);
+
+    ReferralSponsorResponse referralSponsor(String referralCode);
 }

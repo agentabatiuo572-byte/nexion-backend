@@ -3,6 +3,7 @@ package ffdd.compliance.controller;
 import ffdd.common.api.ApiResult;
 import ffdd.common.audit.AuditLogService;
 import ffdd.common.audit.AuditLogWriteRequest;
+import ffdd.common.exception.BizException;
 import ffdd.compliance.domain.KycProfile;
 import ffdd.compliance.domain.ProofAsset;
 import ffdd.compliance.dto.EvidenceDownloadUrlResponse;
@@ -16,6 +17,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -60,6 +64,30 @@ public class ComplianceEvidenceController {
         return ApiResult.ok(profile);
     }
 
+    @PostMapping(value = "/app/kyc-documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<KycProfile> uploadMyKycDocument(
+            @ModelAttribute KycDocumentUploadRequest request,
+            @RequestPart("file") MultipartFile file) {
+        request.setUserId(currentRoleUserId());
+        KycProfile profile = evidenceService.uploadKycDocument(request, file);
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("KYC_APP_DOCUMENT_UPLOAD")
+                .resourceType("KYC_PROFILE")
+                .resourceId(profile.getKycNo())
+                .bizNo(profile.getKycNo())
+                .userId(profile.getUserId())
+                .riskLevel("HIGH")
+                .detail(detail(
+                        "status", profile.getStatus(),
+                        "country", profile.getCountry(),
+                        "documentType", profile.getDocumentType(),
+                        "contentType", file.getContentType(),
+                        "sizeBytes", file.getSize()))
+                .build());
+        return ApiResult.ok(profile);
+    }
+
     @PostMapping(value = "/proof-assets", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAuthority('PERM_COMPLIANCE_WRITE')")
     public ApiResult<ProofAsset> uploadProofAsset(
@@ -68,6 +96,31 @@ public class ComplianceEvidenceController {
         ProofAsset proof = evidenceService.uploadProofAsset(request, file);
         auditLogService.record(AuditLogWriteRequest.builder()
                 .action("PROOF_ASSET_UPLOAD")
+                .resourceType("PROOF_ASSET")
+                .resourceId(proof.getProofNo())
+                .bizNo(proof.getProofNo())
+                .userId(proof.getUserId())
+                .riskLevel("HIGH")
+                .detail(detail(
+                        "proofType", proof.getProofType(),
+                        "status", proof.getStatus(),
+                        "contentType", proof.getContentType(),
+                        "sizeBytes", proof.getSizeBytes(),
+                        "relatedBizType", proof.getRelatedBizType(),
+                        "relatedBizNo", proof.getRelatedBizNo()))
+                .build());
+        return ApiResult.ok(proof);
+    }
+
+    @PostMapping(value = "/app/proof-assets", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('ROLE_USER')")
+    public ApiResult<ProofAsset> uploadMyProofAsset(
+            @ModelAttribute ProofAssetUploadRequest request,
+            @RequestPart("file") MultipartFile file) {
+        request.setUserId(currentRoleUserId());
+        ProofAsset proof = evidenceService.uploadProofAsset(request, file);
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("PROOF_APP_ASSET_UPLOAD")
                 .resourceType("PROOF_ASSET")
                 .resourceId(proof.getProofNo())
                 .bizNo(proof.getProofNo())
@@ -108,5 +161,22 @@ public class ComplianceEvidenceController {
             }
         }
         return detail;
+    }
+
+    private Long currentRoleUserId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication.getAuthorities().stream().noneMatch(a -> "ROLE_USER".equals(a.getAuthority()))) {
+            throw new BizException("Authenticated user is required");
+        }
+        String subject = String.valueOf(authentication.getPrincipal());
+        if (!StringUtils.hasText(subject)) {
+            throw new BizException("Authenticated user id is invalid");
+        }
+        try {
+            return Long.valueOf(subject);
+        } catch (NumberFormatException ignored) {
+            throw new BizException("Authenticated user id is invalid");
+        }
     }
 }

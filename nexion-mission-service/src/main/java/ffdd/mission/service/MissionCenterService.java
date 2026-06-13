@@ -18,14 +18,22 @@ import ffdd.mission.domain.UserStreakMilestone;
 import ffdd.mission.domain.UserStreakPowerUp;
 import ffdd.mission.dto.AchievementClaimResponse;
 import ffdd.mission.dto.AchievementItemResponse;
+import ffdd.mission.dto.AchievementRequest;
+import ffdd.mission.dto.AchievementUpdateRequest;
 import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionItemResponse;
 import ffdd.mission.dto.MissionListResponse;
+import ffdd.mission.dto.MissionRequest;
+import ffdd.mission.dto.MissionUpdateRequest;
 import ffdd.mission.dto.PointsSummaryResponse;
 import ffdd.mission.dto.StreakMilestoneClaimResponse;
 import ffdd.mission.dto.StreakMilestoneItemResponse;
+import ffdd.mission.dto.StreakMilestoneRequest;
+import ffdd.mission.dto.StreakMilestoneUpdateRequest;
 import ffdd.mission.dto.StreakPowerUpActivationResponse;
 import ffdd.mission.dto.StreakPowerUpItemResponse;
+import ffdd.mission.dto.StreakPowerUpRequest;
+import ffdd.mission.dto.StreakPowerUpUpdateRequest;
 import ffdd.mission.dto.StreakLeaderboardEntryResponse;
 import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
@@ -137,6 +145,175 @@ public class MissionCenterService {
                 .toList();
         long completedCount = records.stream().filter(MissionItemResponse::isCompleted).count();
         return new MissionListResponse(userId, records.size(), completedCount, todayCheckIn != null, records);
+    }
+
+    public PageResult<Mission> pageMissionOps(String status, long pageNum, long pageSize) {
+        long normalizedPageNum = Math.max(1, pageNum);
+        long normalizedPageSize = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
+        LambdaQueryWrapper<Mission> wrapper = new LambdaQueryWrapper<Mission>()
+                .eq(Mission::getIsDeleted, 0)
+                .orderByAsc(Mission::getId);
+        if (status != null && !status.isBlank()) {
+            wrapper.eq(Mission::getStatus, Integer.parseInt(status));
+        }
+        Page<Mission> page = missionMapper.selectPage(new Page<>(normalizedPageNum, normalizedPageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Mission createMission(MissionRequest request) {
+        String code = normalizeMissionCode(request.getMissionCode());
+        Mission existing = missionMapper.selectOne(new LambdaQueryWrapper<Mission>()
+                .eq(Mission::getMissionCode, code)
+                .eq(Mission::getIsDeleted, 0));
+        if (existing != null) {
+            throw new BizException("Mission code already exists");
+        }
+        Mission mission = new Mission();
+        mission.setMissionCode(code);
+        mission.setMissionName(requireText(request.getMissionName(), "Mission name is required"));
+        mission.setMissionType(normalizeMissionType(request.getMissionType()));
+        mission.setRewardPoints(Math.max(0, request.getRewardPoints() == null ? 0 : request.getRewardPoints()));
+        mission.setStatus(request.getStatus() == null ? 1 : request.getStatus());
+        mission.setIsDeleted(0);
+        missionMapper.insert(mission);
+        return mission;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Mission updateMission(Long id, MissionUpdateRequest request) {
+        Mission existing = requireMissionById(id);
+        Mission patch = new Mission();
+        patch.setId(existing.getId());
+        if (request.getMissionName() != null) {
+            patch.setMissionName(requireText(request.getMissionName(), "Mission name is required"));
+        }
+        if (request.getMissionType() != null) {
+            patch.setMissionType(normalizeMissionType(request.getMissionType()));
+        }
+        if (request.getRewardPoints() != null) {
+            patch.setRewardPoints(Math.max(0, request.getRewardPoints()));
+        }
+        if (request.getStatus() != null) {
+            patch.setStatus(request.getStatus());
+        }
+        missionMapper.updateById(patch);
+        return requireMissionById(existing.getId());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteMission(Long id) {
+        Mission existing = requireMissionById(id);
+        Mission patch = new Mission();
+        patch.setId(existing.getId());
+        patch.setIsDeleted(1);
+        missionMapper.updateById(patch);
+    }
+
+    public PageResult<Achievement> pageAchievementsOps(
+            String category,
+            String status,
+            String keyword,
+            long pageNum,
+            long pageSize) {
+        long normalizedPageNum = Math.max(1, pageNum);
+        long normalizedPageSize = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
+        LambdaQueryWrapper<Achievement> wrapper = new LambdaQueryWrapper<Achievement>()
+                .eq(Achievement::getIsDeleted, 0)
+                .orderByAsc(Achievement::getCategory)
+                .orderByAsc(Achievement::getSortOrder)
+                .orderByAsc(Achievement::getTriggerValue)
+                .orderByAsc(Achievement::getId);
+        if (category != null && !category.isBlank()) {
+            wrapper.eq(Achievement::getCategory, category.trim().toUpperCase());
+        }
+        if (status != null && !status.isBlank()) {
+            wrapper.eq(Achievement::getStatus, Integer.parseInt(status));
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            String like = keyword.trim();
+            wrapper.and(w -> w.like(Achievement::getAchievementCode, like)
+                    .or()
+                    .like(Achievement::getAchievementName, like)
+                    .or()
+                    .like(Achievement::getDescription, like));
+        }
+        Page<Achievement> page = achievementMapper.selectPage(new Page<>(normalizedPageNum, normalizedPageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Achievement createAchievement(AchievementRequest request) {
+        String code = normalizeAchievementCode(request.getAchievementCode());
+        Achievement existing = achievementMapper.selectOne(new LambdaQueryWrapper<Achievement>()
+                .eq(Achievement::getAchievementCode, code)
+                .eq(Achievement::getIsDeleted, 0));
+        if (existing != null) {
+            throw new BizException("Achievement code already exists");
+        }
+        Achievement achievement = new Achievement();
+        achievement.setAchievementCode(code);
+        achievement.setAchievementName(requireText(request.getAchievementName(), "Achievement name is required"));
+        achievement.setDescription(trimToNull(request.getDescription()));
+        achievement.setCategory(requireText(request.getCategory(), "Achievement category is required").toUpperCase());
+        achievement.setIconKey(trimToNull(request.getIconKey()));
+        achievement.setAccentColor(trimToNull(request.getAccentColor()));
+        achievement.setTriggerType(requireText(request.getTriggerType(), "Achievement trigger type is required").toUpperCase());
+        achievement.setTriggerValue(Math.max(1, request.getTriggerValue() == null ? 1 : request.getTriggerValue()));
+        achievement.setRewardPoints(Math.max(0, request.getRewardPoints() == null ? 0 : request.getRewardPoints()));
+        achievement.setSortOrder(request.getSortOrder() == null ? 0 : request.getSortOrder());
+        achievement.setStatus(request.getStatus() == null ? 1 : request.getStatus());
+        achievement.setIsDeleted(0);
+        achievementMapper.insert(achievement);
+        return achievement;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Achievement updateAchievement(Long id, AchievementUpdateRequest request) {
+        Achievement existing = requireAchievementById(id);
+        Achievement patch = new Achievement();
+        patch.setId(existing.getId());
+        if (request.getAchievementName() != null) {
+            patch.setAchievementName(requireText(request.getAchievementName(), "Achievement name is required"));
+        }
+        if (request.getDescription() != null) {
+            patch.setDescription(trimToNull(request.getDescription()));
+        }
+        if (request.getCategory() != null) {
+            patch.setCategory(requireText(request.getCategory(), "Achievement category is required").toUpperCase());
+        }
+        if (request.getIconKey() != null) {
+            patch.setIconKey(trimToNull(request.getIconKey()));
+        }
+        if (request.getAccentColor() != null) {
+            patch.setAccentColor(trimToNull(request.getAccentColor()));
+        }
+        if (request.getTriggerType() != null) {
+            patch.setTriggerType(requireText(request.getTriggerType(), "Achievement trigger type is required").toUpperCase());
+        }
+        if (request.getTriggerValue() != null) {
+            patch.setTriggerValue(Math.max(1, request.getTriggerValue()));
+        }
+        if (request.getRewardPoints() != null) {
+            patch.setRewardPoints(Math.max(0, request.getRewardPoints()));
+        }
+        if (request.getSortOrder() != null) {
+            patch.setSortOrder(request.getSortOrder());
+        }
+        if (request.getStatus() != null) {
+            patch.setStatus(request.getStatus());
+        }
+        achievementMapper.updateById(patch);
+        return requireAchievementById(existing.getId());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteAchievement(Long id) {
+        Achievement existing = requireAchievementById(id);
+        Achievement patch = new Achievement();
+        patch.setId(existing.getId());
+        patch.setIsDeleted(1);
+        achievementMapper.updateById(patch);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -337,6 +514,166 @@ public class MissionCenterService {
         return activeMilestones().stream()
                 .map(milestone -> toMilestoneItem(milestone, claims.get(milestone.getMilestoneDay()), currentStreak))
                 .toList();
+    }
+
+    public PageResult<StreakPowerUp> pagePowerUpsOps(String status, long pageNum, long pageSize) {
+        long normalizedPageNum = Math.max(1, pageNum);
+        long normalizedPageSize = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
+        LambdaQueryWrapper<StreakPowerUp> wrapper = new LambdaQueryWrapper<StreakPowerUp>()
+                .eq(StreakPowerUp::getIsDeleted, 0)
+                .orderByAsc(StreakPowerUp::getUnlockStreakDays)
+                .orderByAsc(StreakPowerUp::getSortOrder)
+                .orderByAsc(StreakPowerUp::getId);
+        if (status != null && !status.isBlank()) {
+            wrapper.eq(StreakPowerUp::getStatus, Integer.parseInt(status));
+        }
+        Page<StreakPowerUp> page = streakPowerUpMapper.selectPage(new Page<>(normalizedPageNum, normalizedPageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    public PageResult<StreakMilestone> pageMilestonesOps(String status, long pageNum, long pageSize) {
+        long normalizedPageNum = Math.max(1, pageNum);
+        long normalizedPageSize = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
+        LambdaQueryWrapper<StreakMilestone> wrapper = new LambdaQueryWrapper<StreakMilestone>()
+                .eq(StreakMilestone::getIsDeleted, 0)
+                .orderByAsc(StreakMilestone::getMilestoneDay)
+                .orderByAsc(StreakMilestone::getSortOrder)
+                .orderByAsc(StreakMilestone::getId);
+        if (status != null && !status.isBlank()) {
+            wrapper.eq(StreakMilestone::getStatus, Integer.parseInt(status));
+        }
+        Page<StreakMilestone> page = streakMilestoneMapper.selectPage(new Page<>(normalizedPageNum, normalizedPageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public StreakPowerUp createPowerUp(StreakPowerUpRequest request) {
+        String code = normalizePowerUpCode(request.getPowerUpCode());
+        StreakPowerUp existing = streakPowerUpMapper.selectOne(new LambdaQueryWrapper<StreakPowerUp>()
+                .eq(StreakPowerUp::getPowerUpCode, code)
+                .eq(StreakPowerUp::getIsDeleted, 0));
+        if (existing != null) {
+            throw new BizException("Power-up code already exists");
+        }
+        StreakPowerUp powerUp = new StreakPowerUp();
+        powerUp.setPowerUpCode(code);
+        powerUp.setPowerUpName(request.getPowerUpName().trim());
+        powerUp.setI18nKey(trimToNull(request.getI18nKey()));
+        powerUp.setTargetPath(trimToNull(request.getTargetPath()));
+        powerUp.setBadgeAchievementCode(normalizeConfiguredAchievementCode(request.getBadgeAchievementCode()));
+        powerUp.setUnlockStreakDays(request.getUnlockStreakDays());
+        powerUp.setEffectType(request.getEffectType().trim());
+        powerUp.setEffectValue(trimToNull(request.getEffectValue()));
+        powerUp.setDurationDays(request.getDurationDays() == null ? 0 : request.getDurationDays());
+        powerUp.setSortOrder(request.getSortOrder() == null ? 100 : request.getSortOrder());
+        powerUp.setStatus(request.getStatus() == null ? 1 : request.getStatus());
+        powerUp.setIsDeleted(0);
+        streakPowerUpMapper.insert(powerUp);
+        return powerUp;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public StreakPowerUp updatePowerUp(Long id, StreakPowerUpUpdateRequest request) {
+        StreakPowerUp existing = requirePowerUpById(id);
+        StreakPowerUp patch = new StreakPowerUp();
+        patch.setId(existing.getId());
+        if (request.getPowerUpName() != null) {
+            patch.setPowerUpName(request.getPowerUpName().trim());
+        }
+        if (request.getI18nKey() != null) {
+            patch.setI18nKey(trimToNull(request.getI18nKey()));
+        }
+        if (request.getTargetPath() != null) {
+            patch.setTargetPath(trimToNull(request.getTargetPath()));
+        }
+        if (request.getBadgeAchievementCode() != null) {
+            patch.setBadgeAchievementCode(normalizeConfiguredAchievementCode(request.getBadgeAchievementCode()));
+        }
+        if (request.getUnlockStreakDays() != null) {
+            patch.setUnlockStreakDays(request.getUnlockStreakDays());
+        }
+        if (request.getEffectType() != null) {
+            patch.setEffectType(request.getEffectType().trim());
+        }
+        if (request.getEffectValue() != null) {
+            patch.setEffectValue(trimToNull(request.getEffectValue()));
+        }
+        if (request.getDurationDays() != null) {
+            patch.setDurationDays(request.getDurationDays());
+        }
+        if (request.getSortOrder() != null) {
+            patch.setSortOrder(request.getSortOrder());
+        }
+        if (request.getStatus() != null) {
+            patch.setStatus(request.getStatus());
+        }
+        streakPowerUpMapper.updateById(patch);
+        return requirePowerUpById(existing.getId());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public StreakMilestone createMilestone(StreakMilestoneRequest request) {
+        int day = normalizeMilestoneDay(request.getMilestoneDay());
+        StreakMilestone existing = streakMilestoneMapper.selectOne(new LambdaQueryWrapper<StreakMilestone>()
+                .eq(StreakMilestone::getMilestoneDay, day)
+                .eq(StreakMilestone::getIsDeleted, 0));
+        if (existing != null) {
+            throw new BizException("Streak milestone day already exists");
+        }
+        StreakMilestone milestone = new StreakMilestone();
+        milestone.setMilestoneDay(day);
+        milestone.setMilestoneName(request.getMilestoneName().trim());
+        milestone.setRewardType(request.getRewardType().trim());
+        milestone.setRewardAmount(request.getRewardAmount());
+        milestone.setRewardName(request.getRewardName().trim());
+        milestone.setBadgeAchievementCode(normalizeConfiguredAchievementCode(request.getBadgeAchievementCode()));
+        milestone.setSortOrder(request.getSortOrder() == null ? day : request.getSortOrder());
+        milestone.setStatus(request.getStatus() == null ? 1 : request.getStatus());
+        milestone.setIsDeleted(0);
+        streakMilestoneMapper.insert(milestone);
+        return milestone;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public StreakMilestone updateMilestone(Long id, StreakMilestoneUpdateRequest request) {
+        StreakMilestone existing = requireMilestoneById(id);
+        if (request.getMilestoneDay() != null && !request.getMilestoneDay().equals(existing.getMilestoneDay())) {
+            int day = normalizeMilestoneDay(request.getMilestoneDay());
+            StreakMilestone duplicate = streakMilestoneMapper.selectOne(new LambdaQueryWrapper<StreakMilestone>()
+                    .eq(StreakMilestone::getMilestoneDay, day)
+                    .eq(StreakMilestone::getIsDeleted, 0));
+            if (duplicate != null && !duplicate.getId().equals(existing.getId())) {
+                throw new BizException("Streak milestone day already exists");
+            }
+        }
+        StreakMilestone patch = new StreakMilestone();
+        patch.setId(existing.getId());
+        if (request.getMilestoneDay() != null) {
+            patch.setMilestoneDay(request.getMilestoneDay());
+        }
+        if (request.getMilestoneName() != null) {
+            patch.setMilestoneName(request.getMilestoneName().trim());
+        }
+        if (request.getRewardType() != null) {
+            patch.setRewardType(request.getRewardType().trim());
+        }
+        if (request.getRewardAmount() != null) {
+            patch.setRewardAmount(request.getRewardAmount());
+        }
+        if (request.getRewardName() != null) {
+            patch.setRewardName(request.getRewardName().trim());
+        }
+        if (request.getBadgeAchievementCode() != null) {
+            patch.setBadgeAchievementCode(normalizeConfiguredAchievementCode(request.getBadgeAchievementCode()));
+        }
+        if (request.getSortOrder() != null) {
+            patch.setSortOrder(request.getSortOrder());
+        }
+        if (request.getStatus() != null) {
+            patch.setStatus(request.getStatus());
+        }
+        streakMilestoneMapper.updateById(patch);
+        return requireMilestoneById(existing.getId());
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -569,6 +906,28 @@ public class MissionCenterService {
         return mission;
     }
 
+    private Mission requireMissionById(Long id) {
+        if (id == null) {
+            throw new BizException("Mission id is required");
+        }
+        Mission mission = missionMapper.selectById(id);
+        if (mission == null || Integer.valueOf(1).equals(mission.getIsDeleted())) {
+            throw new BizException("Mission not found");
+        }
+        return mission;
+    }
+
+    private Achievement requireAchievementById(Long id) {
+        if (id == null) {
+            throw new BizException("Achievement id is required");
+        }
+        Achievement achievement = achievementMapper.selectById(id);
+        if (achievement == null || Integer.valueOf(1).equals(achievement.getIsDeleted())) {
+            throw new BizException("Achievement not found");
+        }
+        return achievement;
+    }
+
     private DailyCheckIn findDailyCheckIn(Long userId, LocalDate date) {
         return dailyCheckInMapper.selectOne(new LambdaQueryWrapper<DailyCheckIn>()
                 .eq(DailyCheckIn::getUserId, userId)
@@ -742,6 +1101,32 @@ public class MissionCenterService {
         return milestone;
     }
 
+    private StreakPowerUp requirePowerUpById(Long id) {
+        if (id == null || id < 1) {
+            throw new BizException("Power-up id is required");
+        }
+        StreakPowerUp powerUp = streakPowerUpMapper.selectOne(new LambdaQueryWrapper<StreakPowerUp>()
+                .eq(StreakPowerUp::getId, id)
+                .eq(StreakPowerUp::getIsDeleted, 0));
+        if (powerUp == null) {
+            throw new BizException("Power-up not found");
+        }
+        return powerUp;
+    }
+
+    private StreakMilestone requireMilestoneById(Long id) {
+        if (id == null || id < 1) {
+            throw new BizException("Streak milestone id is required");
+        }
+        StreakMilestone milestone = streakMilestoneMapper.selectOne(new LambdaQueryWrapper<StreakMilestone>()
+                .eq(StreakMilestone::getId, id)
+                .eq(StreakMilestone::getIsDeleted, 0));
+        if (milestone == null) {
+            throw new BizException("Streak milestone not found");
+        }
+        return milestone;
+    }
+
     private UserStreakPowerUp findUserPowerUp(Long userId, String powerUpCode) {
         return userStreakPowerUpMapper.selectOne(new LambdaQueryWrapper<UserStreakPowerUp>()
                 .eq(UserStreakPowerUp::getUserId, userId)
@@ -764,10 +1149,14 @@ public class MissionCenterService {
                 achievement.getId(),
                 achievement.getAchievementCode(),
                 achievement.getAchievementName(),
+                achievement.getDescription(),
                 achievement.getCategory(),
+                achievement.getIconKey(),
+                achievement.getAccentColor(),
                 achievement.getTriggerType(),
                 intValue(achievement.getTriggerValue()),
                 rewardPoints(achievement),
+                intValue(achievement.getSortOrder()),
                 userAchievement == null ? STATUS_LOCKED : userAchievement.getAchievementStatus(),
                 TRIGGER_STREAK_DAYS.equals(achievement.getTriggerType())
                         ? Math.min(currentStreak, intValue(achievement.getTriggerValue()))
@@ -1062,6 +1451,32 @@ public class MissionCenterService {
         }
         String normalized = achievementCode.trim().toUpperCase();
         return ACHIEVEMENT_CODE_PATTERN.matcher(normalized).matches() ? normalized : null;
+    }
+
+    private String trimToNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
+    }
+
+    private String requireText(String value, String message) {
+        if (value == null || value.isBlank()) {
+            throw new BizException(message);
+        }
+        return value.trim();
+    }
+
+    private String normalizeMissionCode(String value) {
+        String code = requireText(value, "Mission code is required").toUpperCase();
+        if (!ACHIEVEMENT_CODE_PATTERN.matcher(code).matches()) {
+            throw new BizException("Mission code must use A-Z, 0-9, or underscore");
+        }
+        return code;
+    }
+
+    private String normalizeMissionType(String value) {
+        return requireText(value, "Mission type is required").toUpperCase();
     }
 
     private LocalDateTime powerUpExpiresAt(StreakPowerUp powerUp, LocalDateTime activatedAt) {

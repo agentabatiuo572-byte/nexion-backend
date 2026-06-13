@@ -4,6 +4,7 @@ import ffdd.openapi.domain.WebhookSubscription;
 import ffdd.openapi.dto.OpenApiAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppCreateResponse;
 import ffdd.openapi.dto.OpenApiAppOpsResponse;
+import ffdd.openapi.dto.OpenApiOpsAppCreateRequest;
 import ffdd.openapi.dto.OpenApiAppQuotaUpdateRequest;
 import ffdd.openapi.dto.OpenApiAppSummaryResponse;
 import ffdd.openapi.dto.OpenApiCallAuditResponse;
@@ -15,6 +16,8 @@ import java.util.Map;
 
 public interface OpenApiService {
     OpenApiAppCreateResponse createApp(Long ownerUserId, OpenApiAppCreateRequest request);
+
+    OpenApiAppCreateResponse createOpsApp(OpenApiOpsAppCreateRequest request);
 
     List<OpenApiAppSummaryResponse> listApps(Long ownerUserId);
 
@@ -31,7 +34,15 @@ public interface OpenApiService {
 
     WebhookSubscription createWebhook(Long ownerUserId, WebhookCreateRequest request);
 
+    WebhookSubscription createOpsWebhook(WebhookCreateRequest request);
+
     List<WebhookSubscription> listWebhooks(Long ownerUserId, Long appId);
+
+    List<WebhookSubscription> listOpsWebhooks(Long appId, String eventType, String status, int limit);
+
+    WebhookSubscription enableWebhook(Long id);
+
+    WebhookSubscription disableWebhook(Long id);
 
     Map<String, Object> createReceipt(OpenApiSignatureHeaders headers, OpenApiReceiptCreateRequest request, String path);
 }

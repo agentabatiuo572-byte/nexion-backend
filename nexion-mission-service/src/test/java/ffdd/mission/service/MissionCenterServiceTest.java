@@ -25,14 +25,22 @@ import ffdd.mission.domain.UserStreakMilestone;
 import ffdd.mission.domain.UserStreakPowerUp;
 import ffdd.mission.dto.AchievementClaimResponse;
 import ffdd.mission.dto.AchievementItemResponse;
+import ffdd.mission.dto.AchievementRequest;
+import ffdd.mission.dto.AchievementUpdateRequest;
 import ffdd.mission.dto.DailyCheckInResponse;
 import ffdd.mission.dto.MissionItemResponse;
 import ffdd.mission.dto.MissionListResponse;
+import ffdd.mission.dto.MissionRequest;
+import ffdd.mission.dto.MissionUpdateRequest;
 import ffdd.mission.dto.PointsSummaryResponse;
 import ffdd.mission.dto.StreakMilestoneClaimResponse;
 import ffdd.mission.dto.StreakMilestoneItemResponse;
+import ffdd.mission.dto.StreakMilestoneRequest;
+import ffdd.mission.dto.StreakMilestoneUpdateRequest;
 import ffdd.mission.dto.StreakPowerUpActivationResponse;
 import ffdd.mission.dto.StreakPowerUpItemResponse;
+import ffdd.mission.dto.StreakPowerUpRequest;
+import ffdd.mission.dto.StreakPowerUpUpdateRequest;
 import ffdd.mission.dto.StreakLeaderboardEntryResponse;
 import ffdd.mission.dto.StreakSaverResponse;
 import ffdd.mission.dto.StreakSummaryResponse;
@@ -107,6 +115,152 @@ class MissionCenterServiceTest {
                 .containsExactly("DAILY_CHECK_IN", "FIRST_RECEIPT");
         assertThat(response.getRecords().get(0).isCompleted()).isTrue();
         assertThat(response.getRecords().get(1).getCompletedAt()).isEqualTo(completedAt);
+    }
+
+    @Test
+    void createsMissionOpsTaskWithNormalizedCodeAndDefaults() {
+        MissionRequest request = new MissionRequest();
+        request.setMissionCode("image_inference");
+        request.setMissionName("Image inference");
+        request.setMissionType("growth");
+        request.setRewardPoints(80);
+
+        Mission created = service.createMission(request);
+
+        ArgumentCaptor<Mission> captor = ArgumentCaptor.forClass(Mission.class);
+        verify(missionMapper).insert(captor.capture());
+        assertThat(captor.getValue().getMissionCode()).isEqualTo("IMAGE_INFERENCE");
+        assertThat(captor.getValue().getMissionType()).isEqualTo("GROWTH");
+        assertThat(captor.getValue().getRewardPoints()).isEqualTo(80);
+        assertThat(captor.getValue().getStatus()).isEqualTo(1);
+        assertThat(captor.getValue().getIsDeleted()).isZero();
+        assertThat(created.getMissionCode()).isEqualTo("IMAGE_INFERENCE");
+    }
+
+    @Test
+    void updatesMissionOpsTaskAndReturnsFreshRecord() {
+        Mission existing = mission(9L, "FIRST_RECEIPT", "First Receipt", "GROWTH", 200);
+        Mission updated = mission(9L, "FIRST_RECEIPT", "First Compute Receipt", "COMPUTE", 260);
+        when(missionMapper.selectById(9L)).thenReturn(existing, updated);
+
+        MissionUpdateRequest request = new MissionUpdateRequest();
+        request.setMissionName("First Compute Receipt");
+        request.setMissionType("compute");
+        request.setRewardPoints(260);
+        request.setStatus(0);
+
+        Mission result = service.updateMission(9L, request);
+
+        ArgumentCaptor<Mission> captor = ArgumentCaptor.forClass(Mission.class);
+        verify(missionMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getId()).isEqualTo(9L);
+        assertThat(captor.getValue().getMissionType()).isEqualTo("COMPUTE");
+        assertThat(captor.getValue().getRewardPoints()).isEqualTo(260);
+        assertThat(captor.getValue().getStatus()).isZero();
+        assertThat(result.getMissionName()).isEqualTo("First Compute Receipt");
+    }
+
+    @Test
+    void deletesMissionOpsTaskBySoftDelete() {
+        Mission existing = mission(9L, "FIRST_RECEIPT", "First Receipt", "GROWTH", 200);
+        when(missionMapper.selectById(9L)).thenReturn(existing);
+
+        service.deleteMission(9L);
+
+        ArgumentCaptor<Mission> captor = ArgumentCaptor.forClass(Mission.class);
+        verify(missionMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getId()).isEqualTo(9L);
+        assertThat(captor.getValue().getIsDeleted()).isEqualTo(1);
+    }
+
+    @Test
+    void pagesAchievementOpsConfigs() {
+        Page<Achievement> page = new Page<>(1, 20);
+        page.setRecords(List.of(achievement(11L, "STREAK_3", "3-Day Streak", 3, 5)));
+        page.setTotal(1);
+        when(achievementMapper.selectPage(any(Page.class), any())).thenReturn(page);
+
+        PageResult<Achievement> result = service.pageAchievementsOps("loyalty", "1", "streak", 1, 20);
+
+        assertThat(result.getTotal()).isEqualTo(1);
+        assertThat(result.getRecords()).extracting(Achievement::getAchievementCode).containsExactly("STREAK_3");
+    }
+
+    @Test
+    void createsAchievementOpsConfigWithNormalizedFieldsAndDefaults() {
+        AchievementRequest request = new AchievementRequest();
+        request.setAchievementCode("streak_7");
+        request.setAchievementName("7-Day Streak");
+        request.setDescription("Keep a 7 day streak.");
+        request.setCategory("streak");
+        request.setIconKey("flame");
+        request.setAccentColor("#00D1FF");
+        request.setTriggerType("streak_days");
+        request.setTriggerValue(7);
+        request.setRewardPoints(100);
+        request.setSortOrder(20);
+
+        Achievement created = service.createAchievement(request);
+
+        ArgumentCaptor<Achievement> captor = ArgumentCaptor.forClass(Achievement.class);
+        verify(achievementMapper).insert(captor.capture());
+        assertThat(captor.getValue().getAchievementCode()).isEqualTo("STREAK_7");
+        assertThat(captor.getValue().getDescription()).isEqualTo("Keep a 7 day streak.");
+        assertThat(captor.getValue().getCategory()).isEqualTo("STREAK");
+        assertThat(captor.getValue().getIconKey()).isEqualTo("flame");
+        assertThat(captor.getValue().getAccentColor()).isEqualTo("#00D1FF");
+        assertThat(captor.getValue().getTriggerType()).isEqualTo("STREAK_DAYS");
+        assertThat(captor.getValue().getTriggerValue()).isEqualTo(7);
+        assertThat(captor.getValue().getRewardPoints()).isEqualTo(100);
+        assertThat(captor.getValue().getSortOrder()).isEqualTo(20);
+        assertThat(captor.getValue().getStatus()).isEqualTo(1);
+        assertThat(captor.getValue().getIsDeleted()).isZero();
+        assertThat(created.getAchievementCode()).isEqualTo("STREAK_7");
+    }
+
+    @Test
+    void updatesAchievementOpsConfigAndReturnsFreshRecord() {
+        Achievement existing = achievement(11L, "STREAK_3", "3-Day Streak", 3, 5);
+        Achievement updated = achievement(11L, "STREAK_3", "3-Day Streak Plus", 7, 120);
+        when(achievementMapper.selectById(11L)).thenReturn(existing, updated);
+
+        AchievementUpdateRequest request = new AchievementUpdateRequest();
+        request.setAchievementName("3-Day Streak Plus");
+        request.setDescription("Updated copy");
+        request.setIconKey("award");
+        request.setAccentColor("#9EDC1D");
+        request.setTriggerValue(7);
+        request.setRewardPoints(120);
+        request.setSortOrder(30);
+        request.setStatus(0);
+
+        Achievement result = service.updateAchievement(11L, request);
+
+        ArgumentCaptor<Achievement> captor = ArgumentCaptor.forClass(Achievement.class);
+        verify(achievementMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getId()).isEqualTo(11L);
+        assertThat(captor.getValue().getAchievementName()).isEqualTo("3-Day Streak Plus");
+        assertThat(captor.getValue().getDescription()).isEqualTo("Updated copy");
+        assertThat(captor.getValue().getIconKey()).isEqualTo("award");
+        assertThat(captor.getValue().getAccentColor()).isEqualTo("#9EDC1D");
+        assertThat(captor.getValue().getTriggerValue()).isEqualTo(7);
+        assertThat(captor.getValue().getRewardPoints()).isEqualTo(120);
+        assertThat(captor.getValue().getSortOrder()).isEqualTo(30);
+        assertThat(captor.getValue().getStatus()).isZero();
+        assertThat(result.getRewardPoints()).isEqualTo(120);
+    }
+
+    @Test
+    void deletesAchievementOpsConfigBySoftDelete() {
+        Achievement existing = achievement(11L, "STREAK_3", "3-Day Streak", 3, 5);
+        when(achievementMapper.selectById(11L)).thenReturn(existing);
+
+        service.deleteAchievement(11L);
+
+        ArgumentCaptor<Achievement> captor = ArgumentCaptor.forClass(Achievement.class);
+        verify(achievementMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getId()).isEqualTo(11L);
+        assertThat(captor.getValue().getIsDeleted()).isEqualTo(1);
     }
 
     @Test
@@ -304,6 +458,10 @@ class MissionCenterServiceTest {
         List<AchievementItemResponse> achievements = service.listAchievements(10001L);
 
         assertThat(achievements).hasSize(1);
+        assertThat(achievements.get(0).getDescription()).isEqualTo("3-Day Streak description");
+        assertThat(achievements.get(0).getIconKey()).isEqualTo("award");
+        assertThat(achievements.get(0).getAccentColor()).isEqualTo("#9EDC1D");
+        assertThat(achievements.get(0).getSortOrder()).isEqualTo(10);
         assertThat(achievements.get(0).getStatus()).isEqualTo("UNLOCKED");
         assertThat(achievements.get(0).getProgress()).isEqualTo(2);
     }
@@ -427,6 +585,61 @@ class MissionCenterServiceTest {
     }
 
     @Test
+    void opsCreatesPowerUpWithNormalizedCodeAndDefaults() {
+        StreakPowerUpRequest request = new StreakPowerUpRequest();
+        request.setPowerUpCode("ROYALTY_BOOST");
+        request.setPowerUpName("Royalty Boost");
+        request.setUnlockStreakDays(7);
+        request.setEffectType("CONVERSION");
+        request.setEffectValue("royalty");
+
+        StreakPowerUp response = service.createPowerUp(request);
+
+        assertThat(response.getPowerUpCode()).isEqualTo("royalty_boost");
+        assertThat(response.getSortOrder()).isEqualTo(100);
+        assertThat(response.getStatus()).isEqualTo(1);
+        ArgumentCaptor<StreakPowerUp> powerUpCaptor = ArgumentCaptor.forClass(StreakPowerUp.class);
+        verify(streakPowerUpMapper).insert(powerUpCaptor.capture());
+        assertThat(powerUpCaptor.getValue().getPowerUpName()).isEqualTo("Royalty Boost");
+        assertThat(powerUpCaptor.getValue().getUnlockStreakDays()).isEqualTo(7);
+    }
+
+    @Test
+    void opsCreatePowerUpRejectsDuplicateCode() {
+        StreakPowerUpRequest request = new StreakPowerUpRequest();
+        request.setPowerUpCode("royalty_boost");
+        request.setPowerUpName("Royalty Boost");
+        request.setUnlockStreakDays(7);
+        request.setEffectType("CONVERSION");
+        when(streakPowerUpMapper.selectOne(any())).thenReturn(powerUp(1L, "royalty_boost", "Existing", 7, "streak_royalty", "/team"));
+
+        assertThatThrownBy(() -> service.createPowerUp(request))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Power-up code already exists");
+        verify(streakPowerUpMapper, never()).insert(any(StreakPowerUp.class));
+    }
+
+    @Test
+    void opsUpdatesPowerUpFields() {
+        StreakPowerUp existing = powerUp(1L, "royalty_boost", "Royalty Boost", 7, "streak_royalty", "/team");
+        when(streakPowerUpMapper.selectOne(any())).thenReturn(existing);
+        StreakPowerUpUpdateRequest request = new StreakPowerUpUpdateRequest();
+        request.setPowerUpName("Royalty Boost v2");
+        request.setUnlockStreakDays(14);
+        request.setStatus(0);
+
+        StreakPowerUp response = service.updatePowerUp(1L, request);
+
+        assertThat(response.getPowerUpCode()).isEqualTo("royalty_boost");
+        ArgumentCaptor<StreakPowerUp> patchCaptor = ArgumentCaptor.forClass(StreakPowerUp.class);
+        verify(streakPowerUpMapper).updateById(patchCaptor.capture());
+        assertThat(patchCaptor.getValue().getId()).isEqualTo(1L);
+        assertThat(patchCaptor.getValue().getPowerUpName()).isEqualTo("Royalty Boost v2");
+        assertThat(patchCaptor.getValue().getUnlockStreakDays()).isEqualTo(14);
+        assertThat(patchCaptor.getValue().getStatus()).isZero();
+    }
+
+    @Test
     void activatesUnlockedPowerUpOnceAndUnlocksBadge() {
         StreakPowerUp premium = powerUp(2L, "premium_trial", "Premium 7-day free trial", 14,
                 "streak_premium", "/me/wallet/premium");
@@ -513,6 +726,75 @@ class MissionCenterServiceTest {
                 .containsExactly("CLAIMED", "UNLOCKED", "LOCKED");
         assertThat(response).extracting(StreakMilestoneItemResponse::getDaysRemaining)
                 .containsExactly(0, 0, 7);
+    }
+
+    @Test
+    void opsCreatesStreakMilestoneWithDefaults() {
+        StreakMilestoneRequest request = new StreakMilestoneRequest();
+        request.setMilestoneDay(30);
+        request.setMilestoneName("Day 30");
+        request.setRewardType("POINTS");
+        request.setRewardAmount(new BigDecimal("50.000000"));
+        request.setRewardName("+50 Points");
+
+        StreakMilestone response = service.createMilestone(request);
+
+        assertThat(response.getMilestoneDay()).isEqualTo(30);
+        assertThat(response.getSortOrder()).isEqualTo(30);
+        assertThat(response.getStatus()).isEqualTo(1);
+        ArgumentCaptor<StreakMilestone> milestoneCaptor = ArgumentCaptor.forClass(StreakMilestone.class);
+        verify(streakMilestoneMapper).insert(milestoneCaptor.capture());
+        assertThat(milestoneCaptor.getValue().getRewardAmount()).isEqualByComparingTo("50.000000");
+    }
+
+    @Test
+    void opsCreateStreakMilestoneRejectsDuplicateDay() {
+        StreakMilestoneRequest request = new StreakMilestoneRequest();
+        request.setMilestoneDay(7);
+        request.setMilestoneName("Day 7");
+        request.setRewardType("POINTS");
+        request.setRewardAmount(new BigDecimal("15.000000"));
+        request.setRewardName("+15 Points");
+        when(streakMilestoneMapper.selectOne(any())).thenReturn(milestone(2L, 7, "POINTS", "15.000000", null));
+
+        assertThatThrownBy(() -> service.createMilestone(request))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Streak milestone day already exists");
+        verify(streakMilestoneMapper, never()).insert(any(StreakMilestone.class));
+    }
+
+    @Test
+    void opsUpdatesStreakMilestoneAndRejectsDuplicateDay() {
+        StreakMilestone existing = milestone(1L, 7, "POINTS", "15.000000", null);
+        StreakMilestone duplicate = milestone(2L, 14, "POINTS", "25.000000", null);
+        when(streakMilestoneMapper.selectOne(any())).thenReturn(existing, duplicate);
+        StreakMilestoneUpdateRequest request = new StreakMilestoneUpdateRequest();
+        request.setMilestoneDay(14);
+
+        assertThatThrownBy(() -> service.updateMilestone(1L, request))
+                .isInstanceOf(BizException.class)
+                .hasMessage("Streak milestone day already exists");
+        verify(streakMilestoneMapper, never()).updateById(any(StreakMilestone.class));
+    }
+
+    @Test
+    void opsUpdatesStreakMilestoneFields() {
+        StreakMilestone existing = milestone(1L, 7, "POINTS", "15.000000", null);
+        when(streakMilestoneMapper.selectOne(any())).thenReturn(existing);
+        StreakMilestoneUpdateRequest request = new StreakMilestoneUpdateRequest();
+        request.setMilestoneName("Day 7 Pro");
+        request.setRewardAmount(new BigDecimal("25.000000"));
+        request.setStatus(0);
+
+        StreakMilestone response = service.updateMilestone(1L, request);
+
+        assertThat(response.getMilestoneDay()).isEqualTo(7);
+        ArgumentCaptor<StreakMilestone> patchCaptor = ArgumentCaptor.forClass(StreakMilestone.class);
+        verify(streakMilestoneMapper).updateById(patchCaptor.capture());
+        assertThat(patchCaptor.getValue().getId()).isEqualTo(1L);
+        assertThat(patchCaptor.getValue().getMilestoneName()).isEqualTo("Day 7 Pro");
+        assertThat(patchCaptor.getValue().getRewardAmount()).isEqualByComparingTo("25.000000");
+        assertThat(patchCaptor.getValue().getStatus()).isZero();
     }
 
     @Test
@@ -705,10 +987,14 @@ class MissionCenterServiceTest {
         achievement.setId(id);
         achievement.setAchievementCode(code);
         achievement.setAchievementName(name);
+        achievement.setDescription(name + " description");
         achievement.setCategory("LOYALTY");
+        achievement.setIconKey("award");
+        achievement.setAccentColor("#9EDC1D");
         achievement.setTriggerType("STREAK_DAYS");
         achievement.setTriggerValue(triggerValue);
         achievement.setRewardPoints(rewardPoints);
+        achievement.setSortOrder(10);
         achievement.setStatus(1);
         achievement.setIsDeleted(0);
         return achievement;

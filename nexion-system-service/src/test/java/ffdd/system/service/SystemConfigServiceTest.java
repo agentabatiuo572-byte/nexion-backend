@@ -84,6 +84,31 @@ class SystemConfigServiceTest {
     }
 
     @Test
+    void createsPrivateConfigForEmergencyControls() {
+        when(configItemMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        doAnswer(invocation -> {
+                    ConfigItem item = invocation.getArgument(0);
+                    item.setId(11L);
+                    return 1;
+                })
+                .when(configItemMapper)
+                .insert(any(ConfigItem.class));
+
+        ConfigItemCreateRequest request = new ConfigItemCreateRequest();
+        request.setConfigKey("emergency.killswitch.withdraw");
+        request.setConfigValue("off");
+        request.setConfigGroup("emergency");
+        request.setVisibility("PRIVATE");
+
+        ConfigItemResponse response = service.create(request);
+
+        ArgumentCaptor<ConfigItem> captor = ArgumentCaptor.forClass(ConfigItem.class);
+        verify(configItemMapper).insert(captor.capture());
+        assertThat(captor.getValue().getVisibility()).isEqualTo("PRIVATE");
+        assertThat(response.getVisibility()).isEqualTo("PRIVATE");
+    }
+
+    @Test
     void rejectsInvalidJsonConfigValue() {
         when(configItemMapper.selectOne(any(Wrapper.class))).thenReturn(null);
         ConfigItemCreateRequest request = new ConfigItemCreateRequest();
@@ -116,7 +141,7 @@ class SystemConfigServiceTest {
 
         ConfigItemUpdateRequest request = new ConfigItemUpdateRequest();
         request.setConfigValue("50");
-        request.setVisibility("PUBLIC");
+        request.setVisibility("PRIVATE");
         request.setRemark("temporary burst");
 
         ConfigItemResponse response = service.update(8L, request);
@@ -125,7 +150,7 @@ class SystemConfigServiceTest {
         verify(configItemMapper).updateById(captor.capture());
         assertThat(captor.getValue().getConfigValue()).isEqualTo("50");
         assertThat(captor.getValue().getValueType()).isEqualTo("NUMBER");
-        assertThat(captor.getValue().getVisibility()).isEqualTo("PUBLIC");
+        assertThat(captor.getValue().getVisibility()).isEqualTo("PRIVATE");
         assertThat(captor.getValue().getRemark()).isEqualTo("temporary burst");
         assertThat(response.getConfigValue()).isEqualTo("50");
     }

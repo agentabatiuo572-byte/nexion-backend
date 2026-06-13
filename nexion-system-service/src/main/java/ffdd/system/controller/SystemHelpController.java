@@ -1,6 +1,7 @@
 package ffdd.system.controller;
 
 import ffdd.common.api.ApiResult;
+import ffdd.common.api.PageResult;
 import ffdd.system.dto.HelpArticleCreateRequest;
 import ffdd.system.dto.HelpArticleResponse;
 import ffdd.system.dto.HelpArticleUpdateRequest;
@@ -35,6 +36,22 @@ public class SystemHelpController {
         return ApiResult.ok(systemHelpService.list(query, status, limit));
     }
 
+    @GetMapping("/page")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
+    public ApiResult<PageResult<HelpArticleResponse>> page(
+            @RequestParam(required = false) String query,
+            @RequestParam(required = false) Integer status,
+            @RequestParam(defaultValue = "1") long pageNum,
+            @RequestParam(defaultValue = "20") long pageSize) {
+        return ApiResult.ok(systemHelpService.page(query, status, pageNum, pageSize));
+    }
+
+    @GetMapping("/id/{id}")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
+    public ApiResult<HelpArticleResponse> getById(@PathVariable Long id) {
+        return ApiResult.ok(systemHelpService.getById(id));
+    }
+
     @GetMapping("/{articleCode}")
     @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
     public ApiResult<HelpArticleResponse> getActive(@PathVariable String articleCode) {
@@ -53,5 +70,11 @@ public class SystemHelpController {
             @PathVariable Long id,
             @Valid @RequestBody HelpArticleUpdateRequest request) {
         return ApiResult.ok(systemHelpService.update(id, request));
+    }
+
+    @PatchMapping("/{id}/archive")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    public ApiResult<HelpArticleResponse> archive(@PathVariable Long id) {
+        return ApiResult.ok(systemHelpService.archive(id));
     }
 }

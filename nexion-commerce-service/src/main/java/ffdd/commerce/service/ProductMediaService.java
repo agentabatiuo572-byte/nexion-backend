@@ -23,16 +23,28 @@ import org.springframework.web.multipart.MultipartFile;
 public class ProductMediaService {
     private static final Pattern SAFE_TOKEN = Pattern.compile("[A-Za-z0-9._-]+");
     private static final DateTimeFormatter KEY_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
-    private static final Set<String> ALLOWED_MEDIA_TYPES = Set.of("COVER", "DETAIL", "GENESIS_COVER", "USER_AVATAR");
-    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of("image/jpeg", "image/png", "image/webp");
+    private static final Set<String> ALLOWED_MEDIA_TYPES = Set.of("COVER", "DETAIL", "PRODUCT_REVIEW", "GENESIS_COVER", "GENESIS_MEDIA", "USER_AVATAR");
+    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "video/mp4",
+            "video/webm",
+            "video/quicktime");
     private static final Map<String, String> DEFAULT_EXTENSIONS = Map.of(
             "image/jpeg", ".jpg",
             "image/png", ".png",
-            "image/webp", ".webp");
+            "image/webp", ".webp",
+            "video/mp4", ".mp4",
+            "video/webm", ".webm",
+            "video/quicktime", ".mov");
     private static final Map<String, Set<String>> ALLOWED_EXTENSIONS = Map.of(
             "image/jpeg", Set.of(".jpg", ".jpeg"),
             "image/png", Set.of(".png"),
-            "image/webp", Set.of(".webp"));
+            "image/webp", Set.of(".webp"),
+            "video/mp4", Set.of(".mp4", ".m4v"),
+            "video/webm", Set.of(".webm"),
+            "video/quicktime", Set.of(".mov", ".qt"));
 
     private final ObjectStorageService storageService;
     private final long maxUploadSizeBytes;
@@ -40,7 +52,7 @@ public class ProductMediaService {
 
     public ProductMediaService(
             ObjectStorageService storageService,
-            @Value("${nexion.commerce.product-media.max-upload-size-bytes:5242880}") long maxUploadSizeBytes,
+            @Value("${nexion.commerce.product-media.max-upload-size-bytes:52428800}") long maxUploadSizeBytes,
             @Value("${nexion.commerce.product-media.preview-expiry-seconds:900}") int previewExpirySeconds) {
         this.storageService = storageService;
         this.maxUploadSizeBytes = Math.max(1, maxUploadSizeBytes);
@@ -76,27 +88,27 @@ public class ProductMediaService {
 
     private FilePayload readAndValidateFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new BizException("Product image is required");
+            throw new BizException("Product media is required");
         }
         try {
             byte[] bytes = file.getBytes();
             FileDescriptor descriptor = fileDescriptor(file.getOriginalFilename(), file.getContentType(), (long) bytes.length);
             return new FilePayload(descriptor.contentType(), descriptor.extension(), descriptor.sizeBytes(), bytes);
         } catch (IOException ex) {
-            throw new BizException("Product image cannot be read");
+            throw new BizException("Product media cannot be read");
         }
     }
 
     private FileDescriptor fileDescriptor(String fileName, String contentType, Long sizeBytes) {
         if (sizeBytes == null || sizeBytes <= 0) {
-            throw new BizException("Product image size must be positive");
+            throw new BizException("Product media size must be positive");
         }
         if (sizeBytes > maxUploadSizeBytes) {
-            throw new BizException("Product image is too large");
+            throw new BizException("Product media is too large");
         }
         String normalizedContentType = normalizeContentType(contentType);
         if (!ALLOWED_CONTENT_TYPES.contains(normalizedContentType)) {
-            throw new BizException("Unsupported product image content type");
+            throw new BizException("Unsupported product media content type");
         }
         return new FileDescriptor(
                 normalizedContentType,
@@ -110,6 +122,9 @@ public class ProductMediaService {
                 + UUID.randomUUID().toString().replace("-", "");
         if ("GENESIS_COVER".equals(mediaType)) {
             return "commerce/genesis/cover/" + fileId + extension;
+        }
+        if ("GENESIS_MEDIA".equals(mediaType)) {
+            return "commerce/genesis/media/" + fileId + extension;
         }
         if ("USER_AVATAR".equals(mediaType)) {
             return "auth/users/avatar/" + fileId + extension;
@@ -130,11 +145,11 @@ public class ProductMediaService {
 
     private String normalizeContentType(String contentType) {
         if (!StringUtils.hasText(contentType)) {
-            throw new BizException("Product image content type is required");
+            throw new BizException("Product media content type is required");
         }
         String normalized = contentType.trim().toLowerCase(Locale.ROOT);
         if (normalized.length() > 128 || containsControlCharacters(normalized)) {
-            throw new BizException("Product image content type contains invalid characters");
+            throw new BizException("Product media content type contains invalid characters");
         }
         return normalized;
     }
@@ -149,7 +164,7 @@ public class ProductMediaService {
             normalized = normalized.substring(slash + 1);
         }
         if (!StringUtils.hasText(normalized) || normalized.length() > 255 || containsControlCharacters(normalized)) {
-            throw new BizException("Product image file name contains invalid characters");
+            throw new BizException("Product media file name contains invalid characters");
         }
         return normalized;
     }
@@ -163,7 +178,7 @@ public class ProductMediaService {
                     && ALLOWED_EXTENSIONS.getOrDefault(contentType, Set.of()).contains(extension)) {
                 return extension;
             }
-            throw new BizException("Unsupported product image file extension");
+            throw new BizException("Unsupported product media file extension");
         }
         return DEFAULT_EXTENSIONS.getOrDefault(contentType, ".bin");
     }

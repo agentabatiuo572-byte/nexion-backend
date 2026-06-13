@@ -1,7 +1,9 @@
 package ffdd.team.service;
 
 import ffdd.common.exception.BizException;
+import ffdd.team.dto.LeadershipPoolHistoryItem;
 import ffdd.team.dto.LeadershipPoolParticipant;
+import ffdd.team.dto.LeadershipPoolRankWeight;
 import ffdd.team.dto.LeadershipPoolSnapshot;
 import ffdd.team.dto.TeamCommissionSettlementResult;
 import java.math.BigDecimal;
@@ -96,14 +98,10 @@ public class TeamAdvancedCommissionService {
             LocalDate weekStart,
             BigDecimal platformVolumeUsdt,
             int limit) {
-        if (platformVolumeUsdt == null || platformVolumeUsdt.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BizException("platformVolumeUsdt must be positive");
-        }
-
         LocalDate normalizedWeekStart = normalizeWeekStart(weekStart);
         String orderNo = COMMISSION_LEADERSHIP + "-" + normalizedWeekStart;
         LeadershipRule rule = leadershipRule();
-        BigDecimal sourceVolume = scale(platformVolumeUsdt);
+        BigDecimal sourceVolume = leadershipPlatformVolume(platformVolumeUsdt, normalizedWeekStart);
         BigDecimal poolUsdt = scale(sourceVolume.multiply(rule.poolRate()));
         int totalVotes = totalLeadershipVotes();
 
@@ -149,7 +147,7 @@ public class TeamAdvancedCommissionService {
 
     public LeadershipPoolSnapshot leadershipPoolSnapshot(Long userId, BigDecimal platformVolumeUsdt) {
         LeadershipRule rule = leadershipRule();
-        BigDecimal sourceVolume = positive(platformVolumeUsdt);
+        BigDecimal sourceVolume = leadershipPlatformVolume(platformVolumeUsdt, normalizeWeekStart(null));
         BigDecimal poolUsdt = scale(sourceVolume.multiply(rule.poolRate()));
         int totalVotes = totalLeadershipVotes();
         String rankCode = userRank(userId);
@@ -172,7 +170,9 @@ public class TeamAdvancedCommissionService {
                 totalVotes,
                 userVotes,
                 estimatedShare,
-                participants);
+                participants,
+                leadershipRankWeights(poolUsdt, totalVotes),
+                leadershipHistory(userId, 12));
     }
 
     protected List<PeerCandidate> peerCandidates(int limit) {
@@ -278,6 +278,82 @@ public class TeamAdvancedCommissionService {
                    AND cfg.leadership_votes > 0
                 """, Integer.class);
         return votes == null ? 0 : votes;
+    }
+
+    protected BigDecimal weeklyPlatformVolumeUsdt(LocalDate weekStart) {
+        LocalDate normalizedWeekStart = normalizeWeekStart(weekStart);
+        return decimal("""
+                SELECT COALESCE(SUM(source.order_amount_usd), 0)
+                  FROM (
+                        SELECT order_no, MAX(order_amount_usd) AS order_amount_usd
+                          FROM nx_commission_event
+                         WHERE is_deleted = 0
+                           AND status <> 'REJECTED'
+                           AND order_no IS NOT NULL
+                           AND order_no <> ''
+                           AND order_amount_usd IS NOT NULL
+                           AND created_at >= ?
+                         GROUP BY order_no
+                       ) source
+                """, normalizedWeekStart.atStartOfDay());
+    }
+
+    protected List<LeadershipPoolRankWeight> leadershipRankWeights(BigDecimal poolUsdt, int totalVotes) {
+        return jdbcTemplate.query("""
+                SELECT cfg.rank_code,
+                       cfg.title_en,
+                       cfg.title_cn,
+                       cfg.leadership_votes AS votes_per_user,
+                       COUNT(u.id) AS user_count,
+                       COALESCE(SUM(cfg.leadership_votes), 0) AS total_votes
+                  FROM nx_v_rank_config cfg
+                  LEFT JOIN nx_user u
+                    ON u.v_rank = cfg.rank_code
+                   AND u.is_deleted = 0
+                 WHERE cfg.status = 1
+                   AND cfg.is_deleted = 0
+                   AND cfg.leadership_votes > 0
+                 GROUP BY cfg.rank_code, cfg.title_en, cfg.title_cn, cfg.leadership_votes, cfg.sort_order
+                 ORDER BY cfg.sort_order ASC
+                """, (rs, rowNum) -> {
+            int votesPerUser = rs.getInt("votes_per_user");
+            int userCount = rs.getInt("user_count");
+            int rankVotes = rs.getInt("total_votes");
+            BigDecimal sharePct = totalVotes <= 0
+                    ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                    : BigDecimal.valueOf(rankVotes)
+                            .multiply(BigDecimal.valueOf(100))
+                            .divide(BigDecimal.valueOf(totalVotes), 6, RoundingMode.HALF_UP);
+            return new LeadershipPoolRankWeight(
+                    rs.getString("rank_code"),
+                    rs.getString("title_en"),
+                    rs.getString("title_cn"),
+                    votesPerUser,
+                    userCount,
+                    rankVotes,
+                    sharePct,
+                    leadershipShare(poolUsdt, votesPerUser, totalVotes));
+        });
+    }
+
+    protected List<LeadershipPoolHistoryItem> leadershipHistory(Long userId, int limit) {
+        return jdbcTemplate.query("""
+                SELECT id, order_no, amount_usdt, status, unlock_at, created_at, remark
+                  FROM nx_commission_event
+                 WHERE user_id = ?
+                   AND commission_type = 'LEADERSHIP'
+                   AND layer_no = 0
+                   AND is_deleted = 0
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?
+                """, (rs, rowNum) -> new LeadershipPoolHistoryItem(
+                rs.getLong("id"),
+                rs.getString("order_no"),
+                rs.getBigDecimal("amount_usdt"),
+                rs.getString("status"),
+                rs.getTimestamp("unlock_at") == null ? null : rs.getTimestamp("unlock_at").toLocalDateTime(),
+                rs.getTimestamp("created_at").toLocalDateTime(),
+                rs.getString("remark")), userId, normalizeLimit(limit));
     }
 
     protected boolean hasCommission(String commissionType, Long userId, String orderNo) {
@@ -436,6 +512,14 @@ public class TeamAdvancedCommissionService {
         return result;
     }
 
+    private BigDecimal leadershipPlatformVolume(BigDecimal providedVolume, LocalDate weekStart) {
+        BigDecimal normalized = positive(providedVolume);
+        if (normalized.compareTo(BigDecimal.ZERO) > 0) {
+            return normalized;
+        }
+        return positive(weeklyPlatformVolumeUsdt(weekStart));
+    }
+
     private LocalDate normalizeWeekStart(LocalDate weekStart) {
         return (weekStart == null ? LocalDate.now() : weekStart)
                 .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
@@ -464,6 +548,11 @@ public class TeamAdvancedCommissionService {
     private BigDecimal positive(BigDecimal value) {
         BigDecimal scaled = scale(value);
         return scaled.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP) : scaled;
+    }
+
+    private BigDecimal decimal(String sql, Object... args) {
+        BigDecimal value = jdbcTemplate.queryForObject(sql, BigDecimal.class, args);
+        return value == null ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP) : scale(value);
     }
 
     protected record PeerCandidate(

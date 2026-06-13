@@ -6,10 +6,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import ffdd.common.api.PageResult;
 import ffdd.common.exception.BizException;
 import ffdd.notification.domain.Notification;
+import ffdd.notification.dto.NotificationBroadcastRequest;
+import ffdd.notification.dto.NotificationBroadcastResponse;
 import ffdd.notification.dto.NotificationCreateRequest;
 import ffdd.notification.dto.NotificationMutationResponse;
 import ffdd.notification.dto.NotificationUnreadCountResponse;
 import ffdd.notification.mapper.NotificationMapper;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -52,12 +56,56 @@ public class NotificationCenterService {
         return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
     }
 
+    public PageResult<Notification> pageForOps(
+            Long userId,
+            Integer readFlag,
+            String type,
+            String pushStatus,
+            String keyword,
+            long pageNum,
+            long pageSize) {
+        long normalizedPageNum = Math.max(1, pageNum);
+        long normalizedPageSize = Math.min(Math.max(1, pageSize), MAX_PAGE_SIZE);
+        LambdaQueryWrapper<Notification> wrapper = new LambdaQueryWrapper<Notification>()
+                .eq(Notification::getIsDeleted, 0)
+                .orderByDesc(Notification::getCreatedAt)
+                .orderByDesc(Notification::getId);
+        if (userId != null) {
+            requireUserId(userId);
+            wrapper.eq(Notification::getUserId, userId);
+        }
+        if (readFlag != null) {
+            wrapper.eq(Notification::getReadFlag, normalizeReadFlag(readFlag));
+        }
+        if (StringUtils.hasText(type)) {
+            wrapper.eq(Notification::getType, type.trim());
+        }
+        if (StringUtils.hasText(pushStatus)) {
+            wrapper.eq(Notification::getPushStatus, pushStatus.trim());
+        }
+        if (StringUtils.hasText(keyword)) {
+            String likeKeyword = keyword.trim();
+            wrapper.and(q -> q.like(Notification::getBizNo, likeKeyword)
+                    .or()
+                    .like(Notification::getTitle, likeKeyword)
+                    .or()
+                    .like(Notification::getBody, likeKeyword));
+        }
+        Page<Notification> page =
+                notificationMapper.selectPage(new Page<>(normalizedPageNum, normalizedPageSize), wrapper);
+        return new PageResult<>(page.getTotal(), page.getCurrent(), page.getSize(), page.getRecords());
+    }
+
     public NotificationUnreadCountResponse unreadCount(Long userId) {
         requireUserId(userId);
         return unreadCounter.count(userId, () -> notificationMapper.selectCount(new LambdaQueryWrapper<Notification>()
                 .eq(Notification::getUserId, userId)
                 .eq(Notification::getReadFlag, 0)
                 .eq(Notification::getIsDeleted, 0)));
+    }
+
+    public Notification detailForUser(Long userId, Long notificationId) {
+        return requireOwnedNotification(userId, notificationId);
     }
 
     public Notification create(NotificationCreateRequest request) {
@@ -104,6 +152,38 @@ public class NotificationCenterService {
         }
     }
 
+    public NotificationBroadcastResponse broadcast(NotificationBroadcastRequest request) {
+        if (request == null) {
+            throw new BizException("Notification broadcast request is required");
+        }
+        String campaignName = requireText(request.getCampaignName(), "campaignName", 64);
+        String type = requireText(request.getType(), "type", 32);
+        String title = requireText(request.getTitle(), "title", 128);
+        String body = requireText(request.getBody(), "body", 512);
+        if (request.getTargetUserIds() == null || request.getTargetUserIds().isEmpty()) {
+            throw new BizException("targetUserIds is required");
+        }
+        Set<Long> targetUserIds = new LinkedHashSet<>();
+        for (Long userId : request.getTargetUserIds()) {
+            requireUserId(userId);
+            targetUserIds.add(userId);
+        }
+        String campaignSlug = slug(campaignName);
+        int createdRows = 0;
+        for (Long userId : targetUserIds) {
+            NotificationCreateRequest createRequest = new NotificationCreateRequest();
+            createRequest.setBizNo("campaign:" + campaignSlug + ":" + userId);
+            createRequest.setUserId(userId);
+            createRequest.setType(type);
+            createRequest.setTitle(title);
+            createRequest.setBody(body);
+            create(createRequest);
+            createdRows++;
+        }
+        return new NotificationBroadcastResponse(
+                campaignName, request.getTargetUserIds().size(), targetUserIds.size(), createdRows);
+    }
+
     public Notification markRead(Long userId, Long notificationId) {
         Notification notification = requireOwnedNotification(userId, notificationId);
         boolean wasUnread = Integer.valueOf(0).equals(notification.getReadFlag());
@@ -145,15 +225,50 @@ public class NotificationCenterService {
         return new NotificationMutationResponse(userId, affectedRows);
     }
 
+    public NotificationMutationResponse deleteForOps(Long notificationId) {
+        Notification notification = requireNotification(notificationId);
+        Notification patch = new Notification();
+        patch.setId(notificationId);
+        patch.setIsDeleted(1);
+        int affectedRows = notificationMapper.updateById(patch);
+        if (Integer.valueOf(0).equals(notification.getReadFlag())) {
+            unreadCounter.invalidate(notification.getUserId());
+        }
+        return new NotificationMutationResponse(notification.getUserId(), affectedRows);
+    }
+
+    public Notification retryForOps(Long notificationId) {
+        Notification notification = requireNotification(notificationId);
+        Notification patch = new Notification();
+        patch.setId(notificationId);
+        patch.setPushStatus(PUSH_PENDING);
+        patch.setNextPushAt(null);
+        patch.setLastPushError(null);
+        int affectedRows = notificationMapper.updateById(patch);
+        if (affectedRows < 1) {
+            throw new BizException("Notification not found");
+        }
+        notification.setPushStatus(PUSH_PENDING);
+        notification.setNextPushAt(null);
+        notification.setLastPushError(null);
+        return notification;
+    }
+
     private Notification requireOwnedNotification(Long userId, Long notificationId) {
         requireUserId(userId);
+        Notification notification = requireNotification(notificationId);
+        if (!userId.equals(notification.getUserId())) {
+            throw new BizException("Notification not found");
+        }
+        return notification;
+    }
+
+    private Notification requireNotification(Long notificationId) {
         if (notificationId == null || notificationId < 1) {
             throw new BizException("Notification id is required");
         }
         Notification notification = notificationMapper.selectById(notificationId);
-        if (notification == null
-                || Integer.valueOf(1).equals(notification.getIsDeleted())
-                || !userId.equals(notification.getUserId())) {
+        if (notification == null || Integer.valueOf(1).equals(notification.getIsDeleted())) {
             throw new BizException("Notification not found");
         }
         return notification;
@@ -190,6 +305,17 @@ public class NotificationCenterService {
         String normalized = value.trim();
         if (normalized.length() > maxLength) {
             throw new BizException("Field length must be <= " + maxLength);
+        }
+        return normalized;
+    }
+
+    private String slug(String value) {
+        String normalized = requireText(value, "campaignName", 64)
+                .toLowerCase()
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("(^-|-$)", "");
+        if (!StringUtils.hasText(normalized)) {
+            return "campaign";
         }
         return normalized;
     }

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.auth.domain.User;
 import ffdd.auth.dto.RegisterSmsCodeRequest;
 import ffdd.auth.dto.RegisterSmsCodeResponse;
+import ffdd.auth.dto.ReferralSponsorResponse;
 import ffdd.auth.dto.UserLoginRequest;
 import ffdd.auth.dto.UserLoginResponse;
 import ffdd.auth.dto.UserRegisterRequest;
@@ -11,11 +12,14 @@ import ffdd.auth.mapper.UserMapper;
 import ffdd.auth.service.UserAuthService;
 import ffdd.common.exception.BizException;
 import ffdd.common.security.JwtTokenProvider;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -30,6 +34,7 @@ public class UserAuthServiceImpl implements UserAuthService {
 
     private final UserMapper userMapper;
     private final JwtTokenProvider tokenProvider;
+    private final JdbcTemplate jdbcTemplate;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     @Override
@@ -89,6 +94,24 @@ public class UserAuthServiceImpl implements UserAuthService {
         return buildLoginResponse(user);
     }
 
+    @Override
+    public ReferralSponsorResponse referralSponsor(String referralCode) {
+        User sponsor = findSponsor(referralCode);
+        Long directReferrals = userMapper.selectCount(new LambdaQueryWrapper<User>()
+                .eq(User::getSponsorUserId, sponsor.getId())
+                .eq(User::getIsDeleted, 0));
+        return new ReferralSponsorResponse(
+                sponsor.getReferralCode(),
+                sponsor.getId(),
+                sponsor.getNickname(),
+                sponsor.getAvatarUrl(),
+                sponsor.getCountryCode(),
+                sponsor.getUserLevel(),
+                sponsor.getVRank(),
+                directReferrals,
+                sponsor.getCreatedAt());
+    }
+
     private User findByPhone(String countryCode, String phone) {
         return userMapper.selectOne(new LambdaQueryWrapper<User>()
                 .eq(User::getCountryCode, countryCode)
@@ -114,7 +137,8 @@ public class UserAuthServiceImpl implements UserAuthService {
 
     private UserLoginResponse buildLoginResponse(User user) {
         String subjectName = user.getCountryCode() + user.getPhone();
-        String token = tokenProvider.createToken(user.getId(), "USER", subjectName, USER_AUTHORITIES);
+        String sessionId = createSession(user.getId());
+        String token = tokenProvider.createToken(user.getId(), "USER", subjectName, USER_AUTHORITIES, sessionId);
         return new UserLoginResponse(
                 token,
                 user.getId(),
@@ -122,7 +146,22 @@ public class UserAuthServiceImpl implements UserAuthService {
                 user.getAvatarUrl(),
                 user.getReferralCode(),
                 user.getUserLevel(),
-                user.getVRank());
+                user.getVRank(),
+                sessionId);
+    }
+
+    private String createSession(Long userId) {
+        String sessionId = "US-" + userId + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(Locale.ROOT);
+        jdbcTemplate.update("""
+                INSERT INTO nx_user_session (user_id, refresh_token_id, device_name, client_ip, expires_at, is_deleted)
+                VALUES (?, ?, ?, ?, ?, 0)
+                """,
+                userId,
+                sessionId,
+                "uniapp / mobile app",
+                null,
+                LocalDateTime.now().plusDays(1));
+        return sessionId;
     }
 
     private String defaultNickname(String phone) {

@@ -10,7 +10,9 @@ import java.util.Collection;
 import java.util.Arrays;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -21,12 +23,15 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenProvider tokenProvider;
+    private final JdbcTemplate jdbcTemplate;
     private final String gatewaySecret;
 
     public JwtAuthenticationFilter(
             JwtTokenProvider tokenProvider,
+            JdbcTemplate jdbcTemplate,
             @Value("${nexion.gateway.internal-secret:nexion-local-gateway-secret}") String gatewaySecret) {
         this.tokenProvider = tokenProvider;
+        this.jdbcTemplate = jdbcTemplate;
         this.gatewaySecret = gatewaySecret;
     }
 
@@ -37,10 +42,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (token != null) {
             try {
                 Claims claims = tokenProvider.parse(token);
-                List<SimpleGrantedAuthority> authorities = extractAuthorities(claims);
-                UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                        claims.getSubject(), null, authorities);
-                SecurityContextHolder.getContext().setAuthentication(authentication);
+                if (isSessionActive(claims)) {
+                    List<SimpleGrantedAuthority> authorities = extractAuthorities(claims);
+                    UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                            claims.getSubject(), null, authorities);
+                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                } else {
+                    SecurityContextHolder.clearContext();
+                }
             } catch (Exception ignored) {
                 SecurityContextHolder.clearContext();
             }
@@ -80,6 +89,32 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return null;
         }
         return authorization.substring(7);
+    }
+
+    private boolean isSessionActive(Claims claims) {
+        Object subjectTypeClaim = claims.get("subjectType");
+        String subjectType = subjectTypeClaim == null ? "USER" : String.valueOf(subjectTypeClaim);
+        if (!"USER".equals(subjectType)) {
+            return true;
+        }
+        String sessionId = claims.get("sessionId", String.class);
+        if (!StringUtils.hasText(sessionId)) {
+            return false;
+        }
+        try {
+            Integer activeCount = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(1)
+                      FROM nx_user_session
+                     WHERE refresh_token_id = ?
+                       AND user_id = ?
+                       AND revoked_at IS NULL
+                       AND expires_at > NOW()
+                       AND is_deleted = 0
+                    """, Integer.class, sessionId, Long.valueOf(claims.getSubject()));
+            return activeCount != null && activeCount > 0;
+        } catch (DataAccessException | NumberFormatException ex) {
+            return false;
+        }
     }
 
     private List<SimpleGrantedAuthority> extractAuthorities(Claims claims) {

@@ -20,8 +20,10 @@ import ffdd.compliance.dto.KycProfileSubmitRequest;
 import ffdd.compliance.dto.ProofAssetCreateRequest;
 import ffdd.compliance.dto.ProofAssetUploadRequest;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.mock.web.MockMultipartFile;
 
 class ComplianceEvidenceServiceTest {
@@ -84,7 +86,40 @@ class ComplianceEvidenceServiceTest {
         assertThat(result.getObjectKey()).startsWith("compliance/proofs/10001/compute_receipt/");
         assertThat(result.getChecksum()).startsWith("sha256:");
         assertThat(result.getSizeBytes()).isEqualTo(11L);
-        verify(proofAssetService).create(any(ProofAssetCreateRequest.class));
+        ArgumentCaptor<ProofAssetCreateRequest> createCaptor = ArgumentCaptor.forClass(ProofAssetCreateRequest.class);
+        verify(proofAssetService).create(createCaptor.capture());
+        assertThat(createCaptor.getValue().getMetadataJson())
+                .contains("\"variant\":\"earnings\"")
+                .contains("\"totalEarnings\":12.340000")
+                .contains("\"currentStreak\":3")
+                .contains("\"receiptNo\":\"RCPT-1001\"");
+    }
+
+    @Test
+    void uploadsProofAssetVideoThroughStorage() {
+        when(storageService.put(any(), any(), any(InputStream.class), anyLong()))
+                .thenAnswer(invocation -> new StoredObject(
+                        "nexion",
+                        invocation.getArgument(0),
+                        invocation.getArgument(1),
+                        invocation.getArgument(3)));
+        when(proofAssetService.create(any())).thenAnswer(invocation -> {
+            ProofAssetCreateRequest create = invocation.getArgument(0);
+            ProofAsset proof = new ProofAsset();
+            proof.setUserId(create.getUserId());
+            proof.setObjectKey(create.getObjectKey());
+            proof.setContentType(create.getContentType());
+            proof.setSizeBytes(create.getSizeBytes());
+            proof.setStatus("PENDING");
+            return proof;
+        });
+
+        ProofAsset result = service.uploadProofAsset(
+                proofRequest(), file("proof.mp4", "video/mp4", "video-bytes"));
+
+        assertThat(result.getObjectKey()).startsWith("compliance/proofs/10001/compute_receipt/");
+        assertThat(result.getObjectKey()).endsWith(".mp4");
+        assertThat(result.getContentType()).isEqualTo("video/mp4");
     }
 
     @Test
@@ -139,7 +174,10 @@ class ComplianceEvidenceServiceTest {
         request.setRelatedBizType("COMPUTE_TASK");
         request.setRelatedBizNo("TASK-1001");
         request.setSubmittedBy("worker-1");
-        request.setMetadataJson("{\"receiptNo\":\"RCPT-1001\"}");
+        request.setMetadataVariant("earnings");
+        request.setTotalEarnings(new BigDecimal("12.340000"));
+        request.setCurrentStreak(3);
+        request.setReceiptNo("RCPT-1001");
         return request;
     }
 

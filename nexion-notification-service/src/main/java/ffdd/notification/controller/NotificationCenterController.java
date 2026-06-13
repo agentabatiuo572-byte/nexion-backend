@@ -4,6 +4,8 @@ import ffdd.common.api.ApiResult;
 import ffdd.common.api.PageResult;
 import ffdd.common.security.AuthHeaders;
 import ffdd.notification.domain.Notification;
+import ffdd.notification.dto.NotificationBroadcastRequest;
+import ffdd.notification.dto.NotificationBroadcastResponse;
 import ffdd.notification.dto.NotificationCreateRequest;
 import ffdd.notification.dto.NotificationMutationResponse;
 import ffdd.notification.dto.NotificationPushResult;
@@ -51,6 +53,13 @@ public class NotificationCenterController {
         return ApiResult.ok(notificationCenterService.unreadCount(userId));
     }
 
+    @GetMapping("/{notificationId}")
+    public ApiResult<Notification> detail(
+            @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
+            @PathVariable Long notificationId) {
+        return ApiResult.ok(notificationCenterService.detailForUser(userId, notificationId));
+    }
+
     @PostMapping("/{notificationId}/read")
     public ApiResult<Notification> markRead(
             @RequestHeader(AuthHeaders.SUBJECT_ID) Long userId,
@@ -77,9 +86,42 @@ public class NotificationCenterController {
         return ApiResult.ok(notificationPushService.pushPending(limit));
     }
 
+    @GetMapping("/ops/records")
+    @PreAuthorize("hasAuthority('PERM_NOTIFICATION_READ')")
+    public ApiResult<PageResult<Notification>> pageForOps(
+            @RequestParam(required = false) Long userId,
+            @RequestParam(required = false) Integer readFlag,
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) String pushStatus,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "1") long pageNum,
+            @RequestParam(defaultValue = "20") long pageSize) {
+        return ApiResult.ok(notificationCenterService.pageForOps(
+                userId, readFlag, type, pushStatus, keyword, pageNum, pageSize));
+    }
+
+    @PostMapping("/ops/records/{notificationId}/retry")
+    @PreAuthorize("hasAuthority('PERM_NOTIFICATION_WRITE')")
+    public ApiResult<Notification> retryForOps(@PathVariable Long notificationId) {
+        return ApiResult.ok(notificationCenterService.retryForOps(notificationId));
+    }
+
+    @DeleteMapping("/ops/records/{notificationId}")
+    @PreAuthorize("hasAuthority('PERM_NOTIFICATION_WRITE')")
+    public ApiResult<NotificationMutationResponse> deleteForOps(@PathVariable Long notificationId) {
+        return ApiResult.ok(notificationCenterService.deleteForOps(notificationId));
+    }
+
     @PostMapping("/internal")
     @PreAuthorize("hasAuthority('PERM_NOTIFICATION_WRITE')")
     public ApiResult<Notification> createInternal(@Valid @RequestBody NotificationCreateRequest request) {
         return ApiResult.ok(notificationCenterService.create(request));
+    }
+
+    @PostMapping("/ops/broadcast")
+    @PreAuthorize("hasAuthority('PERM_NOTIFICATION_WRITE')")
+    public ApiResult<NotificationBroadcastResponse> broadcast(
+            @Valid @RequestBody NotificationBroadcastRequest request) {
+        return ApiResult.ok(notificationCenterService.broadcast(request));
     }
 }

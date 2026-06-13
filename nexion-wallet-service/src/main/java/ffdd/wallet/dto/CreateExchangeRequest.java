@@ -3,15 +3,15 @@ package ffdd.wallet.dto;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import lombok.Data;
 
 @Data
 public class CreateExchangeRequest {
-    @NotNull
     private Long userId;
 
-    @NotBlank
+    @Size(max = 64)
     private String exchangeNo;
 
     @NotBlank
@@ -23,12 +23,4 @@ public class CreateExchangeRequest {
     @NotNull
     @DecimalMin("0.000001")
     private BigDecimal fromAmount;
-
-    @NotNull
-    @DecimalMin("0.000001")
-    private BigDecimal toAmount;
-
-    @NotNull
-    @DecimalMin("0.00000001")
-    private BigDecimal rate;
 }
