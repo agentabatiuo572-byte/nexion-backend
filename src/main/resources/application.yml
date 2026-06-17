@@ -1,0 +1,14 @@
+server:
+  port: 8110
+
+spring:
+  application:
+    name: nexion-backend
+
+nexion:
+  architecture:
+    deployment-mode: modular-monolith
+    distributed-runtime-enabled: false
+  ops-console:
+    admin-prefix: /api/admin
+    config-prefix: /api/config

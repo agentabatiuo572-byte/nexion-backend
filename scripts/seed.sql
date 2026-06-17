@@ -711,7 +711,6 @@ VALUES
   (1, 'STREAK_3', '3-Day Streak', 'Check in for 3 consecutive days.', 'LOYALTY', 'calendar', '#9EDC1D', 'STREAK_DAYS', 3, 5, 10, 1),
   (2, 'STREAK_7', '7-Day Streak', 'Keep daily growth active for a full week.', 'LOYALTY', 'flame', '#00D1FF', 'STREAK_DAYS', 7, 15, 20, 1),
   (3, 'STREAK_ROYALTY', 'Streak Royalty', 'Unlock the royalty growth power-up.', 'LOYALTY', 'crown', '#FFB547', 'POWER_UP_ACTIVATION', 0, 0, 30, 1),
-  (4, 'STREAK_PREMIUM', 'Streak Premium', 'Earn the premium trial streak badge.', 'LOYALTY', 'sparkles', '#B18CFF', 'POWER_UP_ACTIVATION', 0, 0, 40, 1),
   (5, 'STREAK_STAKER', 'Streak Staker', 'Activate the staking boost from daily streaks.', 'LOYALTY', 'lock', '#6CFFB8', 'POWER_UP_ACTIVATION', 0, 0, 50, 1),
   (6, 'STREAK_FOUNDER', 'Streak Founder', 'Reach the Genesis whitelist streak tier.', 'LOYALTY', 'rocket', '#FF6B8A', 'POWER_UP_ACTIVATION', 0, 0, 60, 1),
   (7, 'STREAK_MASTER', 'Streak Master', 'Complete the 100-day streak milestone.', 'LOYALTY', 'award', '#9EDC1D', 'STREAK_MILESTONE', 100, 0, 70, 1)
@@ -731,7 +730,6 @@ INSERT INTO nx_streak_power_up
   (id, power_up_code, power_up_name, i18n_key, target_path, badge_achievement_code, unlock_streak_days, effect_type, effect_value, duration_days, sort_order, status)
 VALUES
   (1, 'royalty_boost', 'Royalty Boost +5% this week', 'royalty_boost', '/team/unilevel/how-it-works', 'STREAK_ROYALTY', 7, 'CONVERSION_LINK', 'ROYALTY_BOOST_5PCT_WEEK', 7, 10, 1),
-  (2, 'premium_trial', 'Premium 7-day free trial', 'premium_trial', '/me/wallet/premium', 'STREAK_PREMIUM', 14, 'CONVERSION_LINK', 'PREMIUM_TRIAL_7D', 7, 20, 1),
   (3, 'staking_boost', '+2% APY on next stake', 'staking_boost', '/staking', 'STREAK_STAKER', 30, 'CONVERSION_LINK', 'STAKING_APY_2PCT_NEXT', 0, 30, 1),
   (4, 'genesis_whitelist', 'Genesis whitelist priority', 'genesis_whitelist', '/genesis', 'STREAK_FOUNDER', 60, 'CONVERSION_LINK', 'GENESIS_WHITELIST_PRIORITY', 0, 40, 1)
 ON DUPLICATE KEY UPDATE
@@ -922,12 +920,6 @@ VALUES
   (74, 'wallet.nex_lock.apy_bps', '25000', 'NUMBER', 'wallet', 'PUBLIC', 'NEX v2 lock APY in basis points.', 1),
   (75, 'wallet.nex_lock.default_term_months', '24', 'NUMBER', 'wallet', 'PUBLIC', 'Default NEX v2 lock term in months.', 1),
   (76, 'wallet.nex_lock.min_amount_nex', '1000', 'NUMBER', 'wallet', 'PUBLIC', 'Minimum NEX v2 lock amount shown in the app and enforced by wallet service.', 1),
-  (77, 'wallet.premium.score_usdt_divisor', '20', 'NUMBER', 'wallet', 'PUBLIC', 'USDT balance divisor used by the Premium eligibility score.', 1),
-  (78, 'wallet.premium.score_locked_nex_divisor', '100', 'NUMBER', 'wallet', 'PUBLIC', 'Locked NEX divisor used by the Premium eligibility score.', 1),
-  (79, 'wallet.premium.plus_threshold', '40', 'NUMBER', 'wallet', 'PUBLIC', 'Premium Plus eligibility score threshold.', 1),
-  (80, 'wallet.premium.black_threshold', '80', 'NUMBER', 'wallet', 'PUBLIC', 'Premium Black eligibility score threshold.', 1),
-  (81, 'wallet.premium.monthly_price_usd', '99', 'NUMBER', 'wallet', 'PUBLIC', 'Premium monthly subscription price in USD.', 1),
-  (82, 'wallet.premium.first_month_discount_pct', '50', 'NUMBER', 'wallet', 'PUBLIC', 'Premium first-month discount percentage.', 1),
   (83, 'wallet.repurchase.boost_threshold_nex', '5000', 'NUMBER', 'wallet', 'PUBLIC', 'Locked NEX threshold for repurchase boost.', 1),
   (84, 'wallet.repurchase.boost_multiplier', '1.5', 'NUMBER', 'wallet', 'PUBLIC', 'Repurchase boost multiplier when threshold is met.', 1),
   (85, 'wallet.repurchase.bonus_points', '500', 'NUMBER', 'wallet', 'PUBLIC', 'Bonus points when repurchase boost threshold is met.', 1),
@@ -1228,7 +1220,6 @@ VALUES
   (681, 'compliance.trust.bounty_sla_days', '7', 'NUMBER', 'compliance', 'PUBLIC', 'Trust Center bug bounty review SLA days.', 1),
   (17, 'feature.trial.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'Free trial feature launch switch.', 1),
   (18, 'feature.nex_swap.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'NEX swap feature launch switch.', 1),
-  (19, 'feature.premium.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'Premium subscription feature launch switch.', 1),
   (20, 'feature.nex_lock.enabled', 'false', 'BOOLEAN', 'feature', 'PUBLIC', 'NEX lock feature launch switch.', 1),
   (21, 'compute.active_device_slots.default', '6', 'NUMBER', 'compute', 'PUBLIC', 'Default max active compute devices per user.', 1),
   (60, 'platform.phase.config', '{"currentPhase":"P1","label":"月 1 · 极速拉新","phases":[{"id":"P1","name":"P1 极速拉新","monthsFrom":0,"monthsTo":1,"eta":"Q1","progressCurrent":1,"progressTotal":1,"progressPct":100,"queue":0},{"id":"P2","name":"P2 留存爬坡","monthsFrom":2,"monthsTo":3,"eta":"Q2","progressCurrent":1,"progressTotal":2,"progressPct":50,"queue":0},{"id":"P3","name":"P3 升级窗口","monthsFrom":4,"monthsTo":6,"eta":"Q3","progressCurrent":1,"progressTotal":3,"progressPct":33,"queue":1842},{"id":"P4","name":"P4 订阅化","monthsFrom":7,"monthsTo":8,"eta":"Q4","progressCurrent":1,"progressTotal":2,"progressPct":50,"queue":0},{"id":"P5","name":"P5 沉淀加深","monthsFrom":9,"monthsTo":10,"eta":"Q1 next year","progressCurrent":1,"progressTotal":5,"progressPct":20,"queue":614},{"id":"P6","name":"P6 软退场","monthsFrom":11,"monthsTo":12,"eta":"Q2 next year","progressCurrent":1,"progressTotal":6,"progressPct":16,"queue":0}],"dials":[{"key":"withdrawCooldownDays","name":"提现冷却(天)","value":"7","unit":"d","trend":"↑"},{"key":"withdrawDailyCapUSD","name":"提现日限","value":"$2,000","unit":"USD","trend":"—"},{"key":"withdrawPointsRatio","name":"提现积分比","value":"30%","unit":"pct","trend":"↑"},{"key":"binaryDailyCapUSD","name":"双轨日封顶","value":"$1,500","unit":"USD","trend":"—"},{"key":"stakingApyBoost","name":"Staking APY 加成","value":"1.0×","unit":"x","trend":"—"},{"key":"novaCadenceMult","name":"Nova 节奏乘数","value":"1.2×","unit":"x","trend":"↑"},{"key":"questRewardMult","name":"Quest 奖励乘数","value":"1.5×","unit":"x","trend":"↑"},{"key":"trialOffsetCapUSD","name":"试用抵扣上限","value":"$120","unit":"USD","trend":"—"},{"key":"storeDiscountLadder","name":"商城折扣 ladder","value":"T2","unit":"tier","trend":"—"},{"key":"genesisDividendRate","name":"Genesis 日分红率","value":"0.1%","unit":"pct","trend":"—"}]}', 'JSON', 'platform', 'PUBLIC', 'H1 platform phase config used by generation gates and Growth H1.', 1),
@@ -1546,7 +1537,6 @@ VALUES
   (303, 'emergency.killswitch.exchange', 'on', 'STRING', 'emergency', 'PRIVATE', 'J1 Kill-Switch for NEX exchange.', 1),
   (304, 'emergency.killswitch.trial', 'on', 'STRING', 'emergency', 'PRIVATE', 'J1 Kill-Switch for free trial engine.', 1),
   (305, 'emergency.killswitch.nexv2', 'off', 'STRING', 'emergency', 'PRIVATE', 'J1 Kill-Switch for NEX v2 Vault.', 1),
-  (306, 'emergency.killswitch.premium', 'on', 'STRING', 'emergency', 'PRIVATE', 'J1 Kill-Switch for Premium subscription.', 1),
   (307, 'emergency.geo.US', 'allowed', 'STRING', 'emergency', 'PRIVATE', 'J2 Geo-block state for United States.', 1),
   (308, 'emergency.geo.CN', 'blocked', 'STRING', 'emergency', 'PRIVATE', 'J2 Geo-block state for China.', 1),
   (309, 'emergency.geo.KP', 'blocked', 'STRING', 'emergency', 'PRIVATE', 'J2 Geo-block state for North Korea.', 1),

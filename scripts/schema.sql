@@ -274,6 +274,23 @@ CREATE TABLE IF NOT EXISTS nx_user_session (
   KEY idx_user_session_user (user_id, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_user_impersonation_session (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  session_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  ttl_minutes INT NOT NULL,
+  operator VARCHAR(64) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_impersonation_session_no (session_no),
+  KEY idx_user_impersonation_user (user_id, status, expires_at),
+  KEY idx_user_impersonation_operator (operator, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_sponsorship (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -1547,6 +1564,21 @@ CREATE TABLE IF NOT EXISTS nx_user_device_runtime (
   KEY idx_device_runtime_heartbeat (heartbeat_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_compute_dc_ops_state (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  dc_location VARCHAR(128) NOT NULL,
+  dispatch_paused TINYINT NOT NULL DEFAULT 0,
+  paused_reason VARCHAR(160) NULL,
+  paused_at DATETIME NULL,
+  resumed_at DATETIME NULL,
+  updated_by VARCHAR(96) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_compute_dc_ops_state_dc (dc_location),
+  KEY idx_compute_dc_ops_paused (dispatch_paused, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_device_lifecycle_rule (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   scope_type VARCHAR(32) NOT NULL,
@@ -1568,6 +1600,20 @@ CREATE TABLE IF NOT EXISTS nx_device_lifecycle_rule (
     monthly_decay_rate >= 0 AND monthly_decay_rate <= 1
     AND floor_efficiency >= 0 AND floor_efficiency <= 1
   )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_compute_e3_config (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  config_key VARCHAR(96) NOT NULL,
+  config_value VARCHAR(255) NOT NULL,
+  value_type VARCHAR(16) NOT NULL DEFAULT 'NUMBER',
+  updated_by VARCHAR(96) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_compute_e3_config_key (config_key),
+  KEY idx_compute_e3_config_sort (sort_order, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND INDEX_NAME = 'idx_user_device_status') = 0,
@@ -1958,6 +2004,24 @@ CREATE TABLE IF NOT EXISTS nx_v_rank_config (
   UNIQUE KEY uk_v_rank_code (rank_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_v_rank_reward_fulfillment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  rank_code VARCHAR(16) NOT NULL,
+  reward_name VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  logistics_provider VARCHAR(64) NULL,
+  tracking_no VARCHAR(96) NULL,
+  encrypted_address_ref VARCHAR(128) NULL,
+  reason VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  fulfilled_at DATETIME NULL,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_v_rank_fulfillment_status (status, created_at),
+  KEY idx_v_rank_fulfillment_user (user_id, rank_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_user_level_log (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -1992,6 +2056,28 @@ CREATE TABLE IF NOT EXISTS nx_commission_rule (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_commission_rule_layer (commission_type, layer_no),
   KEY idx_commission_rule_rank (commission_type, rank_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_team_f2_admin_config (
+  config_key VARCHAR(64) PRIMARY KEY,
+  config_value VARCHAR(255) NOT NULL,
+  value_type VARCHAR(16) NOT NULL DEFAULT 'STRING',
+  description VARCHAR(255) NULL,
+  updated_reason VARCHAR(255) NULL,
+  updated_by VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_team_f4_admin_config (
+  config_key VARCHAR(64) PRIMARY KEY,
+  config_value VARCHAR(255) NOT NULL,
+  value_type VARCHAR(16) NOT NULL DEFAULT 'STRING',
+  description VARCHAR(255) NULL,
+  updated_reason VARCHAR(255) NULL,
+  updated_by VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_commission_event (
@@ -2054,6 +2140,26 @@ CREATE TABLE IF NOT EXISTS nx_mission (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_mission_code (mission_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_ops_compute_task_catalog (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  task_code VARCHAR(64) NOT NULL,
+  task_name VARCHAR(128) NOT NULL,
+  task_kind VARCHAR(16) NOT NULL,
+  unit_price_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  billing_unit VARCHAR(16) NOT NULL DEFAULT '/job',
+  requirement_label VARCHAR(96) NOT NULL,
+  saturation_pct DECIMAL(6,2) NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_ops_compute_task_code (task_code),
+  KEY idx_ops_compute_task_status (status, sort_order),
+  CONSTRAINT chk_ops_compute_task_price CHECK (unit_price_usdt >= 0),
+  CONSTRAINT chk_ops_compute_task_saturation CHECK (saturation_pct >= 0 AND saturation_pct <= 100)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_user_mission (
@@ -2594,6 +2700,23 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+CREATE TABLE IF NOT EXISTS nx_risk_signal (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  signal_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  signal_type VARCHAR(64) NOT NULL,
+  severity VARCHAR(32) NOT NULL,
+  evidence VARCHAR(1000) NOT NULL,
+  created_by VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_risk_signal_no (signal_no),
+  KEY idx_risk_signal_user_time (user_id, created_at),
+  KEY idx_risk_signal_type_time (signal_type, created_at),
+  KEY idx_risk_signal_severity_time (severity, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_risk_blacklist (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -2652,6 +2775,21 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'ALTER TABLE nx_risk_blacklist ADD INDEX idx_risk_blacklist_active_expiry (status, expires_at)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_account_list (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  kind VARCHAR(16) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  expires_at DATETIME NULL,
+  created_by VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_account_list_user (user_id),
+  KEY idx_account_list_kind_status (kind, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_proof_asset (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -2757,6 +2895,55 @@ CREATE TABLE IF NOT EXISTS nx_config_item (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_config_key (config_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_third_batch_record (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  module_code VARCHAR(8) NOT NULL,
+  record_type VARCHAR(48) NOT NULL,
+  record_key VARCHAR(96) NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  category VARCHAR(64) DEFAULT NULL,
+  owner VARCHAR(64) DEFAULT NULL,
+  priority VARCHAR(16) DEFAULT NULL,
+  numeric_value DECIMAL(20,6) NOT NULL DEFAULT 0,
+  text_value VARCHAR(1024) DEFAULT NULL,
+  impact_scope VARCHAR(512) DEFAULT NULL,
+  related_object VARCHAR(160) DEFAULT NULL,
+  detail_json TEXT,
+  reason VARCHAR(512) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_third_module_key (module_code, record_key, is_deleted),
+  KEY idx_admin_third_module_status (module_code, status, updated_at),
+  KEY idx_admin_third_related (related_object)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_fourth_batch_report (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  module_code VARCHAR(16) NOT NULL,
+  report_id VARCHAR(64) NOT NULL,
+  report_name VARCHAR(128) NOT NULL,
+  report_type VARCHAR(64) NOT NULL,
+  cycle VARCHAR(32) NOT NULL,
+  file_format VARCHAR(16) NOT NULL,
+  scope_text VARCHAR(255) NOT NULL,
+  field_text VARCHAR(255) NOT NULL,
+  row_count BIGINT NOT NULL DEFAULT 0,
+  contains_pii TINYINT NOT NULL DEFAULT 0,
+  masking_policy VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  note VARCHAR(255) DEFAULT NULL,
+  last_action VARCHAR(32) DEFAULT NULL,
+  last_action_at DATETIME DEFAULT NULL,
+  reason VARCHAR(255) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_fourth_report (module_code, report_id),
+  KEY idx_fourth_report_module_status (module_code, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_config_item' AND COLUMN_NAME = 'config_value') <> 'text',
