@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.dto;
 
+import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -35,6 +36,7 @@ public record DeviceSkuUpsertRequest(
         String supersededBy,
         BigDecimal tradeinDiscount,
         String unlockPhase,
+        DevicePurchaseGateView purchaseGate,
         String imageAssetId,
         String imageObjectKey,
         String imagePreviewUrl,

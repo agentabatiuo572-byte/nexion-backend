@@ -46,6 +46,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             superseded_by AS supersededBy,
             tradein_discount AS tradeinDiscount,
             unlock_phase AS unlockPhase,
+            purchase_gate_json AS purchaseGateJson,
             image_asset_id AS imageAssetId,
             image_object_key AS imageObjectKey,
             image_preview_url AS imagePreviewUrl,
@@ -114,6 +115,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               superseded_by VARCHAR(64) DEFAULT NULL,
               tradein_discount DECIMAL(18,4) DEFAULT NULL,
               unlock_phase VARCHAR(16) NOT NULL DEFAULT 'P1',
+              purchase_gate_json TEXT,
               image_asset_id VARCHAR(64) DEFAULT NULL,
               image_object_key VARCHAR(255) DEFAULT NULL,
               image_preview_url VARCHAR(1024) DEFAULT NULL,
@@ -128,6 +130,18 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createSkuTable();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_device_sku'
+               AND COLUMN_NAME = 'purchase_gate_json'
+            """)
+    int countSkuPurchaseGateColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN purchase_gate_json TEXT NULL AFTER unlock_phase")
+    void addSkuPurchaseGateColumn();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_admin_device_review (
@@ -240,7 +254,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               daily_earn,daily_earn_nex,share_yield_min,share_yield_max,base_rate,sold,stock_text,
               rating,reviews,ai_image_gen_per_min,ai_llm_tokens_per_sec,ai_video_min_per_hour,
               ai_fine_tune_mins,ai_unlocks,features_json,generation,lifecycle,superseded_by,
-              tradein_discount,unlock_phase,image_asset_id,image_object_key,image_preview_url,tag,status,
+              tradein_discount,unlock_phase,purchase_gate_json,image_asset_id,image_object_key,image_preview_url,tag,status,
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},#{sku.tier},#{sku.tagline},#{sku.badge},#{sku.gpu},#{sku.vram},#{sku.hashRate},
@@ -248,8 +262,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.shareYieldMax},#{sku.baseRate},#{sku.sold},#{sku.stock},#{sku.rating},#{sku.reviews},
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
               #{sku.aiUnlocks},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
-              #{sku.tradeinDiscount},#{sku.unlockPhase},#{sku.imageAssetId},#{sku.imageObjectKey},#{sku.imagePreviewUrl},
-              #{sku.tag},#{sku.status},#{sku.createdAt},#{sku.updatedAt},0
+              #{sku.tradeinDiscount},#{sku.unlockPhase},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
+              #{sku.imagePreviewUrl},#{sku.tag},#{sku.status},#{sku.createdAt},#{sku.updatedAt},0
             )
             """)
     int insertSku(@Param("sku") SkuWrite sku);
@@ -286,6 +300,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    superseded_by = #{sku.supersededBy},
                    tradein_discount = #{sku.tradeinDiscount},
                    unlock_phase = #{sku.unlockPhase},
+                   purchase_gate_json = #{sku.purchaseGateJson},
                    image_asset_id = #{sku.imageAssetId},
                    image_object_key = #{sku.imageObjectKey},
                    image_preview_url = #{sku.imagePreviewUrl},
@@ -573,6 +588,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String supersededBy,
             BigDecimal tradeinDiscount,
             String unlockPhase,
+            String purchaseGateJson,
             String imageAssetId,
             String imageObjectKey,
             String imagePreviewUrl,
@@ -614,6 +630,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String supersededBy,
             BigDecimal tradeinDiscount,
             String unlockPhase,
+            String purchaseGateJson,
             String imageAssetId,
             String imageObjectKey,
             String imagePreviewUrl,

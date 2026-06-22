@@ -62,9 +62,21 @@ public class OpsDeviceService {
     private static final Set<String> ORDER_FINAL_STATES = Set.of("active", "refunded", "cancelled", "payment_failed", "expired", "provisioning_failed");
     private static final Set<String> ORDER_CANCELABLE_STATES = Set.of("created", "paid");
     private static final Set<String> TRADEIN_OPERATIONS = Set.of("recycle", "replace", "deactivate");
+    private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
+    private static final String CURRENT_PHASE_KEY = "growth.phase.current";
     private static final String E1_GATE_GROUP = "device_e1_generation_gate";
     private static final String E1_GATE_PREFIX = "device.e1.generation.";
     private static final Pattern E1_GENERATION_ID = Pattern.compile("^[a-z0-9-]{1,80}$");
+    private static final List<E1PhaseDef> E1_PHASES = List.of(
+            new E1PhaseDef("P1", "L0+", "Entry · NexionBox S1"),
+            new E1PhaseDef("P2", "L1+", "Genesis 节点"),
+            new E1PhaseDef("P3", "L2+", "Pro v2 解锁"),
+            new E1PhaseDef("P4", "L3+", "Cloud Share 池"),
+            new E1PhaseDef("P5", "L4+", "Rack P2 解锁"),
+            new E1PhaseDef("P6", "L6+", "Flagship · 顶配"));
+    private static final List<E1GenerationReleaseDef> E1_RELEASES = List.of(
+            new E1GenerationReleaseDef("stellarbox-pro-v2", "NexionBox Pro v2", 5, "P3", 300, true),
+            new E1GenerationReleaseDef("stellarrack-p2", "NexionRack P2", 10, "P5", 800, false));
     private static final Set<String> E3_CONFIG_KEYS = Set.of(
             "degradeEarly",
             "degradeMid",
@@ -410,9 +422,16 @@ public class OpsDeviceService {
     }
 
     public ApiResult<Map<String, Object>> e1GenerationGates() {
+        int platformMonth = currentPlatformMonth();
+        Map<String, String> configValues = e1GateConfigValues();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "E1");
-        response.put("configValues", e1GateConfigValues());
+        response.put("phaseOrder", E1_PHASES.stream().map(E1PhaseDef::p).toList());
+        response.put("phases", E1_PHASES);
+        response.put("platformMonth", platformMonth);
+        response.put("phaseCurrent", configFacade.activeValue(CURRENT_PHASE_KEY).orElse(phaseForMonth(platformMonth)));
+        response.put("releases", e1GenerationReleases(configValues));
+        response.put("configValues", configValues);
         response.put("allowedFields", List.of("phaseOffset", "forceUnlock"));
         response.put("sources", List.of("nx_config_item:" + E1_GATE_GROUP, "H1 current phase", "E5 eligibility"));
         return ApiResult.ok(response);
@@ -756,6 +775,86 @@ public class OpsDeviceService {
         return response;
     }
 
+    private List<Map<String, Object>> e1GenerationReleases(Map<String, String> configValues) {
+        return E1_RELEASES.stream()
+                .map(release -> {
+                    int releaseMonth = readInt(E1_GATE_PREFIX + release.id() + ".releaseMonth", release.releaseMonth());
+                    int discount = readInt(E1_GATE_PREFIX + release.id() + ".discount", release.discount());
+                    boolean eligibility = readBoolean(E1_GATE_PREFIX + release.id() + ".eligibility", release.eligibility());
+                    int phaseOffset = parseInt(configValues.get("E.gen." + release.id() + ".phaseOffset"), 0);
+                    boolean forceUnlock = parseBoolean(configValues.get("E.gen." + release.id() + ".forceUnlock"), false);
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", release.id());
+                    row.put("name", release.name());
+                    row.put("releaseMonth", releaseMonth);
+                    row.put("phase", release.phase());
+                    row.put("discount", discount);
+                    row.put("eligibility", eligibility);
+                    row.put("phaseOffset", phaseOffset);
+                    row.put("forceUnlock", forceUnlock);
+                    row.put("effectiveReleaseMonth", releaseMonth + phaseOffset);
+                    return row;
+                })
+                .toList();
+    }
+
+    private int currentPlatformMonth() {
+        int month = readInt(CURRENT_MONTH_KEY, 4);
+        return month >= 1 && month <= 12 ? month : 4;
+    }
+
+    private String phaseForMonth(int month) {
+        if (month <= 2) {
+            return "P1";
+        }
+        if (month <= 4) {
+            return "P2";
+        }
+        if (month <= 7) {
+            return "P3";
+        }
+        if (month == 8) {
+            return "P4";
+        }
+        if (month <= 10) {
+            return "P5";
+        }
+        return "P6";
+    }
+
+    private int readInt(String configKey, int fallback) {
+        return parseInt(configFacade.activeValue(configKey).orElse(null), fallback);
+    }
+
+    private int parseInt(String value, int fallback) {
+        if (!StringUtils.hasText(value)) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim().replace("M", ""));
+        } catch (RuntimeException ex) {
+            return fallback;
+        }
+    }
+
+    private boolean readBoolean(String configKey, boolean fallback) {
+        return parseBoolean(configFacade.activeValue(configKey).orElse(null), fallback);
+    }
+
+    private boolean parseBoolean(String value, boolean fallback) {
+        if (!StringUtils.hasText(value)) {
+            return fallback;
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        if ("true".equals(normalized)) {
+            return true;
+        }
+        if ("false".equals(normalized)) {
+            return false;
+        }
+        return fallback;
+    }
+
     private String[] normalizeE1GateKey(String rawKey) {
         String key = normalizeId(rawKey);
         if (key.startsWith("E.gen.")) {
@@ -963,5 +1062,17 @@ public class OpsDeviceService {
             }
         }
         return detail;
+    }
+
+    private record E1PhaseDef(String p, String meta, String skus) {
+    }
+
+    private record E1GenerationReleaseDef(
+            String id,
+            String name,
+            int releaseMonth,
+            String phase,
+            int discount,
+            boolean eligibility) {
     }
 }

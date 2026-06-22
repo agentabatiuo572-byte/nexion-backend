@@ -236,6 +236,7 @@ class OpsDeviceControllerTest {
                 null,
                 null,
                 null,
+                null,
                 "popular",
                 "pending",
                 "catalog update",

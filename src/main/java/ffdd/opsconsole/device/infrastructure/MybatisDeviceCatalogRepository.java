@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
+import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
@@ -39,6 +40,9 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     @PostConstruct
     void ensureSchema() {
         mapper.createSkuTable();
+        if (mapper.countSkuPurchaseGateColumn() == 0) {
+            mapper.addSkuPurchaseGateColumn();
+        }
         mapper.createReviewTable();
         mapper.createTaskTable();
         mapper.createOrderTable();
@@ -224,6 +228,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.supersededBy(),
                 row.tradeinDiscount(),
                 row.unlockPhase(),
+                purchaseGate(row.purchaseGateJson()),
                 row.imageAssetId(),
                 row.imageObjectKey(),
                 row.imagePreviewUrl(),
@@ -267,6 +272,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 blankToNull(request.supersededBy()),
                 request.tradeinDiscount(),
                 StringUtils.hasText(request.unlockPhase()) ? request.unlockPhase().trim().toUpperCase() : "P1",
+                purchaseGateJson(request.purchaseGate()),
                 blankToNull(request.imageAssetId()),
                 blankToNull(request.imageObjectKey()),
                 blankToNull(request.imagePreviewUrl()),
@@ -320,6 +326,28 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             return objectMapper.writeValueAsString(features == null ? List.of() : features);
         } catch (JsonProcessingException ex) {
             return "[]";
+        }
+    }
+
+    private DevicePurchaseGateView purchaseGate(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(raw, DevicePurchaseGateView.class);
+        } catch (JsonProcessingException ex) {
+            return null;
+        }
+    }
+
+    private String purchaseGateJson(DevicePurchaseGateView purchaseGate) {
+        if (purchaseGate == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(purchaseGate);
+        } catch (JsonProcessingException ex) {
+            return null;
         }
     }
 

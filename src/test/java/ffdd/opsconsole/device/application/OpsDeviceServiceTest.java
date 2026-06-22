@@ -145,6 +145,17 @@ class OpsDeviceServiceTest {
                 .containsEntry("device.e1.generation.stellarbox-pro-v2.phaseOffset", "2");
         assertThat(result.getData().get("configValues").toString())
                 .contains("E.gen.stellarbox-pro-v2.phaseOffset=2");
+        assertThat(result.getData())
+                .containsEntry("platformMonth", 4)
+                .containsEntry("phaseCurrent", "P2")
+                .containsKeys("phaseOrder", "phases", "releases");
+        assertThat((List<?>) result.getData().get("releases"))
+                .anySatisfy(row -> {
+                    Map<?, ?> release = (Map<?, ?>) row;
+                    assertThat(release.get("id")).isEqualTo("stellarbox-pro-v2");
+                    assertThat(release.get("phaseOffset")).isEqualTo(2);
+                    assertThat(release.get("effectiveReleaseMonth")).isEqualTo(7);
+                });
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -475,6 +486,7 @@ class OpsDeviceServiceTest {
                 null,
                 null,
                 null,
+                null,
                 "popular",
                 status,
                 "catalog update",
@@ -526,6 +538,7 @@ class OpsDeviceServiceTest {
                 "",
                 BigDecimal.ZERO,
                 "P1",
+                null,
                 null,
                 null,
                 null,

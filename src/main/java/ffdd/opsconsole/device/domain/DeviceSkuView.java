@@ -36,6 +36,7 @@ public record DeviceSkuView(
         String supersededBy,
         BigDecimal tradeinDiscount,
         String unlockPhase,
+        DevicePurchaseGateView purchaseGate,
         String imageAssetId,
         String imageObjectKey,
         String imagePreviewUrl,

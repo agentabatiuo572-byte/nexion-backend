@@ -41,6 +41,7 @@ public class DeviceSkuEntity extends BaseEntity {
     private String supersededBy;
     private BigDecimal tradeinDiscount;
     private String unlockPhase;
+    private String purchaseGateJson;
     private String imageAssetId;
     private String imageObjectKey;
     private String imagePreviewUrl;
