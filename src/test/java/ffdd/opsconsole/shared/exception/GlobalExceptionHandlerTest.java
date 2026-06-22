@@ -8,6 +8,7 @@ import jakarta.validation.ConstraintViolationException;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 class GlobalExceptionHandlerTest {
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
@@ -45,6 +46,14 @@ class GlobalExceptionHandlerTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
         assertThat(result.getMessage()).isEqualTo("无权限访问");
+    }
+
+    @Test
+    void maxUploadSizeExceededReturnsStableMediaError() {
+        ApiResult<Void> result = handler.handleMaxUploadSize(new MaxUploadSizeExceededException(200L * 1024 * 1024));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("MEDIA_UPLOAD_TOO_LARGE");
     }
 
     @Test

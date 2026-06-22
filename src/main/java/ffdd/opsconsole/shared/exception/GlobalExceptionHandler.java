@@ -7,6 +7,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -28,6 +29,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ApiResult<Void> handleAccessDenied(AccessDeniedException ex) {
         return ApiResult.fail(403, "无权限访问");
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ApiResult<Void> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "MEDIA_UPLOAD_TOO_LARGE");
     }
 
     @ExceptionHandler(Exception.class)

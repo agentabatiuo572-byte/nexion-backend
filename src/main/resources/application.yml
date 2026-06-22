@@ -4,6 +4,10 @@ server:
 spring:
   application:
     name: nexion-backend
+  servlet:
+    multipart:
+      max-file-size: ${NEXION_MEDIA_MAX_FILE_SIZE:200MB}
+      max-request-size: ${NEXION_MEDIA_MAX_REQUEST_SIZE:220MB}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: ${NEXION_DB_URL:jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
