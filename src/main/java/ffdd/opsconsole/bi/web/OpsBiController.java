@@ -1,12 +1,14 @@
 package ffdd.opsconsole.bi.web;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.bi.application.OpsBiService;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.dto.BiReportActionRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsAdminApi;
-import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -19,12 +21,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/bi")
+@RequiredArgsConstructor
 public class OpsBiController {
     private final OpsBiService biService;
-
-    public OpsBiController(OpsBiService biService) {
-        this.biService = biService;
-    }
 
     @GetMapping("/overview")
     public ApiResult<Map<String, Object>> overview() {
@@ -32,13 +31,18 @@ public class OpsBiController {
     }
 
     @GetMapping("/reports")
-    public ApiResult<List<BiReportView>> reports(@ModelAttribute BiReportQueryRequest request) {
+    public ApiResult<PageResult<BiReportView>> reports(@ModelAttribute BiReportQueryRequest request) {
         return biService.reports(request);
     }
 
     @GetMapping("/regulatory/templates")
     public ApiResult<Map<String, Object>> regulatoryTemplates() {
         return biService.regulatoryTemplates();
+    }
+
+    @GetMapping("/exports/{reportId}/download-token")
+    public ApiResult<Map<String, Object>> downloadToken(@PathVariable String reportId) {
+        return biService.downloadToken(reportId);
     }
 
     @PostMapping("/reports/{reportId}/{action}")

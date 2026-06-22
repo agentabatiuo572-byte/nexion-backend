@@ -37,6 +37,36 @@ class OpsTeamServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void overviewExposesF1ToF4PageReadModelsWithoutStaticFrontendAuthority() {
+        ApiResult<Map<String, Object>> result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("vrankRows"))
+                .hasSize(13)
+                .extracting(row -> row.get("v"))
+                .contains("V0", "V12");
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("fulfillmentQueues"))
+                .extracting(row -> row.get("configKey"))
+                .contains("F.fulfillment.V3.queue.status");
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("unilevelRates"))
+                .hasSize(7)
+                .allSatisfy(row -> assertThat(row).containsKeys("level", "usdtPct", "nexReward", "configKey", "nexConfigKey"));
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("policyParams"))
+                .extracting(row -> row.get("key"))
+                .contains("F.influence.clamp", "F.binary.matchRate", "F.pool.ratio");
+        assertThat(result.getData().get("rateTiers").toString())
+                .doesNotContain("Premium");
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("binarySettlements"))
+                .hasSizeGreaterThanOrEqualTo(4)
+                .allSatisfy(row -> assertThat(row).containsKeys("user", "trackA", "trackB", "matchAmount", "todayPaid", "state", "tone"));
+        Map<String, Object> leadershipPool = (Map<String, Object>) result.getData().get("leadershipPool");
+        assertThat(leadershipPool)
+                .containsKeys("quotaRows", "ambassadorBands", "podium", "voteWeights")
+                .containsEntry("settlementWindow", "Sunday 23:59 UTC");
+    }
+
+    @Test
     void looseningCommissionBelowB1RedlineReturns422() {
         configFacade.values.put("team.direct_royalty_pct", "8");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
@@ -61,6 +91,71 @@ class OpsTeamServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("F_TEAM_POLICY_CHANGED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void uiConfigWritesWhitelistedFKeyAndOverviewEchoesValue() {
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-f-ui",
+                new TeamCommissionConfigUpdateRequest("F.binary.spillover", "已关闭", "close spillover", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.binary.spillover", "已关闭");
+        Map<String, String> configValues = (Map<String, String>) result.getData().get("configValues");
+        assertThat(configValues).containsEntry("F.binary.spillover", "已关闭");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("F_TEAM_UI_CONFIG_CHANGED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void fulfillmentQueueActionWritesWhitelistedBackendState() {
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-f-fulfillment",
+                new TeamCommissionConfigUpdateRequest("F.fulfillment.V3.queue.status", "opened", "open prize queue", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.fulfillment.V3.queue.status", "opened");
+        Map<String, String> configValues = (Map<String, String>) result.getData().get("configValues");
+        assertThat(configValues).containsEntry("F.fulfillment.V3.queue.status", "opened");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void commissionsExposeF5AuditRowsAndReflectBackendStatusOverrides() {
+        service.updateConfig(
+                "idem-f-commission-status",
+                new TeamCommissionConfigUpdateRequest("F.commission.CM-7781.status", "frozen", "freeze abnormal commission", "risk-ops"));
+
+        ApiResult<Map<String, Object>> result = service.commissions();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsKeys("summary", "commissionKinds", "commissionFilters", "commissionEvents", "statusDistribution", "recentAuditFeed");
+        assertThat(result.getData().get("sources").toString())
+                .contains("nx_team_commission_event")
+                .contains("nx_config_item:team.ui.F.commission.*.status");
+        assertThat(result.getData().get("pagination").toString()).contains("server-pageable");
+        var events = (java.util.List<Map<String, Object>>) result.getData().get("commissionEvents");
+        assertThat(events).hasSizeGreaterThanOrEqualTo(12);
+        assertThat(events)
+                .filteredOn(event -> "CM-7781".equals(event.get("id")))
+                .singleElement()
+                .satisfies(event -> assertThat(event).containsEntry("state", "frozen"));
+    }
+
+    @Test
+    void sunsetUiConfigKeyIsRejected() {
+        try {
+            service.updateConfig(
+                    "idem-f-ui",
+                    new TeamCommissionConfigUpdateRequest("F.points.enabled", "true", "restore points", "superadmin"));
+        } catch (IllegalArgumentException ex) {
+            assertThat(ex).hasMessageContaining("Sunset");
+            return;
+        }
+        throw new AssertionError("Expected sunset capability rejection");
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {

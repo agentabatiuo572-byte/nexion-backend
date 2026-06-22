@@ -9,12 +9,14 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -36,6 +38,185 @@ class OpsGrowthServiceTest {
                 .containsEntry("rewardAsset", "NEX")
                 .containsEntry("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
         assertThat(result.getData().get("disabledOutputs").toString()).contains("Points ledger writes");
+        assertThat(result.getData().get("rules")).asList().hasSize(6);
+        assertThat(result.getData().get("streakMilestones")).asList().hasSize(7);
+        assertThat(result.getData().get("streakDistribution")).asList().hasSize(5);
+        assertThat(result.getData().get("powerUps")).asList().hasSize(4);
+        assertThat(result.getData().get("earnMilestones")).asList().hasSize(5);
+        assertThat(result.getData()).containsKeys("tickInterval", "coverage");
+    }
+
+    @Test
+    void trialsMasksServerOnlyFailureRateAndReturnsRuntimeRows() {
+        configFacade.values.put("growth.trial.param.failRate", "4.1");
+
+        ApiResult<Map<String, Object>> result = service.trials();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("domain", "H2")
+                .containsEntry("autoPushKilled", false);
+        assertThat(result.getData().toString()).doesNotContain("4.1");
+        assertThat(result.getData().get("params")).asList().hasSize(10);
+        assertThat(result.getData().get("sessions")).asList().hasSize(4);
+        assertThat(result.getData().get("serverOnlyFields")).asList().contains("failRate");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> params = (List<Map<String, Object>>) result.getData().get("params");
+        assertThat(params)
+                .filteredOn(param -> "failRate".equals(param.get("key")))
+                .singleElement()
+                .extracting(param -> param.get("cur"))
+                .isEqualTo("•••(server only)");
+    }
+
+    @Test
+    void updateTrialParamWritesConfigAuditsAndStillMasksFailureRate() {
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-param",
+                "failRate",
+                new GrowthConfigUpdateRequest("failRate", "6.5", "tune failure", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.trial.param.failRate", "6.5");
+        assertThat(result.getData().toString()).doesNotContain("6.5");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_PARAM_CHANGED");
+        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("serverOnly", true);
+    }
+
+    @Test
+    void cancelTrialSessionWritesTerminalStateAndAudit() {
+        ApiResult<Map<String, Object>> result = service.cancelTrialSession(
+                "idem-h2-cancel",
+                "usr_9921",
+                new GrowthConfigUpdateRequest("cancel", "cancelled", "risk case", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("growth.trial.session.usr_9921.state", "cancelled")
+                .containsKey("growth.trial.session.usr_9921.cancelled_at");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_SESSION_CANCELLED");
+    }
+
+    @Test
+    void chargeTerminalTrialSessionReturns409() {
+        ApiResult<Map<String, Object>> result = service.chargeTrialSession(
+                "idem-h2-charge",
+                "usr_77D4",
+                new GrowthConfigUpdateRequest("charge", "redeemed", "force charge", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TRIAL_SESSION_ALREADY_TERMINAL");
+    }
+
+    @Test
+    void killAutoPushWritesConfigAndAudit() {
+        ApiResult<Map<String, Object>> result = service.killTrialAutoPush(
+                "idem-h2-kill",
+                new GrowthConfigUpdateRequest("autoPushKilled", "true", "incident", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.trial.auto_push_killed", "true");
+        assertThat(result.getData()).containsEntry("autoPushKilled", true);
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_AUTO_PUSH_KILLED");
+    }
+
+    @Test
+    void questEventsReturnsH3H4ReadModelAndSunsetOnly() {
+        ApiResult<Map<String, Object>> result = service.questEvents();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("domain", "H3_H4")
+                .containsEntry("rewardAsset", "NEX")
+                .containsEntry("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
+        assertThat(result.getData().get("dayOneTasks")).asList().hasSize(6);
+        assertThat(result.getData().get("weeklyTier1")).asList().hasSize(9);
+        assertThat(result.getData().get("weeklyTier2")).asList().hasSize(8);
+        assertThat(result.getData().get("monthlyMissions")).asList().hasSize(5);
+        assertThat(result.getData().get("events")).asList().hasSize(7);
+        assertThat(result.getData().get("wheelTiers")).asList().hasSize(8);
+        assertThat(result.getData().get("trackables")).asList().hasSize(4);
+        assertThat(result.getData()).containsKeys("h3Stats", "h4Stats", "wheelEvUsd", "coverage", "sources");
+    }
+
+    @Test
+    void updateQuestConfigWritesAllowedConfigAndAudits() {
+        ApiResult<Map<String, Object>> result = service.updateQuestConfig(
+                "idem-h3-config",
+                "dayOne.tasks.0.reward",
+                new GrowthConfigUpdateRequest("reward", "80 NEX", "adjust day one", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.quest.day_one.task.0.reward", "80 NEX");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H3_QUEST_CONFIG_CHANGED");
+        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-h3-config");
+    }
+
+    @Test
+    void raisingQuestRewardBelowB1RedlineReturns422() {
+        configFacade.values.put("growth.quest.day_one.task.0.reward", "50 NEX");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+
+        ApiResult<Map<String, Object>> result = service.updateQuestConfig(
+                "idem-h3-redline",
+                "dayOne.tasks.0.reward",
+                new GrowthConfigUpdateRequest("reward", "500 NEX", "raise reward", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+    }
+
+    @Test
+    void updateQuestEventStatusWritesConfigAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
+                "idem-h4-status",
+                "regional-pk",
+                new GrowthConfigUpdateRequest("status", "ongoing", "launch event", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.event.regional-pk.status", "ongoing");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H4_EVENT_STATUS_CHANGED");
+    }
+
+    @Test
+    void settingSecondFeaturedOngoingEventReturns422() {
+        ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
+                "idem-h4-featured",
+                "ref-5",
+                new GrowthConfigUpdateRequest("featured", "true", "feature referral", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("EVENT_FEATURED_UNIQUE_VIOLATION");
+    }
+
+    @Test
+    void wheelKillSwitchWritesGuardAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updateQuestConfig(
+                "idem-h4-kill",
+                "wheel.guards.kill",
+                new GrowthConfigUpdateRequest("kill", "关", "regulatory incident", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.wheel.guard.kill", "关");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H4_WHEEL_GUARD_CHANGED");
     }
 
     @Test
@@ -48,6 +229,97 @@ class OpsGrowthServiceTest {
                 new GrowthConfigUpdateRequest("baseRewardNex", "0.50", "raise reward", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+    }
+
+    @Test
+    void luckyProbabilitySumAboveOneHundredReturns422() {
+        ApiResult<Map<String, Object>> result = service.updateCheckInRule(
+                "idem-h5-lucky",
+                "p15",
+                new GrowthConfigUpdateRequest("p15", "96", "raise lucky too far", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("LUCKY_PROBABILITY_SUM_EXCEEDS_100");
+    }
+
+    @Test
+    void updateStreakMilestoneWritesConfigAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updateStreakMilestone(
+                "idem-h5-ms",
+                1,
+                new GrowthConfigUpdateRequest("reward", "+20 NEX", "adjust streak", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.checkin.streak_milestone.1.reward", "+20 NEX");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H5_STREAK_MILESTONE_CHANGED");
+        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-h5-ms");
+    }
+
+    @Test
+    void updatePowerUpWritesThresholdAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updatePowerUp(
+                "idem-h5-pu",
+                2,
+                new GrowthConfigUpdateRequest("day", "35", "adjust power up", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.checkin.power_up.2.day", "35");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H5_POWER_UP_CHANGED");
+    }
+
+    @Test
+    void unorderedEarnMilestoneThresholdReturns422() {
+        ApiResult<Map<String, Object>> result = service.updateEarnMilestone(
+                "idem-h6-order",
+                "earn-500",
+                new GrowthEarnMilestoneUpdateRequest(
+                        new BigDecimal("50"), new BigDecimal("250"), "break order", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("EARN_MILESTONE_THRESHOLD_ORDER_INVALID");
+    }
+
+    @Test
+    void updateEarnMilestoneWritesThresholdRewardAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updateEarnMilestone(
+                "idem-h6-earn",
+                "earn-500",
+                new GrowthEarnMilestoneUpdateRequest(
+                        new BigDecimal("700"), new BigDecimal("300"), "adjust earn milestone", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("growth.earn_milestone.earn-500.threshold_usd", "700")
+                .containsEntry("growth.earn_milestone.earn-500.reward_nex", "300");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H6_EARN_MILESTONE_CHANGED");
+    }
+
+    @Test
+    void updateTickIntervalEnforcesBoundsAndWritesAudit() {
+        ApiResult<Map<String, Object>> tooLarge = service.updateEarnMilestoneTickInterval(
+                "idem-h6-tick-bad",
+                new GrowthConfigUpdateRequest("tick", "120", "too slow", "superadmin"));
+        assertThat(tooLarge.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+
+        ApiResult<Map<String, Object>> result = service.updateEarnMilestoneTickInterval(
+                "idem-h6-tick",
+                new GrowthConfigUpdateRequest("tick", "8", "tune cascade", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.earn_milestone.tick_interval_seconds", "8");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H6_TICK_INTERVAL_CHANGED");
     }
 
     @Test
@@ -85,10 +357,78 @@ class OpsGrowthServiceTest {
         ApiResult<Map<String, Object>> result = service.phases();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("dialCount", 8);
+        assertThat(result.getData())
+                .containsEntry("dialCount", 8)
+                .containsEntry("currentMonth", 7);
+        assertThat(result.getData().get("monthlyDials")).asList().hasSize(12);
+        assertThat(result.getData().get("controls")).asList().hasSize(3);
+        assertThat(result.getData()).containsKey("coverage");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+    }
+
+    @Test
+    void phaseSandboxPreviewIsReadOnlyAndIncludesImpactMatrix() {
+        ApiResult<Map<String, Object>> result = service.phaseSandboxPreview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("domain", "H1")
+                .containsEntry("mode", "READ_ONLY_SANDBOX")
+                .containsEntry("writes", false);
+        assertThat(result.getData().get("impactMatrix")).asList().hasSize(5);
+        assertThat(result.getData().get("retiredDials").toString()).contains("premiumUnlock", "nexV2Unlock");
+    }
+
+    @Test
+    void updateCurrentMonthDialWritesMonthlyCellActiveDialMirrorAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
+                "idem-h1-cell",
+                7,
+                "withdrawNexMinBalance",
+                new GrowthConfigUpdateRequest("withdrawNexMinBalance", "150", "tighten current month", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("growth.phase.month.7.withdrawNexMinBalance", "150")
+                .containsEntry("growth.withdraw_nex_gate.min_balance_nex", "150")
+                .containsEntry("withdrawal.nex_gate.min_balance_nex", "150");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H1_MONTH_DIAL_CHANGED");
+        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("month", 7);
+    }
+
+    @Test
+    void updatePhaseControlWritesConfigAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updatePhaseControl(
+                "idem-h1-control",
+                "pin",
+                new GrowthConfigUpdateRequest("pin", "P3 until launch", "pin phase", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.phase.control.pin", "P3 until launch");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H1_PHASE_CONTROL_CHANGED");
+    }
+
+    @Test
+    void disablePhaseOverrideWritesStateAndAudit() {
+        ApiResult<Map<String, Object>> result = service.updatePhaseOverride(
+                "idem-h1-override",
+                "2026-W18",
+                new GrowthConfigUpdateRequest("disabled", "true", "rollback cohort", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.phase.override.2026-W18.disabled", "true");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H1_PHASE_OVERRIDE_CHANGED");
     }
 
     @SuppressWarnings("unchecked")

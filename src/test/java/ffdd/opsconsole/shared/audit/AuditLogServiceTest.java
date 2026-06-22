@@ -2,12 +2,13 @@ package ffdd.opsconsole.shared.audit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyMap;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -15,12 +16,20 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.MDC;
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 class AuditLogServiceTest {
-    private final NamedParameterJdbcTemplate jdbcTemplate = org.mockito.Mockito.mock(NamedParameterJdbcTemplate.class);
+    private final AuditLogMapper auditLogMapper = org.mockito.Mockito.mock(AuditLogMapper.class);
     private final AuditLogSanitizer sanitizer = new AuditLogSanitizer(new com.fasterxml.jackson.databind.ObjectMapper());
-    private final AuditLogService service = new AuditLogService(jdbcTemplate, sanitizer, "nexion-test-service", true, false);
+    private final ApplicationNameProperties applicationNameProperties = applicationNameProperties();
+    private final AuditProperties auditProperties = new AuditProperties();
+    private final AuditLogService service = new AuditLogService(
+            auditLogMapper, sanitizer, applicationNameProperties, auditProperties);
+
+    private ApplicationNameProperties applicationNameProperties() {
+        ApplicationNameProperties properties = new ApplicationNameProperties();
+        properties.setName("nexion-test-service");
+        return properties;
+    }
 
     @AfterEach
     void tearDown() {
@@ -41,26 +50,25 @@ class AuditLogServiceTest {
                 .detail(Map.of("provider", "MOCK", "signature", "secret-signature"))
                 .build());
 
-        ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-        verify(jdbcTemplate).update(anyString(), params.capture());
-        assertThat(params.getValue())
-                .containsEntry("traceId", "trace-123")
-                .containsEntry("serviceName", "nexion-test-service")
-                .containsEntry("action", "PAYMENT_RECONCILE")
-                .containsEntry("resourceType", "PAYMENT")
-                .containsEntry("resourceId", "PAY-1")
-                .containsEntry("bizNo", "PAY-1")
-                .containsEntry("userId", 1001L)
-                .containsEntry("result", "SUCCESS")
-                .containsEntry("riskLevel", "HIGH");
-        assertThat((String) params.getValue().get("detailJson"))
+        ArgumentCaptor<AuditLogMapper.AuditLogWrite> params = ArgumentCaptor.forClass(AuditLogMapper.AuditLogWrite.class);
+        verify(auditLogMapper).insertAuditLog(params.capture());
+        assertThat(params.getValue().traceId()).isEqualTo("trace-123");
+        assertThat(params.getValue().serviceName()).isEqualTo("nexion-test-service");
+        assertThat(params.getValue().action()).isEqualTo("PAYMENT_RECONCILE");
+        assertThat(params.getValue().resourceType()).isEqualTo("PAYMENT");
+        assertThat(params.getValue().resourceId()).isEqualTo("PAY-1");
+        assertThat(params.getValue().bizNo()).isEqualTo("PAY-1");
+        assertThat(params.getValue().userId()).isEqualTo(1001L);
+        assertThat(params.getValue().result()).isEqualTo("SUCCESS");
+        assertThat(params.getValue().riskLevel()).isEqualTo("HIGH");
+        assertThat(params.getValue().detailJson())
                 .contains("\"signature\":\"[REDACTED]\"")
                 .doesNotContain("secret-signature");
     }
 
     @Test
     void listClampsLimitAndUsesOptionalFilters() {
-        when(jdbcTemplate.query(anyString(), anyMap(), any(org.springframework.jdbc.core.RowMapper.class)))
+        when(auditLogMapper.list(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of());
 
         AuditLogQueryRequest query = new AuditLogQueryRequest();
@@ -72,17 +80,26 @@ class AuditLogServiceTest {
         List<AuditLogRecord> records = service.list(query);
 
         assertThat(records).isEmpty();
-        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-        verify(jdbcTemplate).query(sql.capture(), params.capture(), any(org.springframework.jdbc.core.RowMapper.class));
-        assertThat(sql.getValue()).contains("trace_id = :traceId", "action = :action", "user_id = :userId");
-        assertThat(params.getValue()).containsEntry("limit", 200);
+        verify(auditLogMapper).list(
+                eq("trace-123"),
+                isNull(),
+                eq("PAYMENT_RECONCILE"),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(1001L),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(200));
     }
 
     @Test
     void summaryUsesTimeWindowAndSafeParameterizedFilters() {
-        when(jdbcTemplate.queryForObject(anyString(), anyMap(), eq(Long.class))).thenReturn(5L);
-        when(jdbcTemplate.query(anyString(), anyMap(), any(org.springframework.jdbc.core.RowMapper.class)))
+        when(auditLogMapper.countStats(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(5L);
+        when(auditLogMapper.groupByResult(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.of());
+        when(auditLogMapper.groupByRiskLevel(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of());
 
         AuditStatsQueryRequest query = new AuditStatsQueryRequest();
@@ -98,26 +115,20 @@ class AuditLogServiceTest {
         assertThat(response.getTotal()).isEqualTo(5L);
         assertThat(response.getStartAt()).isEqualTo(LocalDateTime.parse("2026-05-01T00:00:00"));
         assertThat(response.getEndAt()).isEqualTo(LocalDateTime.parse("2026-05-03T00:00:00"));
-        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-        verify(jdbcTemplate).queryForObject(sql.capture(), params.capture(), eq(Long.class));
-        assertThat(sql.getValue())
-                .contains("created_at >= :startAt")
-                .contains("created_at < :endAt")
-                .contains("service_name = :serviceName")
-                .contains("action = :action")
-                .contains("risk_level = :riskLevel")
-                .contains("result = :result");
-        assertThat(params.getValue())
-                .containsEntry("serviceName", "nexion-backend")
-                .containsEntry("action", "PAYMENT_CALLBACK")
-                .containsEntry("riskLevel", "HIGH")
-                .containsEntry("result", "SUCCESS");
+        verify(auditLogMapper).countStats(
+                eq(LocalDateTime.parse("2026-05-01T00:00:00")),
+                eq(LocalDateTime.parse("2026-05-03T00:00:00")),
+                eq("nexion-backend"),
+                eq("PAYMENT_CALLBACK"),
+                eq("HIGH"),
+                eq("SUCCESS"),
+                isNull(),
+                isNull());
     }
 
     @Test
     void topActionsCapsLimitAndUsesWhitelistedDimension() {
-        when(jdbcTemplate.query(anyString(), anyMap(), any(org.springframework.jdbc.core.RowMapper.class)))
+        when(auditLogMapper.topActions(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of(new AuditStatsBucket("PAYMENT_CALLBACK", 7L)));
 
         AuditStatsQueryRequest query = new AuditStatsQueryRequest();
@@ -128,17 +139,21 @@ class AuditLogServiceTest {
         List<AuditStatsBucket> buckets = service.topActions(query);
 
         assertThat(buckets).extracting(AuditStatsBucket::getKey).containsExactly("PAYMENT_CALLBACK");
-        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-        verify(jdbcTemplate).query(sql.capture(), params.capture(), any(org.springframework.jdbc.core.RowMapper.class));
-        assertThat(sql.getValue()).contains("COALESCE(action, 'UNKNOWN') AS bucket_key");
-        assertThat(sql.getValue()).contains("GROUP BY COALESCE(action, 'UNKNOWN')");
-        assertThat(params.getValue()).containsEntry("limit", 50);
+        verify(auditLogMapper).topActions(
+                eq(LocalDateTime.parse("2026-05-01T00:00:00")),
+                eq(LocalDateTime.parse("2026-05-02T00:00:00")),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(50));
     }
 
     @Test
     void topUsersExcludesNullUsersAndCapsLimit() {
-        when(jdbcTemplate.query(anyString(), anyMap(), any(org.springframework.jdbc.core.RowMapper.class)))
+        when(auditLogMapper.topUsers(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of(new AuditStatsBucket("1001", 3L)));
 
         AuditStatsQueryRequest query = new AuditStatsQueryRequest();
@@ -148,11 +163,15 @@ class AuditLogServiceTest {
 
         service.topUsers(query);
 
-        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
-        verify(jdbcTemplate).query(sql.capture(), params.capture(), any(org.springframework.jdbc.core.RowMapper.class));
-        assertThat(sql.getValue()).contains("user_id IS NOT NULL");
-        assertThat(sql.getValue()).contains("GROUP BY CAST(user_id AS CHAR)");
-        assertThat(params.getValue()).containsEntry("limit", 10);
+        verify(auditLogMapper).topUsers(
+                eq(LocalDateTime.parse("2026-05-01T00:00:00")),
+                eq(LocalDateTime.parse("2026-05-02T00:00:00")),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull(),
+                eq(10));
     }
 }

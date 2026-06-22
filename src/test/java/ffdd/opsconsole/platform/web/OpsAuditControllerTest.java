@@ -15,7 +15,11 @@ import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
+import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -23,7 +27,21 @@ import org.mockito.ArgumentCaptor;
 
 class OpsAuditControllerTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsAuditController controller = new OpsAuditController(auditLogService);
+    private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
+    private final OpsAuditController controller = new OpsAuditController(auditLogService, auditCenterService);
+
+    @Test
+    void overviewDelegatesToA2AuditCenterService() {
+        AuditCenterOverview overview = new AuditCenterOverview(null, List.of(), List.of(), List.of(), List.of(),
+                List.of(), null, List.of());
+        when(auditCenterService.overview()).thenReturn(ApiResult.ok(overview));
+
+        ApiResult<AuditCenterOverview> result = controller.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isSameAs(overview);
+        verify(auditCenterService).overview();
+    }
 
     @Test
     void logsDelegatesToA2AuditService() {
@@ -88,6 +106,30 @@ class OpsAuditControllerTest {
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("reason", "incident review")
                 .containsEntry("idempotencyKey", "idem-1");
+    }
+
+    @Test
+    void operationDecisionEndpointsDelegateToAuditCenterService() {
+        AuditOperationDecisionRequest request = new AuditOperationDecisionRequest("verified", "superadmin");
+        AuditCenterOverview.AuditOperationTicket ticket =
+                new AuditCenterOverview.AuditOperationTicket("WO-8852", "提现放行", "usr", "review", "approved",
+                        "superadmin", "super", "fund", true, false, "2m", false, "超管", "verified", "approved");
+        when(auditCenterService.approve("idem-1", "WO-8852", request)).thenReturn(ApiResult.ok(ticket));
+        when(auditCenterService.reject("idem-2", "WO-8851", request)).thenReturn(ApiResult.ok(ticket));
+
+        assertThat(controller.approveOperation("idem-1", "WO-8852", request).getData()).isSameAs(ticket);
+        assertThat(controller.rejectOperation("idem-2", "WO-8851", request).getData()).isSameAs(ticket);
+    }
+
+    @Test
+    void mechanismParamEndpointDelegatesToAuditCenterService() {
+        AuditMechanismParamUpdateRequest request =
+                new AuditMechanismParamUpdateRequest("12 字", "tighten reason", "superadmin");
+        AuditCenterOverview.AuditMechanismParam param =
+                new AuditCenterOverview.AuditMechanismParam("ttl", "理由最短长度", "reason", "12 字", false);
+        when(auditCenterService.updateMechanismParam("idem-1", "ttl", request)).thenReturn(ApiResult.ok(param));
+
+        assertThat(controller.updateMechanismParam("idem-1", "ttl", request).getData()).isSameAs(param);
     }
 
     @Test

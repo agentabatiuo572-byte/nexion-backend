@@ -1,18 +1,17 @@
 package ffdd.opsconsole.shared.security;
 
+import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.Collection;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataAccessException;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -21,19 +20,11 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 @Component
+@RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenProvider tokenProvider;
-    private final JdbcTemplate jdbcTemplate;
-    private final String gatewaySecret;
-
-    public JwtAuthenticationFilter(
-            JwtTokenProvider tokenProvider,
-            JdbcTemplate jdbcTemplate,
-            @Value("${nexion.gateway.internal-secret:nexion-local-gateway-secret}") String gatewaySecret) {
-        this.tokenProvider = tokenProvider;
-        this.jdbcTemplate = jdbcTemplate;
-        this.gatewaySecret = gatewaySecret;
-    }
+    private final AuthSessionMapper authSessionMapper;
+    private final GatewaySecurityProperties gatewayProperties;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -62,7 +53,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private void authenticateFromGatewayHeaders(HttpServletRequest request) {
         String requestSecret = request.getHeader(AuthHeaders.GATEWAY_SECRET);
-        if (!StringUtils.hasText(requestSecret) || !requestSecret.equals(gatewaySecret)) {
+        if (!StringUtils.hasText(requestSecret) || !requestSecret.equals(gatewayProperties.getInternalSecret())) {
             return;
         }
         String subjectId = request.getHeader(AuthHeaders.SUBJECT_ID);
@@ -102,17 +93,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return false;
         }
         try {
-            Integer activeCount = jdbcTemplate.queryForObject("""
-                    SELECT COUNT(1)
-                      FROM nx_user_session
-                     WHERE refresh_token_id = ?
-                       AND user_id = ?
-                       AND revoked_at IS NULL
-                       AND expires_at > NOW()
-                       AND is_deleted = 0
-                    """, Integer.class, sessionId, Long.valueOf(claims.getSubject()));
-            return activeCount != null && activeCount > 0;
-        } catch (DataAccessException | NumberFormatException ex) {
+            int activeCount = authSessionMapper.countActiveUserSession(sessionId, Long.valueOf(claims.getSubject()));
+            return activeCount > 0;
+        } catch (RuntimeException ex) {
             return false;
         }
     }

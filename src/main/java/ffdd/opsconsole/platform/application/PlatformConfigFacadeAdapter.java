@@ -1,19 +1,20 @@
 package ffdd.opsconsole.platform.application;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
 @Service
+@RequiredArgsConstructor
 public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     private final PlatformConfigRepository configRepository;
-
-    public PlatformConfigFacadeAdapter(PlatformConfigRepository configRepository) {
-        this.configRepository = configRepository;
-    }
 
     @Override
     public Optional<String> activeValue(String configKey) {
@@ -45,5 +46,11 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
                 existing.createdAt(),
                 LocalDateTime.now());
         configRepository.save(saved);
+    }
+
+    @Override
+    public Map<String, String> activeValuesByGroup(String configGroup) {
+        return configRepository.findActiveByGroups(java.util.List.of(configGroup)).stream()
+                .collect(Collectors.toMap(PlatformConfigItem::configKey, PlatformConfigItem::configValue, (left, right) -> right));
     }
 }

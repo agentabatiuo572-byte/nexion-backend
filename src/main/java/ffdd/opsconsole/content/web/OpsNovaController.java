@@ -1,0 +1,101 @@
+package ffdd.opsconsole.content.web;
+
+import ffdd.opsconsole.common.api.OpsAdminApi;
+import ffdd.opsconsole.content.application.OpsNovaService;
+import ffdd.opsconsole.content.domain.NovaChannelView;
+import ffdd.opsconsole.content.domain.NovaOverview;
+import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
+import ffdd.opsconsole.content.domain.NovaSocialPoolView;
+import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.dto.NovaChannelStatusRequest;
+import ffdd.opsconsole.content.dto.NovaChannelUpsertRequest;
+import ffdd.opsconsole.content.dto.NovaDeleteRequest;
+import ffdd.opsconsole.content.dto.NovaDistributionUpdateRequest;
+import ffdd.opsconsole.content.dto.NovaPoolUpdateRequest;
+import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
+import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
+import ffdd.opsconsole.shared.api.ApiResult;
+import java.util.List;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/content/nova")
+@RequiredArgsConstructor
+public class OpsNovaController {
+    private final OpsNovaService novaService;
+
+    @GetMapping("/overview")
+    public ApiResult<NovaOverview> overview() {
+        return novaService.overview();
+    }
+
+    @PostMapping("/channels")
+    public ApiResult<NovaChannelView> createChannel(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaChannelUpsertRequest request) {
+        return novaService.createChannel(idempotencyKey, request);
+    }
+
+    @PatchMapping("/channels/{key}")
+    public ApiResult<NovaChannelView> updateChannel(
+            @PathVariable String key,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaChannelUpsertRequest request) {
+        return novaService.updateChannel(key, idempotencyKey, request);
+    }
+
+    @PatchMapping("/channels/{key}/status")
+    public ApiResult<NovaChannelView> updateChannelStatus(
+            @PathVariable String key,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaChannelStatusRequest request) {
+        return novaService.updateChannelStatus(key, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/channels/{key}")
+    public ApiResult<Void> deleteChannel(
+            @PathVariable String key,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaDeleteRequest request) {
+        return novaService.deleteChannel(key, idempotencyKey, request);
+    }
+
+    @PostMapping("/templates")
+    public ApiResult<NovaTemplateView> createTemplate(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaTemplateCreateRequest request) {
+        return novaService.createTemplate(idempotencyKey, request);
+    }
+
+    @PatchMapping("/templates/{channel}/status")
+    public ApiResult<NovaTemplateView> updateTemplateStatus(
+            @PathVariable String channel,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaTemplateStatusRequest request) {
+        return novaService.updateTemplateStatus(channel, idempotencyKey, request);
+    }
+
+    @PatchMapping("/social-distribution")
+    public ApiResult<List<NovaSocialDistributionItem>> updateDistribution(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaDistributionUpdateRequest request) {
+        return novaService.updateDistribution(idempotencyKey, request);
+    }
+
+    @PatchMapping("/social-pools/{poolKey}")
+    public ApiResult<NovaSocialPoolView> updatePool(
+            @PathVariable String poolKey,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaPoolUpdateRequest request) {
+        return novaService.updatePool(poolKey, idempotencyKey, request);
+    }
+}

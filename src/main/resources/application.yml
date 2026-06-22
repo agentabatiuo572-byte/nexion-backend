@@ -4,6 +4,16 @@ server:
 spring:
   application:
     name: nexion-backend
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${NEXION_DB_URL:jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${NEXION_DB_USERNAME:root}
+    password: ${NEXION_DB_PASSWORD:}
+  data:
+    redis:
+      host: ${NEXION_REDIS_HOST:127.0.0.1}
+      port: ${NEXION_REDIS_PORT:6379}
+      password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
   architecture:
@@ -11,4 +21,18 @@ nexion:
     distributed-runtime-enabled: false
   ops-console:
     admin-prefix: /api/admin
-    config-prefix: /api/config
+  storage:
+    endpoint: ${NEXION_MINIO_ENDPOINT:http://127.0.0.1:9000}
+    access-key: ${NEXION_MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${NEXION_MINIO_SECRET_KEY:}
+    bucket: ${NEXION_MINIO_BUCKET:nexion}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true

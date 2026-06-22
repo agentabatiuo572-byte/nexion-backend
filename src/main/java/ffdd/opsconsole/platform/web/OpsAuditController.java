@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.web;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
@@ -10,7 +12,11 @@ import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
+import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -27,11 +33,14 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/audit")
 @PreAuthorize("hasAuthority('PERM_AUDIT_READ')")
+@RequiredArgsConstructor
 public class OpsAuditController {
     private final AuditLogService auditLogService;
+    private final OpsAuditCenterService auditCenterService;
 
-    public OpsAuditController(AuditLogService auditLogService) {
-        this.auditLogService = auditLogService;
+    @GetMapping("/overview")
+    public ApiResult<AuditCenterOverview> overview() {
+        return auditCenterService.overview();
     }
 
     @GetMapping("/logs")
@@ -81,6 +90,33 @@ public class OpsAuditController {
                 "status", "CREATED",
                 "idempotencyKey", normalizedKey,
                 "createdAt", LocalDateTime.now().toString()));
+    }
+
+    @PostMapping("/operations/{operationId}/approve")
+    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    public ApiResult<AuditCenterOverview.AuditOperationTicket> approveOperation(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String operationId,
+            @RequestBody(required = false) AuditOperationDecisionRequest request) {
+        return auditCenterService.approve(idempotencyKey, operationId, request);
+    }
+
+    @PostMapping("/operations/{operationId}/reject")
+    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    public ApiResult<AuditCenterOverview.AuditOperationTicket> rejectOperation(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String operationId,
+            @RequestBody(required = false) AuditOperationDecisionRequest request) {
+        return auditCenterService.reject(idempotencyKey, operationId, request);
+    }
+
+    @PostMapping("/mechanism-params/{paramKey}")
+    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    public ApiResult<AuditCenterOverview.AuditMechanismParam> updateMechanismParam(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String paramKey,
+            @RequestBody(required = false) AuditMechanismParamUpdateRequest request) {
+        return auditCenterService.updateMechanismParam(idempotencyKey, paramKey, request);
     }
 
     @GetMapping("/stats/summary")

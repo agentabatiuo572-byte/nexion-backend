@@ -1,7 +1,7 @@
 USE nexion;
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
-INSERT INTO admin (id, username, password_hash, nickname, email, phone, super_admin, status)
+INSERT INTO nx_admin (id, username, password_hash, nickname, email, phone, super_admin, status)
 VALUES
   (1, 'superadmin', '$2a$10$OiCP0hEdnWNuxl/Q6PQ.juoWSzQCXFbvrLheJ.TYywnoyiZY7s19C', 'Super Admin', 'admin@nexion.ai', NULL, 1, 1)
 ON DUPLICATE KEY UPDATE
@@ -11,7 +11,7 @@ ON DUPLICATE KEY UPDATE
   super_admin = VALUES(super_admin),
   status = VALUES(status);
 
-INSERT INTO admin_role (id, role_code, role_name, remark, status)
+INSERT INTO nx_admin_role (id, role_code, role_name, remark, status)
 VALUES
   (1, 'SUPER_ADMIN', 'Super Administrator', 'Platform owner role with all permissions.', 1),
   (2, 'OPS_ADMIN', 'Operations Administrator', 'Daily operations role for compute, wallet, team, and content.', 1)
@@ -20,7 +20,7 @@ ON DUPLICATE KEY UPDATE
   remark = VALUES(remark),
   status = VALUES(status);
 
-UPDATE admin_permission
+UPDATE nx_admin_permission
 SET permission_code = CONCAT(permission_code, '_LEGACY_', id),
     status = 0,
     is_deleted = 1,
@@ -28,39 +28,39 @@ SET permission_code = CONCAT(permission_code, '_LEGACY_', id),
 WHERE id BETWEEN 101 AND 110
   AND resource_type = 'API';
 
-INSERT INTO admin_permission (id, permission_code, permission_name, resource_type, resource_path, remark, status)
+INSERT INTO nx_admin_permission (id, permission_code, permission_name, resource_type, resource_path, remark, status)
 VALUES
-  (1, 'PERM_ADMIN_READ', 'Read admins', 'API', '/auth/admins/**', NULL, 1),
-  (2, 'PERM_ADMIN_WRITE', 'Write admins', 'API', '/auth/admins/**', NULL, 1),
-  (3, 'PERM_ADMIN_ROLE_ASSIGN', 'Assign admin roles', 'API', '/auth/admins/*/roles', NULL, 1),
-  (4, 'PERM_ROLE_READ', 'Read roles', 'API', '/auth/access-control/roles/**', NULL, 1),
-  (5, 'PERM_ROLE_WRITE', 'Write roles', 'API', '/auth/access-control/roles/**', NULL, 1),
-  (6, 'PERM_ROLE_PERMISSION_ASSIGN', 'Assign role permissions', 'API', '/auth/access-control/roles/*/api-permissions,/auth/access-control/roles/*/menus', NULL, 1),
-  (7, 'PERM_PERMISSION_READ', 'Read permissions', 'API', '/auth/access-control/permissions/**', NULL, 1),
-  (8, 'PERM_PERMISSION_WRITE', 'Write permissions', 'API', '/auth/access-control/permissions/**', NULL, 1),
-  (9, 'PERM_MENU_READ', 'Read menus', 'API', '/auth/access-control/menus/**', NULL, 1),
-  (10, 'PERM_MENU_WRITE', 'Write menus', 'API', '/auth/access-control/menus/**', NULL, 1),
-  (101, 'PERM_BFF_READ', 'Read BFF aggregation', 'API', '/bff/**', NULL, 1),
-  (102, 'PERM_COMPUTE_READ', 'Read compute operations', 'API', '/compute/**', NULL, 1),
-  (117, 'PERM_COMPUTE_WRITE', 'Write compute task, device status, activation, and lifecycle rules', 'API', '/compute/tasks/**,/compute/devices/*/status,/compute/devices/*/activate,/compute/devices/*/deactivate,/compute/devices/*/deactivation-schedule,/compute/device-lifecycle/rules/**', NULL, 1),
-  (103, 'PERM_COMMERCE_READ', 'Read commerce operations', 'API', '/commerce/**,/genesis/**', NULL, 1),
-  (104, 'PERM_COMMERCE_WRITE', 'Write commerce operations', 'API', '/commerce/orders/**,/commerce/products/**,/commerce/payments/ops/**,/genesis/**', NULL, 1),
-  (105, 'PERM_WALLET_READ', 'Read wallet operations', 'API', '/wallet/**', NULL, 1),
-  (112, 'PERM_WALLET_WRITE', 'Write wallet operations', 'API', '/wallet/**', NULL, 1),
-  (118, 'PERM_EARNINGS_WRITE', 'Write earnings tick and milestone operations', 'API', '/earnings/ticks/**,/earnings/milestones/**,/earnings/events/settle-receipt', NULL, 1),
-  (106, 'PERM_TEAM_READ', 'Read team operations', 'API', '/team/**', NULL, 1),
-  (116, 'PERM_TEAM_WRITE', 'Write team operations', 'API', '/team/**', NULL, 1),
-  (107, 'PERM_NOTIFICATION_READ', 'Read notifications', 'API', '/notifications/**', NULL, 1),
-  (119, 'PERM_NOTIFICATION_WRITE', 'Write notification operations', 'API', '/notifications/ops/**', NULL, 1),
-  (108, 'PERM_EARNINGS_READ', 'Read earnings operations', 'API', '/earnings/**', NULL, 1),
-  (109, 'PERM_MISSION_READ', 'Read mission operations', 'API', '/missions/**', NULL, 1),
-  (121, 'PERM_MISSION_WRITE', 'Write mission operations', 'API', '/missions/ops/**', NULL, 1),
-  (110, 'PERM_COMPLIANCE_READ', 'Read compliance operations', 'API', '/compliance/**', NULL, 1),
-  (113, 'PERM_COMPLIANCE_WRITE', 'Write compliance operations', 'API', '/compliance/**', NULL, 1),
-  (111, 'PERM_SYSTEM_READ', 'Read system operations', 'API', '/system/**', NULL, 1),
-  (115, 'PERM_SYSTEM_WRITE', 'Write system operations', 'API', '/system/**', NULL, 1),
-  (114, 'PERM_OPENAPI_ADMIN', 'Admin OpenAPI apps, quotas, audits, and webhook delivery', 'API', '/openapi/ops/**,/openapi/webhooks/deliveries/**', NULL, 1),
-  (120, 'PERM_AUDIT_READ', 'Read cross-service audit logs', 'API', '/audit/**', NULL, 1),
+  (1, 'PERM_ADMIN_READ', 'Read admins', 'API', '/api/admin/platform/accounts/**', NULL, 1),
+  (2, 'PERM_ADMIN_WRITE', 'Write admins', 'API', '/api/admin/platform/accounts/**', NULL, 1),
+  (3, 'PERM_ADMIN_ROLE_ASSIGN', 'Assign admin roles', 'API', '/api/admin/platform/accounts/*/role', NULL, 1),
+  (4, 'PERM_ROLE_READ', 'Read roles', 'API', '/api/admin/platform/rbac/**', NULL, 1),
+  (5, 'PERM_ROLE_WRITE', 'Write roles', 'API', '/api/admin/platform/rbac/**', NULL, 1),
+  (6, 'PERM_ROLE_PERMISSION_ASSIGN', 'Assign role permissions', 'API', '/api/admin/platform/rbac/actions/*/grants', NULL, 1),
+  (7, 'PERM_PERMISSION_READ', 'Read permissions', 'API', '/api/admin/platform/rbac/**', NULL, 1),
+  (8, 'PERM_PERMISSION_WRITE', 'Write permissions', 'API', '/api/admin/platform/rbac/**', NULL, 1),
+  (9, 'PERM_MENU_READ', 'Read menus', 'API', '/api/admin/platform/rbac/**', NULL, 1),
+  (10, 'PERM_MENU_WRITE', 'Write menus', 'API', '/api/admin/platform/rbac/**', NULL, 1),
+  (101, 'PERM_OVERVIEW_READ', 'Read ops dashboard overview', 'API', '/api/admin/ops-dashboard/**,/api/admin/treasury/overview,/api/admin/treasury/dual-ledger', NULL, 1),
+  (102, 'PERM_USERS_READ', 'Read user operations', 'API', '/api/admin/users/**', NULL, 1),
+  (117, 'PERM_USERS_WRITE', 'Write user operations', 'API', '/api/admin/users/**', NULL, 1),
+  (103, 'PERM_FINANCE_READ', 'Read finance and treasury operations', 'API', '/api/admin/finance/**,/api/admin/treasury/**', NULL, 1),
+  (104, 'PERM_FINANCE_WRITE', 'Write finance and treasury operations', 'API', '/api/admin/finance/**,/api/admin/treasury/**', NULL, 1),
+  (105, 'PERM_DEVICES_READ', 'Read device and commerce operations', 'API', '/api/admin/devices/**', NULL, 1),
+  (112, 'PERM_DEVICES_WRITE', 'Write device and commerce operations', 'API', '/api/admin/devices/**', NULL, 1),
+  (106, 'PERM_MARKET_READ', 'Read financial product operations', 'API', '/api/admin/market/**', NULL, 1),
+  (118, 'PERM_MARKET_WRITE', 'Write financial product operations', 'API', '/api/admin/market/**', NULL, 1),
+  (107, 'PERM_CONTENT_READ', 'Read content and support operations', 'API', '/api/admin/content/**', NULL, 1),
+  (119, 'PERM_CONTENT_WRITE', 'Write content and support operations', 'API', '/api/admin/content/**', NULL, 1),
+  (108, 'PERM_TEAM_READ', 'Read team and commission operations', 'API', '/api/admin/teams/**', NULL, 1),
+  (116, 'PERM_TEAM_WRITE', 'Write team and commission operations', 'API', '/api/admin/teams/**', NULL, 1),
+  (109, 'PERM_GROWTH_READ', 'Read growth operations', 'API', '/api/admin/growth/**', NULL, 1),
+  (121, 'PERM_GROWTH_WRITE', 'Write growth operations', 'API', '/api/admin/growth/**', NULL, 1),
+  (110, 'PERM_RISK_READ', 'Read risk and emergency operations', 'API', '/api/admin/risk/**,/api/admin/emergency/**', NULL, 1),
+  (113, 'PERM_RISK_WRITE', 'Write risk and emergency operations', 'API', '/api/admin/risk/**,/api/admin/emergency/**', NULL, 1),
+  (111, 'PERM_SYSTEM_READ', 'Read platform operations', 'API', '/api/admin/platform/**,/api/admin/options/**,/api/admin/media/**,/api/admin/auth/**', NULL, 1),
+  (115, 'PERM_SYSTEM_WRITE', 'Write platform operations', 'API', '/api/admin/platform/**,/api/admin/options/**,/api/admin/media/**,/api/admin/commands/**', NULL, 1),
+  (114, 'PERM_BI_READ', 'Read BI and reporting operations', 'API', '/api/admin/bi/**', NULL, 1),
+  (120, 'PERM_AUDIT_READ', 'Read platform audit logs', 'API', '/api/admin/platform/audit/**', NULL, 1),
   (122, 'PERM_USER_READ', 'Read C-end user operations', 'API', '/auth/users/page,/auth/users/search,/auth/users/*', NULL, 1),
   (123, 'PERM_USER_WRITE', 'Write C-end user operations', 'API', '/auth/users/*', NULL, 1)
 ON DUPLICATE KEY UPDATE
@@ -72,7 +72,7 @@ ON DUPLICATE KEY UPDATE
   status = VALUES(status),
   is_deleted = 0;
 
-INSERT INTO admin_menu (id, menu_code, menu_name, parent_id, route_path, icon, sort_order, remark, status)
+INSERT INTO nx_admin_menu (id, menu_code, menu_name, parent_id, route_path, icon, sort_order, remark, status)
 VALUES
   (10, 'MENU_HOME', 'Home', NULL, '/home', 'HomeFilled', 10, 'Admin dashboard entry.', 1),
   (20, 'MENU_UMS', 'Access Control', NULL, '/ums', 'Lock', 20, 'Admin access control group.', 1),
@@ -90,7 +90,7 @@ ON DUPLICATE KEY UPDATE
   status = VALUES(status),
   is_deleted = 0;
 
-UPDATE admin_menu
+UPDATE nx_admin_menu
 SET menu_name_zh = CASE CAST(menu_code AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci
   WHEN 'MENU_HOME' THEN '首页'
   WHEN 'MENU_UMS' THEN '权限'
@@ -103,53 +103,305 @@ END,
 menu_name_en = COALESCE(menu_name_en, CAST(menu_name AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_0900_ai_ci)
 WHERE menu_code LIKE 'MENU_%';
 
-UPDATE admin_menu
+UPDATE nx_admin_menu
 SET status = 0,
     is_deleted = 1,
     updated_at = NOW()
 WHERE menu_code IN ('MENU_OPS', 'MENU_OPS_DEVICE', 'MENU_OPS_WALLET', 'MENU_OPS_CONFIG');
 
-INSERT IGNORE INTO admin_role_relation (admin_id, role_id)
+INSERT IGNORE INTO nx_admin_role_relation (admin_id, role_id)
 VALUES (1, 1);
 
-INSERT IGNORE INTO admin_role_permission (role_id, permission_id)
-SELECT 1, id FROM admin_permission WHERE resource_type = 'API';
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT 1, id FROM nx_admin_permission WHERE resource_type = 'API';
 
-INSERT IGNORE INTO admin_role_permission (role_id, permission_id)
-SELECT 2, id FROM admin_permission
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT 2, id FROM nx_admin_permission
 WHERE permission_code IN (
-  'PERM_BFF_READ',
-  'PERM_COMPUTE_READ',
-  'PERM_COMPUTE_WRITE',
-  'PERM_COMMERCE_READ',
-  'PERM_COMMERCE_WRITE',
-  'PERM_WALLET_READ',
-  'PERM_WALLET_WRITE',
+  'PERM_OVERVIEW_READ',
+  'PERM_USERS_READ',
+  'PERM_USERS_WRITE',
+  'PERM_FINANCE_READ',
+  'PERM_FINANCE_WRITE',
+  'PERM_DEVICES_READ',
+  'PERM_DEVICES_WRITE',
+  'PERM_MARKET_READ',
+  'PERM_MARKET_WRITE',
   'PERM_TEAM_READ',
   'PERM_TEAM_WRITE',
-  'PERM_NOTIFICATION_READ',
-  'PERM_NOTIFICATION_WRITE',
-  'PERM_EARNINGS_READ',
-  'PERM_MISSION_READ',
-  'PERM_MISSION_WRITE',
-  'PERM_COMPLIANCE_READ',
-  'PERM_COMPLIANCE_WRITE',
+  'PERM_CONTENT_READ',
+  'PERM_CONTENT_WRITE',
+  'PERM_GROWTH_READ',
+  'PERM_GROWTH_WRITE',
+  'PERM_RISK_READ',
+  'PERM_RISK_WRITE',
   'PERM_SYSTEM_READ',
   'PERM_SYSTEM_WRITE',
-  'PERM_EARNINGS_WRITE',
-  'PERM_OPENAPI_ADMIN',
+  'PERM_BI_READ',
   'PERM_AUDIT_READ',
   'PERM_USER_READ',
   'PERM_USER_WRITE'
 );
 
-INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
-SELECT 1, id FROM admin_menu;
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT 1, id FROM nx_admin_menu;
 
-INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
-SELECT 2, id FROM admin_menu WHERE menu_code IN (
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT 2, id FROM nx_admin_menu WHERE menu_code IN (
   'MENU_HOME'
 );
+
+INSERT INTO nx_config_item (config_key, config_value, value_type, config_group, visibility, remark, status)
+VALUES
+  ('a1.account.pendingTickets', '0', 'NUMBER', 'admin_a1_account', 'ADMIN', 'A1 pending account governance tickets.', 1),
+  ('a1.security.minEffectiveSupers', '2', 'NUMBER', 'admin_a1_security', 'ADMIN', 'Minimum enabled super admins required by A1 governance.', 1),
+  ('a1.role.super.registered', 'true', 'BOOLEAN', 'admin_a1_role', 'ADMIN', 'A1 role registration.', 1),
+  ('a1.role.super.name', '超级管理员', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role name.', 1),
+  ('a1.role.super.avatar', 'SA', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role avatar.', 1),
+  ('a1.role.super.color', 'red', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role color.', 1),
+  ('a1.role.super.description', '平台 Owner，保留所有危急操作。', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role description.', 1),
+  ('a1.role.super.scope', '全域：资金、风控、内容、配置、审计', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role scope.', 1),
+  ('a1.role.super.sort', '10', 'NUMBER', 'admin_a1_role', 'ADMIN', 'A1 role sort.', 1),
+  ('a1.role.finance.registered', 'true', 'BOOLEAN', 'admin_a1_role', 'ADMIN', 'A1 role registration.', 1),
+  ('a1.role.finance.name', '资金运营', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role name.', 1),
+  ('a1.role.finance.avatar', 'FI', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role avatar.', 1),
+  ('a1.role.finance.color', 'green', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role color.', 1),
+  ('a1.role.finance.description', '资金、账务、提现与覆盖率。', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role description.', 1),
+  ('a1.role.finance.scope', 'D/C/B 资金域', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role scope.', 1),
+  ('a1.role.finance.sort', '20', 'NUMBER', 'admin_a1_role', 'ADMIN', 'A1 role sort.', 1),
+  ('a1.role.risk.registered', 'true', 'BOOLEAN', 'admin_a1_role', 'ADMIN', 'A1 role registration.', 1),
+  ('a1.role.risk.name', '风控运营', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role name.', 1),
+  ('a1.role.risk.avatar', 'RK', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role avatar.', 1),
+  ('a1.role.risk.color', 'orange', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role color.', 1),
+  ('a1.role.risk.description', '风控模型、KYC、账户限制与熔断。', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role description.', 1),
+  ('a1.role.risk.scope', 'C/K/J 风控域', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role scope.', 1),
+  ('a1.role.risk.sort', '30', 'NUMBER', 'admin_a1_role', 'ADMIN', 'A1 role sort.', 1),
+  ('a1.role.growth.registered', 'true', 'BOOLEAN', 'admin_a1_role', 'ADMIN', 'A1 role registration.', 1),
+  ('a1.role.growth.name', '增长运营', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role name.', 1),
+  ('a1.role.growth.avatar', 'GR', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role avatar.', 1),
+  ('a1.role.growth.color', 'blue', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role color.', 1),
+  ('a1.role.growth.description', '活动、Phase dial、权益与触达。', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role description.', 1),
+  ('a1.role.growth.scope', 'H/权益/触达', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role scope.', 1),
+  ('a1.role.growth.sort', '40', 'NUMBER', 'admin_a1_role', 'ADMIN', 'A1 role sort.', 1),
+  ('a1.role.content.registered', 'true', 'BOOLEAN', 'admin_a1_role', 'ADMIN', 'A1 role registration.', 1),
+  ('a1.role.content.name', '内容运营', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role name.', 1),
+  ('a1.role.content.avatar', 'CT', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role avatar.', 1),
+  ('a1.role.content.color', 'purple', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role color.', 1),
+  ('a1.role.content.description', '文案、课程、风险披露与公告。', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role description.', 1),
+  ('a1.role.content.scope', 'I/公告/课程', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role scope.', 1),
+  ('a1.role.content.sort', '50', 'NUMBER', 'admin_a1_role', 'ADMIN', 'A1 role sort.', 1),
+  ('a1.role.support.registered', 'true', 'BOOLEAN', 'admin_a1_role', 'ADMIN', 'A1 role registration.', 1),
+  ('a1.role.support.name', '客服运营', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role name.', 1),
+  ('a1.role.support.avatar', 'CS', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role avatar.', 1),
+  ('a1.role.support.color', 'cyan', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role color.', 1),
+  ('a1.role.support.description', '用户查询、工单协同与只读辅助。', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role description.', 1),
+  ('a1.role.support.scope', 'C/D 只读与协助', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role scope.', 1),
+  ('a1.role.support.sort', '60', 'NUMBER', 'admin_a1_role', 'ADMIN', 'A1 role sort.', 1),
+  ('a1.role.audit.registered', 'true', 'BOOLEAN', 'admin_a1_role', 'ADMIN', 'A1 role registration.', 1),
+  ('a1.role.audit.name', '审计只读', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role name.', 1),
+  ('a1.role.audit.avatar', 'AU', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role avatar.', 1),
+  ('a1.role.audit.color', 'gray', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role color.', 1),
+  ('a1.role.audit.description', '审计与合规观察，禁止写操作。', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role description.', 1),
+  ('a1.role.audit.scope', 'A2/审计/报表', 'STRING', 'admin_a1_role', 'ADMIN', 'A1 role scope.', 1),
+  ('a1.role.audit.sort', '70', 'NUMBER', 'admin_a1_role', 'ADMIN', 'A1 role sort.', 1),
+  ('a1.security.baseline.tfa_required.registered', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline registration.', 1),
+  ('a1.security.baseline.tfa_required.label', '2FA 强制', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline label.', 1),
+  ('a1.security.baseline.tfa_required.description', '所有运营账号必须启用二次验证。', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline description.', 1),
+  ('a1.security.baseline.tfa_required.value', 'ON', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline value.', 1),
+  ('a1.security.baseline.tfa_required.locked', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline lock.', 1),
+  ('a1.security.baseline.tfa_required.sort', '10', 'NUMBER', 'admin_a1_security', 'ADMIN', 'A1 security baseline sort.', 1),
+  ('a1.security.baseline.least_priv.registered', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline registration.', 1),
+  ('a1.security.baseline.least_priv.label', '最小权限', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline label.', 1),
+  ('a1.security.baseline.least_priv.description', '默认按岗位授予最小可写权限。', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline description.', 1),
+  ('a1.security.baseline.least_priv.value', 'ON', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline value.', 1),
+  ('a1.security.baseline.least_priv.locked', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline lock.', 1),
+  ('a1.security.baseline.least_priv.sort', '20', 'NUMBER', 'admin_a1_security', 'ADMIN', 'A1 security baseline sort.', 1),
+  ('a1.security.baseline.min_supers.registered', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline registration.', 1),
+  ('a1.security.baseline.min_supers.label', '双超级管理员', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline label.', 1),
+  ('a1.security.baseline.min_supers.description', '生产后台至少保留两个有效超级管理员。', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline description.', 1),
+  ('a1.security.baseline.min_supers.value', '2 人', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline value.', 1),
+  ('a1.security.baseline.min_supers.locked', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline lock.', 1),
+  ('a1.security.baseline.min_supers.sort', '30', 'NUMBER', 'admin_a1_security', 'ADMIN', 'A1 security baseline sort.', 1),
+  ('a1.security.baseline.session.registered', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline registration.', 1),
+  ('a1.security.baseline.session.label', '会话上限', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline label.', 1),
+  ('a1.security.baseline.session.description', '后台闲置 30min、绝对 8h。', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline description.', 1),
+  ('a1.security.baseline.session.value', '30min / 8h', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline value.', 1),
+  ('a1.security.baseline.session.locked', 'false', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline lock.', 1),
+  ('a1.security.baseline.session.sort', '40', 'NUMBER', 'admin_a1_security', 'ADMIN', 'A1 security baseline sort.', 1),
+  ('a1.security.baseline.lock.registered', 'true', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline registration.', 1),
+  ('a1.security.baseline.lock.label', '登录锁定', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline label.', 1),
+  ('a1.security.baseline.lock.description', '短窗连续失败锁定，长窗累计失败人工复核。', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline description.', 1),
+  ('a1.security.baseline.lock.value', '5 次/15min · 15 次/24h', 'STRING', 'admin_a1_security', 'ADMIN', 'A1 security baseline value.', 1),
+  ('a1.security.baseline.lock.locked', 'false', 'BOOLEAN', 'admin_a1_security', 'ADMIN', 'A1 security baseline lock.', 1),
+  ('a1.security.baseline.lock.sort', '50', 'NUMBER', 'admin_a1_security', 'ADMIN', 'A1 security baseline sort.', 1),
+  ('a1.rbac.action.balance_adjust', '余额/资产调整(C3)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.balance_adjust.domainGroup', '用户/风控', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.balance_adjust.sort', '10', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.balance_adjust', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.balance_adjust', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.balance_adjust', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.balance_adjust', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.balance_adjust', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.balance_adjust', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.balance_adjust', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.user_freeze', '账户冻结/解冻(C2)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.user_freeze.domainGroup', '用户/风控', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.user_freeze.sort', '20', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.user_freeze', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.user_freeze', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.user_freeze', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.user_freeze', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.user_freeze', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.user_freeze', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.user_freeze', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.withdraw_approve', '提现放行/冻结(D2)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.withdraw_approve.domainGroup', '资金', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.withdraw_approve.sort', '30', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.withdraw_approve', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.withdraw_approve', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.withdraw_approve', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.withdraw_approve', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.withdraw_approve', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.withdraw_approve', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.withdraw_approve', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.bill_adjust', '账单手工调整(D4)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.bill_adjust.domainGroup', '资金', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.bill_adjust.sort', '40', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.bill_adjust', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.bill_adjust', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.bill_adjust', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.bill_adjust', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.bill_adjust', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.bill_adjust', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.bill_adjust', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.coverage_line', '覆盖率红黄线(B1)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.coverage_line.domainGroup', '资金', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.coverage_line.sort', '50', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.coverage_line', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.coverage_line', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.coverage_line', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.coverage_line', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.coverage_line', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.coverage_line', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.coverage_line', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.withdraw_param', '提现参数(D5)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.withdraw_param.domainGroup', '资金', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.withdraw_param.sort', '60', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.withdraw_param', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.withdraw_param', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.withdraw_param', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.withdraw_param', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.withdraw_param', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.withdraw_param', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.withdraw_param', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.risk_model', '风险模型权重(K4)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.risk_model.domainGroup', '用户/风控', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.risk_model.sort', '70', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.risk_model', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.risk_model', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.risk_model', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.risk_model', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.risk_model', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.risk_model', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.risk_model', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.kyc_decide', '大额 KYC 裁决(K5)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.kyc_decide.domainGroup', '用户/风控', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.kyc_decide.sort', '80', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.kyc_decide', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.kyc_decide', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.kyc_decide', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.kyc_decide', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.kyc_decide', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.kyc_decide', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.kyc_decide', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.phase_dial', 'Phase dial(H1)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.phase_dial.domainGroup', '增长/内容', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.phase_dial.sort', '90', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.phase_dial', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.phase_dial', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.phase_dial', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.phase_dial', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.phase_dial', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.phase_dial', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.phase_dial', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.content_publish', '文案/课程发布(I)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.content_publish.domainGroup', '增长/内容', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.content_publish.sort', '100', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.content_publish', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.content_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.content_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.content_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.content_publish', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.content_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.content_publish', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.disclosure_publish', '风险披露发布(I5)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.disclosure_publish.domainGroup', '增长/内容', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.disclosure_publish.sort', '110', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.disclosure_publish', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.disclosure_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.disclosure_publish', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.disclosure_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.disclosure_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.disclosure_publish', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.disclosure_publish', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.killswitch_toggle', '功能闸熔断(J1)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.killswitch_toggle.domainGroup', '基座/应急', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.killswitch_toggle.sort', '120', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.killswitch_toggle', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.killswitch_toggle', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.killswitch_toggle', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.killswitch_toggle', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.killswitch_toggle', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.killswitch_toggle', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.killswitch_toggle', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.geo_block', '地区屏蔽(J2)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.geo_block.domainGroup', '基座/应急', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.geo_block.sort', '130', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.geo_block', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.geo_block', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.geo_block', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.geo_block', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.geo_block', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.geo_block', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.geo_block', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.feature_flag', 'feature flag(A3)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.feature_flag.domainGroup', '基座/应急', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.feature_flag.sort', '140', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.feature_flag', 'C', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.feature_flag', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.feature_flag', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.feature_flag', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.feature_flag', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.feature_flag', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.feature_flag', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.operator_governance', '运营账号治理(A1)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.operator_governance.domainGroup', '基座/应急', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.operator_governance.sort', '150', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.operator_governance', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.operator_governance', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.operator_governance', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.operator_governance', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.operator_governance', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.operator_governance', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.operator_governance', 'R', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.action.audit_export', '审计全量导出(A2)', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action.', 1),
+  ('a1.rbac.action.audit_export.domainGroup', '基座/应急', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action domain.', 1),
+  ('a1.rbac.action.audit_export.sort', '160', 'NUMBER', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC action sort.', 1),
+  ('a1.rbac.super.audit_export', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.finance.audit_export', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.risk.audit_export', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.growth.audit_export', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.content.audit_export', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.support.audit_export', '-', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1),
+  ('a1.rbac.audit.audit_export', 'M', 'STRING', 'admin_a1_rbac', 'ADMIN', 'A1 RBAC grant.', 1)
+ON DUPLICATE KEY UPDATE
+  config_value = VALUES(config_value),
+  value_type = VALUES(value_type),
+  config_group = VALUES(config_group),
+  visibility = VALUES(visibility),
+  remark = VALUES(remark),
+  status = VALUES(status),
+  is_deleted = 0;
 
 INSERT INTO nx_user (id, country_code, phone, password_hash, nickname, referral_code, sponsor_code, kyc_status, user_level, v_rank, status, language, region)
 VALUES
@@ -189,6 +441,39 @@ VALUES
 ON DUPLICATE KEY UPDATE
   two_factor_enabled = VALUES(two_factor_enabled),
   login_fail_count = VALUES(login_fail_count);
+
+INSERT INTO nx_account_list (
+  user_id, kind, reason, status, expires_at, created_by, released_by, release_reason, released_at
+)
+VALUES
+  (10001, 'ALLOW', 'Seeded C2 trust-list entry for backend integration smoke test', 'ACTIVE', DATE_ADD(NOW(), INTERVAL 30 DAY), 'superadmin', NULL, NULL, NULL)
+ON DUPLICATE KEY UPDATE
+  kind = VALUES(kind),
+  reason = VALUES(reason),
+  status = VALUES(status),
+  expires_at = VALUES(expires_at),
+  created_by = VALUES(created_by),
+  released_by = VALUES(released_by),
+  release_reason = VALUES(release_reason),
+  released_at = VALUES(released_at),
+  is_deleted = 0;
+
+INSERT INTO nx_user_impersonation_session (
+  session_no, user_id, status, ttl_minutes, operator, reason, expires_at, terminated_by, terminate_reason, terminated_at
+)
+VALUES
+  ('IMP-SEED-10001', 10001, 'ACTIVE', 30, 'superadmin', 'Seeded C2 impersonation session for backend integration smoke test', DATE_ADD(NOW(), INTERVAL 30 MINUTE), NULL, NULL, NULL)
+ON DUPLICATE KEY UPDATE
+  user_id = VALUES(user_id),
+  status = VALUES(status),
+  ttl_minutes = VALUES(ttl_minutes),
+  operator = VALUES(operator),
+  reason = VALUES(reason),
+  expires_at = VALUES(expires_at),
+  terminated_by = VALUES(terminated_by),
+  terminate_reason = VALUES(terminate_reason),
+  terminated_at = VALUES(terminated_at),
+  is_deleted = 0;
 
 INSERT INTO nx_user_level_config (id, level_code, level_name, entry_condition, core_goal, sort_order, status)
 VALUES
@@ -682,7 +967,12 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO nx_exchange_order
   (id, user_id, exchange_no, from_asset, to_asset, from_amount, to_amount, rate, status, created_at, updated_at, is_deleted)
 VALUES
-  (1, 10001, 'DEMO-EX-NEX-USDT-1', 'NEX', 'USDT', 120.000000, 20.520000, 0.17100000, 'COMPLETED', DATE_SUB(NOW(), INTERVAL 4 DAY), NOW(), 0)
+  (1, 10001, 'DEMO-EX-NEX-USDT-1', 'NEX', 'USDT', 120.000000, 20.520000, 0.17100000, 'COMPLETED', DATE_SUB(NOW(), INTERVAL 4 DAY), NOW(), 0),
+  (2, 10001, 'DEMO-EX-QUEUE-1', 'NEX', 'USDT', 280.000000, 47.880000, 0.17100000, 'QUEUED', DATE_SUB(NOW(), INTERVAL 3 HOUR), NOW(), 0),
+  (3, 10001, 'DEMO-EX-QUEUE-2', 'NEX', 'USDT', 7200.000000, 1231.200000, 0.17100000, 'QUEUED', DATE_SUB(NOW(), INTERVAL 2 HOUR), NOW(), 0),
+  (4, 10001, 'DEMO-EX-KYC-1', 'NEX', 'USDT', 660.000000, 112.860000, 0.17100000, 'KYC_REQUIRED', DATE_SUB(NOW(), INTERVAL 1 HOUR), NOW(), 0),
+  (5, 10001, 'DEMO-EX-USERCAP-1', 'NEX', 'USDT', 310.000000, 53.010000, 0.17100000, 'USER_CAP', DATE_SUB(NOW(), INTERVAL 45 MINUTE), NOW(), 0),
+  (6, 10001, 'DEMO-EX-PLATFORMCAP-1', 'NEX', 'USDT', 5200.000000, 889.200000, 0.17100000, 'PLATFORM_CAP', DATE_SUB(NOW(), INTERVAL 30 MINUTE), NOW(), 0)
 ON DUPLICATE KEY UPDATE
   user_id = VALUES(user_id),
   from_asset = VALUES(from_asset),
@@ -860,6 +1150,12 @@ VALUES
   (61, 'wallet.withdrawal.min_usdt', '20', 'NUMBER', 'wallet', 'PUBLIC', 'Minimum USDT withdrawal amount shown in app.', 1),
   (62, 'wallet.withdrawal.fee_rate', '0.02', 'NUMBER', 'wallet', 'PUBLIC', 'USDT withdrawal fee rate shown in app.', 1),
   (63, 'wallet.exchange.nex_usdt_price', '0.171', 'NUMBER', 'wallet', 'PUBLIC', 'NEX to USDT exchange reference price shown in app.', 1),
+  (64, 'wallet.exchange.user_daily_cap_usdt', '50', 'NUMBER', 'wallet', 'ADMIN', 'G2 per-user daily NEX to USDT outflow cap.', 1),
+  (65, 'wallet.exchange.platform_daily_cap_usdt', '20000', 'NUMBER', 'wallet', 'ADMIN', 'G2 platform daily NEX to USDT outflow cap.', 1),
+  (66, 'wallet.exchange.fee_pct', '0', 'NUMBER', 'wallet', 'ADMIN', 'G2 exchange fee percent; 0 means free promotion.', 1),
+  (67, 'wallet.exchange.fee_min_usdt', '0.50', 'NUMBER', 'wallet', 'ADMIN', 'G2 minimum exchange fee in USDT.', 1),
+  (68, 'wallet.exchange.queue_mode', 'QUEUE', 'STRING', 'wallet', 'ADMIN', 'G2 over-cap handling mode: QUEUE or REJECT.', 1),
+  (69, 'wallet.exchange.kyc_threshold_usdt', '100', 'NUMBER', 'wallet', 'ADMIN', 'G2 cumulative exchange KYC trigger threshold.', 1),
   (144, 'wallet.exchange.min_usdt_value', '1', 'NUMBER', 'wallet', 'PUBLIC', 'Minimum exchange USDT-equivalent amount shown in app and enforced by wallet service.', 1),
   (145, 'wallet.exchange.max_usdt_value', '5000', 'NUMBER', 'wallet', 'PUBLIC', 'Maximum exchange USDT-equivalent amount shown in app and enforced by wallet service.', 1),
   (146, 'wallet.exchange.daily_count_limit', '10', 'NUMBER', 'wallet', 'PUBLIC', 'Maximum non-rejected exchange orders per user per day.', 1),
@@ -1561,6 +1857,66 @@ ON DUPLICATE KEY UPDATE
   message_value = VALUES(message_value),
   status = VALUES(status);
 
+INSERT INTO nx_i18n_message (message_key, locale, message_value, status)
+VALUES
+  ('milestones.earnCross', 'en-US', 'You just crossed {amount} in lifetime earnings - {nex} NEX is on its way.', 1),
+  ('milestones.earnCross', 'zh-CN', '累计收益突破 {amount},奖励 {nex} NEX 马上到账。', 1),
+  ('learn.what-is-nexion.title', 'en-US', 'What is Nexion - the 5-minute crash course', 1),
+  ('learn.what-is-nexion.title', 'zh-CN', 'What is Nexion - 5 分钟速成', 1),
+  ('learn.what-is-nexion.body', 'en-US', 'Understand devices, verified compute work, settlement, NEX rewards, and USDT balances.', 1),
+  ('learn.what-is-nexion.body', 'zh-CN', '了解设备、可验证算力、结算、NEX 奖励和 USDT 余额如何协同。', 1)
+ON DUPLICATE KEY UPDATE
+  message_value = VALUES(message_value),
+  status = VALUES(status);
+
+INSERT INTO nx_i18n_namespace (namespace_code, key_count, coverage_pct, variants, last_change, status, sort_order)
+VALUES
+  ('home', 128, 100, '-', '06-09', 1, 10),
+  ('binaryHowItWorks', 30, 100, '-', '05-30', 1, 20),
+  ('exchangeHowItWorks', 35, 100, '-', '06-02', 1, 30),
+  ('device', 42, 99, '-', '06-06', 1, 40),
+  ('marketing', 64, 95, '多版 x3', '06-05', 1, 50),
+  ('milestones', 22, 100, '多版 x1', '06-09', 1, 60),
+  ('team', 41, 100, '-', '05-30', 1, 70),
+  ('wallet', 52, 98, '-', '06-05', 1, 80),
+  ('trust', 38, 95, '-', '05-12', 1, 90),
+  ('genesis', 29, 99, '-', '05-26', 1, 100),
+  ('riskDisclosure', 44, 100, '-', '06-08', 1, 110),
+  ('learn', 36, 100, '-', '06-01', 1, 120),
+  ('premium_legacy', 18, 100, 'historical compatibility only', '05-14', 0, 900)
+ON DUPLICATE KEY UPDATE
+  key_count = VALUES(key_count),
+  coverage_pct = VALUES(coverage_pct),
+  variants = VALUES(variants),
+  last_change = VALUES(last_change),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);
+
+INSERT INTO nx_i18n_integrity_issue (issue_code, issue_kind, issue_count, samples_text, status, sort_order)
+VALUES
+  ('missing-zh', '缺镜像 (zh)', 3, 'marketing.referral.tagline\nwallet.lowBalance\ntrust.heroSub', 'open', 10),
+  ('missing-en', '缺镜像 (en)', 1, 'genesis.dividendNote', 'open', 20),
+  ('placeholder', '占位符不匹配', 2, 'milestones.earnCross({n} 词序异常)\nmarketing.bundle.cta({amount} 缺失)', 'open', 30),
+  ('hardcoded', '疑似硬编码', 4, 'store/bundle 页脚 Limited time only\nwallet 空态 No transactions yet\nteam 邀请卡 Invite and earn\nearn 任务卡角标 NEW', 'open', 40)
+ON DUPLICATE KEY UPDATE
+  issue_kind = VALUES(issue_kind),
+  issue_count = VALUES(issue_count),
+  samples_text = VALUES(samples_text),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);
+
+INSERT INTO nx_i18n_hardcoded_finding (location, raw_copy, suggested_key, status, sort_order)
+VALUES
+  ('store/bundle 页脚', 'Limited time only', 'store.bundleUrgency', 'open', 10),
+  ('wallet 空态', 'No transactions yet', 'wallet.emptyState', 'open', 20),
+  ('team 邀请卡', 'Invite and earn', 'team.inviteCta', 'open', 30),
+  ('earn 任务卡角标', 'NEW', 'earn.newBadge', 'open', 40)
+ON DUPLICATE KEY UPDATE
+  raw_copy = VALUES(raw_copy),
+  suggested_key = VALUES(suggested_key),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);
+
 INSERT INTO nx_content_page (id, page_code, title, content, status)
 VALUES
   (1, 'terms.service', 'Terms of Service', 'Nexion service terms baseline content.', 1),
@@ -1639,6 +1995,45 @@ ON DUPLICATE KEY UPDATE
   content = VALUES(content),
   status = VALUES(status);
 
+INSERT INTO nx_notification_cap_rule (tier, cap_label, policy, locked, sort_order, status, last_operator)
+VALUES
+  ('critical', '∞ 永不淘汰', '合规重确认 / 风控异动 / 资金账户异动 - 合规硬约束:不可调降,一条都不能丢', 1, 10, 1, 'seed'),
+  ('high', '50 条', 'tier 内 LIFO - 高优运营事件优先保留', 0, 20, 1, 'seed'),
+  ('normal', '200 条', '通知中心总上限 - 常规运营公告', 0, 30, 1, 'seed'),
+  ('low', '30 条 · TTL 24-48h', '教程提示等低优 - 数量+时间双闸,过期自动清', 0, 40, 1, 'seed')
+ON DUPLICATE KEY UPDATE
+  cap_label = VALUES(cap_label),
+  policy = VALUES(policy),
+  locked = VALUES(locked),
+  sort_order = VALUES(sort_order),
+  status = VALUES(status),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_notification_campaign (campaign_no, name, kind, tier, audience, reach_label, status, schedule_text, sent_label, read_label, body_en, body_zh, swipe_to, budget_usd, created_by, last_operator)
+VALUES
+  ('CMP-2618', '6/15 钱包维护窗口公告', 'system', 'high', '全量', '182K', 'SCHEDULED', '06-15 02:00 排期', '-', '-', 'Scheduled wallet maintenance Jun 15 02:00-04:00 UTC. Withdrawals paused during the window.', '6 月 15 日 02:00-04:00(UTC)钱包例行维护,期间暂停提现。', '/me/notifications/maintenance-0615', NULL, 'seed', 'seed'),
+  ('CMP-2617', '风险披露 v12 重确认提醒(SFC 辖区)', 'system', 'critical', 'SFC 辖区 · 未重确认用户', '9.4K', 'SCHEDULED', '06-12 10:00 排期', '-', '-', 'Updated risk disclosure requires re-acknowledgement before your next withdrawal.', '风险披露条款已更新,下次提现前需要重新确认。', '/me/risk-disclosure', NULL, 'seed', 'seed'),
+  ('CMP-2615', 'KYC 二级认证引导(大额用户)', 'system', 'high', '近 30 天提现 >$1k', '12.6K', 'SENT', '06-08 已发', '12.4K', '9.1K', 'Complete advanced verification to keep higher withdrawal limits.', '完成进阶认证,保住更高的提现额度。', '/me/kyc', NULL, 'seed', 'seed'),
+  ('CMP-2612', 'P3 阶段运营公告 · 周任务上新', 'system', 'normal', '全量', '182K', 'SENT', '06-02 已发', '178K', '104K', 'New weekly quests are live - check this week''s board.', '本周新任务已上线,去看看任务板。', '/earn/quests', NULL, 'seed', 'seed'),
+  ('CMP-2609', '监管通告 · 服务条款更新', 'system', 'critical', '全量', '181K', 'SENT', '05-28 已发', '181K', '152K', 'Our Terms of Service have been updated effective Jun 1.', '服务条款已更新,6 月 1 日生效。', '/trust', NULL, 'seed', 'seed'),
+  ('CMP-2606', '低优 · 教程中心上新提示', 'system', 'low', '注册 ≤14 天', '21K', 'SENT', '05-21 已发', '20.6K', '7.8K', 'New beginner lessons in Learn - earn NEX for finishing.', '教程中心上新了,学完还能领 NEX。', '/learn', NULL, 'seed', 'seed'),
+  ('CMP-2619', '7 月费率说明公告(草稿)', 'system', 'normal', '全量', '-', 'DRAFT', '-', '-', '-', '(草稿撰写中)', '(草稿撰写中)', '-', NULL, 'seed', 'seed')
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  kind = VALUES(kind),
+  tier = VALUES(tier),
+  audience = VALUES(audience),
+  reach_label = VALUES(reach_label),
+  status = VALUES(status),
+  schedule_text = VALUES(schedule_text),
+  sent_label = VALUES(sent_label),
+  read_label = VALUES(read_label),
+  body_en = VALUES(body_en),
+  body_zh = VALUES(body_zh),
+  swipe_to = VALUES(swipe_to),
+  budget_usd = VALUES(budget_usd),
+  last_operator = VALUES(last_operator);
+
 INSERT INTO nx_help_article (id, article_code, title, content, category, level, format, duration_min, reward_nex, progress_pct, featured, emoji, tint, sort_order, status)
 VALUES
   (1, 'compute.getting_started', 'Getting started with compute devices', 'Activate a device after a paid order, then wait for task dispatch.', 'help', 'beginner', 'article', 5, 0.000000, 0, 0, '📘', '#c6ff3a', 10, 1),
@@ -1656,6 +2051,137 @@ ON DUPLICATE KEY UPDATE
   emoji = VALUES(emoji),
   tint = VALUES(tint),
   sort_order = VALUES(sort_order),
+  status = VALUES(status);
+
+INSERT INTO nx_help_article (article_code, title, content, category, level, format, surface, duration_min, reward_nex, progress_pct, featured, emoji, tint, sort_order, status)
+VALUES
+  ('support.withdrawal.pending', 'Why is my withdrawal still pending?', 'Most pending withdrawals are waiting for payment desk review, network settlement, KYC re-check, or liquidity queue release. Open a withdrawal ticket with chain, amount, and request time if the SLA is exceeded.', 'withdrawal', 'support', 'faq', 'Help Center', 3, 0.000000, 0, 0, '📘', '#c6ff3a', 10, 1),
+  ('support.kyc.retry', 'What should I do after a KYC rejection?', 'Upload a clear document image, keep every corner visible, and avoid cropped or edited files. Support can reset the review link when the retry window is exhausted.', 'kyc', 'support', 'faq', 'Ticket Create', 3, 0.000000, 0, 0, '📘', '#c6ff3a', 20, 1),
+  ('support.hardware.offline', 'How do I recover a disconnected NexionBox?', 'Hold power for 10 seconds, re-pair the device in the app, and attach the LED pattern to a hardware support ticket if it stays offline.', 'hardware', 'support', 'faq', 'Nova', 3, 0.000000, 0, 0, '📘', '#c6ff3a', 30, 1)
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  content = VALUES(content),
+  category = VALUES(category),
+  level = VALUES(level),
+  format = VALUES(format),
+  surface = VALUES(surface),
+  duration_min = VALUES(duration_min),
+  reward_nex = VALUES(reward_nex),
+  progress_pct = VALUES(progress_pct),
+  featured = VALUES(featured),
+  emoji = VALUES(emoji),
+  tint = VALUES(tint),
+  sort_order = VALUES(sort_order),
+  status = VALUES(status);
+
+INSERT INTO nx_config_item (config_key, config_value, value_type, config_group, visibility, remark, status)
+VALUES
+  ('I.session.cat.advisor.enabled', 'on', 'BOOLEAN', 'content-session', 'ADMIN', 'M5 advisor conversation category enabled.', 1),
+  ('I.session.cat.support.enabled', 'on', 'BOOLEAN', 'content-session', 'ADMIN', 'M5 support conversation category enabled.', 1),
+  ('I.session.cat.ai.enabled', 'on', 'BOOLEAN', 'content-session', 'ADMIN', 'M5 read-only Nova AI conversation category mirror.', 1),
+  ('I.session.advisor.policy.enabled', 'on', 'BOOLEAN', 'content-session', 'ADMIN', 'M5 advisor proactive push master switch.', 1),
+  ('I.session.advisor.policy.delayMs', '1500', 'NUMBER', 'content-session', 'ADMIN', 'M5 advisor proactive push first delay in milliseconds.', 1),
+  ('I.session.advisor.policy.cooldownHours', '24', 'NUMBER', 'content-session', 'ADMIN', 'M5 advisor proactive push cooldown hours.', 1),
+  ('I.session.advisor.policy.maxPerSession', '1', 'NUMBER', 'content-session', 'ADMIN', 'M5 advisor proactive push max messages per session.', 1),
+  ('I.session.advisor.policy.audience', '全量', 'STRING', 'content-session', 'ADMIN', 'M5 advisor proactive push audience segment.', 1)
+ON DUPLICATE KEY UPDATE
+  config_value = VALUES(config_value),
+  value_type = VALUES(value_type),
+  config_group = VALUES(config_group),
+  visibility = VALUES(visibility),
+  remark = VALUES(remark),
+  status = VALUES(status);
+
+INSERT INTO nx_help_article (article_code, title, content, category, level, format, surface, duration_min, reward_nex, progress_pct, featured, emoji, tint, sort_order, status)
+VALUES
+  ('AS-001', '开场', '你好,我是你的专属顾问。你可以把当前目标告诉我,我会按设备、锁仓和复投给你拆路径。', 'advisor', '全量', 'session_script', '—', 1, 0.000000, 0, 0, '💬', '#7dd3fc', 10, 1),
+  ('AS-002', '升级', '你的设备近期有不少时段闲置,升级后能减少空窗并提升可接任务范围。', 'advisor', '注册 ≤14 天', 'session_script', '/store', 1, 0.000000, 0, 0, '💬', '#7dd3fc', 20, 1),
+  ('AS-003', '锁仓', '如果你准备长期持有 NEX,可以先看锁仓档位、释放规则和风险披露,再决定是否进入。', 'advisor', 'P3 阶段活跃', 'session_script', '/staking', 1, 0.000000, 0, 0, '💬', '#7dd3fc', 30, 1),
+  ('AS-004', '复投', '当前收益可以拆成设备容量、锁仓和 Genesis 暴露三条线,我可以先给你列一个保守方案。', 'advisor', '近 30 天提现偏高', 'session_script', '/genesis', 1, 0.000000, 0, 0, '💬', '#7dd3fc', 40, 0),
+  ('RT-S1', 'support', '收到,我先调出你的账户和最近工单记录核对。', 'reply-template', 'support', 'session_reply_template', 'Session Workbench', 1, 0.000000, 0, 0, '💬', '#7dd3fc', 10, 1),
+  ('RT-S2', 'support', '这个问题需要关联账单/设备/风控记录,我会先补充查询再回复你。', 'reply-template', 'support', 'session_reply_template', 'Session Workbench', 1, 0.000000, 0, 0, '💬', '#7dd3fc', 20, 1),
+  ('RT-A1', 'advisor', '我看到了你的目标,建议先确认预算、可接受锁定周期和风险偏好。', 'reply-template', 'advisor', 'session_reply_template', 'Session Workbench', 1, 0.000000, 0, 0, '💬', '#7dd3fc', 30, 1)
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  content = VALUES(content),
+  category = VALUES(category),
+  level = VALUES(level),
+  format = VALUES(format),
+  surface = VALUES(surface),
+  duration_min = VALUES(duration_min),
+  reward_nex = VALUES(reward_nex),
+  progress_pct = VALUES(progress_pct),
+  featured = VALUES(featured),
+  emoji = VALUES(emoji),
+  tint = VALUES(tint),
+  sort_order = VALUES(sort_order),
+  status = VALUES(status);
+
+INSERT INTO nx_conversation (id, conversation_no, user_id, conversation_type, status, owner_agent_id, owner_agent_name, unread_count, last_message, last_message_at, created_at, updated_at, is_deleted)
+VALUES
+  (9101, 'CV-I9-1001', 1001, 'support', 'OPEN', 'agent-1', 'Marina K.', 2, 'My withdrawal has been pending for too long.', DATE_SUB(NOW(), INTERVAL 18 MINUTE), DATE_SUB(NOW(), INTERVAL 2 HOUR), DATE_SUB(NOW(), INTERVAL 18 MINUTE), 0),
+  (9102, 'CV-I9-1002', 1002, 'advisor', 'TRANSFERRED', 'agent-2', 'Agent Two', 1, 'I need an earning plan before upgrading hardware.', DATE_SUB(NOW(), INTERVAL 48 MINUTE), DATE_SUB(NOW(), INTERVAL 3 HOUR), DATE_SUB(NOW(), INTERVAL 48 MINUTE), 0),
+  (9103, 'CV-I9-1003', 1003, 'support', 'RESOLVED', 'agent-1', 'Marina K.', 0, 'Thanks, this can be closed.', DATE_SUB(NOW(), INTERVAL 1 HOUR), DATE_SUB(NOW(), INTERVAL 5 HOUR), DATE_SUB(NOW(), INTERVAL 1 HOUR), 0)
+ON DUPLICATE KEY UPDATE
+  user_id = VALUES(user_id),
+  conversation_type = VALUES(conversation_type),
+  status = VALUES(status),
+  owner_agent_id = VALUES(owner_agent_id),
+  owner_agent_name = VALUES(owner_agent_name),
+  unread_count = VALUES(unread_count),
+  last_message = VALUES(last_message),
+  last_message_at = VALUES(last_message_at),
+  updated_at = VALUES(updated_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_conversation_transfer (id, conversation_no, from_agent_id, from_agent_name, to_type, to_id, to_name, reason, status, operator, transferred_at, created_at, updated_at, is_deleted)
+VALUES
+  (9101, 'CV-I9-1002', 'agent-1', 'Marina K.', 'agent', 'agent-2', 'Agent Two', 'advisor specialist review', 'PENDING', 'Marina K.', DATE_SUB(NOW(), INTERVAL 48 MINUTE), DATE_SUB(NOW(), INTERVAL 48 MINUTE), DATE_SUB(NOW(), INTERVAL 48 MINUTE), 0)
+ON DUPLICATE KEY UPDATE
+  from_agent_id = VALUES(from_agent_id),
+  from_agent_name = VALUES(from_agent_name),
+  to_type = VALUES(to_type),
+  to_id = VALUES(to_id),
+  to_name = VALUES(to_name),
+  reason = VALUES(reason),
+  status = VALUES(status),
+  operator = VALUES(operator),
+  transferred_at = VALUES(transferred_at),
+  updated_at = VALUES(updated_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_conversation_message (id, conversation_id, conversation_no, sender_id, sender_type, sender_name, content, created_at, updated_at, is_deleted)
+VALUES
+  (9101, 9101, 'CV-I9-1001', 1001, 'user', 'User 1001', 'My withdrawal has been pending for too long.', DATE_SUB(NOW(), INTERVAL 18 MINUTE), DATE_SUB(NOW(), INTERVAL 18 MINUTE), 0),
+  (9102, 9101, 'CV-I9-1001', NULL, 'agent', 'Marina K.', 'I am checking the payment desk and liquidity queue now.', DATE_SUB(NOW(), INTERVAL 12 MINUTE), DATE_SUB(NOW(), INTERVAL 12 MINUTE), 0),
+  (9103, 9102, 'CV-I9-1002', 1002, 'user', 'User 1002', 'I need an earning plan before upgrading hardware.', DATE_SUB(NOW(), INTERVAL 48 MINUTE), DATE_SUB(NOW(), INTERVAL 48 MINUTE), 0),
+  (9104, 9103, 'CV-I9-1003', 1003, 'user', 'User 1003', 'Thanks, this can be closed.', DATE_SUB(NOW(), INTERVAL 1 HOUR), DATE_SUB(NOW(), INTERVAL 1 HOUR), 0)
+ON DUPLICATE KEY UPDATE
+  conversation_id = VALUES(conversation_id),
+  conversation_no = VALUES(conversation_no),
+  sender_id = VALUES(sender_id),
+  sender_type = VALUES(sender_type),
+  sender_name = VALUES(sender_name),
+  content = VALUES(content),
+  updated_at = VALUES(updated_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_support_sla_rule (category, first_response_mins, resolution_hours, queue, escalation, status)
+VALUES
+  ('withdrawal', 15, 12, '支付台', 'D2 withdrawal review', 1),
+  ('deposit', 20, 12, '充值台', 'D1 deposit reconciliation', 1),
+  ('kyc', 30, 24, '合规台', 'C4 KYC ledger', 1),
+  ('hardware', 45, 48, '设备运维台', 'E5 device ops', 1),
+  ('account', 30, 24, '账户台', 'C5 security', 1),
+  ('earnings', 45, 48, '收益台', 'F2 earnings ledger', 1),
+  ('genesis', 20, 18, '创世节点台', 'G4 Genesis economy', 1),
+  ('technical', 60, 72, '技术支持台', 'A3 system config', 1),
+  ('other', 60, 72, '一线客服', 'M2 support lead', 1)
+ON DUPLICATE KEY UPDATE
+  first_response_mins = VALUES(first_response_mins),
+  resolution_hours = VALUES(resolution_hours),
+  queue = VALUES(queue),
+  escalation = VALUES(escalation),
   status = VALUES(status);
 
 INSERT INTO nx_help_article (article_code, title, content, category, level, format, duration_min, reward_nex, progress_pct, featured, emoji, tint, sort_order, status)
@@ -1693,3 +2219,200 @@ ON DUPLICATE KEY UPDATE
   tint = VALUES(tint),
   sort_order = VALUES(sort_order),
   status = VALUES(status);
+
+INSERT INTO nx_content_copy (copy_key, description, surface, current_version, status, i18n_key, experiment_id, last_change, draft_version, draft_zh, draft_en, draft_surface, draft_audience, draft_traffic_split, draft_note, last_operator)
+VALUES
+  ('home.conversionBanner', '主转化横幅 · 激活设备每日收益话术', 'Home', 'v7', 'published', 'marketing.home.convBanner', 'EXP-2611', '05-28', 'v8', '完成 {amount} USDT 复投并获得 {nex} NEX 奖励', 'Reinvest {amount} USDT and earn {nex} NEX', 'Home', 'P3 · 全语言', '50', '草稿:复投奖励强调', 'seed'),
+  ('home.missedIncome', '错过收益条 · 与基准机型的日产差额', 'Home', 'v4', 'published', 'marketing.home.missed', 'EXP-2612', '05-30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('home.heroCta', '首屏主按钮文案', 'Home', 'v9', 'published', 'marketing.home.heroCta', NULL, '05-21', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('home.trialNudge', '试用引导条(试用资格用户可见)', 'Home', 'v3', 'published', 'marketing.home.trial', NULL, '04-30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('home.paybackChip', '回本周期角标', 'Home', 'v2', 'published', 'marketing.home.payback', NULL, '04-02', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('me.upgradeCard', '「该升级了」卡片 · 按机队推荐', 'Me', 'v5', 'published', 'marketing.me.upgrade', 'EXP-2613', '06-02', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('me.referralNudge', '邀请返佣提示条', 'Me', 'v6', 'published', 'marketing.me.referral', NULL, '05-11', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('me.vrankProgress', 'V 等级进度话术', 'Me', 'v2', 'published', 'marketing.me.vrank', NULL, '03-19', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('me.walletEmpty', '钱包空态引导', 'Me', 'v3', 'published', 'marketing.me.walletEmpty', NULL, '02-27', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('store.paybackHint', '商品卡回本提示', '商城', 'v4', 'published', 'marketing.store.payback', NULL, '05-06', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('store.bundleBanner', '捆绑购横幅', '商城', 'v3', 'published', 'marketing.store.bundle', NULL, '04-22', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed'),
+  ('store.tradeinHook', '以旧换新钩子文案', '商城', 'v2', 'published', 'marketing.store.tradein', NULL, '03-30', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'seed')
+ON DUPLICATE KEY UPDATE
+  description = VALUES(description),
+  surface = VALUES(surface),
+  current_version = VALUES(current_version),
+  status = VALUES(status),
+  i18n_key = VALUES(i18n_key),
+  experiment_id = VALUES(experiment_id),
+  last_change = VALUES(last_change),
+  draft_version = VALUES(draft_version),
+  draft_zh = VALUES(draft_zh),
+  draft_en = VALUES(draft_en),
+  draft_surface = VALUES(draft_surface),
+  draft_audience = VALUES(draft_audience),
+  draft_traffic_split = VALUES(draft_traffic_split),
+  draft_note = VALUES(draft_note),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_content_copy_version (copy_key, version, status, chain, ts_label, zh_text, en_text, surface, audience, traffic_split, version_note, last_operator)
+VALUES
+  ('home.conversionBanner', 'v8', 'draft', 'li.wen / -', '06-10 18:22', '完成 {amount} USDT 复投并获得 {nex} NEX 奖励', 'Reinvest {amount} USDT and earn {nex} NEX', 'Home', 'P3 · 全语言', '50', '草稿:复投奖励强调', 'seed'),
+  ('home.conversionBanner', 'v7', 'published', 'li.wen / chen.r(lead)', '05-28 11:04', '激活 {targetName},每天赚 ${targetDaily},约 {paybackDays} 天回本,收益是 {lowestName} 的 {multiplier} 倍', 'Activate {targetName} · earn ${targetDaily}/day · payback ~{paybackDays} days · {multiplier}x {lowestName}', 'Home', 'P3 · 全语言', '50', '现行发布版', 'seed'),
+  ('home.conversionBanner', 'v6', 'archived', 'zhao.m / chen.r(lead)', '04-12 09:40', '激活 {targetName},每日预计收益 ${targetDaily}', 'Activate {targetName} for estimated ${targetDaily}/day', 'Home', 'P2-P3', '50', '归档版', 'seed'),
+  ('home.conversionBanner', 'v5', 'archived', 'zhao.m / superadmin', '03-02 15:17', '升级到 {targetName},解锁更高算力', 'Upgrade to {targetName} and unlock higher compute', 'Home', '全量', '50', '归档版', 'seed')
+ON DUPLICATE KEY UPDATE
+  status = VALUES(status),
+  chain = VALUES(chain),
+  ts_label = VALUES(ts_label),
+  zh_text = VALUES(zh_text),
+  en_text = VALUES(en_text),
+  surface = VALUES(surface),
+  audience = VALUES(audience),
+  traffic_split = VALUES(traffic_split),
+  version_note = VALUES(version_note),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_content_experiment_framework (param_key, param_name, current_value, description, sort_order, last_operator)
+VALUES
+  ('split', '分流比例默认', '变体等分', '新实验默认变体等分;可改成任意组合,但合计必须 = 100%,超了服务器拒', 10, 'seed'),
+  ('aud', '受众定向默认', '全量', '默认全量;可按注册周 / 运营阶段 / 语言圈定,只对圈定后新进入的用户生效', 20, 'seed'),
+  ('sample', '最小样本量', '5,000 / 变体', '每个变体曝光不够这个数就出结论,统计上不可信', 30, 'seed'),
+  ('maxrun', '最长运行期', '90 天', '到期未手动结算自动转已结,防止僵尸实验长期分裂用户体验', 40, 'seed')
+ON DUPLICATE KEY UPDATE
+  param_name = VALUES(param_name),
+  current_value = VALUES(current_value),
+  description = VALUES(description),
+  sort_order = VALUES(sort_order),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_content_experiment (experiment_id, copy_key, audience, impressions_label, conversions_label, state, note, last_operator)
+VALUES
+  ('EXP-2611', 'home.conversionBanner', 'P3 · 全语言', '412K', '18.3K', 'running', '05-29 起 · 已 13 天', 'seed'),
+  ('EXP-2612', 'home.missedIncome', '全量', '388K', '13.6K', 'running', '05-30 起 · 已 12 天', 'seed'),
+  ('EXP-2613', 'me.upgradeCard', 'zh · 注册>30天', '96K', '2.2K', 'running', '06-02 起 · 样本不足', 'seed'),
+  ('EXP-2607', 'home.conversionBanner', 'P2-P3', '1.02M', '37.8K', 'adopted', '已结 · B 胜出已采纳为 v7', 'seed'),
+  ('EXP-2598', 'store.paybackHint', '全量', '640K', '17.6K', 'discarded', '已结 · 无显著差异,弃用', 'seed')
+ON DUPLICATE KEY UPDATE
+  copy_key = VALUES(copy_key),
+  audience = VALUES(audience),
+  impressions_label = VALUES(impressions_label),
+  conversions_label = VALUES(conversions_label),
+  state = VALUES(state),
+  note = VALUES(note),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_content_experiment_variant (experiment_id, variant_name, split_pct, cvr_pct, sort_order)
+VALUES
+  ('EXP-2611', 'A(v7 现版)', 50, 4.10, 10),
+  ('EXP-2611', 'B(v8 候选)', 50, 4.80, 20),
+  ('EXP-2612', 'A(差额话术)', 34, 3.20, 10),
+  ('EXP-2612', 'B(倍数话术)', 33, 3.90, 20),
+  ('EXP-2612', 'C(回本话术)', 33, 3.40, 30),
+  ('EXP-2613', 'A(现版)', 50, 2.10, 10),
+  ('EXP-2613', 'B(机队对比)', 50, 2.60, 20),
+  ('EXP-2607', 'A(v6)', 50, 3.40, 10),
+  ('EXP-2607', 'B(v7)', 50, 4.00, 20),
+  ('EXP-2598', 'A', 50, 2.80, 10),
+  ('EXP-2598', 'B', 50, 2.70, 20)
+ON DUPLICATE KEY UPDATE
+  split_pct = VALUES(split_pct),
+  cvr_pct = VALUES(cvr_pct),
+  sort_order = VALUES(sort_order);
+
+INSERT INTO nx_trust_section (section_key, description, struct_text, version_label, status, role_gate, high_sensitivity, last_change, sort_order, last_operator)
+VALUES
+  ('financials', '财务透明数字组', '数字组 + 脚注', 'v5', 'published', '合规 / 超管', 1, '05-12', 10, 'seed'),
+  ('leadership', '管理团队', '人员卡 ×5(姓名/职务/前公司/占位链接)', 'v3', 'published', '内容主管', 0, '03-08', 20, 'seed'),
+  ('nexNarrative', 'NEX 代币叙事', '叙事文案 + 行情 stats + top3 客户榜', 'v6', 'published', '合规 / 超管', 1, '05-26', 30, 'seed'),
+  ('complianceBadges', '合规徽章', '徽章组(SOC2 / ISO27001 / CertiK)', 'v2', 'published', '合规 / 超管', 1, '02-14', 40, 'seed'),
+  ('auditsReserves', '审计与储备证明', '储备证明与审计报告外部引用由媒体/文档资产托管', 'v4', 'published', '合规 / 超管', 1, '04-20', 50, 'seed'),
+  ('listings', '交易所与行情外链', '交易所与行情页引用由资产表托管', 'v2', 'published', '内容主管', 0, '01-30', 60, 'seed')
+ON DUPLICATE KEY UPDATE
+  description = VALUES(description),
+  struct_text = VALUES(struct_text),
+  version_label = VALUES(version_label),
+  status = VALUES(status),
+  role_gate = VALUES(role_gate),
+  high_sensitivity = VALUES(high_sensitivity),
+  last_change = VALUES(last_change),
+  sort_order = VALUES(sort_order),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_trust_section_field (section_key, field_key, field_value, field_delta, sort_order, last_operator)
+VALUES
+  ('financials', 'MRR', '$4.87M', '+22%', 10, 'seed'),
+  ('financials', 'Active', '184,206', '+38%', 20, 'seed'),
+  ('financials', 'Devices', '28,432', '+12%', 30, 'seed'),
+  ('financials', 'Payouts', '$31.2M', '+27%', 40, 'seed'),
+  ('leadership', '成员数', '5 行高管卡', NULL, 10, 'seed'),
+  ('leadership', '字段', '姓名 / 职务 / 前公司 / LinkedIn 资料引用', NULL, 20, 'seed'),
+  ('leadership', '示例', 'CEO / ex-AWS / profile asset key', NULL, 30, 'seed'),
+  ('nexNarrative', '行情 stats', '24h 量 / 市值 / 流通量实时部分走行情源', NULL, 10, 'seed'),
+  ('nexNarrative', '客户榜', '前 3 大 AI 客户 NEX 消费', NULL, 20, 'seed'),
+  ('nexNarrative', '叙事', '30% 收入回购销毁', NULL, 30, 'seed'),
+  ('nexNarrative', '口径对齐', '市值/流通量须与金融产品域(G)一致', NULL, 40, 'seed'),
+  ('complianceBadges', '徽章', 'SOC2 · ISO27001 · CertiK', NULL, 10, 'seed'),
+  ('complianceBadges', '属性', '对外合规声明需要合规或超管执行', NULL, 20, 'seed'),
+  ('auditsReserves', '资产', '链上储备证明 / 审计报告文档资产', NULL, 10, 'seed'),
+  ('listings', '资产', 'PancakeSwap 等行情页资产引用', NULL, 10, 'seed')
+ON DUPLICATE KEY UPDATE
+  field_value = VALUES(field_value),
+  field_delta = VALUES(field_delta),
+  sort_order = VALUES(sort_order),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_disclosure_jurisdiction (jurisdiction_code, jurisdiction_name, version_label, status, published_at_label, affected_count, ack_progress_pct, blocked_count, last_operator)
+VALUES
+  ('MAS', '新加坡', 'v11', 'published', '05-02', 41200, 100.00, 0, 'seed'),
+  ('BaFin', '德国', 'v11', 'published', '05-02', 18600, 99.70, 4, 'seed'),
+  ('FINCEN', '美国', 'v10', 'published', '03-18', 52800, 100.00, 0, 'seed'),
+  ('SFC', '香港', 'v12', 'published', '06-08', 9400, 72.00, 312, 'seed')
+ON DUPLICATE KEY UPDATE
+  jurisdiction_name = VALUES(jurisdiction_name),
+  version_label = VALUES(version_label),
+  status = VALUES(status),
+  published_at_label = VALUES(published_at_label),
+  affected_count = VALUES(affected_count),
+  ack_progress_pct = VALUES(ack_progress_pct),
+  blocked_count = VALUES(blocked_count),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_disclosure_chapter (jurisdiction_code, version_label, chapter_no, zh_title, en_title, zh_body, en_body, sort_order, last_operator)
+VALUES
+  ('SFC', 'v12', '01', '收益预估不构成承诺', 'Earnings estimates are not guarantees', '本章节为受管合规文案。所有收益数字均为基于历史网络数据的估算,不构成对未来收益的承诺;实际产出受全网算力、设备状态与市场价格影响。', 'This section is managed compliance copy. Earnings figures are estimates from historical network data and are not promises of future income. Actual output depends on network compute, device state, and market price.', 10, 'seed'),
+  ('SFC', 'v12', '02', '硬件衰减与产量波动', 'Hardware decay and output variance', '设备生命周期、在线率、维修和网络任务分布都会影响产量。后台展示必须以服务器账本和设备状态为准。', 'Device lifecycle, uptime, maintenance, and network task distribution can affect output. Admin and app views must use server ledger and device state as the source of truth.', 20, 'seed'),
+  ('SFC', 'v12', '03', 'NEX 市场风险', 'NEX market risk', 'NEX 价格存在市场波动风险。NEX 奖励、回购叙事和行情展示不构成投资建议。', 'NEX price is subject to market volatility. NEX rewards, buyback narratives, and market displays are not investment advice.', 30, 'seed'),
+  ('SFC', 'v12', '04', '提现窗口与合规审查', 'Withdrawal windows and compliance review', '提现可能因合规审查、流动性排队、链上拥堵或 KYC 复核而延迟。', 'Withdrawals may be delayed by compliance review, liquidity queue, chain congestion, or KYC re-check.', 40, 'seed'),
+  ('SFC', 'v12', '05', '质押不可撤销', 'Staking is irrevocable', '质押锁仓在对应周期内不可随意撤销,提前退出可能产生罚款或收益损失。', 'Locked staking cannot be freely revoked during its term. Early exit can incur penalties or reward loss.', 50, 'seed'),
+  ('SFC', 'v12', '06', '网络经济与推荐激励', 'Network economy and referral incentives', '推荐、团队与网络经济收益受规则、资格、反作弊和账本确认影响。', 'Referral, team, and network economy rewards depend on rules, eligibility, anti-abuse checks, and ledger confirmation.', 60, 'seed'),
+  ('SFC', 'v12', '07', '托管、KYC 与监管管辖', 'Custody, KYC and regulatory jurisdiction', '用户辖区由 IP、KYC 和风险判定共同决定。变更条款后,用户必须重新确认才能继续受限动作。', 'User jurisdiction is determined by IP, KYC, and risk signals. After terms change, users must re-acknowledge before restricted actions continue.', 70, 'seed')
+ON DUPLICATE KEY UPDATE
+  zh_title = VALUES(zh_title),
+  en_title = VALUES(en_title),
+  zh_body = VALUES(zh_body),
+  en_body = VALUES(en_body),
+  sort_order = VALUES(sort_order),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_disclosure_gate_action (action_key, action_name, description, status_label, tone, active, sort_order, last_operator)
+VALUES
+  ('withdraw', '提现', '提交提现前服务器先验披露确认', '已实装', 'ok', 1, 10, 'seed'),
+  ('staking', '质押锁仓', '确认状态过期时拦截质押入口', '已实装', 'warn', 0, 20, 'seed'),
+  ('nexv2', 'NEX v2 历史锁仓', '已下线历史兼容项,只读展示,不允许重新启用', '已下线 · 历史兼容', 'dim', 0, 30, 'seed')
+ON DUPLICATE KEY UPDATE
+  action_name = VALUES(action_name),
+  description = VALUES(description),
+  status_label = VALUES(status_label),
+  tone = VALUES(tone),
+  active = IF(action_key = 'nexv2', 0, VALUES(active)),
+  sort_order = VALUES(sort_order),
+  last_operator = VALUES(last_operator);
+
+INSERT INTO nx_disclosure_draft (jurisdiction_code, version_label, language_scope, effective_date, requires_reack, zh_body, en_body, status, last_operator)
+VALUES
+  ('SFC', 'v13', 'en+zh', '2026-06-30', 1, 'SFC v13 草稿。收益估算不构成承诺,用户在下次提现前需要重新确认 {version}。', 'SFC v13 draft. Earnings estimates are not guarantees and users must re-acknowledge {version} before the next withdrawal.', 'DRAFT', 'seed')
+ON DUPLICATE KEY UPDATE
+  language_scope = VALUES(language_scope),
+  effective_date = VALUES(effective_date),
+  requires_reack = VALUES(requires_reack),
+  zh_body = VALUES(zh_body),
+  en_body = VALUES(en_body),
+  status = VALUES(status),
+  last_operator = VALUES(last_operator);

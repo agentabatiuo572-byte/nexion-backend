@@ -14,6 +14,8 @@ public interface ConversationRepository {
 
     Optional<ContentConversationView> findByConversationNo(String conversationNo);
 
+    List<ContentConversationMessageView> messages(String conversationNo);
+
     List<Map<String, Object>> transferTargets();
 
     void transferToPending(
@@ -28,4 +30,25 @@ public interface ConversationRepository {
     void acceptTransfer(ContentConversationView conversation, String operator, LocalDateTime now);
 
     void returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
+
+    void waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
+
+    void reply(ContentConversationView conversation, String body, String operator, LocalDateTime now);
+
+    void updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now);
+
+    void archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now);
+
+    void fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
+
+    void markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now);
+
+    ContentConversationView createConversation(
+            String conversationNo,
+            Long userId,
+            String conversationType,
+            String ownerAgentId,
+            String ownerAgentName,
+            String openingText,
+            LocalDateTime now);
 }

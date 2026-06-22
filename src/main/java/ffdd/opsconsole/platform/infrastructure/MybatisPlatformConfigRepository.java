@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.infrastructure;
 
+
+import lombok.RequiredArgsConstructor;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
@@ -10,12 +12,9 @@ import java.util.Optional;
 import org.springframework.stereotype.Repository;
 
 @Repository
+@RequiredArgsConstructor
 public class MybatisPlatformConfigRepository implements PlatformConfigRepository {
     private final PlatformConfigItemMapper mapper;
-
-    public MybatisPlatformConfigRepository(PlatformConfigItemMapper mapper) {
-        this.mapper = mapper;
-    }
 
     @Override
     public Optional<PlatformConfigItem> findActiveByKey(String configKey) {

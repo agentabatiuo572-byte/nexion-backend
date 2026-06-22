@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -25,6 +27,7 @@ import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
+@RequiredArgsConstructor
 public class OpsPlatformConfigService {
     private static final String GROUP_A3 = "admin_a3";
     private static final String GROUP_FLAG = "admin_feature_flag";
@@ -35,11 +38,6 @@ public class OpsPlatformConfigService {
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
-
-    public OpsPlatformConfigService(PlatformConfigRepository configRepository, AuditLogService auditLogService) {
-        this.configRepository = configRepository;
-        this.auditLogService = auditLogService;
-    }
 
     public ApiResult<PlatformConfigOverview> overview() {
         Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);

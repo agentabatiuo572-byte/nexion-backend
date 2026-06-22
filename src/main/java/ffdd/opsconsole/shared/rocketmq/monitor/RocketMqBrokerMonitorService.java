@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import lombok.RequiredArgsConstructor;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.remoting.RPCHook;
@@ -16,26 +17,16 @@ import org.apache.rocketmq.remoting.protocol.admin.TopicStatsTable;
 import org.apache.rocketmq.remoting.protocol.body.Connection;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
 import org.apache.rocketmq.tools.admin.DefaultMQAdminExt;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
+@RequiredArgsConstructor
 public class RocketMqBrokerMonitorService {
     private static final int MAX_TEXT = 256;
 
-    private final boolean enabled;
-    private final String nameServer;
+    private final RocketMqBrokerMonitorProperties properties;
     private final RocketMqAclProperties aclProperties;
-
-    public RocketMqBrokerMonitorService(
-            @Value("${nexion.outbox.rocketmq.enabled:false}") boolean enabled,
-            @Value("${nexion.outbox.rocketmq.name-server:127.0.0.1:9876}") String nameServer,
-            RocketMqAclProperties aclProperties) {
-        this.enabled = enabled;
-        this.nameServer = nameServer;
-        this.aclProperties = aclProperties;
-    }
 
     public RocketMqBrokerMonitor inspectConsumer(
             String name,
@@ -43,9 +34,9 @@ public class RocketMqBrokerMonitorService {
             String consumerGroup,
             boolean includeDlq) {
         RocketMqBrokerMonitor monitor = new RocketMqBrokerMonitor();
-        monitor.setEnabled(enabled);
+        monitor.setEnabled(properties.isEnabled());
         monitor.setName(name);
-        monitor.setNameServer(nameServer);
+        monitor.setNameServer(properties.getNameServer());
         monitor.setAcl(RocketMqAclHookFactory.describe(aclProperties));
         monitor.setTopic(trim(topic));
         monitor.setConsumerGroup(trim(consumerGroup));
@@ -58,7 +49,7 @@ public class RocketMqBrokerMonitorService {
         }
 
         DefaultMQAdminExt admin = createAdmin("nexion-broker-monitor-" + UUID.randomUUID().toString().replace("-", ""));
-        admin.setNamesrvAddr(nameServer);
+        admin.setNamesrvAddr(properties.getNameServer());
         try {
             admin.start();
             loadConsumeStats(admin, monitor);

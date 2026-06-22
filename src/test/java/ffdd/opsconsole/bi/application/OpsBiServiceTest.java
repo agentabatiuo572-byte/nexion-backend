@@ -5,11 +5,13 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.dto.BiReportActionRequest;
+import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -33,6 +35,27 @@ class OpsBiServiceTest {
                 .contains("confirm-with-reason")
                 .contains("24 hours")
                 .contains("decrypted PII export is blocked");
+        assertThat(result.getData())
+                .containsKeys("currentPhase", "phases", "l1", "l2", "l3", "l4");
+        assertThat(result.getData().get("l1").toString()).contains("Day 7 留存");
+        assertThat(result.getData().get("l3").toString()).contains("reserveCoverDays");
+    }
+
+    @Test
+    void reportsUsePageResultAndStatusBuckets() {
+        ApiResult<PageResult<BiReportView>> result = service.reports(new BiReportQueryRequest(
+                null,
+                "PENDING_CONFIRM,PENDING_SPLIT_CONFIRM",
+                2,
+                5,
+                null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getPageNum()).isEqualTo(2);
+        assertThat(result.getData().getPageSize()).isEqualTo(5);
+        assertThat(result.getData().getTotal()).isEqualTo(1);
+        assertThat(result.getData().getRecords()).containsExactly(reportRepository.report);
+        assertThat(reportRepository.lastStatuses).containsExactly("PENDING_CONFIRM", "PENDING_SPLIT_CONFIRM");
     }
 
     @Test
@@ -97,9 +120,12 @@ class OpsBiServiceTest {
         }
 
         @Override
-        public List<BiReportView> reports(String type, String status, int limit) {
-            return List.of(report);
+        public PageResult<BiReportView> reports(String type, List<String> statuses, int pageNum, int pageSize) {
+            lastStatuses = statuses;
+            return new PageResult<>(1, pageNum, pageSize, List.of(report));
         }
+
+        private List<String> lastStatuses = List.of();
 
         @Override
         public Optional<BiReportView> findReport(String reportId) {

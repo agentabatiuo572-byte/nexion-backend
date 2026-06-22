@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.web;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.platform.application.OpsArchitectureService;
@@ -10,12 +12,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/architecture")
+@RequiredArgsConstructor
 public class OpsArchitectureController {
     private final OpsArchitectureService architectureService;
-
-    public OpsArchitectureController(OpsArchitectureService architectureService) {
-        this.architectureService = architectureService;
-    }
 
     @GetMapping
     public ApiResult<OpsArchitectureOverview> overview() {

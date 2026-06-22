@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.web;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.platform.application.OpsDomainRuntimeService;
@@ -17,26 +19,23 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping(OpsAdminApi.ADMIN_PREFIX)
+@RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/runtime")
 @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
+@RequiredArgsConstructor
 public class OpsDomainRuntimeController {
     private final OpsDomainRuntimeService runtimeService;
 
-    public OpsDomainRuntimeController(OpsDomainRuntimeService runtimeService) {
-        this.runtimeService = runtimeService;
-    }
-
-    @GetMapping("/domains/contracts")
+    @GetMapping("/contracts")
     public ApiResult<List<OpsDomainRuntimeContract>> contracts() {
         return runtimeService.contracts();
     }
 
-    @GetMapping("/{adminResource}/runtime/contract")
+    @GetMapping("/contracts/{adminResource}")
     public ApiResult<OpsDomainRuntimeContract> contract(@PathVariable String adminResource) {
         return runtimeService.contract(adminResource);
     }
 
-    @PostMapping("/{adminResource}/runtime/commands/validate")
+    @PostMapping("/contracts/{adminResource}/commands/validate")
     @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
     public ApiResult<OpsDomainCommandValidationResponse> validateCommand(
             @PathVariable String adminResource,

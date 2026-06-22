@@ -1,5 +1,7 @@
 package ffdd.opsconsole.team.web;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.team.application.OpsTeamService;
@@ -15,12 +17,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/teams")
+@RequiredArgsConstructor
 public class OpsTeamController {
     private final OpsTeamService teamService;
-
-    public OpsTeamController(OpsTeamService teamService) {
-        this.teamService = teamService;
-    }
 
     @GetMapping("/overview")
     public ApiResult<Map<String, Object>> overview() {

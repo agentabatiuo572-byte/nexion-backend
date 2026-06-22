@@ -3,21 +3,28 @@ package ffdd.opsconsole.treasury.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -30,15 +37,17 @@ class OpsTreasuryServiceTest {
     private final FakeTreasuryLedgerRepository ledgerRepository = new FakeTreasuryLedgerRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsTreasuryService service = new OpsTreasuryService(
-            ledgerRepository,
-            configFacade,
-            auditLogService,
-            CLOCK,
-            new BigDecimal("5000"),
-            new BigDecimal("0.17"),
-            new BigDecimal("85"),
-            new BigDecimal("100"));
+    private final OpsTreasuryService service = service();
+
+    private OpsTreasuryService service() {
+        OpsTreasuryService service = new OpsTreasuryService(
+                ledgerRepository,
+                configFacade,
+                auditLogService,
+                CLOCK,
+                new TreasuryDualLedgerProperties());
+        return service;
+    }
 
     @Test
     @SuppressWarnings("unchecked")
@@ -136,6 +145,105 @@ class OpsTreasuryServiceTest {
         assertThat(captor.getValue().getAction()).isEqualTo("B1_DUAL_LEDGER_SCOPE_CHANGED");
     }
 
+    @Test
+    void thresholdUpdateWritesTreasuryConfigAndAudits() {
+        TreasuryThresholdRequest request = new TreasuryThresholdRequest(
+                new BigDecimal("92.36"), null, new BigDecimal("18.24"), "risk policy", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.updateThresholds("idem-threshold", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("wallet.dual-ledger.redline-pct", "92.4")
+                .containsEntry("wallet.dual-ledger.run-risk-pct", "18.2");
+        assertThat((Map<String, Object>) result.getData().get("thresholdUpdate"))
+                .containsEntry("redlinePct", new BigDecimal("92.4"))
+                .containsEntry("runRiskPct", new BigDecimal("18.2"));
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("B1_DUAL_LEDGER_THRESHOLDS_CHANGED");
+        assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
+    }
+
+    @Test
+    void ledgerBillsReturnsServerPage() {
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                1L,
+                10001L,
+                "WD-1",
+                "WITHDRAWAL",
+                "USDT",
+                "OUT",
+                new BigDecimal("25.5"),
+                new BigDecimal("74.5"),
+                "SUCCESS",
+                "withdraw completed",
+                LocalDateTime.now(CLOCK),
+                LocalDateTime.now(CLOCK)));
+
+        var result = service.ledgerBills(new TreasuryLedgerQueryRequest("withdrawal", 10001L, "WD", 1, 20));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getTotal()).isEqualTo(1);
+        assertThat(result.getData().getRecords()).extracting(TreasuryLedgerBillView::bizNo).containsExactly("WD-1");
+        assertThat(ledgerRepository.lastBillType).isEqualTo("WITHDRAWAL");
+        assertThat(ledgerRepository.lastBillUserId).isEqualTo(10001L);
+        assertThat(ledgerRepository.lastBillKeyword).isEqualTo("WD");
+    }
+
+    @Test
+    void ledgerAdjustmentCreatesPendingReviewAndAudits() {
+        TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
+                10001L,
+                "USDT",
+                "credit",
+                new BigDecimal("12.3456789"),
+                "WD-1",
+                "ledger repair after reconciliation",
+                "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.createLedgerAdjustment("idem-d4", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("userId", 10001L)
+                .containsEntry("asset", "USDT")
+                .containsEntry("direction", "CREDIT")
+                .containsEntry("amount", new BigDecimal("12.345679"))
+                .containsEntry("status", "PENDING_REVIEW");
+        assertThat(ledgerRepository.adjustments).hasSize(1);
+        assertThat(ledgerRepository.adjustments.get(0))
+                .containsEntry("userId", 10001L)
+                .containsEntry("relatedBizNo", "WD-1");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D4_LEDGER_ADJUSTMENT_CREATED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("reason", "ledger repair after reconciliation")
+                .containsEntry("idempotencyKey", "idem-d4");
+    }
+
+    @Test
+    void ledgerAdjustmentRejectsMissingOperator() {
+        TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
+                10001L,
+                "USDT",
+                "credit",
+                new BigDecimal("12.345678"),
+                "WD-1",
+                "ledger repair after reconciliation",
+                " ");
+
+        ApiResult<Map<String, Object>> result = service.createLedgerAdjustment("idem-d4", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.name());
+        assertThat(ledgerRepository.adjustments).isEmpty();
+        verifyNoInteractions(auditLogService);
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
@@ -169,6 +277,11 @@ class OpsTreasuryServiceTest {
         private BigDecimal avgRiskScore = BigDecimal.ZERO;
         private BigDecimal pendingCommission = BigDecimal.ZERO;
         private BigDecimal netFlow = BigDecimal.ZERO;
+        private final List<TreasuryLedgerBillView> bills = new ArrayList<>();
+        private final List<Map<String, Object>> adjustments = new ArrayList<>();
+        private String lastBillType;
+        private Long lastBillUserId;
+        private String lastBillKeyword;
 
         @Override
         public long countDeposits(LocalDateTime since, String status) {
@@ -248,6 +361,49 @@ class OpsTreasuryServiceTest {
         @Override
         public BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt) {
             return netFlow;
+        }
+
+        @Override
+        public long countLedgerBills(String type, Long userId, String keyword) {
+            lastBillType = type;
+            lastBillUserId = userId;
+            lastBillKeyword = keyword;
+            return bills.size();
+        }
+
+        @Override
+        public List<TreasuryLedgerBillView> pageLedgerBills(String type, Long userId, String keyword, int pageSize, int offset) {
+            lastBillType = type;
+            lastBillUserId = userId;
+            lastBillKeyword = keyword;
+            return bills.stream().skip(offset).limit(pageSize).toList();
+        }
+
+        @Override
+        public List<TreasuryLedgerBillView> userLedgerRows(Long userId, int limit) {
+            return bills.stream().filter(row -> row.userId().equals(userId)).limit(limit).toList();
+        }
+
+        @Override
+        public Optional<BigDecimal> currentUserBalance(Long userId, String asset) {
+            return bills.stream()
+                    .filter(row -> row.userId().equals(userId) && row.asset().equals(asset))
+                    .findFirst()
+                    .map(TreasuryLedgerBillView::balanceAfter);
+        }
+
+        @Override
+        public void createLedgerAdjustment(String adjustmentNo, Long userId, String asset, String direction,
+                                           BigDecimal amount, String relatedBizNo, String reason, String operator) {
+            adjustments.add(Map.of(
+                    "adjustmentNo", adjustmentNo,
+                    "userId", userId,
+                    "asset", asset,
+                    "direction", direction,
+                    "amount", amount,
+                    "relatedBizNo", relatedBizNo,
+                    "reason", reason,
+                    "operator", operator));
         }
     }
 }

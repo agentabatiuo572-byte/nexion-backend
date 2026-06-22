@@ -1,5 +1,7 @@
 package ffdd.opsconsole.emergency.application;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -20,6 +22,7 @@ import java.util.Set;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
+@RequiredArgsConstructor
 public class OpsKillSwitchService {
     private static final List<String> ACTIVE_GATES = List.of("withdraw", "staking", "genesis", "exchange", "trial");
     private static final Set<String> RETIRED_GATES = Set.of("premium", "nexv2", "nex-v2", "points");
@@ -27,15 +30,6 @@ public class OpsKillSwitchService {
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
     private final AuditLogService auditLogService;
-
-    public OpsKillSwitchService(
-            PlatformConfigFacade configFacade,
-            TreasuryCoverageFacade coverageFacade,
-            AuditLogService auditLogService) {
-        this.configFacade = configFacade;
-        this.coverageFacade = coverageFacade;
-        this.auditLogService = auditLogService;
-    }
 
     public ApiResult<Map<String, Object>> matrix() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();

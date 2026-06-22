@@ -10,7 +10,7 @@ class RocketMqBrokerMonitorServiceTest {
     @Test
     void rejectsBlankTopicOrGroupWithoutOpeningAdminClient() {
         RocketMqBrokerMonitorService service = new RocketMqBrokerMonitorService(
-                false, "127.0.0.1:9876", new RocketMqAclProperties());
+                monitorProperties(false), new RocketMqAclProperties());
 
         RocketMqBrokerMonitor monitor = service.inspectConsumer("bad", " ", "group", true);
 
@@ -24,7 +24,7 @@ class RocketMqBrokerMonitorServiceTest {
     @Test
     void supportsMultiTargetAggregationWithPerTargetNames() {
         RocketMqBrokerMonitorService service = new RocketMqBrokerMonitorService(
-                false, "127.0.0.1:9876", new RocketMqAclProperties());
+                monitorProperties(false), new RocketMqAclProperties());
 
         List<RocketMqBrokerMonitor> monitors = service.inspectConsumers(List.of(
                 new RocketMqBrokerConsumerTarget("one", "", "group-one"),
@@ -45,11 +45,18 @@ class RocketMqBrokerMonitorServiceTest {
         acl.setAccessKey("abc123456");
         acl.setSecretKey("should-not-appear");
         acl.setSecurityToken("token-should-not-appear");
-        RocketMqBrokerMonitorService service = new RocketMqBrokerMonitorService(true, "127.0.0.1:9876", acl);
+        RocketMqBrokerMonitorService service = new RocketMqBrokerMonitorService(monitorProperties(true), acl);
 
         RocketMqBrokerMonitor monitor = service.inspectConsumer("acl", "", "group", false);
 
         assertThat(monitor.getAcl()).isEqualTo("enabled=true, accessKey=abc***, securityToken=true");
         assertThat(monitor.toString()).doesNotContain("should-not-appear", "token-should-not-appear");
+    }
+
+    private RocketMqBrokerMonitorProperties monitorProperties(boolean enabled) {
+        RocketMqBrokerMonitorProperties properties = new RocketMqBrokerMonitorProperties();
+        properties.setEnabled(enabled);
+        properties.setNameServer("127.0.0.1:9876");
+        return properties;
     }
 }

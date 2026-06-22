@@ -1,9 +1,11 @@
 USE nexion;
 
-CREATE TABLE IF NOT EXISTS admin_menu (
+CREATE TABLE IF NOT EXISTS nx_admin_menu (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   menu_code VARCHAR(96) NOT NULL,
   menu_name VARCHAR(96) NOT NULL,
+  menu_name_zh VARCHAR(96) NULL,
+  menu_name_en VARCHAR(96) NULL,
   parent_id BIGINT NULL,
   route_path VARCHAR(255) NOT NULL,
   icon VARCHAR(64) NULL,
@@ -18,7 +20,7 @@ CREATE TABLE IF NOT EXISTS admin_menu (
   KEY idx_admin_menu_sort (sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS admin_role_menu (
+CREATE TABLE IF NOT EXISTS nx_admin_role_menu (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   role_id BIGINT NOT NULL,
   menu_id BIGINT NOT NULL,
@@ -28,74 +30,105 @@ CREATE TABLE IF NOT EXISTS admin_role_menu (
   UNIQUE KEY uk_admin_role_menu (role_id, menu_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-UPDATE admin_permission
-SET resource_path = '/auth/access-control/roles/*/permissions,/auth/access-control/roles/*/menus',
+UPDATE nx_admin_permission
+SET resource_path = '/api/admin/platform/rbac/actions/*/grants',
     updated_at = NOW()
 WHERE permission_code = 'PERM_ROLE_PERMISSION_ASSIGN'
   AND resource_type = 'API';
 
-INSERT INTO admin_menu (id, menu_code, menu_name, parent_id, route_path, icon, sort_order, remark, status)
+INSERT INTO nx_admin_menu (id, menu_code, menu_name, menu_name_zh, menu_name_en, parent_id, route_path, icon, sort_order, remark, status)
 VALUES
-  (10, 'MENU_HOME', '首页', NULL, '/home', 'HomeFilled', 10, '后台首页菜单', 1),
-  (20, 'MENU_UMS', '权限', NULL, '/ums', 'Lock', 20, '权限管理目录', 1),
-  (21, 'MENU_UMS_ADMIN', '管理员列表', 20, '/ums/admin', 'User', 21, '管理员维护菜单', 1),
-  (22, 'MENU_UMS_ROLE', '角色列表', 20, '/ums/role', 'UserFilled', 22, '角色维护菜单', 1),
-  (23, 'MENU_UMS_MENU', '菜单管理', 20, '/ums/menu', 'Menu', 23, '后台菜单维护入口', 1),
-  (24, 'MENU_UMS_PERMISSION', 'API 权限', 20, '/ums/permission', 'Key', 24, 'API 权限维护菜单', 1),
-  (40, 'MENU_TEAM', '团队', NULL, '/team', 'Share', 40, '团队管理目录', 1),
-  (41, 'MENU_TEAM_RANK_CONFIG', '等级配置', 40, '/team/rank-config', 'Medal', 41, '等级配置菜单', 1),
-  (42, 'MENU_TEAM_RANK_EVALUATE', '等级评估', 40, '/team/rank-evaluate', 'Trophy', 42, '等级评估菜单', 1),
-  (43, 'MENU_TEAM_COMMISSION_RECORDS', '佣金记录', 40, '/team/commission-records', 'Tickets', 43, '佣金记录菜单', 1),
-  (44, 'MENU_TEAM_COMMISSION_SETTLE', '佣金结算', 40, '/team/commission-settle', 'Money', 44, '佣金结算菜单', 1),
-  (130, 'MENU_COMMERCE', '商城交易', NULL, '/commerce', 'ShoppingCart', 130, '商城交易目录', 1),
-  (131, 'MENU_COMMERCE_PRODUCTS', '商品 SKU', 130, '/commerce/products', 'Goods', 131, '商品 SKU 配置', 1),
-  (132, 'MENU_COMMERCE_ORDERS', '订单管理', 130, '/commerce/orders', 'Tickets', 132, '订单运营', 1),
-  (133, 'MENU_COMMERCE_PAYMENTS', '支付对账', 130, '/commerce/payments', 'CreditCard', 133, '支付对账运营', 1),
-  (134, 'MENU_COMMERCE_TRADEINS', 'Trade-in', 130, '/commerce/tradeins', 'Refresh', 134, 'Trade-in 运营', 1),
-  (150, 'MENU_GENESIS', 'Genesis', NULL, '/genesis', 'Star', 150, 'Genesis 目录', 1),
-  (151, 'MENU_GENESIS_SERIES', '系列配置', 150, '/genesis/series', 'Collection', 151, 'Genesis 系列配置', 1),
-  (152, 'MENU_GENESIS_ORDERS', 'Genesis 订单', 150, '/genesis/orders', 'Tickets', 152, 'Genesis 订单', 1),
-  (153, 'MENU_GENESIS_HOLDINGS', 'Genesis 持仓', 150, '/genesis/holdings', 'Medal', 153, 'Genesis 持仓', 1),
-  (160, 'MENU_COMPUTE', '设备算力', NULL, '/compute', 'Cpu', 160, '设备算力目录', 1),
-  (161, 'MENU_COMPUTE_DEVICES', '设备实例', 160, '/compute/devices', 'Cpu', 161, '设备实例', 1),
-  (162, 'MENU_COMPUTE_LIFECYCLE', '生命周期', 160, '/compute/lifecycle', 'Timer', 162, '生命周期规则', 1),
-  (163, 'MENU_COMPUTE_TASKS', '计算任务', 160, '/compute/tasks', 'Operation', 163, '计算任务', 1),
-  (164, 'MENU_COMPUTE_RECEIPTS', 'Receipt', 160, '/compute/receipts', 'DocumentChecked', 164, '计算凭证', 1),
-  (165, 'MENU_COMPUTE_NODE_MAP', '节点地图', 160, '/compute/node-map', 'MapLocation', 165, '节点地图', 1),
-  (170, 'MENU_WALLET', '钱包运营', NULL, '/wallet', 'Wallet', 170, '钱包运营目录', 1),
-  (171, 'MENU_WALLET_OVERVIEW', '钱包概览', 170, '/wallet/overview', 'Wallet', 171, '钱包概览', 1),
-  (172, 'MENU_WALLET_LEDGERS', '钱包流水', 170, '/wallet/ledgers', 'Tickets', 172, '钱包流水', 1),
-  (173, 'MENU_WALLET_DEPOSITS', '充值记录', 170, '/wallet/deposits', 'Download', 173, '充值运营', 1),
-  (174, 'MENU_WALLET_WITHDRAWALS', '提现广播', 170, '/wallet/withdrawals', 'Upload', 174, '提现广播运营', 1),
-  (180, 'MENU_COMPLIANCE', '合规风控', NULL, '/compliance', 'Checked', 180, '合规风控目录', 1),
-  (181, 'MENU_COMPLIANCE_KYC', 'KYC', 180, '/compliance/kyc', 'UserFilled', 181, 'KYC 运营', 1),
-  (182, 'MENU_COMPLIANCE_RISK', '风险决策', 180, '/compliance/risk-decisions', 'DataAnalysis', 182, '风险决策', 1),
-  (183, 'MENU_COMPLIANCE_REVIEW', '人工复核', 180, '/compliance/review', 'Warning', 183, '人工复核', 1),
-  (184, 'MENU_COMPLIANCE_BLACKLISTS', '黑名单', 180, '/compliance/blacklists', 'CircleClose', 184, '黑名单运营', 1),
-  (185, 'MENU_COMPLIANCE_PROOF', 'Proof 资产', 180, '/compliance/proof-assets', 'Files', 185, 'Proof 资产', 1),
-  (190, 'MENU_SYSTEM', '系统配置', NULL, '/system', 'Setting', 190, '系统配置目录', 1),
-  (191, 'MENU_SYSTEM_CONFIGS', '后台配置', 190, '/system/configs', 'Setting', 191, '后台配置', 1),
-  (192, 'MENU_SYSTEM_PUBLIC_CONFIG', '公共配置', 190, '/system/public-config', 'View', 192, '公共配置', 1),
-  (193, 'MENU_SYSTEM_I18N', '多语言', 190, '/system/i18n', 'ChatLineSquare', 193, '多语言', 1),
-  (194, 'MENU_SYSTEM_CONTENT', '内容页', 190, '/system/content', 'Document', 194, '内容页', 1),
-  (195, 'MENU_SYSTEM_HELP', '帮助中心', 190, '/system/help', 'QuestionFilled', 195, '帮助中心', 1),
-  (196, 'MENU_SYSTEM_SUPPORT_TICKETS', '客服工单', 190, '/system/support-tickets', 'Service', 196, '客服工单运营', 1),
-  (210, 'MENU_OPENAPI', 'OpenAPI', NULL, '/openapi', 'Connection', 210, 'OpenAPI 目录', 1),
-  (211, 'MENU_OPENAPI_APPS', '应用管理', 210, '/openapi/apps', 'Key', 211, 'OpenAPI 应用', 1),
-  (212, 'MENU_OPENAPI_CALL_AUDITS', '调用审计', 210, '/openapi/call-audits', 'DataLine', 212, 'OpenAPI 调用审计', 1),
-  (213, 'MENU_OPENAPI_WEBHOOKS', 'Webhook', 210, '/openapi/webhooks', 'Position', 213, 'Webhook 投递', 1),
-  (220, 'MENU_AUDIT', '审计', NULL, '/audit', 'DataLine', 220, '审计目录', 1),
-  (221, 'MENU_AUDIT_LOGS', '审计日志', 220, '/audit/logs', 'Document', 221, '审计日志', 1),
-  (222, 'MENU_AUDIT_STATS', '审计统计', 220, '/audit/stats', 'DataAnalysis', 222, '审计统计', 1),
-  (230, 'MENU_MISSION', '任务运营', NULL, '/mission', 'Flag', 230, '任务运营目录', 1),
-  (231, 'MENU_MISSION_OVERVIEW', '任务概览', 230, '/mission/overview', 'DataBoard', 231, '任务服务概览', 1),
-  (232, 'MENU_MISSION_CONSUMER', '消费事件', 230, '/mission/consumer', 'Connection', 232, 'Mission 消费事件治理', 1),
-  (240, 'MENU_NOTIFICATION', '通知触达', NULL, '/notification', 'Bell', 240, '通知触达目录', 1),
-  (241, 'MENU_NOTIFICATION_OVERVIEW', '通知概览', 240, '/notification/overview', 'DataBoard', 241, '通知服务概览', 1),
-  (242, 'MENU_NOTIFICATION_PUSH', '待推送处理', 240, '/notification/push', 'Position', 242, '待推送处理', 1),
-  (243, 'MENU_NOTIFICATION_CONSUMER', '消费事件', 240, '/notification/consumer', 'Connection', 243, 'Notification 消费事件治理', 1)
+  (10, 'MENU_HOME', '首页', '首页', 'Home', NULL, '/home', 'HomeFilled', 10, '后台首页菜单', 1),
+  (20, 'MENU_UMS', '权限', '权限', 'Access Control', NULL, '/ums', 'Lock', 20, '权限管理目录', 1),
+  (21, 'MENU_UMS_ADMIN', '管理员列表', '管理员列表', 'Admins', 20, '/ums/admin', 'User', 21, '管理员维护菜单', 1),
+  (22, 'MENU_UMS_ROLE', '角色列表', '角色列表', 'Roles', 20, '/ums/role', 'UserFilled', 22, '角色维护菜单', 1),
+  (23, 'MENU_UMS_MENU', '菜单管理', '菜单管理', 'Menus', 20, '/ums/menu', 'Menu', 23, '后台菜单维护入口', 1),
+  (24, 'MENU_UMS_PERMISSION', 'API 权限', 'API 权限', 'API Permissions', 20, '/ums/permission', 'Key', 24, 'API 权限维护菜单', 1),
+  (1000, 'MENU_PLATFORM', '平台基础', '平台基础', 'platform', NULL, '/platform', 'ShieldCheck', 1000, '平台基础目录,按PC左侧菜单同步。', 1),
+  (1001, 'MENU_PLATFORM_A1', '运营账号 & RBAC', '运营账号 & RBAC', 'A1', 1000, '/platform/rbac', 'Document', 1001, 'A1 运营账号 & RBAC,按PC左侧菜单同步。', 1),
+  (1002, 'MENU_PLATFORM_A2', '审计 & 操作确认', '审计 & 操作确认', 'A2', 1000, '/platform/audit', 'Document', 1002, 'A2 审计 & 操作确认,按PC左侧菜单同步。', 1),
+  (1003, 'MENU_PLATFORM_A3', '系统配置', '系统配置', 'A3', 1000, '/platform/config', 'Document', 1003, 'A3 系统配置,按PC左侧菜单同步。', 1),
+  (1004, 'MENU_PLATFORM_A4', '埋点事件体系', '埋点事件体系', 'A4', 1000, '/platform/events', 'Document', 1004, 'A4 埋点事件体系,按PC左侧菜单同步。', 1),
+  (1005, 'MENU_PLATFORM_A5', '平台参数寄存器', '平台参数寄存器', 'A5', 1000, '/platform/params-registry', 'Document', 1005, 'A5 平台参数寄存器,按PC左侧菜单同步。', 1),
+  (1100, 'MENU_OVERVIEW', '总览驾驶舱', '总览驾驶舱', 'overview', NULL, '/overview', 'Gauge', 1100, '总览驾驶舱目录,按PC左侧菜单同步。', 1),
+  (1101, 'MENU_OVERVIEW_B1', '双账本总览', '双账本总览', 'B1', 1100, '/overview/dual-ledger', 'Document', 1101, 'B1 双账本总览,按PC左侧菜单同步。', 1),
+  (1102, 'MENU_OVERVIEW_B2', '资金池水位', '资金池水位', 'B2', 1100, '/overview/liquidity', 'Document', 1102, 'B2 资金池水位,按PC左侧菜单同步。', 1),
+  (1103, 'MENU_OVERVIEW_B3', '转化漏斗', '转化漏斗', 'B3', 1100, '/overview/funnel', 'Document', 1103, 'B3 转化漏斗,按PC左侧菜单同步。', 1),
+  (1104, 'MENU_OVERVIEW_B4', '节奏状态', '节奏状态', 'B4', 1100, '/overview/rhythm', 'Document', 1104, 'B4 节奏状态,按PC左侧菜单同步。', 1),
+  (1105, 'MENU_OVERVIEW_B5', '风险雷达', '风险雷达', 'B5', 1100, '/overview/risk-radar', 'Document', 1105, 'B5 风险雷达,按PC左侧菜单同步。', 1),
+  (1200, 'MENU_USERS', '用户与账户', '用户与账户', 'users', NULL, '/users', 'Users', 1200, '用户与账户目录,按PC左侧菜单同步。', 1),
+  (1201, 'MENU_USERS_C1', '检索 & 画像', '检索 & 画像', 'C1', 1200, '/users/search', 'Document', 1201, 'C1 检索 & 画像,按PC左侧菜单同步。', 1),
+  (1202, 'MENU_USERS_C2', '账户操作', '账户操作', 'C2', 1200, '/users/actions', 'Document', 1202, 'C2 账户操作,按PC左侧菜单同步。', 1),
+  (1203, 'MENU_USERS_C3', '余额 & 资产调整', '余额 & 资产调整', 'C3', 1200, '/users/assets', 'Document', 1203, 'C3 余额 & 资产调整,按PC左侧菜单同步。', 1),
+  (1204, 'MENU_USERS_C4', 'KYC 合规台账', 'KYC 合规台账', 'C4', 1200, '/users/kyc', 'Document', 1204, 'C4 KYC 合规台账,按PC左侧菜单同步。', 1),
+  (1205, 'MENU_USERS_C5', '安全 & 会话', '安全 & 会话', 'C5', 1200, '/users/security', 'Document', 1205, 'C5 安全 & 会话,按PC左侧菜单同步。', 1),
+  (1206, 'MENU_USERS_C6', '注册/登录风控', '注册/登录风控', 'C6', 1200, '/users/reg-risk', 'Document', 1206, 'C6 注册/登录风控,按PC左侧菜单同步。', 1),
+  (1300, 'MENU_FINANCE', '资金与财务', '资金与财务', 'finance', NULL, '/finance', 'Wallet', 1300, '资金与财务目录,按PC左侧菜单同步。', 1),
+  (1301, 'MENU_FINANCE_D1', '充值对账中心', '充值对账中心', 'D1', 1300, '/finance/recon', 'Document', 1301, 'D1 充值对账中心,按PC左侧菜单同步。', 1),
+  (1302, 'MENU_FINANCE_D2', '提现审核队列', '提现审核队列', 'D2', 1300, '/finance/withdrawals', 'Document', 1302, 'D2 提现审核队列,按PC左侧菜单同步。', 1),
+  (1303, 'MENU_FINANCE_D3', '资金池水位仪表盘', '资金池水位仪表盘', 'D3', 1300, '/finance/pool', 'Document', 1303, 'D3 资金池水位仪表盘,按PC左侧菜单同步。', 1),
+  (1304, 'MENU_FINANCE_D4', '账本/账单审计', '账本/账单审计', 'D4', 1300, '/finance/ledger', 'Document', 1304, 'D4 账本/账单审计,按PC左侧菜单同步。', 1),
+  (1305, 'MENU_FINANCE_D5', '提现参数配置', '提现参数配置', 'D5', 1300, '/finance/params', 'Document', 1305, 'D5 提现参数配置,按PC左侧菜单同步。', 1),
+  (1400, 'MENU_DEVICES', '设备与商城', '设备与商城', 'devices', NULL, '/devices', 'Server', 1400, '设备与商城目录,按PC左侧菜单同步。', 1),
+  (1401, 'MENU_DEVICES_E1', '商品目录 & 代际门', '商品目录 & 代际门', 'E1', 1400, '/devices/pricing', 'Document', 1401, 'E1 商品目录 & 代际门,按PC左侧菜单同步。', 1),
+  (1402, 'MENU_DEVICES_E2', '收益 & 任务引擎', '收益 & 任务引擎', 'E2', 1400, '/devices/tasks', 'Document', 1402, 'E2 收益 & 任务引擎,按PC左侧菜单同步。', 1),
+  (1403, 'MENU_DEVICES_E3', '生命周期 & Trade-in', '生命周期 & Trade-in', 'E3', 1400, '/devices/trade-in', 'Document', 1403, 'E3 生命周期 & Trade-in,按PC左侧菜单同步。', 1),
+  (1404, 'MENU_DEVICES_E4', '订单状态机', '订单状态机', 'E4', 1400, '/devices/orders', 'Document', 1404, 'E4 订单状态机,按PC左侧菜单同步。', 1),
+  (1405, 'MENU_DEVICES_E5', '设备运维', '设备运维', 'E5', 1400, '/devices/ops', 'Document', 1405, 'E5 设备运维,按PC左侧菜单同步。', 1),
+  (1500, 'MENU_NETWORK', '分销与团队', '分销与团队', 'network', NULL, '/network', 'Network', 1500, '分销与团队目录,按PC左侧菜单同步。', 1),
+  (1501, 'MENU_NETWORK_F1', 'V-Rank 晋升', 'V-Rank 晋升', 'F1', 1500, '/network/v-rank', 'Document', 1501, 'F1 V-Rank 晋升,按PC左侧菜单同步。', 1),
+  (1502, 'MENU_NETWORK_F2', '网络版税费率', '网络版税费率', 'F2', 1500, '/network/royalty', 'Document', 1502, 'F2 网络版税费率,按PC左侧菜单同步。', 1),
+  (1503, 'MENU_NETWORK_F3', '双轨结算引擎', '双轨结算引擎', 'F3', 1500, '/network/binary', 'Document', 1503, 'F3 双轨结算引擎,按PC左侧菜单同步。', 1),
+  (1504, 'MENU_NETWORK_F4', '池 / 配额 / 大使 / 榜', '池 / 配额 / 大使 / 榜', 'F4', 1500, '/network/leadership-pool', 'Document', 1504, 'F4 池 / 配额 / 大使 / 榜,按PC左侧菜单同步。', 1),
+  (1505, 'MENU_NETWORK_F5', '佣金事件审计', '佣金事件审计', 'F5', 1500, '/network/commissions', 'Document', 1505, 'F5 佣金事件审计,按PC左侧菜单同步。', 1),
+  (1600, 'MENU_FINANCE_PRODUCTS', '金融产品', '金融产品', 'finance-products', NULL, '/finance-products', 'Landmark', 1600, '金融产品目录,按PC左侧菜单同步。', 1),
+  (1601, 'MENU_FINANCE_PRODUCTS_G1', 'Staking 池配置', 'Staking 池配置', 'G1', 1600, '/finance-products/staking', 'Document', 1601, 'G1 Staking 池配置,按PC左侧菜单同步。', 1),
+  (1602, 'MENU_FINANCE_PRODUCTS_G2', '兑换风控', '兑换风控', 'G2', 1600, '/finance-products/exchange', 'Document', 1602, 'G2 兑换风控,按PC左侧菜单同步。', 1),
+  (1603, 'MENU_FINANCE_PRODUCTS_G3', 'NEX 行情引擎', 'NEX 行情引擎', 'G3', 1600, '/finance-products/market', 'Document', 1603, 'G3 NEX 行情引擎,按PC左侧菜单同步。', 1),
+  (1604, 'MENU_FINANCE_PRODUCTS_G4', 'Genesis 经济', 'Genesis 经济', 'G4', 1600, '/finance-products/genesis', 'Document', 1604, 'G4 Genesis 经济,按PC左侧菜单同步。', 1),
+  (1605, 'MENU_FINANCE_PRODUCTS_G7', '复投激励', '复投激励', 'G7', 1600, '/finance-products/repurchase', 'Document', 1605, 'G7 复投激励,按PC左侧菜单同步。', 1),
+  (1700, 'MENU_GROWTH', '增长与运营节奏', '增长与运营节奏', 'growth', NULL, '/growth', 'TrendingUp', 1700, '增长与运营节奏目录,按PC左侧菜单同步。', 1),
+  (1701, 'MENU_GROWTH_H1', 'Phase 调度器', 'Phase 调度器', 'H1', 1700, '/growth/phase', 'Document', 1701, 'H1 Phase 调度器,按PC左侧菜单同步。', 1),
+  (1702, 'MENU_GROWTH_H2', '免费试用引擎', '免费试用引擎', 'H2', 1700, '/growth/trial', 'Document', 1702, 'H2 免费试用引擎,按PC左侧菜单同步。', 1),
+  (1703, 'MENU_GROWTH_H3', 'Quest 引擎', 'Quest 引擎', 'H3', 1700, '/growth/quest', 'Document', 1703, 'H3 Quest 引擎,按PC左侧菜单同步。', 1),
+  (1704, 'MENU_GROWTH_H4', '活动中心 CMS', '活动中心 CMS', 'H4', 1700, '/growth/events', 'Document', 1704, 'H4 活动中心 CMS,按PC左侧菜单同步。', 1),
+  (1705, 'MENU_GROWTH_H5', '签到 & NEX', '签到 & NEX', 'H5', 1700, '/growth/daily', 'Document', 1705, 'H5 签到 & NEX,按PC左侧菜单同步。', 1),
+  (1706, 'MENU_GROWTH_H6', '里程碑庆祝', '里程碑庆祝', 'H6', 1700, '/growth/milestones', 'Document', 1706, 'H6 里程碑庆祝,按PC左侧菜单同步。', 1),
+  (1800, 'MENU_CONTENT', '内容与合规 CMS', '内容与合规 CMS', 'content', NULL, '/content', 'Megaphone', 1800, '内容与合规 CMS目录,按PC左侧菜单同步。', 1),
+  (1801, 'MENU_CONTENT_I1', '转化文案 A/B', '转化文案 A/B', 'I1', 1800, '/content/copy-ab', 'Document', 1801, 'I1 转化文案 A/B,按PC左侧菜单同步。', 1),
+  (1802, 'MENU_CONTENT_I2', 'Nova 推送运营', 'Nova 推送运营', 'I2', 1800, '/content/nova', 'Document', 1802, 'I2 Nova 推送运营,按PC左侧菜单同步。', 1),
+  (1803, 'MENU_CONTENT_I3', '通知 Campaign', '通知 Campaign', 'I3', 1800, '/content/notifications', 'Document', 1803, 'I3 通知 Campaign,按PC左侧菜单同步。', 1),
+  (1804, 'MENU_CONTENT_I4', '信任中心 CMS', '信任中心 CMS', 'I4', 1800, '/content/trust', 'Document', 1804, 'I4 信任中心 CMS,按PC左侧菜单同步。', 1),
+  (1805, 'MENU_CONTENT_I5', '风险披露版本', '风险披露版本', 'I5', 1800, '/content/disclosure', 'Document', 1805, 'I5 风险披露版本,按PC左侧菜单同步。', 1),
+  (1806, 'MENU_CONTENT_I6', 'i18n 文案管理', 'i18n 文案管理', 'I6', 1800, '/content/i18n', 'Document', 1806, 'I6 i18n 文案管理,按PC左侧菜单同步。', 1),
+  (1807, 'MENU_CONTENT_I7', '教程中心', '教程中心', 'I7', 1800, '/content/learn', 'Document', 1807, 'I7 教程中心,按PC左侧菜单同步。', 1),
+  (1900, 'MENU_EMERGENCY', '紧急与合规控制', '紧急与合规控制', 'emergency', NULL, '/emergency', 'Siren', 1900, '紧急与合规控制目录,按PC左侧菜单同步。', 1),
+  (1901, 'MENU_EMERGENCY_J1', 'Kill-Switch 矩阵', 'Kill-Switch 矩阵', 'J1', 1900, '/emergency/kill-switch', 'Document', 1901, 'J1 Kill-Switch 矩阵,按PC左侧菜单同步。', 1),
+  (1902, 'MENU_EMERGENCY_J2', 'Geo-block', 'Geo-block', 'J2', 1900, '/emergency/geo-block', 'Document', 1902, 'J2 Geo-block,按PC左侧菜单同步。', 1),
+  (1903, 'MENU_EMERGENCY_J3', '篡改防御监控', '篡改防御监控', 'J3', 1900, '/emergency/tamper', 'Document', 1903, 'J3 篡改防御监控,按PC左侧菜单同步。', 1),
+  (1904, 'MENU_EMERGENCY_J4', '监管点名应急 SOP', '监管点名应急 SOP', 'J4', 1900, '/emergency/sop', 'Document', 1904, 'J4 监管点名应急 SOP,按PC左侧菜单同步。', 1),
+  (2000, 'MENU_RISK', '风控与反作弊', '风控与反作弊', 'risk', NULL, '/risk', 'Radar', 2000, '风控与反作弊目录,按PC左侧菜单同步。', 1),
+  (2001, 'MENU_RISK_K1', '反多账户引擎', '反多账户引擎', 'K1', 2000, '/risk/multi-account', 'Document', 2001, 'K1 反多账户引擎,按PC左侧菜单同步。', 1),
+  (2002, 'MENU_RISK_K2', '套利 & 刷量检测', '套利 & 刷量检测', 'K2', 2000, '/risk/abuse', 'Document', 2002, 'K2 套利 & 刷量检测,按PC左侧菜单同步。', 1),
+  (2003, 'MENU_RISK_K3', '提现风控规则引擎', '提现风控规则引擎', 'K3', 2000, '/risk/withdrawal-rules', 'Document', 2003, 'K3 提现风控规则引擎,按PC左侧菜单同步。', 1),
+  (2004, 'MENU_RISK_K4', '风险评分模型', '风险评分模型', 'K4', 2000, '/risk/scoring', 'Document', 2004, 'K4 风险评分模型,按PC左侧菜单同步。', 1),
+  (2005, 'MENU_RISK_K5', '大额 KYC 复审 & 告警', '大额 KYC 复审 & 告警', 'K5', 2000, '/risk/kyc-review', 'Document', 2005, 'K5 大额 KYC 复审 & 告警,按PC左侧菜单同步。', 1),
+  (2100, 'MENU_ANALYTICS', '数据与分析 BI', '数据与分析 BI', 'analytics', NULL, '/analytics', 'BarChart3', 2100, '数据与分析 BI目录,按PC左侧菜单同步。', 1),
+  (2101, 'MENU_ANALYTICS_L1', 'KPI 看板', 'KPI 看板', 'L1', 2100, '/analytics/kpi', 'Document', 2101, 'L1 KPI 看板,按PC左侧菜单同步。', 1),
+  (2102, 'MENU_ANALYTICS_L2', '漏斗/cohort/留存', '漏斗/cohort/留存', 'L2', 2100, '/analytics/funnel-cohort', 'Document', 2102, 'L2 漏斗/cohort/留存,按PC左侧菜单同步。', 1),
+  (2103, 'MENU_ANALYTICS_L3', '财务报表', '财务报表', 'L3', 2100, '/analytics/financial', 'Document', 2103, 'L3 财务报表,按PC左侧菜单同步。', 1),
+  (2104, 'MENU_ANALYTICS_L4', '设备/任务/网络报表', '设备/任务/网络报表', 'L4', 2100, '/analytics/operations', 'Document', 2104, 'L4 设备/任务/网络报表,按PC左侧菜单同步。', 1),
+  (2105, 'MENU_ANALYTICS_L5', '导出 & 监管报告', '导出 & 监管报告', 'L5', 2100, '/analytics/export', 'Document', 2105, 'L5 导出 & 监管报告,按PC左侧菜单同步。', 1),
+  (2200, 'MENU_SERVICE', '客服中心', '客服中心', 'service', NULL, '/service', 'Headset', 2200, '客服中心目录,按PC左侧菜单同步。', 1),
+  (2201, 'MENU_SERVICE_M1', '客服总览', '客服总览', 'M1', 2200, '/service/overview', 'Document', 2201, 'M1 客服总览,按PC左侧菜单同步。', 1),
+  (2202, 'MENU_SERVICE_M2', '工单台', '工单台', 'M2', 2200, '/service/tickets', 'Document', 2202, 'M2 工单台,按PC左侧菜单同步。', 1),
+  (2203, 'MENU_SERVICE_M3', '即时会话台', '即时会话台', 'M3', 2200, '/service/sessions', 'Document', 2203, 'M3 即时会话台,按PC左侧菜单同步。', 1),
+  (2204, 'MENU_SERVICE_M4', '知识库与 SLA', '知识库与 SLA', 'M4', 2200, '/service/kb-sla', 'Document', 2204, 'M4 知识库与 SLA,按PC左侧菜单同步。', 1),
+  (2205, 'MENU_SERVICE_M5', '话术与模板配置', '话术与模板配置', 'M5', 2200, '/service/scripts', 'Document', 2205, 'M5 话术与模板配置,按PC左侧菜单同步。', 1)
 ON DUPLICATE KEY UPDATE
   menu_name = VALUES(menu_name),
+  menu_name_zh = VALUES(menu_name_zh),
+  menu_name_en = VALUES(menu_name_en),
   parent_id = VALUES(parent_id),
   route_path = VALUES(route_path),
   icon = VALUES(icon),
@@ -104,28 +137,29 @@ ON DUPLICATE KEY UPDATE
   status = VALUES(status),
   is_deleted = 0;
 
-UPDATE admin_menu
+UPDATE nx_admin_menu
 SET status = 0,
     is_deleted = 1,
     updated_at = NOW()
-WHERE menu_code IN ('MENU_OPS', 'MENU_OPS_DEVICE', 'MENU_OPS_WALLET', 'MENU_OPS_CONFIG');
+WHERE menu_code LIKE 'MENU_%'
+  AND menu_code NOT IN ('MENU_HOME', 'MENU_UMS', 'MENU_UMS_ADMIN', 'MENU_UMS_ROLE', 'MENU_UMS_MENU', 'MENU_UMS_PERMISSION', 'MENU_PLATFORM', 'MENU_PLATFORM_A1', 'MENU_PLATFORM_A2', 'MENU_PLATFORM_A3', 'MENU_PLATFORM_A4', 'MENU_PLATFORM_A5', 'MENU_OVERVIEW', 'MENU_OVERVIEW_B1', 'MENU_OVERVIEW_B2', 'MENU_OVERVIEW_B3', 'MENU_OVERVIEW_B4', 'MENU_OVERVIEW_B5', 'MENU_USERS', 'MENU_USERS_C1', 'MENU_USERS_C2', 'MENU_USERS_C3', 'MENU_USERS_C4', 'MENU_USERS_C5', 'MENU_USERS_C6', 'MENU_FINANCE', 'MENU_FINANCE_D1', 'MENU_FINANCE_D2', 'MENU_FINANCE_D3', 'MENU_FINANCE_D4', 'MENU_FINANCE_D5', 'MENU_DEVICES', 'MENU_DEVICES_E1', 'MENU_DEVICES_E2', 'MENU_DEVICES_E3', 'MENU_DEVICES_E4', 'MENU_DEVICES_E5', 'MENU_NETWORK', 'MENU_NETWORK_F1', 'MENU_NETWORK_F2', 'MENU_NETWORK_F3', 'MENU_NETWORK_F4', 'MENU_NETWORK_F5', 'MENU_FINANCE_PRODUCTS', 'MENU_FINANCE_PRODUCTS_G1', 'MENU_FINANCE_PRODUCTS_G2', 'MENU_FINANCE_PRODUCTS_G3', 'MENU_FINANCE_PRODUCTS_G4', 'MENU_FINANCE_PRODUCTS_G7', 'MENU_GROWTH', 'MENU_GROWTH_H1', 'MENU_GROWTH_H2', 'MENU_GROWTH_H3', 'MENU_GROWTH_H4', 'MENU_GROWTH_H5', 'MENU_GROWTH_H6', 'MENU_CONTENT', 'MENU_CONTENT_I1', 'MENU_CONTENT_I2', 'MENU_CONTENT_I3', 'MENU_CONTENT_I4', 'MENU_CONTENT_I5', 'MENU_CONTENT_I6', 'MENU_CONTENT_I7', 'MENU_EMERGENCY', 'MENU_EMERGENCY_J1', 'MENU_EMERGENCY_J2', 'MENU_EMERGENCY_J3', 'MENU_EMERGENCY_J4', 'MENU_RISK', 'MENU_RISK_K1', 'MENU_RISK_K2', 'MENU_RISK_K3', 'MENU_RISK_K4', 'MENU_RISK_K5', 'MENU_ANALYTICS', 'MENU_ANALYTICS_L1', 'MENU_ANALYTICS_L2', 'MENU_ANALYTICS_L3', 'MENU_ANALYTICS_L4', 'MENU_ANALYTICS_L5', 'MENU_SERVICE', 'MENU_SERVICE_M1', 'MENU_SERVICE_M2', 'MENU_SERVICE_M3', 'MENU_SERVICE_M4', 'MENU_SERVICE_M5');
 
-INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT rp.role_id, m.id
-FROM admin_role_permission rp
-JOIN admin_permission p ON p.id = rp.permission_id
-JOIN admin_menu m ON m.route_path = p.resource_path
+FROM nx_admin_role_permission rp
+JOIN nx_admin_permission p ON p.id = rp.permission_id
+JOIN nx_admin_menu m ON m.route_path = p.resource_path
 WHERE rp.is_deleted = 0
   AND p.resource_type = 'MENU';
 
-INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
-SELECT 1, id FROM admin_menu;
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT 1, id FROM nx_admin_menu WHERE is_deleted = 0;
 
-UPDATE admin_role_permission rp
-JOIN admin_permission p ON p.id = rp.permission_id
+UPDATE nx_admin_role_permission rp
+JOIN nx_admin_permission p ON p.id = rp.permission_id
 SET rp.is_deleted = 1, rp.updated_at = NOW()
 WHERE p.resource_type = 'MENU';
 
-UPDATE admin_permission
+UPDATE nx_admin_permission
 SET is_deleted = 1, status = 0, updated_at = NOW()
 WHERE resource_type = 'MENU';

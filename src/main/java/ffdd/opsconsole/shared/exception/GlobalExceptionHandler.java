@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.exception;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -16,7 +17,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler({MethodArgumentNotValidException.class, ConstraintViolationException.class})
     public ApiResult<Void> handleValidation(Exception ex) {
-        return ApiResult.fail(400, ex.getMessage());
+        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ApiResult<Void> handleIllegalArgument(IllegalArgumentException ex) {
+        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
     }
 
     @ExceptionHandler(AccessDeniedException.class)

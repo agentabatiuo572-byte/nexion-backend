@@ -1,5 +1,6 @@
 package ffdd.opsconsole.bi.domain;
 
+import ffdd.opsconsole.shared.api.PageResult;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -7,7 +8,7 @@ import java.util.Optional;
 public interface BiReportRepository {
     Map<String, Object> overview();
 
-    List<BiReportView> reports(String type, String status, int limit);
+    PageResult<BiReportView> reports(String type, List<String> statuses, int pageNum, int pageSize);
 
     Optional<BiReportView> findReport(String reportId);
 

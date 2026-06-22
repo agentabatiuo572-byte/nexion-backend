@@ -1,5 +1,7 @@
 package ffdd.opsconsole.treasury.application;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -7,12 +9,9 @@ import java.util.Map;
 import org.springframework.stereotype.Service;
 
 @Service
+@RequiredArgsConstructor
 public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
     private final OpsTreasuryService treasuryService;
-
-    public TreasuryCoverageFacadeAdapter(OpsTreasuryService treasuryService) {
-        this.treasuryService = treasuryService;
-    }
 
     @Override
     public TreasuryCoverageSnapshot snapshot() {

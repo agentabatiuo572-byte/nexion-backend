@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
 import java.math.BigDecimal;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -46,5 +47,15 @@ class OpsTreasuryControllerTest {
         assertThat(controller.updateScope("idem-2", request).getData()).containsEntry("ok", true);
 
         verify(treasuryService).updateScope("idem-2", request);
+    }
+
+    @Test
+    void thresholdDelegatesWithIdempotencyHeader() {
+        TreasuryThresholdRequest request = new TreasuryThresholdRequest(new BigDecimal("90"), null, null, "policy", "superadmin");
+        when(treasuryService.updateThresholds("idem-3", request)).thenReturn(ApiResult.ok(Map.of("ok", true)));
+
+        assertThat(controller.updateThresholds("idem-3", request).getData()).containsEntry("ok", true);
+
+        verify(treasuryService).updateThresholds("idem-3", request);
     }
 }

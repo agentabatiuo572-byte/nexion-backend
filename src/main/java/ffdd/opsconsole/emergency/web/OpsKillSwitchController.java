@@ -1,5 +1,7 @@
 package ffdd.opsconsole.emergency.web;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
@@ -17,12 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/emergency/kill-switches")
+@RequiredArgsConstructor
 public class OpsKillSwitchController {
     private final OpsKillSwitchService killSwitchService;
-
-    public OpsKillSwitchController(OpsKillSwitchService killSwitchService) {
-        this.killSwitchService = killSwitchService;
-    }
 
     @GetMapping
     public ApiResult<Map<String, Object>> matrix() {

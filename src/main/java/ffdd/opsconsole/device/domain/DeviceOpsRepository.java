@@ -12,9 +12,15 @@ public interface DeviceOpsRepository {
 
     PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request);
 
+    List<DeviceOpsView> listUserDevices(Long userId, int limit);
+
     Optional<DeviceOpsView> findDevice(Long deviceId);
 
     Optional<DeviceOpsView> restoreDevice(Long deviceId, LocalDateTime restoredAt);
+
+    DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth);
+
+    Optional<DeviceOpsView> executeTradeinAction(String operation, Long deviceId, String tradeInNo, LocalDateTime now);
 
     Map<String, String> e3Config();
 

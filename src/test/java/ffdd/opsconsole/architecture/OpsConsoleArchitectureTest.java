@@ -11,21 +11,54 @@ import ffdd.opsconsole.common.boundary.TargetLayer;
 import ffdd.opsconsole.common.domain.DomainCode;
 import ffdd.opsconsole.common.domain.OpsDomain;
 import ffdd.opsconsole.common.domain.OpsDomainCatalog;
-import ffdd.opsconsole.shared.audit.AuditLogController;
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.junit.jupiter.api.Test;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.ComponentScan;
-import org.springframework.context.annotation.FilterType;
 import org.w3c.dom.Element;
 
 class OpsConsoleArchitectureTest {
+
+    private static final Path MAIN_JAVA_ROOT = Path.of("src", "main", "java");
+    private static final Path MAIN_RESOURCES_ROOT = Path.of("src", "main", "resources");
+    private static final Path SCRIPTS_ROOT = Path.of("scripts");
+    private static final Pattern FIELD_INJECTION_PATTERN =
+            Pattern.compile("@(?:Autowired|Resource|Inject)\\b");
+    private static final Pattern SPRING_BEAN_PATTERN =
+            Pattern.compile("@(?:RestController|Controller|RestControllerAdvice|ControllerAdvice|Service|Component|Repository|Configuration|ApplicationService)\\b");
+    private static final Pattern FINAL_INSTANCE_FIELD_PATTERN =
+            Pattern.compile("(?m)^\\s*private\\s+final\\s+[^=;]+\\s+[A-Za-z0-9_]+\\s*(?:=|;)");
+    private static final Pattern NON_FINAL_INSTANCE_FIELD_PATTERN =
+            Pattern.compile("(?m)^\\s*private\\s+(?!static\\b)(?!final\\b)[^\\r\\n=;()]+\\s+[A-Za-z0-9_]+\\s*(?:=|;)");
+    private static final Pattern SIMPLE_CONFIG_FINAL_FIELD_PATTERN =
+            Pattern.compile("^\\s*private\\s+final\\s+(?:String|boolean|Boolean|int|Integer|long|Long|BigDecimal)\\s+[A-Za-z0-9_]+\\s*;");
+    private static final Pattern REQUIRED_ARGS_CONSTRUCTOR_PATTERN =
+            Pattern.compile("@RequiredArgsConstructor\\b");
+    private static final Pattern CONFIGURATION_PROPERTIES_PATTERN =
+            Pattern.compile("@ConfigurationProperties\\b");
+    private static final Pattern CLASS_NAME_PATTERN =
+            Pattern.compile("\\b(?:class|record)\\s+([A-Za-z0-9_]+)");
+    private static final Pattern HAND_WRITTEN_JDBC_PATTERN =
+            Pattern.compile("\\b(?:JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbcInsert)\\b|org\\.springframework\\.jdbc");
+    private static final Pattern LEGACY_ADMIN_ROUTE_PATTERN =
+            Pattern.compile("/auth/admin\\b|/api/config\\b");
+    private static final Pattern LEGACY_DISTRIBUTED_PERMISSION_PATTERN =
+            Pattern.compile("(?m)^.*PERM_[A-Z0-9_]+.*'/(?:auth/admins|auth/access-control|bff|compute|commerce|genesis|wallet|earnings|team|notifications|missions|compliance|openapi)(?:/|\\*|').*$");
+    private static final Pattern LOMBOK_VALUE_COPYABLE_PATTERN =
+            Pattern.compile("(?m)^\\s*lombok\\.copyableAnnotations\\s*\\+=\\s*org\\.springframework\\.beans\\.factory\\.annotation\\.Value\\s*$");
+    private static final Pattern MYBATIS_TEXT_BLOCK_ANNOTATION_PATTERN =
+            Pattern.compile("@(?:Select|Insert|Update|Delete)\\(\\\"\\\"\\\"([\\s\\S]*?)\\\"\\\"\\\"\\)");
+    private static final Pattern RAW_XML_UNSAFE_LESS_THAN_OPERATOR_PATTERN =
+            Pattern.compile("(?m)\\s<=?\\s");
 
     @Test
     void domainCatalogContainsTwelveOpsConsoleDomains() {
@@ -41,7 +74,6 @@ class OpsConsoleArchitectureTest {
     @Test
     void activeCatalogUsesExpectedApiPrefixesAndKeepsSunsetProductsHistoricalOnly() {
         assertThat(OpsAdminApi.ADMIN_PREFIX).isEqualTo("/api/admin");
-        assertThat(OpsAdminApi.CONFIG_PREFIX).isEqualTo("/api/config");
         assertThat(OpsAdminApi.IDEMPOTENCY_KEY_HEADER).isEqualTo("Idempotency-Key");
 
         assertThat(OpsDomainCatalog.activeDomains())
@@ -52,6 +84,38 @@ class OpsConsoleArchitectureTest {
                 .noneMatch(name -> name.contains("PremiumSubscription"))
                 .noneMatch(name -> name.contains("NexV2Vault"))
                 .noneMatch(name -> name.contains("PointsReward"));
+    }
+
+    @Test
+    void backendDoesNotExposeLegacyAdminRoutePrefixes() throws Exception {
+        List<String> violations = new ArrayList<>();
+
+        for (Path file : javaAndResourceFiles()) {
+            String source = Files.readString(file);
+            if (LEGACY_ADMIN_ROUTE_PATTERN.matcher(source).find()) {
+                violations.add(displayPath(file));
+            }
+        }
+
+        assertThat(violations)
+                .as("Back-office routes must use /api/admin/** only; do not reintroduce /auth/admin or /api/config")
+                .isEmpty();
+    }
+
+    @Test
+    void sqlSeedPermissionsDoNotPointToRemovedDistributedApiPaths() throws Exception {
+        List<String> violations = new ArrayList<>();
+
+        for (Path file : scriptFiles()) {
+            String source = Files.readString(file);
+            if (LEGACY_DISTRIBUTED_PERMISSION_PATTERN.matcher(source).find()) {
+                violations.add(displayPath(file));
+            }
+        }
+
+        assertThat(violations)
+                .as("Seeded admin API permissions must not point to removed distributed-service route prefixes")
+                .isEmpty();
     }
 
     @Test
@@ -94,20 +158,162 @@ class OpsConsoleArchitectureTest {
                         "PHASE_PARAM_READONLY",
                         "INVALID_STATE_TRANSITION",
                         "REASON_REQUIRED",
+                        "OPERATOR_REQUIRED",
                         "IDEMPOTENCY_KEY_REQUIRED");
     }
 
     @Test
-    void applicationScansOnlyOpsConsoleButExcludesSharedAuditController() {
+    void applicationUsesSingleBootAppAndMybatisMapperScan() {
         assertThat(NexionOpsConsoleApplication.class.getAnnotation(SpringBootApplication.class)).isNotNull();
-        ComponentScan componentScan = NexionOpsConsoleApplication.class.getAnnotation(ComponentScan.class);
         MapperScan mapperScan = NexionOpsConsoleApplication.class.getAnnotation(MapperScan.class);
 
-        assertThat(componentScan.basePackages()).containsExactly("ffdd.opsconsole");
-        assertThat(componentScan.excludeFilters()).hasSize(1);
-        assertThat(componentScan.excludeFilters()[0].type()).isEqualTo(FilterType.ASSIGNABLE_TYPE);
-        assertThat(componentScan.excludeFilters()[0].classes()).containsExactly(AuditLogController.class);
         assertThat(mapperScan.value()).containsExactly("ffdd.opsconsole.**.mapper");
+    }
+
+    @Test
+    void springBeansUseRequiredArgsConstructorInjectionOnly() throws Exception {
+        List<String> fieldInjectionViolations = new ArrayList<>();
+        List<String> mutableBeanFieldViolations = new ArrayList<>();
+        List<String> constructorInjectionViolations = new ArrayList<>();
+        List<String> explicitConstructorViolations = new ArrayList<>();
+
+        for (Path file : sourceFiles()) {
+            String source = Files.readString(file);
+            if (FIELD_INJECTION_PATTERN.matcher(source).find()) {
+                fieldInjectionViolations.add(displayPath(file));
+            }
+            if (!SPRING_BEAN_PATTERN.matcher(source).find()) {
+                continue;
+            }
+            if (!CONFIGURATION_PROPERTIES_PATTERN.matcher(source).find()
+                    && NON_FINAL_INSTANCE_FIELD_PATTERN.matcher(source).find()) {
+                mutableBeanFieldViolations.add(displayPath(file));
+            }
+            if (!FINAL_INSTANCE_FIELD_PATTERN.matcher(source).find()) {
+                continue;
+            }
+
+            String className = className(source);
+            boolean hasRequiredArgsConstructor = REQUIRED_ARGS_CONSTRUCTOR_PATTERN.matcher(source).find();
+            boolean hasExplicitConstructor = className != null
+                    && Pattern.compile("(?m)^\\s*(?:public|protected|private)?\\s*"
+                                    + Pattern.quote(className)
+                                    + "\\s*\\(")
+                            .matcher(source)
+                            .find();
+            if (hasExplicitConstructor) {
+                explicitConstructorViolations.add(displayPath(file));
+            }
+
+            if (!hasRequiredArgsConstructor || hasExplicitConstructor) {
+                constructorInjectionViolations.add(displayPath(file)
+                        + " requiredArgs=" + hasRequiredArgsConstructor
+                        + " explicitConstructor=" + hasExplicitConstructor);
+            }
+        }
+
+        assertThat(fieldInjectionViolations)
+                .as("Spring Bean dependencies must not use @Autowired/@Resource/@Inject field injection")
+                .isEmpty();
+        assertThat(mutableBeanFieldViolations)
+                .as("Spring Beans must keep dependencies as private final fields; mutable fields are allowed only on @ConfigurationProperties binders")
+                .isEmpty();
+        assertThat(constructorInjectionViolations)
+                .as("Spring Bean dependencies must be final fields injected by Lombok @RequiredArgsConstructor")
+                .isEmpty();
+        assertThat(explicitConstructorViolations)
+                .as("Spring Beans must not hand-write dependency constructors; use Lombok @RequiredArgsConstructor")
+                .isEmpty();
+    }
+
+    @Test
+    void springBeanSimpleFinalConfigFieldsDeclareValueInjection() throws Exception {
+        List<String> violations = new ArrayList<>();
+
+        for (Path file : sourceFiles()) {
+            String source = Files.readString(file);
+            if (!SPRING_BEAN_PATTERN.matcher(source).find()) {
+                continue;
+            }
+            List<String> lines = Files.readAllLines(file);
+            for (int index = 0; index < lines.size(); index++) {
+                String line = lines.get(index);
+                if (!SIMPLE_CONFIG_FINAL_FIELD_PATTERN.matcher(line).find()) {
+                    continue;
+                }
+                String previous = previousNonBlank(lines, index);
+                if (!line.contains("@Value(") && !previous.contains("@Value(")) {
+                    violations.add(displayPath(file) + ":" + (index + 1) + " " + line.trim());
+                }
+            }
+        }
+
+        assertThat(violations)
+                .as("Spring Bean simple final config values must carry @Value when Lombok generates constructors")
+                .isEmpty();
+    }
+
+    @Test
+    void lombokConstructorInjectionCopiesSpringValueAnnotations() throws Exception {
+        Path lombokConfig = Path.of("lombok.config");
+
+        assertThat(lombokConfig)
+                .as("lombok.config must exist so @Value final fields work with @RequiredArgsConstructor")
+                .exists();
+        assertThat(LOMBOK_VALUE_COPYABLE_PATTERN.matcher(Files.readString(lombokConfig)).find())
+                .as("Spring @Value must be copied onto Lombok-generated constructor parameters")
+                .isTrue();
+    }
+
+    @Test
+    void mappersExtendMybatisPlusBaseMapperAndNoHandWrittenJdbcRemains() throws Exception {
+        List<Path> mapperFiles = sourceFiles().stream()
+                .filter(path -> displayPath(path).contains("/mapper/"))
+                .filter(path -> path.getFileName().toString().endsWith("Mapper.java"))
+                .toList();
+        List<String> mapperViolations = new ArrayList<>();
+        List<String> jdbcViolations = new ArrayList<>();
+
+        for (Path file : sourceFiles()) {
+            String source = Files.readString(file);
+            if (HAND_WRITTEN_JDBC_PATTERN.matcher(source).find()) {
+                jdbcViolations.add(displayPath(file));
+            }
+        }
+        for (Path mapperFile : mapperFiles) {
+            String source = Files.readString(mapperFile);
+            if (!source.contains("extends BaseMapper<")) {
+                mapperViolations.add(displayPath(mapperFile));
+            }
+        }
+
+        assertThat(mapperFiles).hasSizeGreaterThanOrEqualTo(12);
+        assertThat(mapperViolations)
+                .as("MyBatis-Plus mapper interfaces must extend BaseMapper")
+                .isEmpty();
+        assertThat(jdbcViolations)
+                .as("Application code must not reintroduce hand-written Spring JDBC repositories")
+                .isEmpty();
+    }
+
+    @Test
+    void mybatisAnnotationSqlDoesNotLeakXmlUnsafeLessThanOperators() throws Exception {
+        List<String> violations = new ArrayList<>();
+
+        for (Path file : sourceFiles()) {
+            String source = Files.readString(file);
+            java.util.regex.Matcher matcher = MYBATIS_TEXT_BLOCK_ANNOTATION_PATTERN.matcher(source);
+            while (matcher.find()) {
+                String sql = matcher.group(1);
+                if (RAW_XML_UNSAFE_LESS_THAN_OPERATOR_PATTERN.matcher(sql).find()) {
+                    violations.add(displayPath(file));
+                }
+            }
+        }
+
+        assertThat(violations)
+                .as("MyBatis annotation SQL is parsed by XMLLanguageDriver; use &lt; or &lt;= for less-than operators")
+                .isEmpty();
     }
 
     @Test
@@ -148,6 +354,55 @@ class OpsConsoleArchitectureTest {
         Path current = Path.of("pom.xml");
         Path parent = Path.of("..", "pom.xml");
         return parent.toFile().isFile() ? parent : current;
+    }
+
+    private static List<Path> sourceFiles() throws Exception {
+        try (Stream<Path> files = Files.walk(MAIN_JAVA_ROOT)) {
+            return files.filter(path -> path.getFileName().toString().endsWith(".java")).toList();
+        }
+    }
+
+    private static List<Path> javaAndResourceFiles() throws Exception {
+        List<Path> files = new ArrayList<>(sourceFiles());
+        if (Files.exists(MAIN_RESOURCES_ROOT)) {
+            try (Stream<Path> resourceFiles = Files.walk(MAIN_RESOURCES_ROOT)) {
+                files.addAll(resourceFiles
+                        .filter(Files::isRegularFile)
+                        .filter(path -> !path.getFileName().toString().endsWith(".class"))
+                        .toList());
+            }
+        }
+        return files;
+    }
+
+    private static List<Path> scriptFiles() throws Exception {
+        if (!Files.exists(SCRIPTS_ROOT)) {
+            return List.of();
+        }
+        try (Stream<Path> files = Files.walk(SCRIPTS_ROOT)) {
+            return files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".sql"))
+                    .toList();
+        }
+    }
+
+    private static String className(String source) {
+        java.util.regex.Matcher matcher = CLASS_NAME_PATTERN.matcher(source);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private static String displayPath(Path path) {
+        return path.toString().replace('\\', '/');
+    }
+
+    private static String previousNonBlank(List<String> lines, int index) {
+        for (int current = index - 1; current >= 0; current--) {
+            String line = lines.get(current).trim();
+            if (!line.isEmpty()) {
+                return line;
+            }
+        }
+        return "";
     }
 
     private static List<String> childrenText(Element root, String parentTag, String childTag) {

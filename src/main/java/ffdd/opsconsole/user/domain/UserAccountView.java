@@ -16,6 +16,10 @@ public record UserAccountView(
         Boolean twoFactorEnabled,
         BigDecimal walletUsdt,
         BigDecimal walletNex,
+        Integer riskScore,
+        String riskBand,
+        Long deviceCount,
+        Long activeDeviceCount,
         LocalDateTime registeredAt,
         LocalDateTime lastLoginAt) {
 }

@@ -182,52 +182,101 @@ public class OpsDomainRuntimeService {
         map.put(DomainCode.A, List.of(
                 api("Architecture", "/api/admin/platform/architecture", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
                 api("A2Audit", "/api/admin/platform/audit", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT", false),
-                api("A3Config", "/api/admin/platform/config", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false)));
+                api("A3Config", "/api/admin/platform/config", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
+                api("A4EventCenter", "/api/admin/platform/events", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT", false),
+                api("AdminCommand", "/api/admin/commands", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
+                api("DynamicOptions", "/api/admin/options/{domain}/{name}", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
+                api("GlobalSearch", "/api/admin/platform/search", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
+                api("RuntimeContracts", "/api/admin/platform/runtime/contracts", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
+                api("MediaUpload", "/api/admin/media/uploads", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false)));
         map.put(DomainCode.B, List.of(
-                api("TreasuryLedger", "/api/admin/treasury/ledgers", "PERM_TREASURY_READ", "PERM_TREASURY_WRITE", true),
-                api("ReserveCoverage", "/api/admin/treasury/coverage", "PERM_TREASURY_READ", "PERM_TREASURY_WRITE", true),
-                api("RiskRadar", "/api/admin/treasury/risk-radar", "PERM_TREASURY_READ", "PERM_TREASURY_WRITE", true)));
+                api("ReserveCoverage", "/api/admin/treasury/overview", "PERM_TREASURY_READ", "PERM_TREASURY_WRITE", true),
+                api("DualLedger", "/api/admin/treasury/dual-ledger", "PERM_TREASURY_READ", "PERM_TREASURY_WRITE", true),
+                api("TreasuryInjection", "/api/admin/treasury/injections", "PERM_TREASURY_READ", "PERM_TREASURY_WRITE", true)));
         map.put(DomainCode.C, List.of(
                 api("UserProfile", "/api/admin/users/profiles", "PERM_USER_READ", "PERM_USER_WRITE", false),
-                api("KycReview", "/api/admin/users/kyc", "PERM_USER_READ", "PERM_USER_WRITE", false),
-                api("ManualAssetAdjustment", "/api/admin/users/asset-adjustments", "PERM_USER_READ", "PERM_USER_WRITE", false)));
+                api("UserSession", "/api/admin/users/sessions", "PERM_USER_READ", "PERM_USER_WRITE", false),
+                api("ManualAssetAdjustment", "/api/admin/users/profiles/{userId}/asset-adjustments", "PERM_USER_READ", "PERM_USER_WRITE", false)));
         map.put(DomainCode.D, List.of(
-                api("Wallet", "/api/admin/finance/wallets", "PERM_WALLET_READ", "PERM_WALLET_WRITE", false),
+                api("TopupReconciliation", "/api/admin/finance/topup/overview", "PERM_WITHDRAWAL_READ", "PERM_WITHDRAWAL_REVIEW", true),
+                api("TopupFlows", "/api/admin/finance/topup/flows", "PERM_WITHDRAWAL_READ", "PERM_WITHDRAWAL_REVIEW", false),
                 api("Withdrawal", "/api/admin/finance/withdrawals", "PERM_WITHDRAWAL_READ", "PERM_WITHDRAWAL_REVIEW", false),
-                api("Deposit", "/api/admin/finance/deposits", "PERM_WALLET_READ", "PERM_WALLET_WRITE", false)));
+                api("WithdrawalParam", "/api/admin/finance/withdrawal-params", "PERM_WITHDRAWAL_READ", "PERM_WITHDRAWAL_REVIEW", false)));
         map.put(DomainCode.E, List.of(
-                api("Device", "/api/admin/devices/fleet", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
-                api("TradeIn", "/api/admin/devices/trade-ins", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
-                api("DeviceRestore", "/api/admin/devices/recycle", "PERM_DEVICE_READ", "PERM_DEVICE_RESTORE", false)));
+                api("Device", "/api/admin/devices", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
+                api("DeviceSku", "/api/admin/devices/skus", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
+                api("DeviceReview", "/api/admin/devices/reviews", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
+                api("DeviceTask", "/api/admin/devices/tasks", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
+                api("DeviceOrder", "/api/admin/devices/orders", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
+                api("E3Config", "/api/admin/devices/e3/config", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", false),
+                api("E3TradeinTx", "/api/admin/devices/e3/tradein", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE", true),
+                api("DeviceRestore", "/api/admin/devices/{deviceId}/restore", "PERM_DEVICE_READ", "PERM_DEVICE_RESTORE", false)));
         map.put(DomainCode.F, List.of(
+                api("TeamOverview", "/api/admin/teams/overview", "PERM_TEAM_READ", "PERM_TEAM_WRITE", false),
                 api("TeamCommission", "/api/admin/teams/commissions", "PERM_TEAM_READ", "PERM_TEAM_WRITE", false),
-                api("PartnerRank", "/api/admin/teams/ranks", "PERM_TEAM_READ", "PERM_TEAM_WRITE", false),
-                api("Quota", "/api/admin/teams/quotas", "PERM_TEAM_READ", "PERM_TEAM_WRITE", false)));
+                api("TeamRanks", "/api/admin/teams/ranks", "PERM_TEAM_READ", "PERM_TEAM_WRITE", false)));
         map.put(DomainCode.G, List.of(
+                api("StakingPools", "/api/admin/market/staking", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
+                api("StakingPoolParam", "/api/admin/market/staking/pools/{tierKey}/params/{paramKey}", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
+                api("StakingPoolSaleStatus", "/api/admin/market/staking/pools/{tierKey}/sale-status", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
+                api("StakingPoolKillStatus", "/api/admin/market/staking/pools/{tierKey}/kill-status", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
                 api("NexMarketCurve", "/api/admin/market/nex/curve", "PERM_MARKET_READ", "PERM_MARKET_WRITE", false),
-                api("Exchange", "/api/admin/market/exchange", "PERM_MARKET_READ", "PERM_MARKET_WRITE", false),
-                api("Genesis", "/api/admin/market/genesis", "PERM_MARKET_READ", "PERM_MARKET_WRITE", false)));
+                api("NexMarketAdvance", "/api/admin/market/nex/curve/advance", "PERM_MARKET_READ", "PERM_MARKET_WRITE", false),
+                api("GenesisEconomy", "/api/admin/market/nex/genesis", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
+                api("GenesisParam", "/api/admin/market/nex/genesis/params/{paramKey}", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
+                api("GenesisMarketStatus", "/api/admin/market/nex/genesis/market-status", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
+                api("GenesisDividendBatch", "/api/admin/market/nex/genesis/dividend-batches/{batchNo}/rerun", "PERM_MARKET_READ", "PERM_MARKET_WRITE", false),
+                api("RepurchaseProduct", "/api/admin/market/nex/repurchase", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true),
+                api("RepurchaseParam", "/api/admin/market/nex/repurchase/params/{paramKey}", "PERM_MARKET_READ", "PERM_MARKET_WRITE", true)));
         map.put(DomainCode.H, List.of(
                 api("GrowthPhase", "/api/admin/growth/phases", "PERM_GROWTH_READ", "PERM_GROWTH_WRITE", false),
-                api("Quest", "/api/admin/growth/quests", "PERM_GROWTH_READ", "PERM_GROWTH_WRITE", false),
                 api("CheckInNexReward", "/api/admin/growth/check-in", "PERM_GROWTH_READ", "PERM_GROWTH_WRITE", false),
                 api("WithdrawNexGate", "/api/admin/growth/withdraw-gate", "PERM_GROWTH_READ", "PERM_GROWTH_WRITE", false)));
         map.put(DomainCode.I, List.of(
                 api("Conversation", "/api/admin/content/conversations", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
-                api("CrossAgentTransfer", "/api/admin/content/conversations/transfers", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
-                api("I18n", "/api/admin/content/i18n", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false)));
+                api("ConversationTransfer", "/api/admin/content/conversations/{conversationNo}/transfer", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("TransferAcceptReturn", "/api/admin/content/conversations/{conversationNo}/transfer/{action}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("SupportTicket", "/api/admin/content/tickets", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("SupportKnowledge", "/api/admin/content/knowledge/overview", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("SupportFaqCrud", "/api/admin/content/knowledge/faqs", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("SupportSlaRule", "/api/admin/content/knowledge/sla/{category}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NovaOverview", "/api/admin/content/nova/overview", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NovaChannelCrud", "/api/admin/content/nova/channels", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NovaTemplateStatus", "/api/admin/content/nova/templates/{channel}/status", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NovaSocialDistribution", "/api/admin/content/nova/social-distribution", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NovaSocialPool", "/api/admin/content/nova/social-pools/{poolKey}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("CopyAbOverview", "/api/admin/content/copy-ab/overview", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("CopyVersion", "/api/admin/content/copy-ab/copies/{copyKey}/versions", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("CopyExperiment", "/api/admin/content/copy-ab/experiments/{experimentId}/{action}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NotificationCampaign", "/api/admin/content/campaigns/overview", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NotificationCampaignAction", "/api/admin/content/campaigns/{campaignNo}/{action}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("NotificationCapRule", "/api/admin/content/campaigns/caps/{tier}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("TrustDisclosureOverview", "/api/admin/content/trust-disclosure/overview", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("TrustSection", "/api/admin/content/trust-disclosure/trust-sections/{sectionKey}/{action}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("DisclosureJurisdiction", "/api/admin/content/trust-disclosure/disclosures/{jurisdiction}/{action}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("DisclosureGateAction", "/api/admin/content/trust-disclosure/disclosures/gated-actions", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("I18nLearningOverview", "/api/admin/content/i18n-learning/overview", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("I18nMessage", "/api/admin/content/i18n-learning/messages/{messageKey}/{action}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false),
+                api("LearningCourse", "/api/admin/content/i18n-learning/courses/{courseId}", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", true),
+                api("LearningFeaturedCourse", "/api/admin/content/i18n-learning/courses/featured", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE", false)));
         map.put(DomainCode.J, List.of(
                 api("KillSwitch", "/api/admin/emergency/kill-switches", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE", false),
-                api("GeoBlock", "/api/admin/emergency/geo-block", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE", false),
-                api("TamperDefense", "/api/admin/emergency/tamper", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE", false)));
+                api("KillSwitchUpdate", "/api/admin/emergency/kill-switches/{key}", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE", false),
+                api("EmergencyDisable", "/api/admin/emergency/kill-switches/emergency-disable", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE", false)));
         map.put(DomainCode.K, List.of(
                 api("RiskCase", "/api/admin/risk/cases", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
-                api("FraudSignal", "/api/admin/risk/signals", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
-                api("DecisionEvidence", "/api/admin/risk/evidence", "PERM_RISK_READ", "PERM_RISK_WRITE", false)));
+                api("RiskCaseDecision", "/api/admin/risk/cases/{caseNo}/decision", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
+                api("RiskSignal", "/api/admin/risk/signals", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
+                api("ArbitrageSignal", "/api/admin/risk/arbitrage/overview", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
+                api("ArbitrageAction", "/api/admin/risk/arbitrage/rows/{rowId}/{action}", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
+                api("RiskScoringModel", "/api/admin/risk/scoring/overview", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
+                api("RiskScoringAction", "/api/admin/risk/scoring/**", "PERM_RISK_READ", "PERM_RISK_WRITE", false),
+                api("WithdrawRule", "/api/admin/risk/withdraw-rules", "PERM_RISK_READ", "PERM_RISK_WRITE", true),
+                api("WithdrawRuleDryRun", "/api/admin/risk/withdraw-rules/dry-runs", "PERM_RISK_READ", "PERM_RISK_WRITE", false)));
         map.put(DomainCode.L, List.of(
                 api("BIReport", "/api/admin/bi/reports", "PERM_BI_READ", "PERM_BI_EXPORT", false),
-                api("ExportJob", "/api/admin/bi/exports", "PERM_BI_READ", "PERM_BI_EXPORT", false),
-                api("RegulatoryReport", "/api/admin/bi/regulatory", "PERM_BI_READ", "PERM_BI_EXPORT", false)));
+                api("BIReportAction", "/api/admin/bi/reports/{reportId}/{action}", "PERM_BI_READ", "PERM_BI_EXPORT", false),
+                api("RegulatoryTemplates", "/api/admin/bi/regulatory/templates", "PERM_BI_READ", "PERM_BI_EXPORT", false)));
         return Map.copyOf(map);
     }
 

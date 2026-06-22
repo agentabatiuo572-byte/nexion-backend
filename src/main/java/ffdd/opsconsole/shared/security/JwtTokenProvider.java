@@ -8,20 +8,13 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Date;
 import javax.crypto.SecretKey;
-import org.springframework.beans.factory.annotation.Value;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 @Component
+@RequiredArgsConstructor
 public class JwtTokenProvider {
-    private final SecretKey secretKey;
-    private final Duration expiration;
-
-    public JwtTokenProvider(
-            @Value("${nexion.jwt.secret:nexion-development-secret-key-change-me-please}") String secret,
-            @Value("${nexion.jwt.ttl-minutes:1440}") long expirationMinutes) {
-        this.secretKey = Keys.hmacShaKeyFor(padSecret(secret).getBytes(StandardCharsets.UTF_8));
-        this.expiration = Duration.ofMinutes(expirationMinutes);
-    }
+    private final JwtProperties properties;
 
     public String createToken(Long subjectId, String subjectType, String username, Collection<String> authorities) {
         return createToken(subjectId, subjectType, username, authorities, null);
@@ -29,7 +22,7 @@ public class JwtTokenProvider {
 
     public String createToken(Long subjectId, String subjectType, String username, Collection<String> authorities, String sessionId) {
         Date now = new Date();
-        Date expiresAt = new Date(now.getTime() + expiration.toMillis());
+        Date expiresAt = new Date(now.getTime() + expiration().toMillis());
         var builder = Jwts.builder()
                 .subject(String.valueOf(subjectId))
                 .claim("subjectType", subjectType)
@@ -40,15 +33,23 @@ public class JwtTokenProvider {
         if (sessionId != null && !sessionId.isBlank()) {
             builder.claim("sessionId", sessionId);
         }
-        return builder.signWith(secretKey).compact();
+        return builder.signWith(secretKey()).compact();
     }
 
     public Claims parse(String token) {
         return Jwts.parser()
-                .verifyWith(secretKey)
+                .verifyWith(secretKey())
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
+    }
+
+    private SecretKey secretKey() {
+        return Keys.hmacShaKeyFor(padSecret(properties.getSecret()).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private Duration expiration() {
+        return Duration.ofMinutes(properties.getTtlMinutes());
     }
 
     private String padSecret(String secret) {

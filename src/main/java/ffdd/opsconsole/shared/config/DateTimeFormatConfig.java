@@ -2,6 +2,7 @@ package ffdd.opsconsole.shared.config;
 
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.TimeZone;
@@ -22,6 +23,11 @@ public class DateTimeFormatConfig {
                 .simpleDateFormat(DATE_TIME_PATTERN)
                 .serializerByType(LocalDateTime.class, new LocalDateTimeSerializer(DATE_TIME_FORMATTER))
                 .deserializerByType(LocalDateTime.class, new LocalDateTimeDeserializer(DATE_TIME_FORMATTER));
+    }
+
+    @Bean
+    public Clock systemClock() {
+        return Clock.systemDefaultZone();
     }
 
     @Bean

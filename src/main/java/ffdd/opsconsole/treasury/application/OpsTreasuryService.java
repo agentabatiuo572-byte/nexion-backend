@@ -1,14 +1,19 @@
 package ffdd.opsconsole.treasury.application;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -16,11 +21,14 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import org.springframework.beans.factory.annotation.Value;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
+@RequiredArgsConstructor
 public class OpsTreasuryService {
     private static final int DEFAULT_DAYS = 7;
     private static final int MAX_DAYS = 90;
@@ -28,54 +36,14 @@ public class OpsTreasuryService {
     private static final String NEX_USD_RATE_CONFIG_KEY = "wallet.dual-ledger.nex-usd-rate";
     private static final String REDLINE_CONFIG_KEY = "wallet.dual-ledger.redline-pct";
     private static final String HEALTHY_CONFIG_KEY = "wallet.dual-ledger.healthy-pct";
+    private static final String RUN_RISK_CONFIG_KEY = "wallet.dual-ledger.run-risk-pct";
     private static final String SCOPE_CONFIG_KEY = "wallet.dual-ledger.scope";
 
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
-    private final BigDecimal fallbackReserveUsd;
-    private final BigDecimal fallbackNexUsdRate;
-    private final BigDecimal fallbackRedlinePct;
-    private final BigDecimal fallbackHealthyPct;
-
-    public OpsTreasuryService(
-            TreasuryLedgerRepository ledgerRepository,
-            PlatformConfigFacade configFacade,
-            AuditLogService auditLogService,
-            @Value("${nexion.wallet.dual-ledger.reserve-usd:5000}") BigDecimal fallbackReserveUsd,
-            @Value("${nexion.wallet.dual-ledger.nex-usd-rate:0.17}") BigDecimal fallbackNexUsdRate,
-            @Value("${nexion.wallet.dual-ledger.redline-pct:85}") BigDecimal fallbackRedlinePct,
-            @Value("${nexion.wallet.dual-ledger.healthy-pct:100}") BigDecimal fallbackHealthyPct) {
-        this(
-                ledgerRepository,
-                configFacade,
-                auditLogService,
-                Clock.systemDefaultZone(),
-                fallbackReserveUsd,
-                fallbackNexUsdRate,
-                fallbackRedlinePct,
-                fallbackHealthyPct);
-    }
-
-    OpsTreasuryService(
-            TreasuryLedgerRepository ledgerRepository,
-            PlatformConfigFacade configFacade,
-            AuditLogService auditLogService,
-            Clock clock,
-            BigDecimal fallbackReserveUsd,
-            BigDecimal fallbackNexUsdRate,
-            BigDecimal fallbackRedlinePct,
-            BigDecimal fallbackHealthyPct) {
-        this.ledgerRepository = ledgerRepository;
-        this.configFacade = configFacade;
-        this.auditLogService = auditLogService;
-        this.clock = clock;
-        this.fallbackReserveUsd = safe(fallbackReserveUsd);
-        this.fallbackNexUsdRate = safe(fallbackNexUsdRate);
-        this.fallbackRedlinePct = safe(fallbackRedlinePct);
-        this.fallbackHealthyPct = safe(fallbackHealthyPct);
-    }
+    private final TreasuryDualLedgerProperties dualLedgerProperties;
 
     public ApiResult<Map<String, Object>> overview(int days) {
         int normalizedDays = normalizeDays(days);
@@ -116,10 +84,11 @@ public class OpsTreasuryService {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
-        BigDecimal reserveUsd = configDecimal(RESERVE_CONFIG_KEY, fallbackReserveUsd);
-        BigDecimal nexUsdRate = configDecimal(NEX_USD_RATE_CONFIG_KEY, fallbackNexUsdRate);
-        BigDecimal redlinePct = configDecimal(REDLINE_CONFIG_KEY, fallbackRedlinePct);
-        BigDecimal healthyPct = configDecimal(HEALTHY_CONFIG_KEY, fallbackHealthyPct);
+        BigDecimal reserveUsd = configDecimal(RESERVE_CONFIG_KEY, dualLedgerProperties.getReserveUsd());
+        BigDecimal nexUsdRate = configDecimal(NEX_USD_RATE_CONFIG_KEY, dualLedgerProperties.getNexUsdRate());
+        BigDecimal redlinePct = configDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
+        BigDecimal healthyPct = configDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
+        BigDecimal runRiskPct = configDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
         String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
 
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
@@ -160,6 +129,7 @@ public class OpsTreasuryService {
                 "coverageRatio", pctScale(coverageRatio),
                 "redlinePct", pctScale(redlinePct),
                 "healthyPct", pctScale(healthyPct),
+                "runRiskPct", pctScale(runRiskPct),
                 "redlineBreached", coverageRatio.compareTo(redlinePct) < 0,
                 "netFlow24hUsd", money(netFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
@@ -186,7 +156,7 @@ public class OpsTreasuryService {
         if (!StringUtils.hasText(request.voucherNo())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VOUCHER_NO_REQUIRED");
         }
-        BigDecimal oldReserve = configDecimal(RESERVE_CONFIG_KEY, fallbackReserveUsd);
+        BigDecimal oldReserve = configDecimal(RESERVE_CONFIG_KEY, dualLedgerProperties.getReserveUsd());
         BigDecimal amount = request.amount().setScale(2, RoundingMode.HALF_UP);
         BigDecimal newReserve = oldReserve.add(amount).setScale(2, RoundingMode.HALF_UP);
         configFacade.upsertAdminValue(
@@ -230,6 +200,138 @@ public class OpsTreasuryService {
         return ApiResult.ok(response);
     }
 
+    public ApiResult<Map<String, Object>> updateThresholds(String idempotencyKey, TreasuryThresholdRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        boolean hasRedline = request.redlinePct() != null;
+        boolean hasHealthy = request.healthyPct() != null;
+        boolean hasRunRisk = request.runRiskPct() != null;
+        if (!hasRedline && !hasHealthy && !hasRunRisk) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "THRESHOLD_REQUIRED");
+        }
+
+        BigDecimal redline = hasRedline
+                ? threshold(request.redlinePct(), "redlinePct", BigDecimal.ZERO, BigDecimal.valueOf(200))
+                : configDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
+        BigDecimal healthy = hasHealthy
+                ? threshold(request.healthyPct(), "healthyPct", BigDecimal.ZERO, BigDecimal.valueOf(250))
+                : configDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
+        BigDecimal runRisk = hasRunRisk
+                ? threshold(request.runRiskPct(), "runRiskPct", BigDecimal.ZERO, BigDecimal.valueOf(100))
+                : configDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
+        if (redline.compareTo(healthy) > 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_NOT_EXCEED_HEALTHY");
+        }
+
+        Map<String, Object> changed = new LinkedHashMap<>();
+        if (hasRedline) {
+            configFacade.upsertAdminValue(REDLINE_CONFIG_KEY, redline.toPlainString(), "NUMBER", "wallet", "B1 coverage redline threshold");
+            changed.put("redlinePct", redline);
+        }
+        if (hasHealthy) {
+            configFacade.upsertAdminValue(HEALTHY_CONFIG_KEY, healthy.toPlainString(), "NUMBER", "wallet", "B1 coverage healthy threshold");
+            changed.put("healthyPct", healthy);
+        }
+        if (hasRunRisk) {
+            configFacade.upsertAdminValue(RUN_RISK_CONFIG_KEY, runRisk.toPlainString(), "NUMBER", "wallet", "B1 run-risk threshold");
+            changed.put("runRiskPct", runRisk);
+        }
+
+        audit("B1_DUAL_LEDGER_THRESHOLDS_CHANGED", "DUAL_LEDGER_THRESHOLDS", "B1", request.operator(), section(
+                "changed", changed,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = dualLedger().getData();
+        response.put("thresholdUpdate", changed);
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<PageResult<TreasuryLedgerBillView>> ledgerBills(TreasuryLedgerQueryRequest request) {
+        int pageNum = clamp(request == null || request.pageNum() == null ? 1 : request.pageNum(), 1, 10_000);
+        int pageSize = clamp(request == null || request.pageSize() == null ? 20 : request.pageSize(), 1, 100);
+        String type = normalizeLedgerType(request == null ? null : request.type());
+        Long userId = request == null ? null : request.userId();
+        String keyword = trimToNull(request == null ? null : request.keyword());
+        long total = ledgerRepository.countLedgerBills(type, userId, keyword);
+        int offset = (pageNum - 1) * pageSize;
+        List<TreasuryLedgerBillView> rows = ledgerRepository.pageLedgerBills(type, userId, keyword, pageSize, offset);
+        return ApiResult.ok(new PageResult<>(total, pageNum, pageSize, rows));
+    }
+
+    public ApiResult<Map<String, Object>> userLedger(Long userId) {
+        if (userId == null || userId <= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
+        }
+        List<TreasuryLedgerBillView> rows = ledgerRepository.userLedgerRows(userId, 50);
+        Map<String, BigDecimal> sums = new LinkedHashMap<>();
+        for (TreasuryLedgerBillView row : rows) {
+            BigDecimal signed = "IN".equalsIgnoreCase(row.direction()) ? safe(row.amount()) : safe(row.amount()).negate();
+            sums.merge(row.asset(), signed, BigDecimal::add);
+        }
+        Map<String, Object> response = section(
+                "userId", userId,
+                "rows", rows,
+                "sums", sums,
+                "currentUsdtBalance", ledgerRepository.currentUserBalance(userId, "USDT").orElse(BigDecimal.ZERO),
+                "currentNexBalance", ledgerRepository.currentUserBalance(userId, "NEX").orElse(BigDecimal.ZERO),
+                "sources", List.of("nx_wallet_ledger"));
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> createLedgerAdjustment(String idempotencyKey, TreasuryLedgerAdjustmentRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (request.userId() == null || request.userId() <= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
+        }
+        String asset;
+        String direction;
+        BigDecimal amount;
+        try {
+            asset = normalizeAsset(request.asset());
+            direction = normalizeAdjustmentDirection(request.direction());
+            amount = positiveAmount(request.amount());
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
+        String adjustmentNo = "ADJ-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
+        String relatedBizNo = trimToNull(request.relatedBizNo());
+        String operator = trimToNull(request.operator());
+        if (operator == null) {
+            return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
+        }
+        ledgerRepository.createLedgerAdjustment(
+                adjustmentNo,
+                request.userId(),
+                asset,
+                direction,
+                amount,
+                relatedBizNo,
+                request.reason().trim(),
+                operator);
+        audit("D4_LEDGER_ADJUSTMENT_CREATED", "WALLET_ASSET_ADJUSTMENT", adjustmentNo, operator, section(
+                "userId", request.userId(),
+                "asset", asset,
+                "direction", direction,
+                "amount", amount,
+                "relatedBizNo", relatedBizNo,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(section(
+                "adjustmentNo", adjustmentNo,
+                "userId", request.userId(),
+                "asset", asset,
+                "direction", direction,
+                "amount", amount,
+                "status", "PENDING_REVIEW",
+                "ledgerPosting", "deferred-to-review",
+                "relatedBizNo", relatedBizNo));
+    }
+
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
@@ -259,6 +361,64 @@ public class OpsTreasuryService {
             return DEFAULT_DAYS;
         }
         return Math.min(days, MAX_DAYS);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(value, max));
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private String normalizeLedgerType(String value) {
+        String normalized = trimToNull(value);
+        if (normalized == null || "all".equalsIgnoreCase(normalized)) {
+            return null;
+        }
+        return normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeAsset(String value) {
+        String normalized = requireText(value, "ASSET_REQUIRED").toUpperCase(Locale.ROOT);
+        if (normalized.contains("POINT")) {
+            throw new IllegalArgumentException("Points system is sunset");
+        }
+        if (!List.of("USDT", "NEX").contains(normalized)) {
+            throw new IllegalArgumentException("Unsupported asset");
+        }
+        return normalized;
+    }
+
+    private String normalizeAdjustmentDirection(String value) {
+        String normalized = requireText(value, "DIRECTION_REQUIRED").toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "IN", "CREDIT" -> "CREDIT";
+            case "OUT", "DEBIT" -> "DEBIT";
+            default -> throw new IllegalArgumentException("Unsupported adjustment direction");
+        };
+    }
+
+    private BigDecimal positiveAmount(BigDecimal value) {
+        if (value == null || value.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Amount must be positive");
+        }
+        return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros();
+    }
+
+    private BigDecimal threshold(BigDecimal value, String fieldName, BigDecimal min, BigDecimal max) {
+        BigDecimal normalized = safe(value).setScale(1, RoundingMode.HALF_UP);
+        if (normalized.compareTo(min) <= 0 || normalized.compareTo(max) > 0) {
+            throw new IllegalArgumentException(fieldName + " is out of range");
+        }
+        return normalized;
+    }
+
+    private String requireText(String value, String message) {
+        if (!StringUtils.hasText(value)) {
+            throw new IllegalArgumentException(message);
+        }
+        return value.trim();
     }
 
     private BigDecimal configDecimal(String key, BigDecimal fallback) {

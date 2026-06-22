@@ -37,6 +37,67 @@ class OpsDomainRuntimeServiceTest {
     }
 
     @Test
+    void platformContractIncludesA4EventCenterDedicatedApi() {
+        ApiResult<OpsDomainRuntimeContract> result = service.contract("platform");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("A4EventCenter");
+            assertThat(api.path()).isEqualTo("/api/admin/platform/events");
+            assertThat(api.writePermission()).isEqualTo("PERM_AUDIT_EXPORT");
+        });
+    }
+
+    @Test
+    void contentContractIncludesM4KnowledgeApi() {
+        ApiResult<OpsDomainRuntimeContract> result = service.contract("content");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("SupportKnowledge");
+            assertThat(api.path()).isEqualTo("/api/admin/content/knowledge/overview");
+            assertThat(api.writePermission()).isEqualTo("PERM_CONTENT_WRITE");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("SupportSlaRule");
+            assertThat(api.path()).isEqualTo("/api/admin/content/knowledge/sla/{category}");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("CopyAbOverview");
+            assertThat(api.path()).isEqualTo("/api/admin/content/copy-ab/overview");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("CopyExperiment");
+            assertThat(api.path()).isEqualTo("/api/admin/content/copy-ab/experiments/{experimentId}/{action}");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("NotificationCampaign");
+            assertThat(api.path()).isEqualTo("/api/admin/content/campaigns/overview");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("NotificationCapRule");
+            assertThat(api.path()).isEqualTo("/api/admin/content/campaigns/caps/{tier}");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("TrustDisclosureOverview");
+            assertThat(api.path()).isEqualTo("/api/admin/content/trust-disclosure/overview");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("DisclosureGateAction");
+            assertThat(api.path()).isEqualTo("/api/admin/content/trust-disclosure/disclosures/gated-actions");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("I18nLearningOverview");
+            assertThat(api.path()).isEqualTo("/api/admin/content/i18n-learning/overview");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("LearningCourse");
+            assertThat(api.path()).isEqualTo("/api/admin/content/i18n-learning/courses/{courseId}");
+            assertThat(api.b1RedlineTriggered()).isTrue();
+        });
+    }
+
+    @Test
     void writeValidationRequiresIdempotencyAndReason() {
         OpsDomainCommandValidationRequest request =
                 new OpsDomainCommandValidationRequest("ADJUST_LEDGER", "TreasuryLedger", null, null, null, null, "ops correction");
@@ -97,6 +158,50 @@ class OpsDomainRuntimeServiceTest {
                 .contains("D5_H1_WITHDRAW_NEX_GATE", "H5_CHECKIN_NEX_REWARD");
         assertThat(service.contract("content").getData().updateCorrections()).contains("I9_CROSS_AGENT_TRANSFER");
         assertThat(service.contract("emergency").getData().updateCorrections()).contains("J1_GATE_SHRINK");
+    }
+
+    @Test
+    void marketContractIncludesRepurchaseProductApiWithB1Redline() {
+        ApiResult<OpsDomainRuntimeContract> result = service.contract("markets");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("RepurchaseProduct");
+            assertThat(api.path()).isEqualTo("/api/admin/market/nex/repurchase");
+            assertThat(api.b1RedlineTriggered()).isTrue();
+        });
+    }
+
+    @Test
+    void marketContractIncludesGenesisEconomyApisWithB1Redline() {
+        ApiResult<OpsDomainRuntimeContract> result = service.contract("markets");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("GenesisEconomy");
+            assertThat(api.path()).isEqualTo("/api/admin/market/nex/genesis");
+            assertThat(api.b1RedlineTriggered()).isTrue();
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("GenesisDividendBatch");
+            assertThat(api.path()).isEqualTo("/api/admin/market/nex/genesis/dividend-batches/{batchNo}/rerun");
+        });
+    }
+
+    @Test
+    void marketContractIncludesStakingPoolApisWithB1Redline() {
+        ApiResult<OpsDomainRuntimeContract> result = service.contract("markets");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("StakingPools");
+            assertThat(api.path()).isEqualTo("/api/admin/market/staking");
+            assertThat(api.b1RedlineTriggered()).isTrue();
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("StakingPoolKillStatus");
+            assertThat(api.path()).isEqualTo("/api/admin/market/staking/pools/{tierKey}/kill-status");
+        });
     }
 
     @Test

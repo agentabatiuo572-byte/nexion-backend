@@ -1,55 +1,111 @@
 package ffdd.opsconsole.risk.application;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
+import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
+import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
+import ffdd.opsconsole.risk.domain.RiskArbitrageViewGroup;
 import ffdd.opsconsole.risk.domain.RiskCaseView;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
+import ffdd.opsconsole.risk.domain.RiskRouteCountView;
+import ffdd.opsconsole.risk.domain.RiskRuleDimensionView;
+import ffdd.opsconsole.risk.domain.RiskRuleHitView;
+import ffdd.opsconsole.risk.domain.RiskRuleView;
+import ffdd.opsconsole.risk.domain.RiskScoreConfigView;
+import ffdd.opsconsole.risk.domain.RiskScoreDimensionView;
+import ffdd.opsconsole.risk.domain.RiskScoreDistributionView;
+import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
+import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskScoringSourceCatalog;
+import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
+import ffdd.opsconsole.risk.dto.RiskArbitrageParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskDecisionRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleCreateRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleDryRunRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleHitQueryRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleStatusRequest;
+import ffdd.opsconsole.risk.dto.RiskScoreCommandRequest;
+import ffdd.opsconsole.risk.dto.RiskScoreOverrideRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringBandRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
+@RequiredArgsConstructor
 public class OpsRiskService {
     private static final Set<String> FINAL_DECISIONS = Set.of("ALLOW", "BLOCK", "REJECT", "DENY");
     private static final Set<String> MANUAL_DECISIONS = Set.of("ALLOW", "BLOCK", "HOLD");
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
+    private static final Set<String> RULE_ACTIONS = Set.of("pass", "delay", "freeze", "manual");
+    private static final Set<String> RULE_STATES = Set.of("draft", "active", "paused", "archived");
+    private static final Map<String, K2ActionSpec> K2_ACTIONS = Map.of(
+            "mark", new K2ActionSpec("flag", "已标记套利", "K2_ARBITRAGE_MARKED"),
+            "block-gift", new K2ActionSpec("blockgift", "新人礼已拦截", "K2_WELCOME_GIFT_BLOCKED"),
+            "board-flag", new K2ActionSpec("boardflag", "已标记刷榜", "K2_LEADERBOARD_FLAGGED"),
+            "freeze-cluster", new K2ActionSpec("freeze", "已联动 K1 冻结", "K2_CLUSTER_FREEZE_LINKED"));
+    private static final List<K2ViewSpec> K2_VIEWS = List.of(
+            new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
+                    List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益", "层数命中", "判定", "动作"),
+                    "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑上级 / 试用循环。"),
+            new K2ViewSpec("tradein", "换新套利", "· 以旧换新套利 · 没满最短持有月就想换新,残值已被服务器算成 $0 拦下",
+                    List.of("账户", "设备", "购入时间", "持有月数 / 门槛", "残值拦截", "层数命中", "动作"),
+                    "最短持有月数由 E3 配置,这里只读；服务器守卫已把不满门槛的残值算成 $0。"),
+            new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
+                    List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征", "层数命中", "动作"),
+                    "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
+            new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/佣金增速异常的冲榜账户",
+                    List.of("账户", "本期累计佣金", "增速(对基线)", "直推增长", "关联簇", "判定", "动作"),
+                    "这里只标记并发信号给 F8 和风险雷达；取消参榜资格、从奖池剔除由 F8 执行。"));
+    private static final List<DimensionSpec> K3_DIMENSIONS = List.of(
+            new DimensionSpec("largeAmountUsdt", "WR-01", "金额", "单笔 >= $1,000 -> 转人工",
+                    "和提现队列(D2)自己的大额操作确认线、大额 KYC 复审线(K5)是三个独立参数,现在碰巧都是 $1,000,可以分别调",
+                    "manual", "范围 $100-$50,000；锚定超过 $1,000 进增强审核的合规口径", "card"),
+            new DimensionSpec("velocity24h", "WR-02", "速度", "24h > 3 笔 或 > $5,000 -> 延迟",
+                    "防化整为零快速搬钱；笔数和提现队列里的 24h 第几笔字段对齐",
+                    "delay", "笔数 1-20；金额 $500-$50,000", "wave"),
+            new DimensionSpec("newAccountProtectDays", "WR-03", "新账户", "注册 < 7 天 -> 延迟",
+                    "新号秒提是套现典型动作；和 K1 注册侧信号联动",
+                    "delay", "范围 0-30 天", "user"),
+            new DimensionSpec("addressReputationSource", "WR-04", "地址信誉", "内部黑名单 + 链上信誉",
+                    "信誉源 = 内部黑名单 + 链上信誉服务；换源只对新地址生效",
+                    "freeze", "可选内部 / 第三方 / 组合", "shield"));
 
     private final RiskOpsRepository riskRepository;
     private final AuditLogService auditLogService;
 
-    public OpsRiskService(RiskOpsRepository riskRepository, AuditLogService auditLogService) {
-        this.riskRepository = riskRepository;
-        this.auditLogService = auditLogService;
-    }
-
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(riskRepository.overview());
         response.put("domain", "K");
-        response.put("capabilities", List.of("RiskCase", "FraudSignal", "DeviceFingerprint", "DecisionEvidence"));
+        response.put("capabilities", List.of("RiskCase", "FraudSignal", "DeviceFingerprint", "DecisionEvidence", "WithdrawRule", "ArbitrageSignal", "RiskScoringModel"));
         response.put("decisionStates", List.of("REVIEWING", "FINALIZED"));
         response.put("redlines", List.of("finalized cases cannot be re-decided", "manual decisions require reason and A2 audit"));
-        response.put("sources", List.of("nx_risk_decision", "nx_risk_signal"));
+        response.put("sources", List.of("nx_risk_decision", "nx_risk_signal", "nx_admin_risk_withdraw_rule", "nx_admin_risk_score_dimension"));
         return ApiResult.ok(response);
     }
 
-    public ApiResult<List<RiskCaseView>> cases(RiskCaseQueryRequest request) {
-        int limit = normalizeLimit(request == null ? null : request.limit(), 50, 200);
-        return ApiResult.ok(riskRepository.search(
-                request == null ? null : request.userId(),
-                request == null ? null : request.status(),
-                request == null ? null : request.decision(),
-                limit));
+    public ApiResult<PageResult<RiskCaseView>> cases(RiskCaseQueryRequest request) {
+        return ApiResult.ok(riskRepository.pageCases(request));
     }
 
     public ApiResult<RiskCaseView> detail(String caseNo) {
@@ -102,19 +158,402 @@ public class OpsRiskService {
         String signalType = requireText(request.signalType(), "SIGNAL_TYPE_REQUIRED").toUpperCase(Locale.ROOT);
         String severity = normalizeSeverity(request.severity());
         String signalNo = "SIG-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
-        riskRepository.recordSignal(signalNo, request.userId(), signalType, severity, sanitizeEvidence(request.evidence()), operator(request.operator()));
+        String evidence = sanitizeEvidence(request.evidence());
+        riskRepository.recordSignal(signalNo, request.userId(), signalType, severity, evidence, operator(request.operator()));
+        RiskCaseView manualCase = null;
+        if (isKycReviewSignal(signalType)) {
+            String caseNo = nextRiskCaseNo("KYC");
+            manualCase = riskRepository.createManualReviewCase(
+                    caseNo,
+                    request.userId(),
+                    "KYC_REVIEW",
+                    "USER-" + request.userId(),
+                    request.reason().trim(),
+                    riskScore(severity),
+                    signalType,
+                    evidence,
+                    operator(request.operator()));
+        }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("signalNo", signalNo);
         response.put("userId", request.userId());
         response.put("signalType", signalType);
         response.put("severity", severity);
-        response.put("status", "RECORDED");
-        audit("K_RISK_SIGNAL_RECORDED", "RISK_SIGNAL", signalNo, request.userId(), operator(request.operator()), Map.of(
-                "signalType", signalType,
-                "severity", severity,
+        response.put("status", manualCase == null ? "RECORDED" : "REVIEW_CREATED");
+        if (manualCase != null) {
+            response.put("caseNo", manualCase.caseNo());
+            response.put("riskScore", manualCase.riskScore());
+        }
+        Map<String, Object> auditDetail = new LinkedHashMap<>();
+        auditDetail.put("signalType", signalType);
+        auditDetail.put("severity", severity);
+        auditDetail.put("reason", request.reason().trim());
+        auditDetail.put("idempotencyKey", idempotencyKey.trim());
+        if (manualCase != null) {
+            auditDetail.put("manualReviewCaseNo", manualCase.caseNo());
+        }
+        audit("K_RISK_SIGNAL_RECORDED", "RISK_SIGNAL", signalNo, request.userId(), operator(request.operator()), auditDetail);
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> withdrawRuleOverview() {
+        List<RiskRuleView> rules = riskRepository.withdrawRules();
+        List<RiskRouteCountView> routeCounts = riskRepository.withdrawRouteCounts();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("dimensions", dimensions(rules));
+        response.put("rules", rules);
+        response.put("routeCounts", routeCounts);
+        response.put("routeTotal", routeCounts.stream().mapToLong(r -> r.count() == null ? 0L : r.count()).sum());
+        response.put("hits", riskRepository.withdrawRuleHits(null, 20));
+        response.put("stateMachine", List.of("draft", "active", "paused", "archived"));
+        response.put("redlines", List.of("archived rules are terminal", "rule changes require reason and A2 audit", "rule relaxation triggers B1 coverage precheck"));
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<List<RiskRuleHitView>> withdrawRuleHits(RiskRuleHitQueryRequest request) {
+        String action = request == null ? null : request.action();
+        if (StringUtils.hasText(action) && !"all".equalsIgnoreCase(action) && !RULE_ACTIONS.contains(action.trim().toLowerCase(Locale.ROOT))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_ACTION_INVALID");
+        }
+        int limit = normalizeLimit(request == null ? null : request.limit(), 20, 200);
+        return ApiResult.ok(riskRepository.withdrawRuleHits(action, limit));
+    }
+
+    public ApiResult<RiskRuleView> createWithdrawRule(String idempotencyKey, RiskRuleCreateRequest request) {
+        ApiResult<RiskRuleView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String dimension = trimmed(request.dimension());
+        String condition = trimmed(request.conditionText());
+        if (!StringUtils.hasText(dimension) || !StringUtils.hasText(condition)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_REQUIRED_FIELDS_MISSING");
+        }
+        if (condition.length() > 1000) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_TOO_LONG");
+        }
+        String action = normalizeRuleAction(request.action());
+        if (action == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_ACTION_INVALID");
+        }
+        String ruleId = nextRuleId();
+        RiskRuleView created = riskRepository.createWithdrawRule(ruleId, dimension, condition, action, "draft", operator(request.operator()));
+        audit("K3_WITHDRAW_RULE_CREATED", "WITHDRAW_RULE", created.ruleId(), null, operator(request.operator()), Map.of(
+                "ruleId", created.ruleId(),
+                "dimension", created.dimension(),
+                "action", created.action(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(created);
+    }
+
+    public ApiResult<RiskRuleView> updateWithdrawRuleState(String ruleId, String idempotencyKey, RiskRuleStatusRequest request) {
+        ApiResult<RiskRuleView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalized = trimmed(ruleId);
+        if (!StringUtils.hasText(normalized)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_ID_REQUIRED");
+        }
+        String state = normalizeRuleState(request.state());
+        if (state == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_STATE_INVALID");
+        }
+        RiskRuleView before = riskRepository.findWithdrawRule(normalized).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "RULE_NOT_FOUND");
+        }
+        if ("archived".equals(before.state()) && !"archived".equals(state)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if (state.equals(before.state())) {
+            return ApiResult.ok(before);
+        }
+        RiskRuleView updated = riskRepository.updateWithdrawRuleState(normalized, state).orElse(before);
+        audit("K3_WITHDRAW_RULE_STATE_CHANGED", "WITHDRAW_RULE", normalized, null, operator(request.operator()), Map.of(
+                "ruleId", normalized,
+                "fromState", before.state(),
+                "toState", updated.state(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
+    }
+
+    public ApiResult<RiskRuleView> updateWithdrawRuleCondition(String ruleId, String idempotencyKey, RiskRuleConditionRequest request) {
+        ApiResult<RiskRuleView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalized = trimmed(ruleId);
+        String condition = trimmed(request.conditionText());
+        if (!StringUtils.hasText(normalized) || !StringUtils.hasText(condition)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_REQUIRED");
+        }
+        if (condition.length() > 1000) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_TOO_LONG");
+        }
+        RiskRuleView before = riskRepository.findWithdrawRule(normalized).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "RULE_NOT_FOUND");
+        }
+        if ("archived".equals(before.state())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        RiskRuleView updated = riskRepository.updateWithdrawRuleCondition(normalized, condition).orElse(before);
+        audit("K3_WITHDRAW_RULE_CONDITION_CHANGED", "WITHDRAW_RULE", normalized, null, operator(request.operator()), Map.of(
+                "ruleId", normalized,
+                "fromCondition", before.conditionText(),
+                "toCondition", updated.conditionText(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
+    }
+
+    public ApiResult<Map<String, Object>> dryRunWithdrawRules(String idempotencyKey, RiskRuleDryRunRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String batchNo = "K3-DRY-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase(Locale.ROOT);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("batchNo", batchNo);
+        response.put("status", "STARTED");
+        response.put("sampleWindowDays", 30);
+        response.put("routeCounts", riskRepository.withdrawRouteCounts());
+        response.put("startedAt", LocalDateTime.now());
+        audit("K3_WITHDRAW_RULE_DRY_RUN_STARTED", "WITHDRAW_RULE_DRY_RUN", batchNo, null, operator(request.operator()), Map.of(
+                "batchNo", batchNo,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> arbitrageOverview() {
+        List<RiskArbitrageRowView> rows = riskRepository.arbitrageRows();
+        Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
+                .collect(Collectors.groupingBy(RiskArbitrageRowView::viewKey, LinkedHashMap::new, Collectors.toList()));
+        List<RiskArbitrageViewGroup> views = K2_VIEWS.stream()
+                .map(spec -> new RiskArbitrageViewGroup(
+                        spec.key(),
+                        spec.label(),
+                        spec.sub(),
+                        spec.head(),
+                        spec.note(),
+                        byView.getOrDefault(spec.key(), List.of())))
+                .toList();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("stats", riskRepository.arbitrageStats());
+        response.put("params", riskRepository.arbitrageParams());
+        response.put("views", views);
+        response.put("minHoldingMonths", "6");
+        response.put("redlines", List.of("K2 only marks and emits signals", "account freezing is linked to K1 action chain", "welcome gift blocking never touches settled assets"));
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<RiskArbitrageParamView> updateArbitrageParam(String key, String idempotencyKey, RiskArbitrageParamUpdateRequest request) {
+        ApiResult<RiskArbitrageParamView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalizedKey = trimmed(key);
+        String value = trimmed(request.value());
+        if (!StringUtils.hasText(normalizedKey) || !StringUtils.hasText(value)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_PARAM_VALUE_REQUIRED");
+        }
+        if (value.length() > 128) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_PARAM_VALUE_TOO_LONG");
+        }
+        RiskArbitrageParamView updated = riskRepository.updateArbitrageParam(normalizedKey, value).orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(404, "K2_PARAM_NOT_FOUND");
+        }
+        audit("K2_PARAM_CHANGED", "RISK_ARBITRAGE_PARAM", normalizedKey, null, operator(request.operator()), Map.of(
+                "key", normalizedKey,
+                "value", value,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
+    }
+
+    public ApiResult<RiskArbitrageRowView> executeArbitrageAction(String rowId, String action, String idempotencyKey, RiskArbitrageActionRequest request) {
+        ApiResult<RiskArbitrageRowView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalizedRowId = trimmed(rowId);
+        String normalizedAction = trimmed(action).toLowerCase(Locale.ROOT);
+        K2ActionSpec spec = K2_ACTIONS.get(normalizedAction);
+        if (!StringUtils.hasText(normalizedRowId) || spec == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_ACTION_INVALID");
+        }
+        RiskArbitrageRowView before = riskRepository.findArbitrageRow(normalizedRowId).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "K2_ROW_NOT_FOUND");
+        }
+        if (StringUtils.hasText(before.disposition())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if (!before.actions().contains(spec.requiredRowAction())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        RiskArbitrageRowView updated = riskRepository.updateArbitrageDisposition(normalizedRowId, spec.disposition()).orElse(before);
+        audit(spec.auditAction(), "RISK_ARBITRAGE_ROW", normalizedRowId, null, operator(request.operator()), Map.of(
+                "rowId", normalizedRowId,
+                "viewKey", before.viewKey(),
+                "action", normalizedAction,
+                "clusterId", before.clusterId() == null ? "" : before.clusterId(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
+    }
+
+    public ApiResult<Map<String, Object>> scoringOverview() {
+        List<RiskScoreDistributionView> distribution = riskRepository.scoringDistribution();
+        List<RiskScoreOverrideView> overrides = riskRepository.scoreOverrides();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("dimensions", riskRepository.scoringDimensions());
+        response.put("config", riskRepository.scoringConfig());
+        response.put("distribution", distribution);
+        response.put("totalUsers", distribution.stream().mapToLong(v -> v.count() == null ? 0L : v.count()).sum());
+        response.put("overrides", overrides);
+        response.put("overrideActive", overrides.stream().filter(v -> Boolean.TRUE.equals(v.active())).count());
+        response.put("redlines", List.of("weights must sum to 100", "model changes require platform admin reason", "single-user override must be reversible"));
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<RiskScoreUserView> scoreUser(String userNo) {
+        String normalized = trimmed(userNo);
+        if (!StringUtils.hasText(normalized)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
+        }
+        return riskRepository.findScoreUser(normalized)
+                .map(ApiResult::ok)
+                .orElseGet(() -> ApiResult.fail(404, "SCORE_USER_NOT_FOUND"));
+    }
+
+    public ApiResult<Map<String, Object>> updateScoringWeights(String idempotencyKey, RiskScoringWeightsRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        Map<String, Integer> weights = request.weights();
+        if (weights == null || weights.isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_WEIGHTS_REQUIRED");
+        }
+        Set<String> knownKeys = riskRepository.scoringDimensions().stream()
+                .map(RiskScoreDimensionView::dimKey)
+                .collect(Collectors.toSet());
+        if (!knownKeys.equals(weights.keySet())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_WEIGHT_KEYS_INVALID");
+        }
+        int total = weights.values().stream().mapToInt(v -> v == null ? -1 : v).sum();
+        boolean invalid = weights.values().stream().anyMatch(v -> v == null || v < 0 || v > 100);
+        if (invalid || total != 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_WEIGHTS_MUST_SUM_100");
+        }
+        List<RiskScoreDimensionView> updated = riskRepository.updateScoringWeights(new LinkedHashMap<>(weights));
+        audit("K4_SCORE_WEIGHTS_CHANGED", "RISK_SCORE_MODEL", "weights", null, operator(request.operator()), Map.of(
+                "weights", updated,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return scoringOverview();
+    }
+
+    public ApiResult<Map<String, Object>> updateScoringSource(String idempotencyKey, RiskScoringSourceRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String inputSource = trimmed(request.inputSource());
+        if (!RiskScoringSourceCatalog.contains(inputSource)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_SOURCE_INVALID");
+        }
+        riskRepository.updateScoringConfig("inputSource", inputSource);
+        audit("K4_SCORE_SOURCE_TOGGLED", "RISK_SCORE_MODEL", "source", null, operator(request.operator()), Map.of(
+                "inputSource", inputSource,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return scoringOverview();
+    }
+
+    public ApiResult<Map<String, Object>> updateScoringBand(String idempotencyKey, RiskScoringBandRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        Integer lowMax = request.lowMax();
+        Integer highMin = request.highMin();
+        if (lowMax == null || highMin == null || lowMax < 0 || highMin > 100 || lowMax >= highMin) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_BAND_INVALID");
+        }
+        riskRepository.updateScoringConfig("bandLowMax", String.valueOf(lowMax));
+        riskRepository.updateScoringConfig("bandHighMin", String.valueOf(highMin));
+        audit("K4_SCORE_BAND_CHANGED", "RISK_SCORE_MODEL", "band", null, operator(request.operator()), Map.of(
+                "lowMax", lowMax,
+                "highMin", highMin,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return scoringOverview();
+    }
+
+    public ApiResult<Map<String, Object>> updateScoringEscalate(String idempotencyKey, RiskScoringEscalateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        Integer score = request.score();
+        if (score == null || score < 70 || score > 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_ESCALATE_INVALID");
+        }
+        riskRepository.updateScoringConfig("autoEscalateScore", String.valueOf(score));
+        audit("K4_SCORE_ESCALATE_CHANGED", "RISK_SCORE_MODEL", "escalate", null, operator(request.operator()), Map.of(
+                "score", score,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return scoringOverview();
+    }
+
+    public ApiResult<RiskScoreUserView> overrideScore(String userNo, String idempotencyKey, RiskScoreOverrideRequest request) {
+        ApiResult<RiskScoreUserView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        Integer score = request.score();
+        String normalized = trimmed(userNo);
+        if (!StringUtils.hasText(normalized) || score == null || score < 0 || score > 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_OVERRIDE_INVALID");
+        }
+        RiskScoreOverrideView updated = riskRepository.overrideScore(normalized, score, request.reason().trim(), operator(request.operator())).orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(404, "SCORE_USER_NOT_FOUND");
+        }
+        audit("K4_SCORE_OVERRIDDEN", "RISK_SCORE_USER", normalized, null, operator(request.operator()), Map.of(
+                "userNo", normalized,
+                "overrideScore", score,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return scoreUser(normalized);
+    }
+
+    public ApiResult<RiskScoreUserView> recomputeScore(String userNo, String idempotencyKey, RiskScoreCommandRequest request) {
+        ApiResult<RiskScoreUserView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalized = trimmed(userNo);
+        if (!StringUtils.hasText(normalized)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
+        }
+        RiskScoreUserView updated = riskRepository.recomputeScore(normalized).orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(404, "SCORE_USER_NOT_FOUND");
+        }
+        audit("K4_SCORE_RECOMPUTED", "RISK_SCORE_USER", normalized, null, operator(request.operator()), Map.of(
+                "userNo", normalized,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
     }
 
     private <T> ApiResult<T> requireCommand(String idempotencyKey, String reason) {
@@ -148,6 +587,16 @@ public class OpsRiskService {
         return normalized;
     }
 
+    private String normalizeRuleAction(String action) {
+        String normalized = trimmed(action).toLowerCase(Locale.ROOT);
+        return RULE_ACTIONS.contains(normalized) ? normalized : null;
+    }
+
+    private String normalizeRuleState(String state) {
+        String normalized = trimmed(state).toLowerCase(Locale.ROOT);
+        return RULE_STATES.contains(normalized) ? normalized : null;
+    }
+
     private String sanitizeEvidence(String evidence) {
         if (!StringUtils.hasText(evidence)) {
             return "{}";
@@ -163,8 +612,29 @@ public class OpsRiskService {
         return Math.min(value, max);
     }
 
+    private boolean isKycReviewSignal(String signalType) {
+        return "KYC_REVIEW_MANUAL".equals(signalType) || signalType.startsWith("KYC_REVIEW_");
+    }
+
+    private String nextRiskCaseNo(String prefix) {
+        return prefix + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase(Locale.ROOT);
+    }
+
+    private int riskScore(String severity) {
+        return switch (severity) {
+            case "CRITICAL" -> 95;
+            case "HIGH" -> 88;
+            case "MEDIUM" -> 72;
+            default -> 55;
+        };
+    }
+
     private String normalizeText(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String trimmed(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private String requireText(String value, String message) {
@@ -176,6 +646,37 @@ public class OpsRiskService {
 
     private String operator(String operator) {
         return StringUtils.hasText(operator) ? operator.trim() : "system";
+    }
+
+    private List<RiskRuleDimensionView> dimensions(List<RiskRuleView> rules) {
+        Map<String, RiskRuleView> byId = new LinkedHashMap<>();
+        rules.forEach(rule -> byId.put(rule.ruleId(), rule));
+        return K3_DIMENSIONS.stream()
+                .map(spec -> {
+                    RiskRuleView rule = byId.get(spec.ruleId());
+                    return new RiskRuleDimensionView(
+                            spec.ruleKey(),
+                            spec.ruleId(),
+                            spec.name(),
+                            rule == null ? spec.conditionDefault() : rule.conditionText(),
+                            spec.conditionDefault(),
+                            spec.why(),
+                            rule == null ? spec.action() : rule.action(),
+                            spec.note(),
+                            spec.icon());
+                })
+                .sorted(Comparator.comparingInt(v -> switch (v.ruleKey()) {
+                    case "largeAmountUsdt" -> 0;
+                    case "velocity24h" -> 1;
+                    case "newAccountProtectDays" -> 2;
+                    case "addressReputationSource" -> 3;
+                    default -> 9;
+                }))
+                .toList();
+    }
+
+    private String nextRuleId() {
+        return "WR-C" + UUID.randomUUID().toString().replace("-", "").substring(0, 5).toUpperCase(Locale.ROOT);
     }
 
     private void audit(String action, String resourceType, String resourceId, Long userId, String operator, Map<String, Object> detail) {
@@ -191,5 +692,33 @@ public class OpsRiskService {
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
+    }
+
+    private record DimensionSpec(
+            String ruleKey,
+            String ruleId,
+            String name,
+            String conditionDefault,
+            String why,
+            String action,
+            String note,
+            String icon
+    ) {
+    }
+
+    private record K2ActionSpec(
+            String requiredRowAction,
+            String disposition,
+            String auditAction
+    ) {
+    }
+
+    private record K2ViewSpec(
+            String key,
+            String label,
+            String sub,
+            List<String> head,
+            String note
+    ) {
     }
 }

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.platform.web;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.platform.application.OpsPlatformConfigService;
@@ -16,12 +18,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/config")
+@RequiredArgsConstructor
 public class OpsPlatformConfigController {
     private final OpsPlatformConfigService configService;
-
-    public OpsPlatformConfigController(OpsPlatformConfigService configService) {
-        this.configService = configService;
-    }
 
     @GetMapping("/overview")
     @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")

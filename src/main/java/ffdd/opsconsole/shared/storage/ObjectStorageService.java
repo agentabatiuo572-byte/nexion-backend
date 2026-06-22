@@ -1,5 +1,7 @@
 package ffdd.opsconsole.shared.storage;
 
+
+import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.exception.BizException;
 import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
@@ -10,12 +12,14 @@ import io.minio.http.Method;
 import java.io.InputStream;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
+@RequiredArgsConstructor
 public class ObjectStorageService {
     private static final Logger log = LoggerFactory.getLogger(ObjectStorageService.class);
     private static final int DEFAULT_EXPIRY_SECONDS = 900;
@@ -23,12 +27,7 @@ public class ObjectStorageService {
 
     private final MinioClient minioClient;
     private final StorageProperties properties;
-    private volatile boolean bucketReady;
-
-    public ObjectStorageService(MinioClient minioClient, StorageProperties properties) {
-        this.minioClient = minioClient;
-        this.properties = properties;
-    }
+    private final AtomicBoolean bucketReady = new AtomicBoolean(false);
 
     public StoredObject put(String objectKey, String contentType, InputStream inputStream, long sizeBytes) {
         validateObjectKey(objectKey);
@@ -108,15 +107,15 @@ public class ObjectStorageService {
     }
 
     private void ensureBucket() throws Exception {
-        if (bucketReady) {
+        if (bucketReady.get()) {
             return;
         }
         synchronized (this) {
-            if (bucketReady) {
+            if (bucketReady.get()) {
                 return;
             }
             ensureBucketExists();
-            bucketReady = true;
+            bucketReady.set(true);
         }
     }
 

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.shared.audit;
 
+
+import lombok.RequiredArgsConstructor;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Array;
@@ -12,6 +14,7 @@ import java.util.Map;
 import org.springframework.stereotype.Component;
 
 @Component
+@RequiredArgsConstructor
 public class AuditLogSanitizer {
     private static final String REDACTED = "[REDACTED]";
     private static final int MAX_DETAIL_JSON_LENGTH = 4096;
@@ -21,10 +24,6 @@ public class AuditLogSanitizer {
             "objectkey", "object_key", "rawbody", "raw_body");
 
     private final ObjectMapper objectMapper;
-
-    public AuditLogSanitizer(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
 
     public String toSafeJson(Object detail) {
         if (detail == null) {
