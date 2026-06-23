@@ -1,7 +1,9 @@
 package ffdd.opsconsole.device.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -609,6 +611,23 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void deleteTaskRejectsWhenSkuReferencesTaskPool() {
+        catalogRepository.task = task("TK-5", "LoRA 微调", new BigDecimal("3.00"), "active");
+        catalogRepository.tasks.put("TK-5", catalogRepository.task);
+        catalogRepository.sku = sku("stellarbox-s1", "NexionBox S1", "on", "P1", "TK-5");
+
+        ApiResult<Map<String, Object>> result = service.deleteTask(
+                "TK-5",
+                "idem-task-delete",
+                new DeviceTaskStatusRequest("inactive", "retire task", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).contains("NexionBox S1").contains("stellarbox-s1");
+        assertThat(catalogRepository.findTask("TK-5")).isPresent();
+        verify(auditLogService, never()).record(any());
+    }
+
+    @Test
     void cancelOrderRejectsIllegalStateWith409() {
         catalogRepository.order = order("OD-1", "active");
 
@@ -767,6 +786,10 @@ class OpsDeviceServiceTest {
     }
 
     private static DeviceSkuView sku(String skuId, String name, String status, String unlockPhase) {
+        return sku(skuId, name, status, unlockPhase, "LLM pool");
+    }
+
+    private static DeviceSkuView sku(String skuId, String name, String status, String unlockPhase, String aiUnlocks) {
         return new DeviceSkuView(
                 skuId,
                 name,
@@ -792,7 +815,7 @@ class OpsDeviceServiceTest {
                 1000L,
                 10L,
                 5L,
-                "LLM pool",
+                aiUnlocks,
                 List.of("managed"),
                 1,
                 "active",
@@ -1005,6 +1028,11 @@ class OpsDeviceServiceTest {
         @Override
         public Optional<DeviceSkuView> findSku(String skuId) {
             return sku != null && sku.skuId().equals(skuId) ? Optional.of(sku) : Optional.empty();
+        }
+
+        @Override
+        public List<DeviceSkuView> findSkusByAiUnlocks(String taskId) {
+            return sku != null && taskId.equals(sku.aiUnlocks()) ? List.of(sku) : List.of();
         }
 
         @Override

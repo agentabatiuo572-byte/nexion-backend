@@ -630,6 +630,15 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     SkuRow findSku(@Param("skuId") String skuId);
 
+    @Select("""
+            SELECT
+            """ + SKU_COLUMNS + """
+              FROM nx_admin_device_sku
+             WHERE ai_unlocks = #{taskId} AND is_deleted = 0
+             ORDER BY FIELD(status,'on','pending','off'), updated_at DESC, id DESC
+            """)
+    List<SkuRow> findSkusByAiUnlocks(@Param("taskId") String taskId);
+
     @Insert("""
             INSERT INTO nx_admin_device_sku (
               sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,price,

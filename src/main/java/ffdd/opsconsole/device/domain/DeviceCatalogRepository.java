@@ -19,6 +19,8 @@ public interface DeviceCatalogRepository {
 
     Optional<DeviceSkuView> findSku(String skuId);
 
+    List<DeviceSkuView> findSkusByAiUnlocks(String taskId);
+
     DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now);
 
     Optional<DeviceSkuView> updateSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now);

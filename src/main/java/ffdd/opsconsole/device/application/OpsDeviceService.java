@@ -503,6 +503,10 @@ public class OpsDeviceService {
         if (before == null) {
             return ApiResult.fail(404, "TASK_NOT_FOUND");
         }
+        ApiResult<DeviceTaskView> inUseGuard = requireTaskNotReferencedBySku(normalized, status);
+        if (inUseGuard != null) {
+            return inUseGuard;
+        }
         DeviceTaskView updated = catalogRepository.updateTaskStatus(normalized, status, LocalDateTime.now(clock)).orElse(before);
         audit("E2_TASK_STATUS_CHANGED", "DEVICE_TASK", normalized, request.operator(), detail(
                 "taskId", normalized,
@@ -523,6 +527,10 @@ public class OpsDeviceService {
         if (before == null) {
             return ApiResult.fail(404, "TASK_NOT_FOUND");
         }
+        ApiResult<Map<String, Object>> inUseGuard = requireTaskNotReferencedBySku(normalized);
+        if (inUseGuard != null) {
+            return inUseGuard;
+        }
         catalogRepository.softDeleteTask(normalized, LocalDateTime.now(clock));
         audit("E2_TASK_DELETED", "DEVICE_TASK", normalized, request.operator(), detail(
                 "taskId", normalized,
@@ -530,6 +538,32 @@ public class OpsDeviceService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(detail("taskId", normalized, "deleted", true));
+    }
+
+    private ApiResult<DeviceTaskView> requireTaskNotReferencedBySku(String taskId, String nextStatus) {
+        if (!"inactive".equals(nextStatus)) {
+            return null;
+        }
+        List<DeviceSkuView> refs = catalogRepository.findSkusByAiUnlocks(taskId);
+        if (refs.isEmpty()) {
+            return null;
+        }
+        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), taskInUseBySkuMessage(refs));
+    }
+
+    private ApiResult<Map<String, Object>> requireTaskNotReferencedBySku(String taskId) {
+        List<DeviceSkuView> refs = catalogRepository.findSkusByAiUnlocks(taskId);
+        if (refs.isEmpty()) {
+            return null;
+        }
+        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), taskInUseBySkuMessage(refs));
+    }
+
+    private String taskInUseBySkuMessage(List<DeviceSkuView> refs) {
+        List<String> labels = refs.stream()
+                .map(sku -> String.format("%s(%s)", sku.name(), sku.skuId()))
+                .toList();
+        return "任务正在被 E1 SKU 使用,请先到 E1 修改这些 SKU 的解锁算力池:" + String.join("、", labels);
     }
 
     public ApiResult<PageResult<DeviceOrderView>> orders(DeviceOrderQueryRequest request) {

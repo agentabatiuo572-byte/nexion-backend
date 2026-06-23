@@ -105,6 +105,13 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public List<DeviceSkuView> findSkusByAiUnlocks(String taskId) {
+        return mapper.findSkusByAiUnlocks(taskId).stream()
+                .map(this::skuView)
+                .toList();
+    }
+
+    @Override
     public DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
         mapper.insertSku(skuWrite(skuId, request, now, now));
         return findSku(skuId).orElseThrow();
