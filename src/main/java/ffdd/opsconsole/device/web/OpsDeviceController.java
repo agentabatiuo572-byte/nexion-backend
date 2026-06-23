@@ -152,6 +152,14 @@ public class OpsDeviceController {
         return deviceService.createTask(idempotencyKey, request);
     }
 
+    @PutMapping("/tasks/{taskId}")
+    public ApiResult<DeviceTaskView> updateTask(
+            @PathVariable String taskId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceTaskUpsertRequest request) {
+        return deviceService.updateTask(taskId, idempotencyKey, request);
+    }
+
     @PatchMapping("/tasks/{taskId}/price")
     public ApiResult<DeviceTaskView> updateTaskPrice(
             @PathVariable String taskId,

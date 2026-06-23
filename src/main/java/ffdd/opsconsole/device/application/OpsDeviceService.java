@@ -65,7 +65,7 @@ public class OpsDeviceService {
     private static final Set<String> REVIEW_STATUSES = Set.of("published", "hidden");
     private static final Set<String> TASK_STATUSES = Set.of("active", "paused", "inactive");
     private static final Set<String> TASK_UNITS = Set.of("/job", "/1k", "/min");
-    private static final Set<String> TASK_REQUIREMENTS = Set.of("S1+", "需 NexionBox Pro", "需 NexionRack");
+    private static final Set<String> TASK_REQUIREMENTS = Set.of("手机+", "S1+", "需 NexionBox Pro", "需 NexionRack");
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of("payment_failed", "expired", "refunded", "provisioning_failed");
     private static final Set<String> ORDER_FINAL_STATES = Set.of("active", "refunded", "cancelled", "payment_failed", "expired", "provisioning_failed");
     private static final Set<String> ORDER_CANCELABLE_STATES = Set.of("created", "paid");
@@ -359,6 +359,30 @@ public class OpsDeviceService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(created);
+    }
+
+    public ApiResult<DeviceTaskView> updateTask(String taskId, String idempotencyKey, DeviceTaskUpsertRequest request) {
+        ApiResult<DeviceTaskView> guard = requireTaskCommand(idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        String normalized = normalizeId(taskId);
+        DeviceTaskView before = catalogRepository.findTask(normalized).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "TASK_NOT_FOUND");
+        }
+        DeviceTaskView updated = catalogRepository.updateTask(normalized, request, LocalDateTime.now(clock)).orElse(before);
+        audit("E2_TASK_UPDATED", "DEVICE_TASK", normalized, request.operator(), detail(
+                "taskId", normalized,
+                "beforeName", before.name(),
+                "afterName", updated.name(),
+                "beforePrice", before.price(),
+                "afterPrice", updated.price(),
+                "beforeRequirement", before.requirement(),
+                "afterRequirement", updated.requirement(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
     }
 
     public ApiResult<DeviceTaskView> updateTaskPrice(String taskId, String idempotencyKey, DeviceTaskPriceRequest request) {

@@ -807,6 +807,19 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Update("""
             UPDATE nx_admin_device_task
+               SET name = #{task.name},
+                   price = #{task.price},
+                   unit_text = #{task.unit},
+                   requirement = #{task.requirement},
+                   saturation = #{task.saturation},
+                   status = #{task.status},
+                   updated_at = #{task.updatedAt}
+             WHERE task_id = #{task.taskId} AND is_deleted = 0
+            """)
+    int updateTask(@Param("task") TaskWrite task);
+
+    @Update("""
+            UPDATE nx_admin_device_task
                SET price = #{price}, updated_at = #{now}
              WHERE task_id = #{taskId} AND is_deleted = 0
             """)

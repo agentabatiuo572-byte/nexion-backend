@@ -186,6 +186,12 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public Optional<DeviceTaskView> updateTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now) {
+        int updated = mapper.updateTask(taskWrite(taskId, request, now, now));
+        return updated == 0 ? Optional.empty() : findTask(taskId);
+    }
+
+    @Override
     public Optional<DeviceTaskView> updateTaskPrice(String taskId, BigDecimal price, LocalDateTime now) {
         int updated = mapper.updateTaskPrice(taskId, valueOrZero(price), now);
         return updated == 0 ? Optional.empty() : findTask(taskId);

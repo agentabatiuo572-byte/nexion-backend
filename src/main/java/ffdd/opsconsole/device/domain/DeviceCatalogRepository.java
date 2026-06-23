@@ -44,6 +44,8 @@ public interface DeviceCatalogRepository {
 
     DeviceTaskView createTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now);
 
+    Optional<DeviceTaskView> updateTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now);
+
     Optional<DeviceTaskView> updateTaskPrice(String taskId, java.math.BigDecimal price, LocalDateTime now);
 
     Optional<DeviceTaskView> updateTaskStatus(String taskId, String status, LocalDateTime now);

@@ -521,6 +521,25 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void updateTaskPersistsEditableFieldsAndAudits() {
+        catalogRepository.task = task("TK-1", "LLM 推理 70B", new BigDecimal("0.46"), "active");
+
+        ApiResult<DeviceTaskView> result = service.updateTask(
+                "TK-1",
+                "idem-task-update",
+                taskRequest("手机端 Embedding", "/1k", "手机+"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().name()).isEqualTo("手机端 Embedding");
+        assertThat(result.getData().unit()).isEqualTo("/1k");
+        assertThat(result.getData().requirement()).isEqualTo("手机+");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E2_TASK_UPDATED");
+    }
+
+    @Test
     void createTaskRejectsValuesOutsideBackendOptions() {
         ApiResult<DeviceTaskView> invalidUnit = service.createTask(
                 "idem-task",
@@ -539,7 +558,7 @@ class OpsDeviceServiceTest {
     void createTaskAcceptsBackendOptionValues() {
         ApiResult<DeviceTaskView> result = service.createTask(
                 "idem-task",
-                taskRequest("LLM 推理 70B", "/1k", "需 NexionBox Pro"));
+                taskRequest("LLM 推理 70B", "/1k", "手机+"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().taskId()).startsWith("TK-");
@@ -1217,6 +1236,30 @@ class OpsDeviceServiceTest {
                     now);
             tasks.put(taskId, task);
             return task;
+        }
+
+        @Override
+        public Optional<DeviceTaskView> updateTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now) {
+            DeviceTaskView current = tasks.get(taskId);
+            if (current == null && task != null && task.taskId().equals(taskId)) {
+                current = task;
+            }
+            if (current == null) {
+                return Optional.empty();
+            }
+            DeviceTaskView updated = new DeviceTaskView(
+                    current.taskId(),
+                    request.name(),
+                    request.price(),
+                    request.unit(),
+                    request.requirement(),
+                    request.saturation(),
+                    request.status(),
+                    current.createdAt(),
+                    now);
+            tasks.put(taskId, updated);
+            task = updated;
+            return Optional.of(updated);
         }
 
         @Override
