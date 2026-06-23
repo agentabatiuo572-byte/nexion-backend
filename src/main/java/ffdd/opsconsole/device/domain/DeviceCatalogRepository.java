@@ -8,7 +8,9 @@ import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 public interface DeviceCatalogRepository {
@@ -53,4 +55,46 @@ public interface DeviceCatalogRepository {
     Optional<DeviceOrderView> findOrder(String orderNo);
 
     Optional<DeviceOrderView> updateOrderState(String orderNo, String state, LocalDateTime now);
+
+    List<DevicePhaseView> listPhases(String scope, boolean includeArchived);
+
+    Optional<DevicePhaseView> findPhase(String scope, String phaseId);
+
+    Optional<DevicePhaseView> findPhaseByLabel(String scope, String label);
+
+    DevicePhaseView savePhase(
+            String scope,
+            String currentPhaseId,
+            String label,
+            String meta,
+            String skus,
+            Integer sortOrder,
+            String status,
+            LocalDateTime now);
+
+    boolean archivePhase(String scope, String phaseId, LocalDateTime now);
+
+    void backfillPhaseReferences(String scope, LocalDateTime now);
+
+    int countSkusByUnlockPhase(String phaseId);
+
+    int countGenerationGatesByPhase(String phaseId);
+
+    List<DeviceGenerationGateView> listGenerationGates(boolean includeArchived);
+
+    Optional<DeviceGenerationGateView> findGenerationGate(String skuId);
+
+    DeviceGenerationGateView saveGenerationGate(
+            String skuId,
+            String name,
+            Integer releaseMonth,
+            String phase,
+            BigDecimal discount,
+            Boolean eligibility,
+            Integer phaseOffset,
+            Boolean forceUnlock,
+            String status,
+            LocalDateTime now);
+
+    boolean archiveGenerationGate(String skuId, LocalDateTime now);
 }

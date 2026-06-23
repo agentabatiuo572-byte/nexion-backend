@@ -1847,6 +1847,119 @@ ON DUPLICATE KEY UPDATE
   remark = VALUES(remark),
   status = VALUES(status);
 
+INSERT INTO nx_config_item (config_key, config_value, value_type, config_group, visibility, remark, status)
+VALUES
+  ('growth.phase.current_month', '7', 'NUMBER', 'growth', 'ADMIN', 'H1 current platform month used by E1 generation gates.', 1),
+  ('growth.phase.current', 'P3', 'STRING', 'growth', 'ADMIN', 'H1 current phase used by E1 generation gates.', 1),
+  ('device.e1.phaseOrder', 'P1,P2,P3,P4,P5,P6', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 generation phase order.', 1),
+  ('device.e1.phase.P1.meta', 'L0+', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P1 eligibility meta.', 1),
+  ('device.e1.phase.P1.skus', 'Entry · NexionBox S1', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P1 SKU label.', 1),
+  ('device.e1.phase.P2.meta', 'L1+', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P2 eligibility meta.', 1),
+  ('device.e1.phase.P2.skus', 'Genesis 节点', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P2 SKU label.', 1),
+  ('device.e1.phase.P3.meta', 'L2+', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P3 eligibility meta.', 1),
+  ('device.e1.phase.P3.skus', 'Pro v2 解锁', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P3 SKU label.', 1),
+  ('device.e1.phase.P4.meta', 'L3+', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P4 eligibility meta.', 1),
+  ('device.e1.phase.P4.skus', 'Cloud Share 池', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P4 SKU label.', 1),
+  ('device.e1.phase.P5.meta', 'L4+', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P5 eligibility meta.', 1),
+  ('device.e1.phase.P5.skus', 'Rack P2 解锁', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P5 SKU label.', 1),
+  ('device.e1.phase.P6.meta', 'L6+', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P6 eligibility meta.', 1),
+  ('device.e1.phase.P6.skus', 'Flagship · 顶配', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 phase P6 SKU label.', 1),
+  ('device.e1.releaseIds', 'stellarbox-pro-v2,stellarrack-p2', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 generation release id order.', 1),
+  ('device.e1.generation.stellarbox-pro-v2.name', 'NexionBox Pro v2', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 release display name.', 1),
+  ('device.e1.generation.stellarbox-pro-v2.releaseMonth', '5', 'NUMBER', 'device_e1_generation_gate', 'ADMIN', 'E1 release month.', 1),
+  ('device.e1.generation.stellarbox-pro-v2.phase', 'P3', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 release phase.', 1),
+  ('device.e1.generation.stellarbox-pro-v2.discount', '300', 'NUMBER', 'device_e1_generation_gate', 'ADMIN', 'E1 trade-in discount in USDT.', 1),
+  ('device.e1.generation.stellarbox-pro-v2.eligibility', 'true', 'BOOLEAN', 'device_e1_generation_gate', 'ADMIN', 'E1 E5 eligibility gate.', 1),
+  ('device.e1.generation.stellarbox-pro-v2.phaseOffset', '0', 'NUMBER', 'device_e1_generation_gate', 'ADMIN', 'E1 release month offset.', 1),
+  ('device.e1.generation.stellarbox-pro-v2.forceUnlock', 'false', 'BOOLEAN', 'device_e1_generation_gate', 'ADMIN', 'E1 forced release override.', 1),
+  ('device.e1.generation.stellarrack-p2.name', 'NexionRack P2', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 release display name.', 1),
+  ('device.e1.generation.stellarrack-p2.releaseMonth', '10', 'NUMBER', 'device_e1_generation_gate', 'ADMIN', 'E1 release month.', 1),
+  ('device.e1.generation.stellarrack-p2.phase', 'P5', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 release phase.', 1),
+  ('device.e1.generation.stellarrack-p2.discount', '800', 'NUMBER', 'device_e1_generation_gate', 'ADMIN', 'E1 trade-in discount in USDT.', 1),
+  ('device.e1.generation.stellarrack-p2.eligibility', 'false', 'BOOLEAN', 'device_e1_generation_gate', 'ADMIN', 'E1 E5 eligibility gate.', 1),
+  ('device.e1.generation.stellarrack-p2.phaseOffset', '0', 'NUMBER', 'device_e1_generation_gate', 'ADMIN', 'E1 release month offset.', 1),
+  ('device.e1.generation.stellarrack-p2.forceUnlock', 'false', 'BOOLEAN', 'device_e1_generation_gate', 'ADMIN', 'E1 forced release override.', 1)
+ON DUPLICATE KEY UPDATE
+  config_value = VALUES(config_value),
+  value_type = VALUES(value_type),
+  config_group = VALUES(config_group),
+  visibility = VALUES(visibility),
+  remark = VALUES(remark),
+  status = VALUES(status);
+
+CREATE TABLE IF NOT EXISTS nx_admin_phase_config (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  scope VARCHAR(32) NOT NULL DEFAULT 'E1',
+  label VARCHAR(128) NOT NULL,
+  meta VARCHAR(128) DEFAULT NULL,
+  sku_label VARCHAR(255) DEFAULT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_phase_scope_label (scope, label),
+  KEY idx_admin_phase_scope_sort (scope,status,is_deleted,sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_admin_phase_config (
+  scope, label, meta, sku_label, sort_order, status, created_at, updated_at, is_deleted
+)
+VALUES
+  ('E1', 'P1', 'L0+', 'Entry · NexionBox S1', 10, 'active', NOW(), NOW(), 0),
+  ('E1', 'P2', 'L1+', 'Genesis 节点', 20, 'active', NOW(), NOW(), 0),
+  ('E1', 'P3', 'L2+', 'Pro v2 解锁', 30, 'active', NOW(), NOW(), 0),
+  ('E1', 'P4', 'L3+', 'Cloud Share 池', 40, 'active', NOW(), NOW(), 0),
+  ('E1', 'P5', 'L4+', 'Rack P2 解锁', 50, 'active', NOW(), NOW(), 0),
+  ('E1', 'P6', 'L6+', 'Flagship · 顶配', 60, 'active', NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE
+  meta = VALUES(meta),
+  sku_label = VALUES(sku_label),
+  sort_order = VALUES(sort_order),
+  status = VALUES(status),
+  updated_at = VALUES(updated_at),
+  is_deleted = 0;
+
+CREATE TABLE IF NOT EXISTS nx_admin_device_generation_gate (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  sku_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  release_month INT NOT NULL,
+  phase VARCHAR(32) NOT NULL DEFAULT '',
+  phase_id BIGINT DEFAULT NULL,
+  tradein_discount DECIMAL(18,4) NOT NULL DEFAULT 0,
+  eligibility TINYINT NOT NULL DEFAULT 0,
+  phase_offset INT NOT NULL DEFAULT 0,
+  force_unlock TINYINT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_device_generation_gate_sku (sku_id),
+  KEY idx_admin_device_generation_gate_status (status,is_deleted),
+  KEY idx_admin_device_generation_gate_phase (phase,release_month),
+  KEY idx_admin_device_generation_gate_phase_id (phase_id,release_month)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_admin_device_generation_gate (
+  sku_id, name, release_month, phase, phase_id, tradein_discount, eligibility, phase_offset, force_unlock, status, created_at, updated_at, is_deleted
+)
+VALUES
+  ('stellarbox-pro-v2', 'NexionBox Pro v2', 5, '', (SELECT id FROM nx_admin_phase_config WHERE scope = 'E1' AND label = 'P3' AND is_deleted = 0 LIMIT 1), 300.0000, 1, 0, 0, 'active', NOW(), NOW(), 0),
+  ('stellarrack-p2', 'NexionRack P2', 10, '', (SELECT id FROM nx_admin_phase_config WHERE scope = 'E1' AND label = 'P5' AND is_deleted = 0 LIMIT 1), 800.0000, 0, 0, 0, 'active', NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  release_month = VALUES(release_month),
+  phase = VALUES(phase),
+  phase_id = VALUES(phase_id),
+  tradein_discount = VALUES(tradein_discount),
+  eligibility = VALUES(eligibility),
+  phase_offset = VALUES(phase_offset),
+  force_unlock = VALUES(force_unlock),
+  status = VALUES(status),
+  updated_at = VALUES(updated_at),
+  is_deleted = 0;
+
 INSERT INTO nx_i18n_message (id, message_key, locale, message_value, status)
 VALUES
   (1, 'app.name', 'en-US', 'Nexion', 1),
@@ -2416,3 +2529,38 @@ ON DUPLICATE KEY UPDATE
   en_body = VALUES(en_body),
   status = VALUES(status),
   last_operator = VALUES(last_operator);
+
+CREATE TABLE IF NOT EXISTS nx_admin_device_task (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  task_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  price DECIMAL(18,4) NOT NULL DEFAULT 0,
+  unit_text VARCHAR(32) NOT NULL DEFAULT '/job',
+  requirement VARCHAR(128) NOT NULL DEFAULT 'S1+',
+  saturation DECIMAL(7,4) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_device_task (task_id),
+  KEY idx_admin_device_task_status (status,is_deleted),
+  KEY idx_admin_device_task_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_admin_device_task (task_id, name, price, unit_text, requirement, saturation, status, created_at, updated_at, is_deleted)
+VALUES
+  ('TK-1', 'LLM 推理 405B', 1.2000, '/job', '需 NexionBox Pro', 0.8200, 'active', NOW(), NOW(), 0),
+  ('TK-2', 'LLM 推理 70B', 0.4600, '/job', 'S1+', 0.6100, 'active', NOW(), NOW(), 0),
+  ('TK-3', '图像生成 SDXL', 0.3400, '/job', 'S1+', 0.5500, 'active', NOW(), NOW(), 0),
+  ('TK-4', '视频渲染', 2.8000, '/job', '需 NexionRack', 0.7400, 'active', NOW(), NOW(), 0),
+  ('TK-5', '微调 / LoRA', 5.1000, '/job', '需 NexionRack', 0.4800, 'active', NOW(), NOW(), 0),
+  ('TK-6', 'Embedding 批处理', 0.1200, '/1k', 'S1+', 0.3900, 'active', NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  price = VALUES(price),
+  unit_text = VALUES(unit_text),
+  requirement = VALUES(requirement),
+  saturation = VALUES(saturation),
+  status = VALUES(status),
+  is_deleted = 0,
+  updated_at = NOW();

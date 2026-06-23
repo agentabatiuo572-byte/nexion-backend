@@ -413,6 +413,67 @@ CREATE TABLE IF NOT EXISTS nx_admin_role_menu (
   UNIQUE KEY uk_admin_role_menu (role_id, menu_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_admin_device_generation_gate (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  sku_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  release_month INT NOT NULL,
+  phase VARCHAR(32) NOT NULL DEFAULT '',
+  phase_id BIGINT NULL,
+  tradein_discount DECIMAL(18,4) NOT NULL DEFAULT 0,
+  eligibility TINYINT NOT NULL DEFAULT 0,
+  phase_offset INT NOT NULL DEFAULT 0,
+  force_unlock TINYINT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_device_generation_gate_sku (sku_id),
+  KEY idx_admin_device_generation_gate_status (status, is_deleted),
+  KEY idx_admin_device_generation_gate_phase (phase, release_month),
+  KEY idx_admin_device_generation_gate_phase_id (phase_id, release_month)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_admin_device_generation_gate' AND COLUMN_NAME = 'phase') < 32,
+  'ALTER TABLE nx_admin_device_generation_gate MODIFY COLUMN phase VARCHAR(32) NOT NULL DEFAULT ''''',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_admin_device_generation_gate' AND COLUMN_NAME = 'phase_id') = 0,
+  'ALTER TABLE nx_admin_device_generation_gate ADD COLUMN phase_id BIGINT NULL AFTER phase',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_admin_device_generation_gate' AND INDEX_NAME = 'idx_admin_device_generation_gate_phase_id') = 0,
+  'ALTER TABLE nx_admin_device_generation_gate ADD INDEX idx_admin_device_generation_gate_phase_id (phase_id, release_month)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_admin_phase_config (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  scope VARCHAR(32) NOT NULL DEFAULT 'E1',
+  label VARCHAR(128) NOT NULL,
+  meta VARCHAR(128) DEFAULT NULL,
+  sku_label VARCHAR(255) DEFAULT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_phase_scope_label (scope, label),
+  KEY idx_admin_phase_scope_sort (scope, status, is_deleted, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_admin_phase_config' AND COLUMN_NAME = 'phase_id') > 0,
+  'ALTER TABLE nx_admin_phase_config MODIFY COLUMN phase_id VARCHAR(32) NULL DEFAULT NULL',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_admin_phase_config' AND INDEX_NAME = 'uk_admin_phase_scope_label') = 0,
+  'ALTER TABLE nx_admin_phase_config ADD UNIQUE KEY uk_admin_phase_scope_label (scope, label)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_user_wallet (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -781,7 +842,7 @@ CREATE TABLE IF NOT EXISTS nx_product (
   share_yield_min DECIMAL(10,4) NULL,
   share_yield_max DECIMAL(10,4) NULL,
   superseded_by_product_no VARCHAR(64) NULL,
-  unlock_phase VARCHAR(16) NULL,
+  unlock_phase VARCHAR(32) NULL,
   sold_count INT NOT NULL DEFAULT 0,
   rating_value DECIMAL(3,2) NOT NULL DEFAULT 0,
   review_count INT NOT NULL DEFAULT 0,
@@ -879,7 +940,12 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'unlock_phase') = 0,
-  'ALTER TABLE nx_product ADD COLUMN unlock_phase VARCHAR(16) NULL AFTER superseded_by_product_no',
+  'ALTER TABLE nx_product ADD COLUMN unlock_phase VARCHAR(32) NULL AFTER superseded_by_product_no',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'unlock_phase') < 32,
+  'ALTER TABLE nx_product MODIFY COLUMN unlock_phase VARCHAR(32) NULL',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 UPDATE nx_product

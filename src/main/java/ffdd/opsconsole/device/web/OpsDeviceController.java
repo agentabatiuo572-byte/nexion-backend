@@ -13,8 +13,14 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGateArchiveRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewStatusRequest;
@@ -204,11 +210,65 @@ public class OpsDeviceController {
         return deviceService.e1GenerationGates();
     }
 
+    @PostMapping("/e1/phases")
+    public ApiResult<Map<String, Object>> createE1Phase(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DevicePhaseUpsertRequest request) {
+        return deviceService.createE1Phase(idempotencyKey, request);
+    }
+
+    @PatchMapping("/e1/phases/{phaseId}")
+    public ApiResult<Map<String, Object>> patchE1Phase(
+            @PathVariable String phaseId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DevicePhaseUpsertRequest request) {
+        return deviceService.patchE1Phase(phaseId, idempotencyKey, request);
+    }
+
+    @PatchMapping("/e1/phases/{phaseId}/current")
+    public ApiResult<Map<String, Object>> setE1CurrentPhase(
+            @PathVariable String phaseId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DevicePhaseCurrentRequest request) {
+        return deviceService.setE1CurrentPhase(phaseId, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/e1/phases/{phaseId}")
+    public ApiResult<Map<String, Object>> archiveE1Phase(
+            @PathVariable String phaseId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DevicePhaseArchiveRequest request) {
+        return deviceService.archiveE1Phase(phaseId, idempotencyKey, request);
+    }
+
     @PatchMapping("/e1/generation-gates")
     public ApiResult<Map<String, Object>> updateE1GenerationGate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody E3ConfigUpdateRequest request) {
         return deviceService.updateE1GenerationGate(idempotencyKey, request);
+    }
+
+    @PostMapping("/e1/generation-gates")
+    public ApiResult<Map<String, Object>> createE1GenerationGate(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceGenerationGateUpsertRequest request) {
+        return deviceService.createE1GenerationGate(idempotencyKey, request);
+    }
+
+    @PatchMapping("/e1/generation-gates/{skuId}")
+    public ApiResult<Map<String, Object>> patchE1GenerationGate(
+            @PathVariable String skuId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceGenerationGatePatchRequest request) {
+        return deviceService.patchE1GenerationGate(skuId, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/e1/generation-gates/{skuId}")
+    public ApiResult<Map<String, Object>> archiveE1GenerationGate(
+            @PathVariable String skuId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceGenerationGateArchiveRequest request) {
+        return deviceService.archiveE1GenerationGate(skuId, idempotencyKey, request);
     }
 
     @GetMapping("/e3/overview")

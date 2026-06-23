@@ -7,16 +7,24 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGateArchiveRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewStatusRequest;
@@ -36,6 +44,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -53,7 +62,6 @@ public class OpsDeviceService {
     private static final Set<String> SKU_STATUSES = Set.of("on", "off", "pending");
     private static final Set<String> SKU_TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
     private static final Set<String> SKU_LIFECYCLES = Set.of("active", "legacy");
-    private static final Set<String> SKU_UNLOCK_PHASES = Set.of("P1", "P2", "P3", "P4", "P5", "P6");
     private static final Set<String> REVIEW_STATUSES = Set.of("published", "hidden");
     private static final Set<String> TASK_STATUSES = Set.of("active", "paused", "inactive");
     private static final Set<String> TASK_UNITS = Set.of("/job", "/1k", "/min");
@@ -64,19 +72,26 @@ public class OpsDeviceService {
     private static final Set<String> TRADEIN_OPERATIONS = Set.of("recycle", "replace", "deactivate");
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
+    private static final String E1_PHASE_SCOPE = "E1";
     private static final String E1_GATE_GROUP = "device_e1_generation_gate";
+    private static final String E1_PHASE_ORDER_KEY = "device.e1.phaseOrder";
+    private static final String E1_PHASE_PREFIX = "device.e1.phase.";
+    private static final String E1_RELEASE_IDS_KEY = "device.e1.releaseIds";
     private static final String E1_GATE_PREFIX = "device.e1.generation.";
+    private static final int SKU_IMAGE_ASSET_ID_MAX_LENGTH = 512;
+    private static final int SKU_IMAGE_OBJECT_KEY_MAX_LENGTH = 255;
+    private static final int SKU_IMAGE_PREVIEW_URL_MAX_LENGTH = 4096;
     private static final Pattern E1_GENERATION_ID = Pattern.compile("^[a-z0-9-]{1,80}$");
-    private static final List<E1PhaseDef> E1_PHASES = List.of(
-            new E1PhaseDef("P1", "L0+", "Entry · NexionBox S1"),
-            new E1PhaseDef("P2", "L1+", "Genesis 节点"),
-            new E1PhaseDef("P3", "L2+", "Pro v2 解锁"),
-            new E1PhaseDef("P4", "L3+", "Cloud Share 池"),
-            new E1PhaseDef("P5", "L4+", "Rack P2 解锁"),
-            new E1PhaseDef("P6", "L6+", "Flagship · 顶配"));
-    private static final List<E1GenerationReleaseDef> E1_RELEASES = List.of(
-            new E1GenerationReleaseDef("stellarbox-pro-v2", "NexionBox Pro v2", 5, "P3", 300, true),
-            new E1GenerationReleaseDef("stellarrack-p2", "NexionRack P2", 10, "P5", 800, false));
+    private static final Set<String> E1_GATE_FIELDS = Set.of(
+            "releaseMonth",
+            "phase",
+            "discount",
+            "tradeinDiscount",
+            "eligibility",
+            "phaseOffset",
+            "forceUnlock");
+    private static final Set<String> E1_GATE_STATUSES = Set.of("active", "archived");
+    private static final Set<String> E1_PHASE_STATUSES = Set.of("active", "archived");
     private static final Set<String> E3_CONFIG_KEYS = Set.of(
             "degradeEarly",
             "degradeMid",
@@ -93,6 +108,13 @@ public class OpsDeviceService {
             "promoDelaySeconds",
             "promoMinAgeDays",
             "inventorySoftMax");
+    private static final List<DefaultTaskSeed> DEFAULT_E2_TASKS = List.of(
+            new DefaultTaskSeed("TK-1", "LLM 推理 405B", "1.20", "/job", "需 NexionBox Pro", "0.82"),
+            new DefaultTaskSeed("TK-2", "LLM 推理 70B", "0.46", "/job", "S1+", "0.61"),
+            new DefaultTaskSeed("TK-3", "图像生成 SDXL", "0.34", "/job", "S1+", "0.55"),
+            new DefaultTaskSeed("TK-4", "视频渲染", "2.80", "/job", "需 NexionRack", "0.74"),
+            new DefaultTaskSeed("TK-5", "微调 / LoRA", "5.10", "/job", "需 NexionRack", "0.48"),
+            new DefaultTaskSeed("TK-6", "Embedding 批处理", "0.12", "/1k", "S1+", "0.39"));
 
     private final DeviceOpsRepository deviceRepository;
     private final DeviceCatalogRepository catalogRepository;
@@ -143,7 +165,8 @@ public class OpsDeviceService {
         if (catalogRepository.findSku(skuId).isPresent()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_ALREADY_EXISTS");
         }
-        DeviceSkuView created = catalogRepository.createSku(skuId, request, LocalDateTime.now(clock));
+        DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request);
+        DeviceSkuView created = catalogRepository.createSku(skuId, writeRequest, LocalDateTime.now(clock));
         audit("E1_SKU_CREATED", "DEVICE_SKU", created.skuId(), request.operator(), detail(
                 "skuId", created.skuId(),
                 "name", created.name(),
@@ -166,7 +189,8 @@ public class OpsDeviceService {
         if (before == null) {
             return ApiResult.fail(404, "SKU_NOT_FOUND");
         }
-        DeviceSkuView updated = catalogRepository.updateSku(normalized, request, LocalDateTime.now(clock)).orElse(before);
+        DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request);
+        DeviceSkuView updated = catalogRepository.updateSku(normalized, writeRequest, LocalDateTime.now(clock)).orElse(before);
         audit("E1_SKU_UPDATED", "DEVICE_SKU", normalized, request.operator(), detail(
                 "skuId", normalized,
                 "beforeName", before.name(),
@@ -311,8 +335,14 @@ public class OpsDeviceService {
         return ApiResult.ok(detail("reviewId", normalized, "deleted", true));
     }
 
+    @Transactional
     public ApiResult<PageResult<DeviceTaskView>> tasks(DeviceTaskQueryRequest request) {
-        return ApiResult.ok(catalogRepository.pageTasks(request));
+        PageResult<DeviceTaskView> page = catalogRepository.pageTasks(request);
+        if (shouldSeedDefaultTasks(request, page)) {
+            seedDefaultTasks(LocalDateTime.now(clock));
+            page = catalogRepository.pageTasks(request);
+        }
+        return ApiResult.ok(page);
     }
 
     public ApiResult<DeviceTaskView> createTask(String idempotencyKey, DeviceTaskUpsertRequest request) {
@@ -423,18 +453,267 @@ public class OpsDeviceService {
 
     public ApiResult<Map<String, Object>> e1GenerationGates() {
         int platformMonth = currentPlatformMonth();
-        Map<String, String> configValues = e1GateConfigValues();
+        Map<String, String> e1Configs = configFacade.activeValuesByGroup(E1_GATE_GROUP);
+        seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        List<DeviceGenerationGateView> gates = catalogRepository.listGenerationGates(false);
+        Map<String, String> configValues = e1GateConfigValues(gates);
+        List<DevicePhaseView> phases = e1PhaseDefs();
+        List<String> phaseOrder = phases.stream().map(DevicePhaseView::p).toList();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "E1");
-        response.put("phaseOrder", E1_PHASES.stream().map(E1PhaseDef::p).toList());
-        response.put("phases", E1_PHASES);
+        response.put("phaseOrder", phaseOrder);
+        response.put("phases", phases);
         response.put("platformMonth", platformMonth);
-        response.put("phaseCurrent", configFacade.activeValue(CURRENT_PHASE_KEY).orElse(phaseForMonth(platformMonth)));
-        response.put("releases", e1GenerationReleases(configValues));
+        response.put("phaseCurrent", currentE1PhaseId(platformMonth, phases));
+        response.put("releases", e1GenerationReleases(gates));
         response.put("configValues", configValues);
-        response.put("allowedFields", List.of("phaseOffset", "forceUnlock"));
-        response.put("sources", List.of("nx_config_item:" + E1_GATE_GROUP, "H1 current phase", "E5 eligibility"));
+        response.put("allowedFields", List.of("releaseMonth", "phase", "discount", "eligibility", "phaseOffset", "forceUnlock"));
+        response.put("sources", List.of(
+                "nx_admin_phase_config",
+                "nx_admin_device_generation_gate",
+                "nx_config_item:" + E1_GATE_GROUP + ":legacy_phase_seed",
+                "nx_config_item:" + CURRENT_PHASE_KEY,
+                "nx_config_item:" + CURRENT_MONTH_KEY,
+                "E5 eligibility"));
         return ApiResult.ok(response);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> createE1Phase(String idempotencyKey, DevicePhaseUpsertRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_REQUEST_REQUIRED");
+        }
+        String label = normalizePhaseLabel(request.label());
+        if (catalogRepository.findPhaseByLabel(E1_PHASE_SCOPE, label).isPresent()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_NAME_EXISTS");
+        }
+        DevicePhaseView created = catalogRepository.savePhase(
+                E1_PHASE_SCOPE,
+                "",
+                label,
+                normalizeText(request.meta()),
+                normalizeText(request.skus()),
+                request.sortOrder() == null ? nextPhaseSortOrder() : normalizePhaseSortOrder(request.sortOrder()),
+                normalizePhaseStatus(request.status()),
+                LocalDateTime.now(clock));
+        audit("E1_PHASE_CREATED", "DEVICE_PHASE", created.p(), request.operator(), detail(
+                "id", created.p(),
+                "label", created.label(),
+                "meta", created.meta(),
+                "skus", created.skus(),
+                "sortOrder", created.sortOrder(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e1GenerationGates();
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> patchE1Phase(String phaseId, String idempotencyKey, DevicePhaseUpsertRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_REQUEST_REQUIRED");
+        }
+        String currentPhaseId = matchConfiguredE1PhaseId(phaseId, true);
+        DevicePhaseView before = catalogRepository.findPhase(E1_PHASE_SCOPE, currentPhaseId).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "E1_PHASE_NOT_FOUND");
+        }
+        String nextLabel = StringUtils.hasText(request.label()) ? normalizePhaseLabel(request.label()) : before.label();
+        if (catalogRepository.findPhaseByLabel(E1_PHASE_SCOPE, nextLabel)
+                .filter(phase -> !currentPhaseId.equals(phase.p()))
+                .isPresent()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_NAME_EXISTS");
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        DevicePhaseView updated = catalogRepository.savePhase(
+                E1_PHASE_SCOPE,
+                currentPhaseId,
+                nextLabel,
+                request.meta() == null ? before.meta() : normalizeText(request.meta()),
+                request.skus() == null ? before.skus() : normalizeText(request.skus()),
+                request.sortOrder() == null ? before.sortOrder() : normalizePhaseSortOrder(request.sortOrder()),
+                request.status() == null ? before.status() : normalizePhaseStatus(request.status()),
+                now);
+        audit("E1_PHASE_UPDATED", "DEVICE_PHASE", updated.p(), request.operator(), detail(
+                "before", phaseSnapshot(before),
+                "after", phaseSnapshot(updated),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e1GenerationGates();
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> archiveE1Phase(String phaseId, String idempotencyKey, DevicePhaseArchiveRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalized = matchConfiguredE1PhaseId(phaseId, true);
+        DevicePhaseView before = catalogRepository.findPhase(E1_PHASE_SCOPE, normalized).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "E1_PHASE_NOT_FOUND");
+        }
+        if (catalogRepository.listPhases(E1_PHASE_SCOPE, false).size() <= 1) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_MIN_ONE_REQUIRED");
+        }
+        if (normalized.equals(currentE1PhaseId(currentPlatformMonth(), e1PhaseDefs()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_IS_CURRENT");
+        }
+        int skuRefs = catalogRepository.countSkusByUnlockPhase(normalized);
+        int gateRefs = catalogRepository.countGenerationGatesByPhase(normalized);
+        if (skuRefs > 0 || gateRefs > 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_IN_USE");
+        }
+        catalogRepository.archivePhase(E1_PHASE_SCOPE, normalized, LocalDateTime.now(clock));
+        audit("E1_PHASE_ARCHIVED", "DEVICE_PHASE", normalized, request.operator(), detail(
+                "phase", phaseSnapshot(before),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e1GenerationGates();
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> setE1CurrentPhase(String phaseId, String idempotencyKey, DevicePhaseCurrentRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        List<DevicePhaseView> phases = e1PhaseDefs();
+        String normalized = matchE1PhaseId(phaseId, phases);
+        DevicePhaseView target = phases.stream()
+                .filter(phase -> phase.p().equals(normalized))
+                .findFirst()
+                .orElse(null);
+        if (target == null) {
+            return ApiResult.fail(404, "E1_PHASE_NOT_FOUND");
+        }
+        String before = currentE1PhaseId(currentPlatformMonth(), phases);
+        configFacade.upsertAdminValue(
+                CURRENT_PHASE_KEY,
+                normalized,
+                "STRING",
+                "growth",
+                "E1 current phase override");
+        audit("E1_PHASE_CURRENT_CHANGED", "DEVICE_PHASE", normalized, request.operator(), detail(
+                "before", before,
+                "after", normalized,
+                "phase", phaseSnapshot(target),
+                "configKey", CURRENT_PHASE_KEY,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e1GenerationGates();
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> createE1GenerationGate(String idempotencyKey, DeviceGenerationGateUpsertRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_REQUEST_REQUIRED");
+        }
+        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        String skuId = normalizeGenerationId(request.skuId());
+        if (!StringUtils.hasText(skuId)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_ID_INVALID");
+        }
+        DeviceGenerationGateView existing = catalogRepository.findGenerationGate(skuId).orElse(null);
+        if (existing != null && "active".equals(existing.status())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_ALREADY_EXISTS");
+        }
+        DeviceSkuView sku = catalogRepository.findSku(skuId).orElse(null);
+        if (sku == null) {
+            return ApiResult.fail(404, "SKU_NOT_FOUND");
+        }
+        String name = StringUtils.hasText(request.name()) ? request.name().trim() : sku.name();
+        DeviceGenerationGateView created = catalogRepository.saveGenerationGate(
+                skuId,
+                name,
+                normalizeReleaseMonth(request.releaseMonth()),
+                normalizeE1Phase(request.phase()),
+                normalizeDiscount(request.discount()),
+                request.eligibility(),
+                normalizePhaseOffset(request.phaseOffset() == null ? 0 : request.phaseOffset()),
+                request.forceUnlock(),
+                normalizeGenerationGateStatus(request.status()),
+                LocalDateTime.now(clock));
+        audit("E1_GENERATION_GATE_CREATED", "DEVICE_GENERATION_GATE", skuId, request.operator(), detail(
+                "generationId", skuId,
+                "name", created.name(),
+                "releaseMonth", created.releaseMonth(),
+                "phase", created.phase(),
+                "discount", created.discount(),
+                "eligibility", created.eligibility(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e1GenerationGates();
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> patchE1GenerationGate(String skuId, String idempotencyKey, DeviceGenerationGatePatchRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalized = normalizeGenerationId(skuId);
+        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
+        }
+        DeviceGenerationGateView updated = catalogRepository.saveGenerationGate(
+                normalized,
+                StringUtils.hasText(request.name()) ? request.name().trim() : before.name(),
+                request.releaseMonth() == null ? before.releaseMonth() : normalizeReleaseMonth(request.releaseMonth()),
+                request.phase() == null ? before.phase() : normalizeE1Phase(request.phase()),
+                request.discount() == null ? before.discount() : normalizeDiscount(request.discount()),
+                request.eligibility() == null ? before.eligibility() : request.eligibility(),
+                request.phaseOffset() == null ? before.phaseOffset() : normalizePhaseOffset(request.phaseOffset()),
+                request.forceUnlock() == null ? before.forceUnlock() : request.forceUnlock(),
+                request.status() == null ? before.status() : normalizeGenerationGateStatus(request.status()),
+                LocalDateTime.now(clock));
+        audit("E1_GENERATION_GATE_UPDATED", "DEVICE_GENERATION_GATE", normalized, request.operator(), detail(
+                "generationId", normalized,
+                "before", generationGateSnapshot(before),
+                "after", generationGateSnapshot(updated),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e1GenerationGates();
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> archiveE1GenerationGate(String skuId, String idempotencyKey, DeviceGenerationGateArchiveRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalized = normalizeGenerationId(skuId);
+        DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
+        }
+        catalogRepository.archiveGenerationGate(normalized, LocalDateTime.now(clock));
+        audit("E1_GENERATION_GATE_ARCHIVED", "DEVICE_GENERATION_GATE", normalized, request.operator(), detail(
+                "generationId", normalized,
+                "name", before.name(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e1GenerationGates();
     }
 
     public ApiResult<Map<String, Object>> updateE1GenerationGate(String idempotencyKey, E3ConfigUpdateRequest request) {
@@ -442,16 +721,24 @@ public class OpsDeviceService {
         if (guard != null) {
             return guard;
         }
+        Map<String, String> e1Configs = configFacade.activeValuesByGroup(E1_GATE_GROUP);
+        seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         String[] key = normalizeE1GateKey(request.key());
         String value = normalizeE1GateValue(key[1], request.value());
-        String configKey = E1_GATE_PREFIX + key[0] + "." + key[1];
-        String oldValue = configFacade.activeValue(configKey).orElse(null);
-        configFacade.upsertAdminValue(configKey, value, "phaseOffset".equals(key[1]) ? "NUMBER" : "BOOLEAN", E1_GATE_GROUP, request.reason().trim());
+        DeviceGenerationGateView before = catalogRepository.findGenerationGate(key[0]).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
+        }
+        String oldValue = generationGateFieldValue(before, key[1]);
+        DeviceGenerationGateView updated = saveGenerationGateField(before, key[1], value);
         audit("E1_GENERATION_GATE_CHANGED", "DEVICE_GENERATION_GATE", key[0], request.operator(), detail(
                 "generationId", key[0],
                 "field", key[1],
                 "oldValue", oldValue,
-                "newValue", value,
+                "newValue", generationGateFieldValue(updated, key[1]),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return e1GenerationGates();
@@ -616,13 +903,77 @@ public class OpsDeviceService {
         if (!allows(request.lifecycle(), SKU_LIFECYCLES)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_LIFECYCLE_INVALID");
         }
-        if (!"Share".equals(tier) && !allows(request.unlockPhase(), SKU_UNLOCK_PHASES)) {
+        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        if (!"Share".equals(tier) && !isConfiguredE1PhaseId(request.unlockPhase())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLOCK_PHASE_INVALID");
         }
         if (normalizeSkuStatus(request.status()) == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STATUS_INVALID");
         }
+        ApiResult<DeviceSkuView> mediaGuard = requireSkuMediaFields(request);
+        if (mediaGuard != null) {
+            return mediaGuard;
+        }
         return null;
+    }
+
+    private ApiResult<DeviceSkuView> requireSkuMediaFields(DeviceSkuUpsertRequest request) {
+        if (!validMediaAssetId(request.imageAssetId())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_IMAGE_ASSET_ID_INVALID");
+        }
+        if (!validMediaObjectKey(request.imageObjectKey())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_IMAGE_OBJECT_KEY_INVALID");
+        }
+        if (!validMediaPreviewUrl(request.imagePreviewUrl())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_IMAGE_PREVIEW_URL_INVALID");
+        }
+        return null;
+    }
+
+    private DeviceSkuUpsertRequest normalizeSkuPhaseRequest(DeviceSkuUpsertRequest request) {
+        String tier = normalizeExact(request.tier());
+        String unlockPhase = "Share".equals(tier) ? "" : normalizeE1Phase(request.unlockPhase());
+        return new DeviceSkuUpsertRequest(
+                request.skuId(),
+                request.name(),
+                request.tier(),
+                request.tagline(),
+                request.badge(),
+                request.gpu(),
+                request.vram(),
+                request.hashRate(),
+                request.power(),
+                request.datacenter(),
+                request.price(),
+                request.dailyEarn(),
+                request.dailyEarnNex(),
+                request.shareYieldMin(),
+                request.shareYieldMax(),
+                request.baseRate(),
+                request.sold(),
+                request.stock(),
+                request.rating(),
+                request.reviews(),
+                request.aiImageGenPerMin(),
+                request.aiLlmTokensPerSec(),
+                request.aiVideoMinPerHour(),
+                request.aiFineTuneMins(),
+                request.aiUnlocks(),
+                request.features(),
+                request.generation(),
+                request.lifecycle(),
+                request.supersededBy(),
+                request.tradeinDiscount(),
+                unlockPhase,
+                request.purchaseGate(),
+                request.imageAssetId(),
+                request.imageObjectKey(),
+                request.imagePreviewUrl(),
+                request.tag(),
+                request.status(),
+                request.reason(),
+                request.operator());
     }
 
     private ApiResult<DeviceReviewView> requireReviewCommand(String idempotencyKey, DeviceReviewUpsertRequest request) {
@@ -676,6 +1027,23 @@ public class OpsDeviceService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_STATUS_INVALID");
         }
         return null;
+    }
+
+    private boolean shouldSeedDefaultTasks(DeviceTaskQueryRequest request, PageResult<DeviceTaskView> page) {
+        if (page == null || page.getTotal() > 0) {
+            return false;
+        }
+        return request == null
+                || (!StringUtils.hasText(request.status()) && !StringUtils.hasText(request.keyword()));
+    }
+
+    private void seedDefaultTasks(LocalDateTime now) {
+        for (DefaultTaskSeed seed : DEFAULT_E2_TASKS) {
+            if (catalogRepository.findTask(seed.taskId()).isPresent()) {
+                continue;
+            }
+            catalogRepository.createTask(seed.taskId(), seed.toRequest(), now);
+        }
     }
 
     private ApiResult<DeviceOrderView> transitionOrder(
@@ -755,71 +1123,117 @@ public class OpsDeviceService {
         return null;
     }
 
-    private Map<String, String> e1GateConfigValues() {
+    private void seedE1GenerationGatesFromLegacyConfigIfEmpty(Map<String, String> e1Configs) {
+        if (!catalogRepository.listGenerationGates(true).isEmpty()) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        for (String releaseId : csv(e1Configs.get(E1_RELEASE_IDS_KEY))) {
+            if (!E1_GENERATION_ID.matcher(releaseId).matches()) {
+                continue;
+            }
+            String name = text(e1Configs, E1_GATE_PREFIX + releaseId + ".name");
+            String phase = text(e1Configs, E1_GATE_PREFIX + releaseId + ".phase");
+            int releaseMonth = parseInt(e1Configs.get(E1_GATE_PREFIX + releaseId + ".releaseMonth"), 0);
+            if (!StringUtils.hasText(name) || !StringUtils.hasText(phase) || releaseMonth < 1 || releaseMonth > 12) {
+                continue;
+            }
+            catalogRepository.saveGenerationGate(
+                    releaseId,
+                    name,
+                    releaseMonth,
+                    normalizeE1Phase(phase),
+                    BigDecimal.valueOf(parseInt(e1Configs.get(E1_GATE_PREFIX + releaseId + ".discount"), 0)),
+                    parseBoolean(e1Configs.get(E1_GATE_PREFIX + releaseId + ".eligibility"), false),
+                    parseInt(e1Configs.get(E1_GATE_PREFIX + releaseId + ".phaseOffset"), 0),
+                    parseBoolean(e1Configs.get(E1_GATE_PREFIX + releaseId + ".forceUnlock"), false),
+                    "active",
+                    now);
+        }
+    }
+
+    private void seedE1PhasesFromLegacyConfigIfEmpty(Map<String, String> e1Configs) {
+        if (!catalogRepository.listPhases(E1_PHASE_SCOPE, true).isEmpty()) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        int order = 10;
+        for (String phaseName : csv(e1Configs.get(E1_PHASE_ORDER_KEY))) {
+            String label;
+            try {
+                label = normalizePhaseLabel(phaseName);
+            } catch (RuntimeException ex) {
+                continue;
+            }
+            catalogRepository.savePhase(
+                    E1_PHASE_SCOPE,
+                    "",
+                    label,
+                    text(e1Configs, E1_PHASE_PREFIX + label + ".meta"),
+                    text(e1Configs, E1_PHASE_PREFIX + label + ".skus"),
+                    order,
+                    "active",
+                    now);
+            order += 10;
+        }
+    }
+
+    private Map<String, String> e1GateConfigValues(List<DeviceGenerationGateView> gates) {
         Map<String, String> response = new LinkedHashMap<>();
-        configFacade.activeValuesByGroup(E1_GATE_GROUP).forEach((key, value) -> {
-            if (!key.startsWith(E1_GATE_PREFIX)) {
-                return;
-            }
-            String suffix = key.substring(E1_GATE_PREFIX.length());
-            int split = suffix.lastIndexOf('.');
-            if (split <= 0 || split >= suffix.length() - 1) {
-                return;
-            }
-            String generationId = suffix.substring(0, split);
-            String field = suffix.substring(split + 1);
-            if (E1_GENERATION_ID.matcher(generationId).matches() && Set.of("phaseOffset", "forceUnlock").contains(field)) {
-                response.put("E.gen." + generationId + "." + field, value);
-            }
-        });
+        for (DeviceGenerationGateView gate : gates) {
+            response.put("E.gen." + gate.id() + ".releaseMonth", String.valueOf(gate.releaseMonth()));
+            response.put("E.gen." + gate.id() + ".phase", gate.phase());
+            response.put("E.gen." + gate.id() + ".discount", decimalText(gate.discount()));
+            response.put("E.gen." + gate.id() + ".eligibility", String.valueOf(Boolean.TRUE.equals(gate.eligibility())));
+            response.put("E.gen." + gate.id() + ".phaseOffset", String.valueOf(gate.phaseOffset()));
+            response.put("E.gen." + gate.id() + ".forceUnlock", String.valueOf(Boolean.TRUE.equals(gate.forceUnlock())));
+        }
         return response;
     }
 
-    private List<Map<String, Object>> e1GenerationReleases(Map<String, String> configValues) {
-        return E1_RELEASES.stream()
-                .map(release -> {
-                    int releaseMonth = readInt(E1_GATE_PREFIX + release.id() + ".releaseMonth", release.releaseMonth());
-                    int discount = readInt(E1_GATE_PREFIX + release.id() + ".discount", release.discount());
-                    boolean eligibility = readBoolean(E1_GATE_PREFIX + release.id() + ".eligibility", release.eligibility());
-                    int phaseOffset = parseInt(configValues.get("E.gen." + release.id() + ".phaseOffset"), 0);
-                    boolean forceUnlock = parseBoolean(configValues.get("E.gen." + release.id() + ".forceUnlock"), false);
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("id", release.id());
-                    row.put("name", release.name());
-                    row.put("releaseMonth", releaseMonth);
-                    row.put("phase", release.phase());
-                    row.put("discount", discount);
-                    row.put("eligibility", eligibility);
-                    row.put("phaseOffset", phaseOffset);
-                    row.put("forceUnlock", forceUnlock);
-                    row.put("effectiveReleaseMonth", releaseMonth + phaseOffset);
-                    return row;
-                })
-                .toList();
+    private List<DevicePhaseView> e1PhaseDefs() {
+        return catalogRepository.listPhases(E1_PHASE_SCOPE, false);
+    }
+
+    private List<Map<String, Object>> e1GenerationReleases(List<DeviceGenerationGateView> gates) {
+        List<Map<String, Object>> response = new ArrayList<>();
+        for (DeviceGenerationGateView gate : gates) {
+            int releaseMonth = gate.releaseMonth() == null ? 0 : gate.releaseMonth();
+            int phaseOffset = gate.phaseOffset() == null ? 0 : gate.phaseOffset();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", gate.id());
+            row.put("name", gate.name());
+            row.put("releaseMonth", releaseMonth);
+            row.put("phase", gate.phase());
+            row.put("discount", gate.discount());
+            row.put("eligibility", Boolean.TRUE.equals(gate.eligibility()));
+            row.put("phaseOffset", phaseOffset);
+            row.put("forceUnlock", Boolean.TRUE.equals(gate.forceUnlock()));
+            row.put("status", gate.status());
+            row.put("effectiveReleaseMonth", releaseMonth + phaseOffset);
+            response.add(row);
+        }
+        return response;
     }
 
     private int currentPlatformMonth() {
-        int month = readInt(CURRENT_MONTH_KEY, 4);
-        return month >= 1 && month <= 12 ? month : 4;
+        int month = readInt(CURRENT_MONTH_KEY, 0);
+        return month >= 1 && month <= 12 ? month : 0;
     }
 
-    private String phaseForMonth(int month) {
-        if (month <= 2) {
-            return "P1";
+    private String phaseForMonth(int month, List<DevicePhaseView> phases) {
+        if (month < 1 || phases.isEmpty()) {
+            return "";
         }
-        if (month <= 4) {
-            return "P2";
-        }
-        if (month <= 7) {
-            return "P3";
-        }
-        if (month == 8) {
-            return "P4";
-        }
-        if (month <= 10) {
-            return "P5";
-        }
-        return "P6";
+        int index = Math.min(phases.size() - 1, Math.max(0, ((month - 1) * phases.size()) / 12));
+        return phases.get(index).p();
+    }
+
+    private String currentE1PhaseId(int platformMonth, List<DevicePhaseView> phases) {
+        return configFacade.activeValue(CURRENT_PHASE_KEY)
+                .map(value -> matchE1PhaseId(value, phases))
+                .filter(StringUtils::hasText)
+                .orElseGet(() -> phaseForMonth(platformMonth, phases));
     }
 
     private int readInt(String configKey, int fallback) {
@@ -855,6 +1269,198 @@ public class OpsDeviceService {
         return fallback;
     }
 
+    private List<String> csv(String value) {
+        List<String> items = new ArrayList<>();
+        if (!StringUtils.hasText(value)) {
+            return items;
+        }
+        for (String item : value.split(",")) {
+            String normalized = item.trim();
+            if (StringUtils.hasText(normalized)) {
+                items.add(normalized);
+            }
+        }
+        return items;
+    }
+
+    private String text(Map<String, String> values, String key) {
+        String value = values.get(key);
+        return StringUtils.hasText(value) ? value.trim() : "";
+    }
+
+    private String normalizeGenerationId(String raw) {
+        String normalized = normalizeId(raw).toLowerCase(Locale.ROOT);
+        return E1_GENERATION_ID.matcher(normalized).matches() ? normalized : "";
+    }
+
+    private int normalizeReleaseMonth(Integer month) {
+        if (month == null || month < 1 || month > 12) {
+            throw new IllegalArgumentException("E1_GATE_RELEASE_MONTH_INVALID");
+        }
+        return month;
+    }
+
+    private String normalizeE1Phase(String phase) {
+        String normalized = matchConfiguredE1PhaseId(phase, false);
+        if (!StringUtils.hasText(normalized)) {
+            throw new IllegalArgumentException("E1_GATE_PHASE_INVALID");
+        }
+        return normalized;
+    }
+
+    private String matchConfiguredE1PhaseId(String phase, boolean allowArchived) {
+        return matchE1PhaseId(phase, catalogRepository.listPhases(E1_PHASE_SCOPE, allowArchived));
+    }
+
+    private String matchE1PhaseId(String phase, List<DevicePhaseView> phases) {
+        String requested = normalizeText(phase);
+        if (!StringUtils.hasText(requested)) {
+            return "";
+        }
+        return phases.stream()
+                .filter(candidate -> requested.equals(candidate.p()) || requested.equals(candidate.label()))
+                .map(DevicePhaseView::p)
+                .findFirst()
+                .orElse("");
+    }
+
+    private boolean isConfiguredE1PhaseId(String phase) {
+        try {
+            return StringUtils.hasText(matchConfiguredE1PhaseId(phase, false));
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private String normalizePhaseLabel(String label) {
+        String normalized = normalizeText(label);
+        if (!StringUtils.hasText(normalized) || normalized.length() > 128) {
+            throw new IllegalArgumentException("E1_PHASE_LABEL_INVALID");
+        }
+        return normalized;
+    }
+
+    private String normalizeText(String value) {
+        return StringUtils.hasText(value) ? value.trim() : "";
+    }
+
+    private int normalizePhaseSortOrder(Integer sortOrder) {
+        if (sortOrder == null || sortOrder < 0 || sortOrder > 9999) {
+            throw new IllegalArgumentException("E1_PHASE_SORT_INVALID");
+        }
+        return sortOrder;
+    }
+
+    private String normalizePhaseStatus(String status) {
+        String normalized = StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "active";
+        if (!E1_PHASE_STATUSES.contains(normalized)) {
+            throw new IllegalArgumentException("E1_PHASE_STATUS_INVALID");
+        }
+        return normalized;
+    }
+
+    private int nextPhaseSortOrder() {
+        return catalogRepository.listPhases(E1_PHASE_SCOPE, true).stream()
+                .map(DevicePhaseView::sortOrder)
+                .filter(java.util.Objects::nonNull)
+                .max(Integer::compareTo)
+                .orElse(0) + 10;
+    }
+
+    private BigDecimal normalizeDiscount(BigDecimal discount) {
+        if (discount == null || discount.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("E1_GATE_DISCOUNT_INVALID");
+        }
+        return discount.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private int normalizePhaseOffset(Integer offset) {
+        if (offset == null || offset < -12 || offset > 12) {
+            throw new IllegalArgumentException("E1_GATE_PHASE_OFFSET_OUT_OF_RANGE");
+        }
+        return offset;
+    }
+
+    private String normalizeGenerationGateStatus(String status) {
+        String normalized = StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "active";
+        if (!E1_GATE_STATUSES.contains(normalized)) {
+            throw new IllegalArgumentException("E1_GATE_STATUS_INVALID");
+        }
+        return normalized;
+    }
+
+    private String decimalText(BigDecimal value) {
+        return value == null ? "0" : value.stripTrailingZeros().toPlainString();
+    }
+
+    private Map<String, Object> generationGateSnapshot(DeviceGenerationGateView gate) {
+        return detail(
+                "id", gate.id(),
+                "name", gate.name(),
+                "releaseMonth", gate.releaseMonth(),
+                "phase", gate.phase(),
+                "discount", gate.discount(),
+                "eligibility", gate.eligibility(),
+                "phaseOffset", gate.phaseOffset(),
+                "forceUnlock", gate.forceUnlock(),
+                "status", gate.status());
+    }
+
+    private Map<String, Object> phaseSnapshot(DevicePhaseView phase) {
+        return detail(
+                "id", phase.p(),
+                "label", phase.label(),
+                "meta", phase.meta(),
+                "skus", phase.skus(),
+                "sortOrder", phase.sortOrder(),
+                "status", phase.status());
+    }
+
+    private String generationGateFieldValue(DeviceGenerationGateView gate, String field) {
+        return switch (field) {
+            case "releaseMonth" -> String.valueOf(gate.releaseMonth());
+            case "phase" -> gate.phase();
+            case "discount", "tradeinDiscount" -> decimalText(gate.discount());
+            case "eligibility" -> String.valueOf(Boolean.TRUE.equals(gate.eligibility()));
+            case "phaseOffset" -> String.valueOf(gate.phaseOffset());
+            case "forceUnlock" -> String.valueOf(Boolean.TRUE.equals(gate.forceUnlock()));
+            default -> "";
+        };
+    }
+
+    private DeviceGenerationGateView saveGenerationGateField(DeviceGenerationGateView before, String field, String value) {
+        Integer releaseMonth = before.releaseMonth();
+        String phase = before.phase();
+        BigDecimal discount = before.discount();
+        Boolean eligibility = before.eligibility();
+        Integer phaseOffset = before.phaseOffset();
+        Boolean forceUnlock = before.forceUnlock();
+        if ("releaseMonth".equals(field)) {
+            releaseMonth = normalizeReleaseMonth(Integer.parseInt(value));
+        } else if ("phase".equals(field)) {
+            phase = normalizeE1Phase(value);
+        } else if ("discount".equals(field) || "tradeinDiscount".equals(field)) {
+            discount = normalizeDiscount(new BigDecimal(value));
+        } else if ("eligibility".equals(field)) {
+            eligibility = Boolean.parseBoolean(value);
+        } else if ("phaseOffset".equals(field)) {
+            phaseOffset = normalizePhaseOffset(Integer.parseInt(value));
+        } else if ("forceUnlock".equals(field)) {
+            forceUnlock = Boolean.parseBoolean(value);
+        }
+        return catalogRepository.saveGenerationGate(
+                before.id(),
+                before.name(),
+                releaseMonth,
+                phase,
+                discount,
+                eligibility,
+                phaseOffset,
+                forceUnlock,
+                before.status(),
+                LocalDateTime.now(clock));
+    }
+
     private String[] normalizeE1GateKey(String rawKey) {
         String key = normalizeId(rawKey);
         if (key.startsWith("E.gen.")) {
@@ -866,7 +1472,7 @@ public class OpsDeviceService {
         }
         String generationId = key.substring(0, split);
         String field = key.substring(split + 1);
-        if (!E1_GENERATION_ID.matcher(generationId).matches() || !Set.of("phaseOffset", "forceUnlock").contains(field)) {
+        if (!E1_GENERATION_ID.matcher(generationId).matches() || !E1_GATE_FIELDS.contains(field)) {
             throw new IllegalArgumentException("E1_GATE_KEY_INVALID");
         }
         return new String[] { generationId, field };
@@ -879,6 +1485,16 @@ public class OpsDeviceService {
                 throw new IllegalArgumentException("E1_GATE_PHASE_OFFSET_OUT_OF_RANGE");
             }
             return String.valueOf(offset);
+        }
+        if ("releaseMonth".equals(field)) {
+            int month = parsePositiveOrNegativeInt(rawValue);
+            return String.valueOf(normalizeReleaseMonth(month));
+        }
+        if ("phase".equals(field)) {
+            return normalizeE1Phase(rawValue);
+        }
+        if ("discount".equals(field) || "tradeinDiscount".equals(field)) {
+            return decimalText(normalizeDiscount(parseDecimal(rawValue)));
         }
         if (!StringUtils.hasText(rawValue)) {
             throw new IllegalArgumentException("E1_GATE_VALUE_REQUIRED");
@@ -965,6 +1581,51 @@ public class OpsDeviceService {
     private String normalizeSkuStatus(String status) {
         String normalized = status == null ? "pending" : status.trim().toLowerCase(Locale.ROOT);
         return SKU_STATUSES.contains(normalized) ? normalized : null;
+    }
+
+    private boolean validMediaAssetId(String assetId) {
+        if (!StringUtils.hasText(assetId)) {
+            return true;
+        }
+        String trimmed = assetId.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        return trimmed.length() <= SKU_IMAGE_ASSET_ID_MAX_LENGTH
+                && !lower.startsWith("http://")
+                && !lower.startsWith("https://")
+                && trimmed.indexOf('/') < 0
+                && trimmed.indexOf('\\') < 0
+                && trimmed.indexOf('\n') < 0
+                && trimmed.indexOf('\r') < 0
+                && trimmed.indexOf('\t') < 0;
+    }
+
+    private boolean validMediaObjectKey(String objectKey) {
+        if (!StringUtils.hasText(objectKey)) {
+            return true;
+        }
+        String trimmed = objectKey.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        return trimmed.length() <= SKU_IMAGE_OBJECT_KEY_MAX_LENGTH
+                && !trimmed.startsWith("/")
+                && !trimmed.endsWith("/")
+                && !lower.startsWith("http://")
+                && !lower.startsWith("https://")
+                && !lower.contains("..")
+                && trimmed.indexOf('\\') < 0
+                && trimmed.indexOf('\n') < 0
+                && trimmed.indexOf('\r') < 0
+                && trimmed.indexOf('\t') < 0;
+    }
+
+    private boolean validMediaPreviewUrl(String previewUrl) {
+        if (!StringUtils.hasText(previewUrl)) {
+            return true;
+        }
+        String trimmed = previewUrl.trim();
+        return trimmed.length() <= SKU_IMAGE_PREVIEW_URL_MAX_LENGTH
+                && trimmed.indexOf('\n') < 0
+                && trimmed.indexOf('\r') < 0
+                && trimmed.indexOf('\t') < 0;
     }
 
     private String normalizeReviewStatus(String status) {
@@ -1064,15 +1725,25 @@ public class OpsDeviceService {
         return detail;
     }
 
-    private record E1PhaseDef(String p, String meta, String skus) {
+    private record DefaultTaskSeed(
+            String taskId,
+            String name,
+            String price,
+            String unit,
+            String requirement,
+            String saturation) {
+
+        private DeviceTaskUpsertRequest toRequest() {
+            return new DeviceTaskUpsertRequest(
+                    name,
+                    new BigDecimal(price),
+                    unit,
+                    requirement,
+                    new BigDecimal(saturation),
+                    "active",
+                    "E2 default seed",
+                    "system");
+        }
     }
 
-    private record E1GenerationReleaseDef(
-            String id,
-            String name,
-            int releaseMonth,
-            String phase,
-            int discount,
-            boolean eligibility) {
-    }
 }

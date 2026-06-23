@@ -6,7 +6,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
+import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
@@ -43,9 +45,37 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         if (mapper.countSkuPurchaseGateColumn() == 0) {
             mapper.addSkuPurchaseGateColumn();
         }
+        mapper.widenSkuUnlockPhaseColumn();
+        if (mapper.countSkuUnlockPhaseIdColumn() == 0) {
+            mapper.addSkuUnlockPhaseIdColumn();
+        }
+        if (mapper.countSkuImageAssetIdColumn() == 0) {
+            mapper.addSkuImageAssetIdColumn();
+        }
+        mapper.widenSkuImageAssetIdColumn();
+        if (mapper.countSkuImageObjectKeyColumn() == 0) {
+            mapper.addSkuImageObjectKeyColumn();
+        }
+        mapper.widenSkuImageObjectKeyColumn();
+        if (mapper.countSkuImagePreviewUrlColumn() == 0) {
+            mapper.addSkuImagePreviewUrlColumn();
+        }
+        mapper.widenSkuImagePreviewUrlColumn();
         mapper.createReviewTable();
         mapper.createTaskTable();
         mapper.createOrderTable();
+        mapper.createGenerationGateTable();
+        mapper.widenGenerationGatePhaseColumn();
+        if (mapper.countGenerationGatePhaseIdColumn() == 0) {
+            mapper.addGenerationGatePhaseIdColumn();
+        }
+        mapper.createPhaseTable();
+        if (mapper.countPhaseIdColumn() > 0) {
+            mapper.makeLegacyPhaseIdNullable();
+        }
+        if (mapper.countPhaseLabelIndex() == 0) {
+            mapper.addPhaseLabelIndex();
+        }
     }
 
     @Override
@@ -195,6 +225,121 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         return updated == 0 ? Optional.empty() : findOrder(orderNo);
     }
 
+    @Override
+    public List<DevicePhaseView> listPhases(String scope, boolean includeArchived) {
+        return mapper.listPhases(scope, includeArchived);
+    }
+
+    @Override
+    public Optional<DevicePhaseView> findPhase(String scope, String phaseId) {
+        return Optional.ofNullable(mapper.findPhase(scope, phaseId));
+    }
+
+    @Override
+    public Optional<DevicePhaseView> findPhaseByLabel(String scope, String label) {
+        return Optional.ofNullable(mapper.findPhaseByLabel(scope, label));
+    }
+
+    @Override
+    public DevicePhaseView savePhase(
+            String scope,
+            String currentPhaseId,
+            String label,
+            String meta,
+            String skus,
+            Integer sortOrder,
+            String status,
+            LocalDateTime now) {
+        String current = normalize(currentPhaseId);
+        LocalDateTime createdAt = StringUtils.hasText(current)
+                ? findPhase(scope, current).map(DevicePhaseView::createdAt).orElse(now)
+                : now;
+        DeviceCatalogMapper.PhaseWrite write = new DeviceCatalogMapper.PhaseWrite(
+                scope,
+                label,
+                blankToNull(meta),
+                blankToNull(skus),
+                sortOrder == null ? 0 : sortOrder,
+                status,
+                createdAt,
+                now);
+        if (StringUtils.hasText(current)) {
+            mapper.updatePhase(current, write);
+            return findPhase(scope, current).orElseThrow();
+        } else {
+            mapper.upsertPhase(write);
+            return findPhaseByLabel(scope, label).orElseThrow();
+        }
+    }
+
+    @Override
+    public boolean archivePhase(String scope, String phaseId, LocalDateTime now) {
+        return mapper.archivePhase(scope, phaseId, now) > 0;
+    }
+
+    @Override
+    public void backfillPhaseReferences(String scope, LocalDateTime now) {
+        if (mapper.countPhaseIdColumn() > 0) {
+            mapper.backfillSkuUnlockPhaseIdsByLegacyPhaseId(scope, now);
+            mapper.backfillGenerationGatePhaseIdsByLegacyPhaseId(scope, now);
+        }
+        mapper.backfillSkuUnlockPhaseIdsByLabel(scope, now);
+        mapper.backfillGenerationGatePhaseIdsByLabel(scope, now);
+    }
+
+    @Override
+    public int countSkusByUnlockPhase(String phaseId) {
+        return mapper.countSkusByUnlockPhase(phaseId);
+    }
+
+    @Override
+    public int countGenerationGatesByPhase(String phaseId) {
+        return mapper.countGenerationGatesByPhase(phaseId);
+    }
+
+    @Override
+    public List<DeviceGenerationGateView> listGenerationGates(boolean includeArchived) {
+        return mapper.listGenerationGates(includeArchived);
+    }
+
+    @Override
+    public Optional<DeviceGenerationGateView> findGenerationGate(String skuId) {
+        return Optional.ofNullable(mapper.findGenerationGate(skuId));
+    }
+
+    @Override
+    public DeviceGenerationGateView saveGenerationGate(
+            String skuId,
+            String name,
+            Integer releaseMonth,
+            String phase,
+            BigDecimal discount,
+            Boolean eligibility,
+            Integer phaseOffset,
+            Boolean forceUnlock,
+            String status,
+            LocalDateTime now) {
+        LocalDateTime createdAt = findGenerationGate(skuId).map(DeviceGenerationGateView::createdAt).orElse(now);
+        mapper.upsertGenerationGate(new DeviceCatalogMapper.GenerationGateWrite(
+                skuId,
+                name,
+                releaseMonth,
+                phaseIdOrNull(phase),
+                valueOrZero(discount),
+                Boolean.TRUE.equals(eligibility),
+                phaseOffset == null ? 0 : phaseOffset,
+                Boolean.TRUE.equals(forceUnlock),
+                status,
+                createdAt,
+                now));
+        return findGenerationGate(skuId).orElseThrow();
+    }
+
+    @Override
+    public boolean archiveGenerationGate(String skuId, LocalDateTime now) {
+        return mapper.archiveGenerationGate(skuId, now) > 0;
+    }
+
     private DeviceSkuView skuView(DeviceCatalogMapper.SkuRow row) {
         return new DeviceSkuView(
                 row.skuId(),
@@ -271,7 +416,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 blankToNull(request.lifecycle()),
                 blankToNull(request.supersededBy()),
                 request.tradeinDiscount(),
-                StringUtils.hasText(request.unlockPhase()) ? request.unlockPhase().trim().toUpperCase() : "P1",
+                phaseIdOrNull(request.unlockPhase()),
                 purchaseGateJson(request.purchaseGate()),
                 blankToNull(request.imageAssetId()),
                 blankToNull(request.imageObjectKey()),
@@ -353,6 +498,13 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
 
     private BigDecimal valueOrZero(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private Long phaseIdOrNull(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        return Long.valueOf(value.trim());
     }
 
     private String skuStatus(String status) {

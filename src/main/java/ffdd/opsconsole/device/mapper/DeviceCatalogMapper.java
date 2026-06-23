@@ -1,7 +1,9 @@
 package ffdd.opsconsole.device.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
+import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.infrastructure.DeviceSkuEntity;
@@ -45,7 +47,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             lifecycle,
             superseded_by AS supersededBy,
             tradein_discount AS tradeinDiscount,
-            unlock_phase AS unlockPhase,
+            COALESCE(CAST(unlock_phase_id AS CHAR), unlock_phase) AS unlockPhase,
             purchase_gate_json AS purchaseGateJson,
             image_asset_id AS imageAssetId,
             image_object_key AS imageObjectKey,
@@ -78,6 +80,31 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             dc_location AS dcLocation,
             age_text AS ageText,
             ordered_at AS orderedAt,
+            updated_at AS updatedAt
+            """;
+
+    String GENERATION_GATE_COLUMNS = """
+            sku_id AS id,
+            name,
+            release_month AS releaseMonth,
+            COALESCE(CAST(phase_id AS CHAR), phase) AS phase,
+            tradein_discount AS discount,
+            eligibility,
+            phase_offset AS phaseOffset,
+            force_unlock AS forceUnlock,
+            status,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+            """;
+
+    String PHASE_COLUMNS = """
+            CAST(id AS CHAR) AS p,
+            label,
+            meta,
+            sku_label AS skus,
+            sort_order AS sortOrder,
+            status,
+            created_at AS createdAt,
             updated_at AS updatedAt
             """;
 
@@ -114,11 +141,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               lifecycle VARCHAR(32) DEFAULT NULL,
               superseded_by VARCHAR(64) DEFAULT NULL,
               tradein_discount DECIMAL(18,4) DEFAULT NULL,
-              unlock_phase VARCHAR(16) NOT NULL DEFAULT 'P1',
+              unlock_phase VARCHAR(32) NOT NULL DEFAULT '',
+              unlock_phase_id BIGINT DEFAULT NULL,
               purchase_gate_json TEXT,
-              image_asset_id VARCHAR(64) DEFAULT NULL,
+              image_asset_id VARCHAR(512) DEFAULT NULL,
               image_object_key VARCHAR(255) DEFAULT NULL,
-              image_preview_url VARCHAR(1024) DEFAULT NULL,
+              image_preview_url TEXT NULL,
               tag VARCHAR(32) DEFAULT NULL,
               status VARCHAR(32) NOT NULL DEFAULT 'pending',
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -142,6 +170,66 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN purchase_gate_json TEXT NULL AFTER unlock_phase")
     void addSkuPurchaseGateColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku MODIFY COLUMN unlock_phase VARCHAR(32) NOT NULL DEFAULT ''")
+    void widenSkuUnlockPhaseColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_device_sku'
+               AND COLUMN_NAME = 'unlock_phase_id'
+            """)
+    int countSkuUnlockPhaseIdColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN unlock_phase_id BIGINT NULL AFTER unlock_phase")
+    void addSkuUnlockPhaseIdColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_device_sku'
+               AND COLUMN_NAME = 'image_asset_id'
+            """)
+    int countSkuImageAssetIdColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN image_asset_id VARCHAR(512) DEFAULT NULL AFTER purchase_gate_json")
+    void addSkuImageAssetIdColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku MODIFY COLUMN image_asset_id VARCHAR(512) DEFAULT NULL")
+    void widenSkuImageAssetIdColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_device_sku'
+               AND COLUMN_NAME = 'image_object_key'
+            """)
+    int countSkuImageObjectKeyColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN image_object_key VARCHAR(255) DEFAULT NULL AFTER image_asset_id")
+    void addSkuImageObjectKeyColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku MODIFY COLUMN image_object_key VARCHAR(255) DEFAULT NULL")
+    void widenSkuImageObjectKeyColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_device_sku'
+               AND COLUMN_NAME = 'image_preview_url'
+            """)
+    int countSkuImagePreviewUrlColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN image_preview_url TEXT NULL AFTER image_object_key")
+    void addSkuImagePreviewUrlColumn();
+
+    @Update("ALTER TABLE nx_admin_device_sku MODIFY COLUMN image_preview_url TEXT NULL")
+    void widenSkuImagePreviewUrlColumn();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_admin_device_review (
@@ -204,6 +292,238 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     void createOrderTable();
 
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_device_generation_gate (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              sku_id VARCHAR(64) NOT NULL,
+              name VARCHAR(128) NOT NULL,
+              release_month INT NOT NULL,
+              phase VARCHAR(32) NOT NULL DEFAULT '',
+              phase_id BIGINT DEFAULT NULL,
+              tradein_discount DECIMAL(18,4) NOT NULL DEFAULT 0,
+              eligibility TINYINT NOT NULL DEFAULT 0,
+              phase_offset INT NOT NULL DEFAULT 0,
+              force_unlock TINYINT NOT NULL DEFAULT 0,
+              status VARCHAR(32) NOT NULL DEFAULT 'active',
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_admin_device_generation_gate_sku (sku_id),
+              KEY idx_admin_device_generation_gate_status (status,is_deleted),
+              KEY idx_admin_device_generation_gate_phase (phase,release_month),
+              KEY idx_admin_device_generation_gate_phase_id (phase_id,release_month)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createGenerationGateTable();
+
+    @Update("ALTER TABLE nx_admin_device_generation_gate MODIFY COLUMN phase VARCHAR(32) NOT NULL DEFAULT ''")
+    void widenGenerationGatePhaseColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_device_generation_gate'
+               AND COLUMN_NAME = 'phase_id'
+            """)
+    int countGenerationGatePhaseIdColumn();
+
+    @Update("ALTER TABLE nx_admin_device_generation_gate ADD COLUMN phase_id BIGINT NULL AFTER phase")
+    void addGenerationGatePhaseIdColumn();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_phase_config (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              scope VARCHAR(32) NOT NULL DEFAULT 'E1',
+              label VARCHAR(128) NOT NULL,
+              meta VARCHAR(128) DEFAULT NULL,
+              sku_label VARCHAR(255) DEFAULT NULL,
+              sort_order INT NOT NULL DEFAULT 0,
+              status VARCHAR(32) NOT NULL DEFAULT 'active',
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_admin_phase_scope_label (scope, label),
+              KEY idx_admin_phase_scope_sort (scope, status, is_deleted, sort_order)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createPhaseTable();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.STATISTICS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_phase_config'
+               AND INDEX_NAME = 'uk_admin_phase_scope_label'
+            """)
+    int countPhaseLabelIndex();
+
+    @Update("ALTER TABLE nx_admin_phase_config ADD UNIQUE KEY uk_admin_phase_scope_label (scope, label)")
+    void addPhaseLabelIndex();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_phase_config'
+               AND COLUMN_NAME = 'phase_id'
+            """)
+    int countPhaseIdColumn();
+
+    @Update("ALTER TABLE nx_admin_phase_config MODIFY COLUMN phase_id VARCHAR(32) NULL DEFAULT NULL")
+    void makeLegacyPhaseIdNullable();
+
+    @Select("""
+            <script>
+            SELECT
+            """ + PHASE_COLUMNS + """
+              FROM nx_admin_phase_config
+             WHERE scope = #{scope} AND is_deleted = 0
+             <if test='includeArchived == false'>AND status = 'active'</if>
+             ORDER BY sort_order ASC, id ASC
+            </script>
+            """)
+    List<DevicePhaseView> listPhases(@Param("scope") String scope, @Param("includeArchived") boolean includeArchived);
+
+    @Select("""
+            SELECT
+            """ + PHASE_COLUMNS + """
+              FROM nx_admin_phase_config
+             WHERE scope = #{scope} AND id = #{phaseId} AND is_deleted = 0
+             LIMIT 1
+            """)
+    DevicePhaseView findPhase(@Param("scope") String scope, @Param("phaseId") String phaseId);
+
+    @Select("""
+            SELECT
+            """ + PHASE_COLUMNS + """
+              FROM nx_admin_phase_config
+             WHERE scope = #{scope} AND label = #{label} AND is_deleted = 0
+             LIMIT 1
+            """)
+    DevicePhaseView findPhaseByLabel(@Param("scope") String scope, @Param("label") String label);
+
+    @Insert("""
+            INSERT INTO nx_admin_phase_config (
+              scope, label, meta, sku_label, sort_order, status, created_at, updated_at, is_deleted
+            ) VALUES (
+              #{phase.scope}, #{phase.label}, #{phase.meta}, #{phase.skus},
+              #{phase.sortOrder}, #{phase.status}, #{phase.createdAt}, #{phase.updatedAt}, 0
+            )
+            ON DUPLICATE KEY UPDATE
+              meta = VALUES(meta),
+              sku_label = VALUES(sku_label),
+              sort_order = VALUES(sort_order),
+              status = VALUES(status),
+              updated_at = VALUES(updated_at),
+              is_deleted = 0
+            """)
+    int upsertPhase(@Param("phase") PhaseWrite phase);
+
+    @Update("""
+            UPDATE nx_admin_phase_config
+               SET label = #{phase.label},
+                   meta = #{phase.meta},
+                   sku_label = #{phase.skus},
+                   sort_order = #{phase.sortOrder},
+                   status = #{phase.status},
+                   updated_at = #{phase.updatedAt},
+                   is_deleted = 0
+             WHERE scope = #{phase.scope}
+               AND id = #{currentPhaseId}
+               AND is_deleted = 0
+            """)
+    int updatePhase(@Param("currentPhaseId") String currentPhaseId, @Param("phase") PhaseWrite phase);
+
+    @Update("""
+            UPDATE nx_admin_phase_config
+               SET status = 'archived',
+                   updated_at = #{now}
+             WHERE scope = #{scope} AND id = #{phaseId} AND is_deleted = 0 AND status <> 'archived'
+            """)
+    int archivePhase(@Param("scope") String scope, @Param("phaseId") String phaseId, @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_phase_config
+             WHERE scope = #{scope} AND status = 'active' AND is_deleted = 0
+            """)
+    int countActivePhases(@Param("scope") String scope);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_device_sku
+             WHERE (CAST(unlock_phase_id AS CHAR) = #{phaseId} OR unlock_phase = #{phaseId})
+               AND is_deleted = 0
+               AND status <> 'off'
+            """)
+    int countSkusByUnlockPhase(@Param("phaseId") String phaseId);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_device_generation_gate
+             WHERE (CAST(phase_id AS CHAR) = #{phaseId} OR phase = #{phaseId})
+               AND is_deleted = 0
+               AND status = 'active'
+            """)
+    int countGenerationGatesByPhase(@Param("phaseId") String phaseId);
+
+    @Update("""
+            UPDATE nx_admin_device_sku
+               JOIN nx_admin_phase_config p
+                 ON p.scope = #{scope}
+                AND p.is_deleted = 0
+                AND p.label = nx_admin_device_sku.unlock_phase
+               SET nx_admin_device_sku.unlock_phase_id = p.id,
+                   nx_admin_device_sku.updated_at = #{now}
+             WHERE nx_admin_device_sku.is_deleted = 0
+               AND nx_admin_device_sku.unlock_phase_id IS NULL
+               AND nx_admin_device_sku.unlock_phase <> ''
+            """)
+    int backfillSkuUnlockPhaseIdsByLabel(@Param("scope") String scope, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_admin_device_generation_gate
+               JOIN nx_admin_phase_config p
+                 ON p.scope = #{scope}
+                AND p.is_deleted = 0
+                AND p.label = nx_admin_device_generation_gate.phase
+               SET nx_admin_device_generation_gate.phase_id = p.id,
+                   nx_admin_device_generation_gate.updated_at = #{now}
+             WHERE nx_admin_device_generation_gate.is_deleted = 0
+               AND nx_admin_device_generation_gate.phase_id IS NULL
+               AND nx_admin_device_generation_gate.phase <> ''
+            """)
+    int backfillGenerationGatePhaseIdsByLabel(@Param("scope") String scope, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_admin_device_sku
+               JOIN nx_admin_phase_config p
+                 ON p.scope = #{scope}
+                AND p.is_deleted = 0
+                AND p.phase_id = nx_admin_device_sku.unlock_phase
+               SET nx_admin_device_sku.unlock_phase_id = p.id,
+                   nx_admin_device_sku.updated_at = #{now}
+             WHERE nx_admin_device_sku.is_deleted = 0
+               AND nx_admin_device_sku.unlock_phase_id IS NULL
+               AND nx_admin_device_sku.unlock_phase <> ''
+            """)
+    int backfillSkuUnlockPhaseIdsByLegacyPhaseId(@Param("scope") String scope, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_admin_device_generation_gate
+               JOIN nx_admin_phase_config p
+                 ON p.scope = #{scope}
+                AND p.is_deleted = 0
+                AND p.phase_id = nx_admin_device_generation_gate.phase
+               SET nx_admin_device_generation_gate.phase_id = p.id,
+                   nx_admin_device_generation_gate.updated_at = #{now}
+             WHERE nx_admin_device_generation_gate.is_deleted = 0
+               AND nx_admin_device_generation_gate.phase_id IS NULL
+               AND nx_admin_device_generation_gate.phase <> ''
+            """)
+    int backfillGenerationGatePhaseIdsByLegacyPhaseId(@Param("scope") String scope, @Param("now") LocalDateTime now);
+
     @Select("""
             <script>
             SELECT COUNT(*) FROM nx_admin_device_sku
@@ -254,7 +574,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               daily_earn,daily_earn_nex,share_yield_min,share_yield_max,base_rate,sold,stock_text,
               rating,reviews,ai_image_gen_per_min,ai_llm_tokens_per_sec,ai_video_min_per_hour,
               ai_fine_tune_mins,ai_unlocks,features_json,generation,lifecycle,superseded_by,
-              tradein_discount,unlock_phase,purchase_gate_json,image_asset_id,image_object_key,image_preview_url,tag,status,
+              tradein_discount,unlock_phase,unlock_phase_id,purchase_gate_json,image_asset_id,image_object_key,image_preview_url,tag,status,
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},#{sku.tier},#{sku.tagline},#{sku.badge},#{sku.gpu},#{sku.vram},#{sku.hashRate},
@@ -262,7 +582,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.shareYieldMax},#{sku.baseRate},#{sku.sold},#{sku.stock},#{sku.rating},#{sku.reviews},
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
               #{sku.aiUnlocks},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
-              #{sku.tradeinDiscount},#{sku.unlockPhase},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
+              #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
               #{sku.imagePreviewUrl},#{sku.tag},#{sku.status},#{sku.createdAt},#{sku.updatedAt},0
             )
             """)
@@ -299,7 +619,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    lifecycle = #{sku.lifecycle},
                    superseded_by = #{sku.supersededBy},
                    tradein_discount = #{sku.tradeinDiscount},
-                   unlock_phase = #{sku.unlockPhase},
+                   unlock_phase = '',
+                   unlock_phase_id = #{sku.unlockPhaseId},
                    purchase_gate_json = #{sku.purchaseGateJson},
                    image_asset_id = #{sku.imageAssetId},
                    image_object_key = #{sku.imageObjectKey},
@@ -556,6 +877,58 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int updateOrderState(@Param("orderNo") String orderNo, @Param("state") String state, @Param("now") LocalDateTime now);
 
+    @Select("""
+            <script>
+            SELECT
+            """ + GENERATION_GATE_COLUMNS + """
+              FROM nx_admin_device_generation_gate
+             WHERE is_deleted = 0
+             <if test='includeArchived == false'>AND status = 'active'</if>
+             ORDER BY release_month ASC, id ASC
+            </script>
+            """)
+    List<DeviceGenerationGateView> listGenerationGates(@Param("includeArchived") boolean includeArchived);
+
+    @Select("""
+            SELECT
+            """ + GENERATION_GATE_COLUMNS + """
+              FROM nx_admin_device_generation_gate
+             WHERE sku_id = #{skuId} AND is_deleted = 0
+             LIMIT 1
+            """)
+    DeviceGenerationGateView findGenerationGate(@Param("skuId") String skuId);
+
+    @Insert("""
+            INSERT INTO nx_admin_device_generation_gate (
+              sku_id, name, release_month, phase, phase_id, tradein_discount, eligibility,
+              phase_offset, force_unlock, status, created_at, updated_at, is_deleted
+            ) VALUES (
+              #{gate.skuId}, #{gate.name}, #{gate.releaseMonth}, '', #{gate.phaseId}, #{gate.discount}, #{gate.eligibility},
+              #{gate.phaseOffset}, #{gate.forceUnlock}, #{gate.status}, #{gate.createdAt}, #{gate.updatedAt}, 0
+            )
+            ON DUPLICATE KEY UPDATE
+              name = VALUES(name),
+              release_month = VALUES(release_month),
+              phase = VALUES(phase),
+              phase_id = VALUES(phase_id),
+              tradein_discount = VALUES(tradein_discount),
+              eligibility = VALUES(eligibility),
+              phase_offset = VALUES(phase_offset),
+              force_unlock = VALUES(force_unlock),
+              status = VALUES(status),
+              updated_at = VALUES(updated_at),
+              is_deleted = 0
+            """)
+    int upsertGenerationGate(@Param("gate") GenerationGateWrite gate);
+
+    @Update("""
+            UPDATE nx_admin_device_generation_gate
+               SET status = 'archived',
+                   updated_at = #{now}
+             WHERE sku_id = #{skuId} AND is_deleted = 0 AND status <> 'archived'
+            """)
+    int archiveGenerationGate(@Param("skuId") String skuId, @Param("now") LocalDateTime now);
+
     record SkuRow(
             String skuId,
             String name,
@@ -629,12 +1002,37 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String lifecycle,
             String supersededBy,
             BigDecimal tradeinDiscount,
-            String unlockPhase,
+            Long unlockPhaseId,
             String purchaseGateJson,
             String imageAssetId,
             String imageObjectKey,
             String imagePreviewUrl,
             String tag,
+            String status,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt) {
+    }
+
+    record GenerationGateWrite(
+            String skuId,
+            String name,
+            Integer releaseMonth,
+            Long phaseId,
+            BigDecimal discount,
+            Boolean eligibility,
+            Integer phaseOffset,
+            Boolean forceUnlock,
+            String status,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt) {
+    }
+
+    record PhaseWrite(
+            String scope,
+            String label,
+            String meta,
+            String skus,
+            Integer sortOrder,
             String status,
             LocalDateTime createdAt,
             LocalDateTime updatedAt) {

@@ -2,6 +2,7 @@ package ffdd.opsconsole.device.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -10,9 +11,11 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
@@ -21,6 +24,9 @@ import ffdd.opsconsole.device.domain.DeviceTradeinTxView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
+import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewStatusRequest;
@@ -37,10 +43,12 @@ import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -134,20 +142,32 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void e1GenerationGatePersistsConfigAndAudits() {
+    void e1GenerationGatePersistsBusinessTableAndAudits() {
+        configFacade.values.put("growth.phase.current_month", "4");
+        configFacade.values.put("growth.phase.current", "P2");
+        configFacade.values.put("device.e1.phaseOrder", "P1,P2,P3");
+        configFacade.values.put("device.e1.phase.P1.meta", "L0+");
+        configFacade.values.put("device.e1.phase.P1.skus", "Entry");
+        configFacade.values.put("device.e1.phase.P2.meta", "L1+");
+        configFacade.values.put("device.e1.phase.P2.skus", "Genesis");
+        configFacade.values.put("device.e1.phase.P3.meta", "L2+");
+        configFacade.values.put("device.e1.phase.P3.skus", "Pro v2");
+        catalogRepository.generationGates.put(
+                "stellarbox-pro-v2",
+                gate("stellarbox-pro-v2", "NexionBox Pro v2", 5, "P3", new BigDecimal("300"), true, 0, false, "active"));
         E3ConfigUpdateRequest request =
                 new E3ConfigUpdateRequest("E.gen.stellarbox-pro-v2.phaseOffset", "2", "stage next release", "superadmin");
 
         ApiResult<Map<String, Object>> result = service.updateE1GenerationGate("idem-e1-gate", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values)
-                .containsEntry("device.e1.generation.stellarbox-pro-v2.phaseOffset", "2");
+        assertThat(configFacade.values).doesNotContainKey("device.e1.generation.stellarbox-pro-v2.phaseOffset");
+        assertThat(catalogRepository.generationGates.get("stellarbox-pro-v2").phaseOffset()).isEqualTo(2);
         assertThat(result.getData().get("configValues").toString())
                 .contains("E.gen.stellarbox-pro-v2.phaseOffset=2");
         assertThat(result.getData())
                 .containsEntry("platformMonth", 4)
-                .containsEntry("phaseCurrent", "P2")
+                .containsEntry("phaseCurrent", "2")
                 .containsKeys("phaseOrder", "phases", "releases");
         assertThat((List<?>) result.getData().get("releases"))
                 .anySatisfy(row -> {
@@ -242,6 +262,7 @@ class OpsDeviceServiceTest {
 
     @Test
     void createSkuRequiresCommandAndAudits() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         DeviceSkuUpsertRequest request = skuRequest("stellarbox-test", "NexionBox Test", "pending");
 
         ApiResult<DeviceSkuView> result = service.createSku("idem-sku", request);
@@ -258,6 +279,8 @@ class OpsDeviceServiceTest {
 
     @Test
     void createSkuRejectsValuesOutsideBackendOptions() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+
         assertThat(service.createSku(
                         "idem-sku",
                         skuRequest("stellarbox-test", "NexionBox Test", "pending", "Enterprise", "HK-1", 1, "active", "P1"))
@@ -281,6 +304,57 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void updateSkuAllowsEncodedMediaAssetIdsLongerThanLegacyColumn() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
+        String objectKey = "admin/e/sku-video/20260622/76979261-71a8-4276-82a2-b19b9823baef.mp4";
+        String assetId = Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+        DeviceSkuUpsertRequest request = skuRequest(
+                "stellarrack-p1",
+                "StellarRack P1",
+                "on",
+                "Entry",
+                "HK-1",
+                1,
+                "active",
+                "P1",
+                assetId,
+                objectKey,
+                "http://127.0.0.1:9000/nexion/" + objectKey + "?X-Amz-Signature=test");
+
+        ApiResult<DeviceSkuView> result = service.updateSku("stellarrack-p1", "idem-sku-media", request);
+
+        assertThat(assetId.length()).isGreaterThan(64);
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.imageAssetId()).isEqualTo(assetId);
+        assertThat(catalogRepository.lastSkuRequest.imageObjectKey()).isEqualTo(objectKey);
+    }
+
+    @Test
+    void createSkuRejectsPreviewUrlStoredAsImageAssetId() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        DeviceSkuUpsertRequest request = skuRequest(
+                "stellarbox-test",
+                "NexionBox Test",
+                "pending",
+                "Entry",
+                "HK-1",
+                1,
+                "active",
+                "P1",
+                "http://127.0.0.1:9000/nexion/admin/e/sku-video/20260622/asset.mp4",
+                "admin/e/sku-video/20260622/asset.mp4",
+                "http://127.0.0.1:9000/nexion/admin/e/sku-video/20260622/asset.mp4");
+
+        ApiResult<DeviceSkuView> result = service.createSku("idem-sku-url-asset", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("SKU_IMAGE_ASSET_ID_INVALID");
+    }
+
+    @Test
     void createShareSkuAllowsBlankUnlockPhase() {
         DeviceSkuUpsertRequest request =
                 skuRequest("shared-rack-test", "Nexion Shared Rack", "pending", " Share ", "HK-1", 2, "active", "");
@@ -289,6 +363,86 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().skuId()).isEqualTo("shared-rack-test");
+    }
+
+    @Test
+    void e1PhaseCrudCreatesConfigAndAllowsSkuUnlockPhase() {
+        DevicePhaseUpsertRequest phaseRequest =
+                new DevicePhaseUpsertRequest(null, "代际第一代", "L0+", "Entry", 10, "active", "新增 Phase 配置", "superadmin");
+
+        ApiResult<Map<String, Object>> phaseResult = service.createE1Phase("idem-phase", phaseRequest);
+        assertThat(phaseResult.getCode()).isZero();
+        String generatedPhaseId = catalogRepository.phases.keySet().iterator().next();
+        ApiResult<DeviceSkuView> skuResult = service.createSku(
+                "idem-sku-s1",
+                skuRequest("stellarbox-s1", "NexionBox S1", "pending", "Entry", "HK-1", 1, "active", generatedPhaseId));
+
+        assertThat(generatedPhaseId).matches("\\d+");
+        assertThat(catalogRepository.phases.get(generatedPhaseId).label()).isEqualTo("代际第一代");
+        assertThat(skuResult.getCode()).isZero();
+        assertThat(skuResult.getData().unlockPhase()).isEqualTo(generatedPhaseId);
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService, times(2)).record(captor.capture());
+        assertThat(captor.getAllValues().stream().map(AuditLogWriteRequest::getAction))
+                .contains("E1_PHASE_CREATED", "E1_SKU_CREATED");
+    }
+
+    @Test
+    void e1PhaseRenameKeepsInternalReferencesStable() {
+        catalogRepository.phases.put("1", phase("1", "P1", 10));
+        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "1");
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 1, "1", BigDecimal.ZERO, true, 0, false, "active"));
+        configFacade.values.put("growth.phase.current", "1");
+
+        ApiResult<Map<String, Object>> result = service.patchE1Phase(
+                "1",
+                "idem-phase-rename",
+                new DevicePhaseUpsertRequest(null, "代际第一代", "L0+", "Entry", 10, "active", "改成业务命名", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.phases).containsKey("1");
+        assertThat(catalogRepository.phases.get("1").label()).isEqualTo("代际第一代");
+        assertThat(catalogRepository.sku.unlockPhase()).isEqualTo("1");
+        assertThat(catalogRepository.generationGates.get("stellarbox-test").phase()).isEqualTo("1");
+        assertThat(configFacade.values).containsEntry("growth.phase.current", "1");
+    }
+
+    @Test
+    void e1CurrentPhaseCanBeSetManually() {
+        catalogRepository.phases.put("1", phase("1", "代际第一代", 10));
+        catalogRepository.phases.put("2", phase("2", "代际第二代", 20));
+        configFacade.values.put("growth.phase.current", "1");
+
+        ApiResult<Map<String, Object>> result = service.setE1CurrentPhase(
+                "2",
+                "idem-phase-current",
+                new DevicePhaseCurrentRequest("手动切换当前阶段", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.phase.current", "2");
+        assertThat(result.getData()).containsEntry("phaseCurrent", "2");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E1_PHASE_CURRENT_CHANGED");
+    }
+
+    @Test
+    void e1PhaseArchiveRejectsReferencedPhase() {
+        catalogRepository.phases.put("1", phase("1", "P1", 10));
+        catalogRepository.phases.put("2", phase("2", "代际第一代", 20));
+        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "2");
+
+        ApiResult<Map<String, Object>> result = service.archiveE1Phase(
+                "2",
+                "idem-phase-archive",
+                new DevicePhaseArchiveRequest("仍被 SKU 使用", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("E1_PHASE_IN_USE");
     }
 
     @Test
@@ -320,6 +474,20 @@ class OpsDeviceServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E1_REVIEW_STATUS_CHANGED");
+    }
+
+    @Test
+    void tasksSeedDefaultRowsWhenPrimaryListIsEmpty() {
+        ApiResult<PageResult<DeviceTaskView>> result = service.tasks(new DeviceTaskQueryRequest(null, null, 1L, 20L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getTotal()).isEqualTo(6);
+        assertThat(result.getData().getRecords())
+                .extracting(DeviceTaskView::taskId)
+                .containsExactly("TK-6", "TK-5", "TK-4", "TK-3", "TK-2", "TK-1");
+        assertThat(result.getData().getRecords())
+                .extracting(DeviceTaskView::name)
+                .contains("LLM 推理 405B", "Embedding 批处理");
     }
 
     @Test
@@ -451,6 +619,21 @@ class OpsDeviceServiceTest {
             Integer generation,
             String lifecycle,
             String unlockPhase) {
+        return skuRequest(skuId, name, status, tier, datacenter, generation, lifecycle, unlockPhase, null, null, null);
+    }
+
+    private static DeviceSkuUpsertRequest skuRequest(
+            String skuId,
+            String name,
+            String status,
+            String tier,
+            String datacenter,
+            Integer generation,
+            String lifecycle,
+            String unlockPhase,
+            String imageAssetId,
+            String imageObjectKey,
+            String imagePreviewUrl) {
         return new DeviceSkuUpsertRequest(
                 skuId,
                 name,
@@ -484,13 +667,18 @@ class OpsDeviceServiceTest {
                 BigDecimal.ZERO,
                 unlockPhase,
                 null,
-                null,
-                null,
-                null,
+                imageAssetId,
+                imageObjectKey,
+                imagePreviewUrl,
                 "popular",
                 status,
                 "catalog update",
                 "superadmin");
+    }
+
+    private static DevicePhaseView phase(String phaseId, String label, int sortOrder) {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 17, 0, 0);
+        return new DevicePhaseView(phaseId, label, "", "", sortOrder, "active", now, now);
     }
 
     private static DeviceTaskUpsertRequest taskRequest(String name, String unit, String requirement) {
@@ -506,6 +694,10 @@ class OpsDeviceServiceTest {
     }
 
     private static DeviceSkuView sku(String skuId, String name, String status) {
+        return sku(skuId, name, status, "P1");
+    }
+
+    private static DeviceSkuView sku(String skuId, String name, String status, String unlockPhase) {
         return new DeviceSkuView(
                 skuId,
                 name,
@@ -537,7 +729,7 @@ class OpsDeviceServiceTest {
                 "active",
                 "",
                 BigDecimal.ZERO,
-                "P1",
+                unlockPhase,
                 null,
                 null,
                 null,
@@ -546,6 +738,31 @@ class OpsDeviceServiceTest {
                 status,
                 null,
                 null);
+    }
+
+    private static DeviceGenerationGateView gate(
+            String skuId,
+            String name,
+            Integer releaseMonth,
+            String phase,
+            BigDecimal discount,
+            Boolean eligibility,
+            Integer phaseOffset,
+            Boolean forceUnlock,
+            String status) {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 17, 0, 0);
+        return new DeviceGenerationGateView(
+                skuId,
+                name,
+                releaseMonth,
+                phase,
+                discount,
+                eligibility,
+                phaseOffset,
+                forceUnlock,
+                status,
+                now,
+                now);
     }
 
     private static DeviceReviewView review(String reviewId, String status) {
@@ -697,7 +914,12 @@ class OpsDeviceServiceTest {
         private DeviceSkuView sku;
         private DeviceReviewView review;
         private DeviceTaskView task;
+        private final Map<String, DeviceTaskView> tasks = new LinkedHashMap<>();
         private DeviceOrderView order;
+        private DeviceSkuUpsertRequest lastSkuRequest;
+        private final Map<String, DevicePhaseView> phases = new LinkedHashMap<>();
+        private final Map<String, DeviceGenerationGateView> generationGates = new LinkedHashMap<>();
+        private long nextPhaseId = 1;
 
         @Override
         public PageResult<DeviceSkuView> pageSkus(DeviceSkuQueryRequest request) {
@@ -711,7 +933,8 @@ class OpsDeviceServiceTest {
 
         @Override
         public DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
-            sku = sku(skuId, request.name(), request.status());
+            lastSkuRequest = request;
+            sku = sku(skuId, request.name(), request.status(), request.unlockPhase());
             return sku;
         }
 
@@ -720,7 +943,8 @@ class OpsDeviceServiceTest {
             if (sku == null || !sku.skuId().equals(skuId)) {
                 return Optional.empty();
             }
-            sku = sku(skuId, request.name(), request.status());
+            lastSkuRequest = request;
+            sku = sku(skuId, request.name(), request.status(), request.unlockPhase());
             return Optional.of(sku);
         }
 
@@ -729,7 +953,7 @@ class OpsDeviceServiceTest {
             if (sku == null || !sku.skuId().equals(skuId)) {
                 return Optional.empty();
             }
-            sku = sku(sku.skuId(), sku.name(), status);
+            sku = sku(sku.skuId(), sku.name(), status, sku.unlockPhase());
             return Optional.of(sku);
         }
 
@@ -786,23 +1010,224 @@ class OpsDeviceServiceTest {
         }
 
         @Override
+        public List<DevicePhaseView> listPhases(String scope, boolean includeArchived) {
+            return phases.values().stream()
+                    .filter(phase -> includeArchived || "active".equals(phase.status()))
+                    .sorted(java.util.Comparator.comparing(DevicePhaseView::sortOrder))
+                    .toList();
+        }
+
+        @Override
+        public Optional<DevicePhaseView> findPhase(String scope, String phaseId) {
+            return Optional.ofNullable(phases.get(phaseId));
+        }
+
+        @Override
+        public Optional<DevicePhaseView> findPhaseByLabel(String scope, String label) {
+            return phases.values().stream()
+                    .filter(phase -> label.equals(phase.label()))
+                    .findFirst();
+        }
+
+        @Override
+        public DevicePhaseView savePhase(
+                String scope,
+                String currentPhaseId,
+                String label,
+                String meta,
+                String skus,
+                Integer sortOrder,
+                String status,
+                LocalDateTime now) {
+            String id = currentPhaseId == null || currentPhaseId.isBlank() ? nextPhaseId() : currentPhaseId;
+            LocalDateTime createdAt = Optional.ofNullable(phases.get(id))
+                    .map(DevicePhaseView::createdAt)
+                    .orElse(now);
+            DevicePhaseView phase = new DevicePhaseView(
+                    id,
+                    label,
+                    meta,
+                    skus,
+                    sortOrder,
+                    status,
+                    createdAt,
+                    now);
+            phases.put(id, phase);
+            return phase;
+        }
+
+        @Override
+        public boolean archivePhase(String scope, String phaseId, LocalDateTime now) {
+            DevicePhaseView before = phases.get(phaseId);
+            if (before == null) {
+                return false;
+            }
+            phases.put(phaseId, new DevicePhaseView(
+                    before.p(),
+                    before.label(),
+                    before.meta(),
+                    before.skus(),
+                    before.sortOrder(),
+                    "archived",
+                    before.createdAt(),
+                    now));
+            return true;
+        }
+
+        @Override
+        public void backfillPhaseReferences(String scope, LocalDateTime now) {
+            Map<String, String> phaseLookup = new LinkedHashMap<>();
+            phases.values().forEach(phase -> {
+                phaseLookup.put(phase.p(), phase.p());
+                phaseLookup.put(phase.label(), phase.p());
+            });
+            if (sku != null && phaseLookup.containsKey(sku.unlockPhase())) {
+                sku = sku(sku.skuId(), sku.name(), sku.status(), phaseLookup.get(sku.unlockPhase()));
+            }
+            generationGates.replaceAll((id, gate) -> phaseLookup.containsKey(gate.phase())
+                    ? new DeviceGenerationGateView(
+                            gate.id(),
+                            gate.name(),
+                            gate.releaseMonth(),
+                            phaseLookup.get(gate.phase()),
+                            gate.discount(),
+                            gate.eligibility(),
+                            gate.phaseOffset(),
+                            gate.forceUnlock(),
+                            gate.status(),
+                            gate.createdAt(),
+                            now)
+                    : gate);
+        }
+
+        @Override
+        public int countSkusByUnlockPhase(String phaseId) {
+            return sku != null && phaseId.equals(sku.unlockPhase()) ? 1 : 0;
+        }
+
+        @Override
+        public int countGenerationGatesByPhase(String phaseId) {
+            return (int) generationGates.values().stream()
+                    .filter(gate -> phaseId.equals(gate.phase()) && "active".equals(gate.status()))
+                    .count();
+        }
+
+        @Override
+        public List<DeviceGenerationGateView> listGenerationGates(boolean includeArchived) {
+            return generationGates.values().stream()
+                    .filter(gate -> includeArchived || !"archived".equals(gate.status()))
+                    .toList();
+        }
+
+        @Override
+        public Optional<DeviceGenerationGateView> findGenerationGate(String skuId) {
+            return Optional.ofNullable(generationGates.get(skuId));
+        }
+
+        @Override
+        public DeviceGenerationGateView saveGenerationGate(
+                String skuId,
+                String name,
+                Integer releaseMonth,
+                String phase,
+                BigDecimal discount,
+                Boolean eligibility,
+                Integer phaseOffset,
+                Boolean forceUnlock,
+                String status,
+                LocalDateTime now) {
+            LocalDateTime createdAt = Optional.ofNullable(generationGates.get(skuId))
+                    .map(DeviceGenerationGateView::createdAt)
+                    .orElse(now);
+            DeviceGenerationGateView gate = new DeviceGenerationGateView(
+                    skuId,
+                    name,
+                    releaseMonth,
+                    phase,
+                    discount,
+                    eligibility,
+                    phaseOffset,
+                    forceUnlock,
+                    status,
+                    createdAt,
+                    now);
+            generationGates.put(skuId, gate);
+            return gate;
+        }
+
+        @Override
+        public boolean archiveGenerationGate(String skuId, LocalDateTime now) {
+            DeviceGenerationGateView before = generationGates.get(skuId);
+            if (before == null) {
+                return false;
+            }
+            generationGates.put(skuId, new DeviceGenerationGateView(
+                    before.id(),
+                    before.name(),
+                    before.releaseMonth(),
+                    before.phase(),
+                    before.discount(),
+                    before.eligibility(),
+                    before.phaseOffset(),
+                    before.forceUnlock(),
+                    "archived",
+                    before.createdAt(),
+                    now));
+            return true;
+        }
+
+        private String nextPhaseId() {
+            while (phases.containsKey(String.valueOf(nextPhaseId))) {
+                nextPhaseId++;
+            }
+            return String.valueOf(nextPhaseId++);
+        }
+
+        @Override
         public PageResult<DeviceTaskView> pageTasks(DeviceTaskQueryRequest request) {
+            if (!tasks.isEmpty()) {
+                List<DeviceTaskView> records = tasks.values().stream()
+                        .sorted((left, right) -> right.taskId().compareTo(left.taskId()))
+                        .toList();
+                return new PageResult<>(records.size(), 1, 20, records);
+            }
             return new PageResult<>(task == null ? 0 : 1, 1, 20, task == null ? List.of() : List.of(task));
         }
 
         @Override
         public Optional<DeviceTaskView> findTask(String taskId) {
+            DeviceTaskView found = tasks.get(taskId);
+            if (found != null) {
+                return Optional.of(found);
+            }
             return task != null && task.taskId().equals(taskId) ? Optional.of(task) : Optional.empty();
         }
 
         @Override
         public DeviceTaskView createTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now) {
-            task = task(taskId, request.name(), request.price(), request.status());
+            task = new DeviceTaskView(
+                    taskId,
+                    request.name(),
+                    request.price(),
+                    request.unit(),
+                    request.requirement(),
+                    request.saturation(),
+                    request.status(),
+                    now,
+                    now);
+            tasks.put(taskId, task);
             return task;
         }
 
         @Override
         public Optional<DeviceTaskView> updateTaskPrice(String taskId, BigDecimal price, LocalDateTime now) {
+            DeviceTaskView current = tasks.get(taskId);
+            if (current != null) {
+                DeviceTaskView updated = task(current.taskId(), current.name(), price, current.status());
+                tasks.put(taskId, updated);
+                task = updated;
+                return Optional.of(updated);
+            }
             if (task == null || !task.taskId().equals(taskId)) {
                 return Optional.empty();
             }
@@ -812,6 +1237,13 @@ class OpsDeviceServiceTest {
 
         @Override
         public Optional<DeviceTaskView> updateTaskStatus(String taskId, String status, LocalDateTime now) {
+            DeviceTaskView current = tasks.get(taskId);
+            if (current != null) {
+                DeviceTaskView updated = task(current.taskId(), current.name(), current.price(), status);
+                tasks.put(taskId, updated);
+                task = updated;
+                return Optional.of(updated);
+            }
             if (task == null || !task.taskId().equals(taskId)) {
                 return Optional.empty();
             }
@@ -821,6 +1253,12 @@ class OpsDeviceServiceTest {
 
         @Override
         public boolean softDeleteTask(String taskId, LocalDateTime now) {
+            if (tasks.remove(taskId) != null) {
+                if (task != null && task.taskId().equals(taskId)) {
+                    task = null;
+                }
+                return true;
+            }
             if (task != null && task.taskId().equals(taskId)) {
                 task = null;
                 return true;
@@ -866,7 +1304,7 @@ class OpsDeviceServiceTest {
             Map<String, String> matched = new LinkedHashMap<>();
             if ("device_e1_generation_gate".equals(configGroup)) {
                 values.forEach((key, value) -> {
-                    if (key.startsWith("device.e1.generation.")) {
+                    if (key.startsWith("device.e1.")) {
                         matched.put(key, value);
                     }
                 });
