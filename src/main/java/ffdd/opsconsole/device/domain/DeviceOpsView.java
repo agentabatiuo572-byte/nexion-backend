@@ -6,6 +6,8 @@ import java.time.LocalDateTime;
 public record DeviceOpsView(
         Long id,
         Long userId,
+        String userNo,
+        String nickname,
         String instanceNo,
         String name,
         String productTier,

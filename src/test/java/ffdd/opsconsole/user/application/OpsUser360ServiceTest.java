@@ -147,6 +147,8 @@ class OpsUser360ServiceTest {
         DeviceOpsView ownDevice = new DeviceOpsView(
                 700L,
                 2231L,
+                "U00002231",
+                "Stella Miner",
                 "MINER-1",
                 "A100 节点",
                 "Pro",
@@ -170,6 +172,8 @@ class OpsUser360ServiceTest {
         DeviceOpsView otherDevice = new DeviceOpsView(
                 701L,
                 9999L,
+                "U00009999",
+                "Other Miner",
                 "MINER-OTHER",
                 "Other",
                 "Lite",

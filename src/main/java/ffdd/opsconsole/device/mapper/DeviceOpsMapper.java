@@ -17,6 +17,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     String DEVICE_COLUMNS = """
             d.id,
             d.user_id AS userId,
+            CONCAT('U', LPAD(d.user_id, 8, '0')) AS userNo,
+            COALESCE(NULLIF(u.nickname, ''), CONCAT('user-', d.user_id), '未绑定用户') AS nickname,
             d.instance_no AS instanceNo,
             d.name,
             d.product_tier AS productTier,
@@ -66,7 +68,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                AND (
                  d.status NOT IN ('ONLINE','BUSY')
                  OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST')
-                OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+                OR DATE_SUB(NOW(), INTERVAL 10 MINUTE) > r.heartbeat_at
                )
             """)
     @Lang(RawLanguageDriver.class)
@@ -76,6 +78,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             <script>
             SELECT COUNT(*)
               FROM nx_user_device d
+              LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
              WHERE d.is_deleted = 0
              <if test='status != null and status != ""'>AND d.status = #{status}</if>
              <if test='dcLocation != null and dcLocation != ""'>AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}</if>
@@ -83,7 +86,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
                     OR d.name LIKE CONCAT('%', #{keyword}, '%')
                     OR d.product_code LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%'))
+                    OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(d.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
             </script>
             """)
@@ -94,6 +99,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             SELECT
             """ + DEVICE_COLUMNS + """
               FROM nx_user_device d
+              LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
              WHERE d.is_deleted = 0
              <if test='status != null and status != ""'>AND d.status = #{status}</if>
@@ -102,7 +108,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
                     OR d.name LIKE CONCAT('%', #{keyword}, '%')
                     OR d.product_code LIKE CONCAT('%', #{keyword}, '%')
-                    OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%'))
+                    OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(d.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
              ORDER BY COALESCE(d.last_seen_at, d.updated_at, d.created_at) DESC
              LIMIT #{limit} OFFSET #{offset}
@@ -116,6 +124,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             SELECT
             """ + DEVICE_COLUMNS + """
               FROM nx_user_device d
+              LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
              WHERE d.is_deleted = 0
                AND d.user_id = #{userId}
@@ -128,6 +137,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             SELECT
             """ + DEVICE_COLUMNS + """
               FROM nx_user_device d
+              LEFT JOIN nx_user u ON u.id = d.user_id AND u.is_deleted = 0
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
              WHERE d.is_deleted = 0 AND d.id = #{deviceId}
              LIMIT 1

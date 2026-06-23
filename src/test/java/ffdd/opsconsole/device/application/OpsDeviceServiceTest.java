@@ -710,6 +710,8 @@ class OpsDeviceServiceTest {
         return new DeviceOpsView(
                 1L,
                 1001L,
+                "U00001001",
+                "Test Miner",
                 "NX-001",
                 "NexionBox S1",
                 "S1",
