@@ -109,13 +109,18 @@ public class OpsDeviceService {
             "stageMidEnd",
             "cycleMonths",
             "minEfficiency",
+            "taskLockS1",
+            "taskLockPro",
+            "taskLockRack",
             "salvagePct",
+            "eligibility",
             "minHoldingMonths",
             "promoMult",
             "promoCooldownDays",
             "promoMaxPerSession",
             "promoDelaySeconds",
             "promoMinAgeDays",
+            "promoRoutes",
             "inventorySoftMax");
     private static final List<DefaultTaskSeed> DEFAULT_E2_TASKS = List.of(
             new DefaultTaskSeed("TK-1", "LLM 推理 405B", "1.20", "/job", "需 NexionBox Pro", "0.82", "llm-inference", "Llama-3.1-405B", "0.80", "2.40", "80GB", "派发中"),
@@ -941,9 +946,9 @@ public class OpsDeviceService {
             return guard;
         }
         String key = normalizeE3Key(request.key());
-        BigDecimal value = normalizeE3Value(key, request.value());
+        E3ConfigValue value = normalizeE3Value(key, request.value());
         Map<String, String> before = deviceRepository.e3Config();
-        deviceRepository.upsertE3Config(key, value.stripTrailingZeros().toPlainString(), "NUMBER", operator(request.operator()));
+        deviceRepository.upsertE3Config(key, value.value(), value.valueType(), operator(request.operator()));
         Map<String, String> after = deviceRepository.e3Config();
         audit("E3_CONFIG_CHANGED", "DEVICE_E3_CONFIG", key, request.operator(), Map.of(
                 "key", key,
@@ -1827,36 +1832,64 @@ public class OpsDeviceService {
         } else if (normalized.startsWith("E.tradein.")) {
             normalized = normalized.substring("E.tradein.".length());
         }
-        normalized = normalized.replace("promo.", "promo");
+        normalized = switch (normalized) {
+            case "taskLock.s1" -> "taskLockS1";
+            case "taskLock.pro" -> "taskLockPro";
+            case "taskLock.rack" -> "taskLockRack";
+            case "promo.cooldownDays", "promoCooldownDays" -> "promoCooldownDays";
+            case "promo.maxPerSession", "promoMaxPerSession" -> "promoMaxPerSession";
+            case "promo.delaySec", "promoDelaySec", "promo.delaySeconds", "promoDelaySeconds" -> "promoDelaySeconds";
+            case "promo.minAgeDays", "promoMinAgeDays" -> "promoMinAgeDays";
+            case "promo.routes", "promoRoutes" -> "promoRoutes";
+            default -> normalized;
+        };
         if (!E3_CONFIG_KEYS.contains(normalized)) {
             throw new IllegalArgumentException("Unsupported E3 config key");
         }
         return normalized;
     }
 
-    private BigDecimal normalizeE3Value(String key, String raw) {
+    private E3ConfigValue normalizeE3Value(String key, String raw) {
+        if ("eligibility".equals(key)) {
+            String value = normalizeText(raw);
+            if (!Set.of("全部用户", "L2+ 持有者", "L3+ 持有者", "L4+ 持有者", "L5+ 持有者", "L6+ 持有者").contains(value)) {
+                throw new IllegalArgumentException("eligibility config is invalid");
+            }
+            return new E3ConfigValue(value, "STRING");
+        }
+        if ("promoRoutes".equals(key)) {
+            String value = normalizeText(raw);
+            if (!Set.of("/me/devices", "/me", "/store", "/earn", "全部页面").contains(value)) {
+                throw new IllegalArgumentException("promo routes config is invalid");
+            }
+            return new E3ConfigValue(value, "STRING");
+        }
         BigDecimal value = parseDecimal(raw);
         if (key.startsWith("degrade")) {
             if (value.compareTo(BigDecimal.valueOf(-100)) < 0 || value.compareTo(BigDecimal.ZERO) > 0) {
                 throw new IllegalArgumentException("degrade config must be -100-0");
             }
-            return value.setScale(2, RoundingMode.HALF_UP);
+            return numberConfig(value.setScale(2, RoundingMode.HALF_UP));
         }
         if ("minEfficiency".equals(key) || "salvagePct".equals(key)) {
             if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0) {
                 throw new IllegalArgumentException("percent config must be 0-100");
             }
-            return value.setScale(2, RoundingMode.HALF_UP);
+            return numberConfig(value.setScale(2, RoundingMode.HALF_UP));
         }
         if (key.endsWith("Days") || key.endsWith("Seconds") || key.endsWith("Max") || key.endsWith("Months")
                 || "stageEarlyEnd".equals(key) || "stageMidEnd".equals(key) || "cycleMonths".equals(key)
-                || "inventorySoftMax".equals(key)) {
+                || "inventorySoftMax".equals(key) || "promoMaxPerSession".equals(key) || key.startsWith("taskLock")) {
             if (value.compareTo(BigDecimal.ZERO) < 0) {
                 throw new IllegalArgumentException("numeric config must be positive");
             }
-            return BigDecimal.valueOf(value.setScale(0, RoundingMode.DOWN).longValue());
+            return numberConfig(BigDecimal.valueOf(value.setScale(0, RoundingMode.DOWN).longValue()));
         }
-        return value.setScale(4, RoundingMode.HALF_UP);
+        return numberConfig(value.setScale(4, RoundingMode.HALF_UP));
+    }
+
+    private E3ConfigValue numberConfig(BigDecimal value) {
+        return new E3ConfigValue(value.stripTrailingZeros().toPlainString(), "NUMBER");
     }
 
     private BigDecimal parseDecimal(String raw) {
@@ -2100,6 +2133,9 @@ public class OpsDeviceService {
             String note,
             String dailyUsdt,
             String dailyNex) {
+    }
+
+    private record E3ConfigValue(String value, String valueType) {
     }
 
 }

@@ -150,6 +150,28 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void updateE3ConfigAcceptsDottedPromoRouteString() {
+        E3ConfigUpdateRequest request = new E3ConfigUpdateRequest("E.tradein.promo.routes", "/me/devices", "route scope", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config("idem-e3", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(deviceRepository.config).containsEntry("promoRoutes", "/me/devices");
+        assertThat(deviceRepository.lastConfigValueType).isEqualTo("STRING");
+    }
+
+    @Test
+    void updateE3ConfigStoresPromoMaxPerSessionAsInteger() {
+        E3ConfigUpdateRequest request = new E3ConfigUpdateRequest("E.tradein.promo.maxPerSession", "2.9", "session cap", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config("idem-e3", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(deviceRepository.config).containsEntry("promoMaxPerSession", "2");
+        assertThat(deviceRepository.lastConfigValueType).isEqualTo("NUMBER");
+    }
+
+    @Test
     void e1GenerationGatePersistsBusinessTableAndAudits() {
         configFacade.values.put("growth.phase.current_month", "4");
         configFacade.values.put("growth.phase.current", "P2");
@@ -1018,6 +1040,7 @@ class OpsDeviceServiceTest {
         private String lastTradeinOperation;
         private LocalDateTime lastTradeinSince;
         private LocalDateTime lastTradeinMonthStart;
+        private String lastConfigValueType;
 
         @Override
         public Map<String, Object> overviewCounters() {
@@ -1079,6 +1102,7 @@ class OpsDeviceServiceTest {
         @Override
         public void upsertE3Config(String key, String value, String valueType, String operator) {
             config.put(key, value);
+            lastConfigValueType = valueType;
         }
 
         @Override

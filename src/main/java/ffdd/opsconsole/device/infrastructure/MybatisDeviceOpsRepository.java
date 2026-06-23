@@ -18,12 +18,34 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
 @Repository
 @RequiredArgsConstructor
 public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
+    private static final Set<String> E3_CONFIG_KEYS = Set.of(
+            "degradeEarly",
+            "degradeMid",
+            "degradeLate",
+            "stageEarlyEnd",
+            "stageMidEnd",
+            "cycleMonths",
+            "minEfficiency",
+            "taskLockS1",
+            "taskLockPro",
+            "taskLockRack",
+            "salvagePct",
+            "eligibility",
+            "minHoldingMonths",
+            "promoMult",
+            "promoCooldownDays",
+            "promoMaxPerSession",
+            "promoDelaySeconds",
+            "promoMinAgeDays",
+            "promoRoutes",
+            "inventorySoftMax");
     private final DeviceOpsMapper mapper;
     private volatile boolean datacenterCatalogReady;
 
@@ -116,20 +138,22 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     @Override
     public Map<String, String> e3Config() {
         Map<String, String> config = defaultE3Config();
-        mapper.e3ConfigRows().forEach(row -> config.put(row.configKey(), row.configValue()));
         mapper.defaultLifecycleRules().forEach(row -> {
             int startMonth = row.startMonth() == null ? 0 : row.startMonth();
             if (startMonth == 1) {
-                config.put("degradeEarly", rateToPercent(row.monthlyDecayRate()));
+                config.put("degradeEarly", decayToPercent(row.monthlyDecayRate()));
                 config.put("stageEarlyEnd", String.valueOf(row.endMonth()));
             } else if (startMonth == 4) {
-                config.put("degradeMid", rateToPercent(row.monthlyDecayRate()));
+                config.put("degradeMid", decayToPercent(row.monthlyDecayRate()));
                 config.put("stageMidEnd", String.valueOf(row.endMonth()));
             } else if (startMonth >= 9) {
-                config.put("degradeLate", rateToPercent(row.monthlyDecayRate()));
+                config.put("degradeLate", decayToPercent(row.monthlyDecayRate()));
             }
             config.put("minEfficiency", rateToPercent(row.floorEfficiency()));
         });
+        mapper.e3ConfigRows().stream()
+                .filter(row -> E3_CONFIG_KEYS.contains(row.configKey()))
+                .forEach(row -> config.put(row.configKey(), row.configValue()));
         return config;
     }
 
@@ -233,22 +257,34 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     private Map<String, String> defaultE3Config() {
         Map<String, String> config = new LinkedHashMap<>();
-        config.put("degradeEarly", "4");
-        config.put("degradeMid", "6");
-        config.put("degradeLate", "10");
+        config.put("degradeEarly", "-4");
+        config.put("degradeMid", "-6");
+        config.put("degradeLate", "-23.7");
         config.put("stageEarlyEnd", "3");
         config.put("stageMidEnd", "8");
         config.put("cycleMonths", "12");
         config.put("minEfficiency", "22");
+        config.put("taskLockS1", "40");
+        config.put("taskLockPro", "140");
+        config.put("taskLockRack", "450");
         config.put("salvagePct", "30");
-        config.put("minHoldingMonths", "1");
+        config.put("eligibility", "L4+ 持有者");
+        config.put("minHoldingMonths", "6");
         config.put("promoMult", "1.0");
         config.put("promoCooldownDays", "14");
         config.put("promoMaxPerSession", "1");
         config.put("promoDelaySeconds", "6");
         config.put("promoMinAgeDays", "30");
+        config.put("promoRoutes", "/me/devices");
         config.put("inventorySoftMax", "0");
         return config;
+    }
+
+    private String decayToPercent(BigDecimal value) {
+        return (value == null ? BigDecimal.ZERO : value)
+                .multiply(BigDecimal.valueOf(-100))
+                .stripTrailingZeros()
+                .toPlainString();
     }
 
     private String rateToPercent(BigDecimal value) {
@@ -314,12 +350,26 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     private int sortForConfig(String key) {
         return switch (key) {
-            case "promoMult" -> 10;
-            case "promoCooldownDays" -> 20;
-            case "promoMaxPerSession" -> 30;
-            case "promoDelaySeconds" -> 40;
-            case "promoMinAgeDays" -> 50;
-            case "inventorySoftMax" -> 60;
+            case "degradeEarly" -> 10;
+            case "degradeMid" -> 20;
+            case "degradeLate" -> 30;
+            case "stageEarlyEnd" -> 40;
+            case "stageMidEnd" -> 50;
+            case "cycleMonths" -> 60;
+            case "minEfficiency" -> 70;
+            case "taskLockS1" -> 80;
+            case "taskLockPro" -> 90;
+            case "taskLockRack" -> 100;
+            case "salvagePct" -> 110;
+            case "eligibility" -> 120;
+            case "minHoldingMonths" -> 130;
+            case "promoMult" -> 140;
+            case "promoCooldownDays" -> 150;
+            case "promoMaxPerSession" -> 160;
+            case "promoDelaySeconds" -> 170;
+            case "promoMinAgeDays" -> 180;
+            case "promoRoutes" -> 190;
+            case "inventorySoftMax" -> 200;
             default -> 100;
         };
     }

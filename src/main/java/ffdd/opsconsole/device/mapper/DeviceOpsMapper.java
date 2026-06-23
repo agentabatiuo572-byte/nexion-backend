@@ -196,7 +196,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               FROM nx_tradein_application
              WHERE is_deleted = 0
                AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-              AND months_owned &lt; #{cliffMonth}
+              AND months_owned < #{cliffMonth}
                AND status IN ('REJECTED','RISK_REJECTED','BLOCKED')
             """)
     @Lang(RawLanguageDriver.class)

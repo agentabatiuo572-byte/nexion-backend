@@ -841,7 +841,7 @@ INSERT INTO nx_device_lifecycle_rule
 VALUES
   (1, 'DEFAULT', NULL, 1, 3, 0.040000, 0.220000, 0, 1, 10),
   (2, 'DEFAULT', NULL, 4, 8, 0.060000, 0.220000, 0, 1, 20),
-  (3, 'DEFAULT', NULL, 9, NULL, 0.100000, 0.220000, 0, 1, 30),
+  (3, 'DEFAULT', NULL, 9, NULL, 0.237000, 0.220000, 0, 1, 30),
   (4, 'PRODUCT_TYPE', 'MOBILE', 0, NULL, 0.000000, 1.000000, 1, 1, 100),
   (5, 'PRODUCT_TYPE', 'CLOUD_SHARE', 0, NULL, 0.000000, 1.000000, 1, 1, 100)
 ON DUPLICATE KEY UPDATE
@@ -854,6 +854,40 @@ ON DUPLICATE KEY UPDATE
   exempt = VALUES(exempt),
   status = VALUES(status),
   sort_order = VALUES(sort_order);
+
+INSERT INTO nx_compute_e3_config(config_key, config_value, value_type, updated_by, sort_order, is_deleted)
+VALUES
+  ('degradeEarly', '-4', 'NUMBER', 'seed', 10, 0),
+  ('degradeMid', '-6', 'NUMBER', 'seed', 20, 0),
+  ('degradeLate', '-23.7', 'NUMBER', 'seed', 30, 0),
+  ('stageEarlyEnd', '3', 'NUMBER', 'seed', 40, 0),
+  ('stageMidEnd', '8', 'NUMBER', 'seed', 50, 0),
+  ('cycleMonths', '12', 'NUMBER', 'seed', 60, 0),
+  ('minEfficiency', '22', 'NUMBER', 'seed', 70, 0),
+  ('taskLockS1', '40', 'NUMBER', 'seed', 80, 0),
+  ('taskLockPro', '140', 'NUMBER', 'seed', 90, 0),
+  ('taskLockRack', '450', 'NUMBER', 'seed', 100, 0),
+  ('salvagePct', '30', 'NUMBER', 'seed', 110, 0),
+  ('eligibility', 'L4+ 持有者', 'STRING', 'seed', 120, 0),
+  ('minHoldingMonths', '6', 'NUMBER', 'seed', 130, 0),
+  ('promoMult', '1.0', 'NUMBER', 'seed', 140, 0),
+  ('promoCooldownDays', '14', 'NUMBER', 'seed', 150, 0),
+  ('promoMaxPerSession', '1', 'NUMBER', 'seed', 160, 0),
+  ('promoDelaySeconds', '6', 'NUMBER', 'seed', 170, 0),
+  ('promoMinAgeDays', '30', 'NUMBER', 'seed', 180, 0),
+  ('promoRoutes', '/me/devices', 'STRING', 'seed', 190, 0),
+  ('inventorySoftMax', '0', 'NUMBER', 'seed', 200, 0)
+ON DUPLICATE KEY UPDATE
+  config_value = VALUES(config_value),
+  value_type = VALUES(value_type),
+  updated_by = VALUES(updated_by),
+  sort_order = VALUES(sort_order),
+  is_deleted = VALUES(is_deleted);
+
+UPDATE nx_compute_e3_config
+   SET is_deleted = 1,
+       updated_by = 'seed'
+ WHERE config_key IN ('taskLockThresholdS1', 'taskLockThresholdPro', 'taskLockThresholdRack');
 
 INSERT INTO nx_compute_datacenter(dc_location, region_label, status, sort_order, updated_by, is_deleted)
 VALUES
