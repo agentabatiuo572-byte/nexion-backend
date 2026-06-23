@@ -8,6 +8,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
+import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewStatusRequest;
@@ -35,6 +37,7 @@ import ffdd.opsconsole.device.dto.DeviceTaskStatusRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
+import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -143,6 +146,19 @@ public class OpsDeviceController {
     @GetMapping("/tasks")
     public ApiResult<PageResult<DeviceTaskView>> tasks(DeviceTaskQueryRequest request) {
         return deviceService.tasks(request);
+    }
+
+    @GetMapping("/phone-tiers")
+    public ApiResult<List<DevicePhoneTierRewardView>> phoneTierRewards() {
+        return deviceService.phoneTierRewards();
+    }
+
+    @PatchMapping("/phone-tiers/{tier}")
+    public ApiResult<DevicePhoneTierRewardView> updatePhoneTierReward(
+            @PathVariable Integer tier,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DevicePhoneTierRewardUpdateRequest request) {
+        return deviceService.updatePhoneTierReward(tier, idempotencyKey, request);
     }
 
     @PostMapping("/tasks")

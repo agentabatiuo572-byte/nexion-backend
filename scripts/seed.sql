@@ -2539,6 +2539,12 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_task (
   requirement VARCHAR(128) NOT NULL DEFAULT 'S1+',
   saturation DECIMAL(7,4) NOT NULL DEFAULT 0,
   status VARCHAR(32) NOT NULL DEFAULT 'active',
+  task_class VARCHAR(64) NOT NULL DEFAULT 'llm-inference',
+  model_name VARCHAR(128) NOT NULL DEFAULT '',
+  min_reward DECIMAL(18,4) NOT NULL DEFAULT 0,
+  max_reward DECIMAL(18,4) NOT NULL DEFAULT 0,
+  min_vram VARCHAR(64) NOT NULL DEFAULT '',
+  kill_init VARCHAR(32) NOT NULL DEFAULT '派发中',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -2547,20 +2553,63 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_task (
   KEY idx_admin_device_task_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO nx_admin_device_task (task_id, name, price, unit_text, requirement, saturation, status, created_at, updated_at, is_deleted)
+INSERT INTO nx_admin_device_task (
+  task_id, name, price, unit_text, requirement, saturation, status,
+  task_class, model_name, min_reward, max_reward, min_vram, kill_init,
+  created_at, updated_at, is_deleted
+)
 VALUES
-  ('TK-1', 'LLM 推理 405B', 1.2000, '/job', '需 NexionBox Pro', 0.8200, 'active', NOW(), NOW(), 0),
-  ('TK-2', 'LLM 推理 70B', 0.4600, '/job', 'S1+', 0.6100, 'active', NOW(), NOW(), 0),
-  ('TK-3', '图像生成 SDXL', 0.3400, '/job', 'S1+', 0.5500, 'active', NOW(), NOW(), 0),
-  ('TK-4', '视频渲染', 2.8000, '/job', '需 NexionRack', 0.7400, 'active', NOW(), NOW(), 0),
-  ('TK-5', '微调 / LoRA', 5.1000, '/job', '需 NexionRack', 0.4800, 'active', NOW(), NOW(), 0),
-  ('TK-6', 'Embedding 批处理', 0.1200, '/1k', 'S1+', 0.3900, 'active', NOW(), NOW(), 0)
+  ('TK-1', 'LLM 推理 405B', 1.2000, '/job', '需 NexionBox Pro', 0.8200, 'active', 'llm-inference', 'Llama-3.1-405B', 0.8000, 2.4000, '80GB', '派发中', NOW(), NOW(), 0),
+  ('TK-2', 'LLM 推理 70B', 0.4600, '/job', 'S1+', 0.6100, 'active', 'llm-inference', 'Llama-3.1-70B', 0.3000, 0.9000, '24GB', '派发中', NOW(), NOW(), 0),
+  ('TK-3', '图像生成 SDXL', 0.3400, '/job', 'S1+', 0.5500, 'active', 'image-gen', 'SDXL', 0.2000, 0.7000, '12GB', '派发中', NOW(), NOW(), 0),
+  ('TK-4', '视频渲染', 2.8000, '/job', '需 NexionRack', 0.7400, 'active', 'video-render', 'HunyuanVideo', 1.6000, 4.2000, '48GB', '派发中', NOW(), NOW(), 0),
+  ('TK-5', '微调 / LoRA', 5.1000, '/job', '需 NexionRack', 0.4800, 'active', 'fine-tune', 'LoRA', 3.0000, 7.5000, '48GB', '派发中', NOW(), NOW(), 0),
+  ('TK-6', 'Embedding 批处理', 0.1200, '/1k', 'S1+', 0.3900, 'active', 'embedding', 'BGE-M3', 0.0600, 0.2200, '8GB', '派发中', NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
   price = VALUES(price),
   unit_text = VALUES(unit_text),
   requirement = VALUES(requirement),
   saturation = VALUES(saturation),
+  status = VALUES(status),
+  task_class = VALUES(task_class),
+  model_name = VALUES(model_name),
+  min_reward = VALUES(min_reward),
+  max_reward = VALUES(max_reward),
+  min_vram = VALUES(min_vram),
+  kill_init = VALUES(kill_init),
+  is_deleted = 0,
+  updated_at = NOW();
+
+CREATE TABLE IF NOT EXISTS nx_admin_phone_tier_reward (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  tier INT NOT NULL,
+  name VARCHAR(64) NOT NULL,
+  note VARCHAR(255) NOT NULL DEFAULT '',
+  daily_usdt DECIMAL(18,4) NOT NULL DEFAULT 0,
+  daily_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_phone_tier_reward (tier),
+  KEY idx_admin_phone_tier_reward_status (status,is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_admin_phone_tier_reward (
+  tier, name, note, daily_usdt, daily_nex, status, created_at, updated_at, is_deleted
+)
+VALUES
+  (1, '入门档', '低端机 / 信号缺失兜底', 0.0400, 6.0000, 'active', NOW(), NOW(), 0),
+  (2, '标准档', '中端机', 0.0500, 8.0000, 'active', NOW(), NOW(), 0),
+  (3, '主流档', '典型机 · 锚定营销 $0.06', 0.0600, 10.0000, 'active', NOW(), NOW(), 0),
+  (4, '高性能档', '次旗舰', 0.0800, 13.0000, 'active', NOW(), NOW(), 0),
+  (5, '旗舰档', '旗舰 SoC', 0.0950, 16.0000, 'active', NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  note = VALUES(note),
+  daily_usdt = VALUES(daily_usdt),
+  daily_nex = VALUES(daily_nex),
   status = VALUES(status),
   is_deleted = 0,
   updated_at = NOW();

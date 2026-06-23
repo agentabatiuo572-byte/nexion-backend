@@ -16,6 +16,7 @@ import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
+import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
@@ -27,6 +28,7 @@ import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
+import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewStatusRequest;
@@ -488,6 +490,42 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().getRecords())
                 .extracting(DeviceTaskView::name)
                 .contains("LLM 推理 405B", "Embedding 批处理");
+        assertThat(result.getData().getRecords().get(0).taskClass()).isNotBlank();
+        assertThat(result.getData().getRecords().get(0).model()).isNotBlank();
+        assertThat(result.getData().getRecords().get(0).minVram()).isNotBlank();
+    }
+
+    @Test
+    void phoneTierRewardsSeedDefaultRowsWhenPrimaryListIsEmpty() {
+        ApiResult<List<DevicePhoneTierRewardView>> result = service.phoneTierRewards();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).hasSize(5);
+        assertThat(result.getData())
+                .extracting(DevicePhoneTierRewardView::tier)
+                .containsExactly(1, 2, 3, 4, 5);
+        assertThat(result.getData())
+                .extracting(DevicePhoneTierRewardView::dailyUsdt)
+                .anySatisfy(value -> assertThat(value).isEqualByComparingTo("0.06"));
+    }
+
+    @Test
+    void phoneTierRewardUpdatePersistsAndAudits() {
+        service.phoneTierRewards();
+
+        ApiResult<DevicePhoneTierRewardView> result = service.updatePhoneTierReward(
+                3,
+                "idem-phone-tier",
+                new DevicePhoneTierRewardUpdateRequest(new BigDecimal("0.07"), new BigDecimal("11"), "tier rebalance", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().tier()).isEqualTo(3);
+        assertThat(result.getData().dailyUsdt()).isEqualByComparingTo("0.07");
+        assertThat(result.getData().dailyNex()).isEqualByComparingTo("11");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E2_PHONE_TIER_REWARD_CHANGED");
     }
 
     @Test
@@ -533,6 +571,12 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().name()).isEqualTo("手机端 Embedding");
         assertThat(result.getData().unit()).isEqualTo("/1k");
         assertThat(result.getData().requirement()).isEqualTo("手机+");
+        assertThat(result.getData().taskClass()).isEqualTo("embedding");
+        assertThat(result.getData().model()).isEqualTo("BGE-M3");
+        assertThat(result.getData().minReward()).isEqualByComparingTo("0.06");
+        assertThat(result.getData().maxReward()).isEqualByComparingTo("0.22");
+        assertThat(result.getData().minVram()).isEqualTo("8GB");
+        assertThat(result.getData().killInit()).isEqualTo("派发中");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -708,6 +752,12 @@ class OpsDeviceServiceTest {
                 requirement,
                 new BigDecimal("0.50"),
                 "active",
+                "embedding",
+                "BGE-M3",
+                new BigDecimal("0.06"),
+                new BigDecimal("0.22"),
+                "8GB",
+                "派发中",
                 "catalog update",
                 "superadmin");
     }
@@ -807,6 +857,12 @@ class OpsDeviceServiceTest {
                 "S1+",
                 new BigDecimal("0.50"),
                 status,
+                "embedding",
+                "BGE-M3",
+                new BigDecimal("0.06"),
+                new BigDecimal("0.22"),
+                "8GB",
+                "派发中",
                 null,
                 null);
     }
@@ -934,6 +990,7 @@ class OpsDeviceServiceTest {
         private DeviceReviewView review;
         private DeviceTaskView task;
         private final Map<String, DeviceTaskView> tasks = new LinkedHashMap<>();
+        private final Map<Integer, DevicePhoneTierRewardView> phoneTierRewards = new LinkedHashMap<>();
         private DeviceOrderView order;
         private DeviceSkuUpsertRequest lastSkuRequest;
         private final Map<String, DevicePhaseView> phases = new LinkedHashMap<>();
@@ -1232,6 +1289,12 @@ class OpsDeviceServiceTest {
                     request.requirement(),
                     request.saturation(),
                     request.status(),
+                    request.taskClass(),
+                    request.model(),
+                    request.minReward(),
+                    request.maxReward(),
+                    request.minVram(),
+                    request.killInit(),
                     now,
                     now);
             tasks.put(taskId, task);
@@ -1255,6 +1318,12 @@ class OpsDeviceServiceTest {
                     request.requirement(),
                     request.saturation(),
                     request.status(),
+                    request.taskClass(),
+                    request.model(),
+                    request.minReward(),
+                    request.maxReward(),
+                    request.minVram(),
+                    request.killInit(),
                     current.createdAt(),
                     now);
             tasks.put(taskId, updated);
@@ -1266,7 +1335,22 @@ class OpsDeviceServiceTest {
         public Optional<DeviceTaskView> updateTaskPrice(String taskId, BigDecimal price, LocalDateTime now) {
             DeviceTaskView current = tasks.get(taskId);
             if (current != null) {
-                DeviceTaskView updated = task(current.taskId(), current.name(), price, current.status());
+                DeviceTaskView updated = new DeviceTaskView(
+                        current.taskId(),
+                        current.name(),
+                        price,
+                        current.unit(),
+                        current.requirement(),
+                        current.saturation(),
+                        current.status(),
+                        current.taskClass(),
+                        current.model(),
+                        current.minReward(),
+                        current.maxReward(),
+                        current.minVram(),
+                        current.killInit(),
+                        current.createdAt(),
+                        now);
                 tasks.put(taskId, updated);
                 task = updated;
                 return Optional.of(updated);
@@ -1274,7 +1358,22 @@ class OpsDeviceServiceTest {
             if (task == null || !task.taskId().equals(taskId)) {
                 return Optional.empty();
             }
-            task = task(task.taskId(), task.name(), price, task.status());
+            task = new DeviceTaskView(
+                    task.taskId(),
+                    task.name(),
+                    price,
+                    task.unit(),
+                    task.requirement(),
+                    task.saturation(),
+                    task.status(),
+                    task.taskClass(),
+                    task.model(),
+                    task.minReward(),
+                    task.maxReward(),
+                    task.minVram(),
+                    task.killInit(),
+                    task.createdAt(),
+                    now);
             return Optional.of(task);
         }
 
@@ -1282,7 +1381,22 @@ class OpsDeviceServiceTest {
         public Optional<DeviceTaskView> updateTaskStatus(String taskId, String status, LocalDateTime now) {
             DeviceTaskView current = tasks.get(taskId);
             if (current != null) {
-                DeviceTaskView updated = task(current.taskId(), current.name(), current.price(), status);
+                DeviceTaskView updated = new DeviceTaskView(
+                        current.taskId(),
+                        current.name(),
+                        current.price(),
+                        current.unit(),
+                        current.requirement(),
+                        current.saturation(),
+                        status,
+                        current.taskClass(),
+                        current.model(),
+                        current.minReward(),
+                        current.maxReward(),
+                        current.minVram(),
+                        current.killInit(),
+                        current.createdAt(),
+                        now);
                 tasks.put(taskId, updated);
                 task = updated;
                 return Optional.of(updated);
@@ -1290,7 +1404,22 @@ class OpsDeviceServiceTest {
             if (task == null || !task.taskId().equals(taskId)) {
                 return Optional.empty();
             }
-            task = task(task.taskId(), task.name(), task.price(), status);
+            task = new DeviceTaskView(
+                    task.taskId(),
+                    task.name(),
+                    task.price(),
+                    task.unit(),
+                    task.requirement(),
+                    task.saturation(),
+                    status,
+                    task.taskClass(),
+                    task.model(),
+                    task.minReward(),
+                    task.maxReward(),
+                    task.minVram(),
+                    task.killInit(),
+                    task.createdAt(),
+                    now);
             return Optional.of(task);
         }
 
@@ -1307,6 +1436,60 @@ class OpsDeviceServiceTest {
                 return true;
             }
             return false;
+        }
+
+        @Override
+        public List<DevicePhoneTierRewardView> listPhoneTierRewards() {
+            return List.copyOf(phoneTierRewards.values());
+        }
+
+        @Override
+        public Optional<DevicePhoneTierRewardView> findPhoneTierReward(Integer tier) {
+            return Optional.ofNullable(phoneTierRewards.get(tier));
+        }
+
+        @Override
+        public DevicePhoneTierRewardView createPhoneTierReward(
+                Integer tier,
+                String name,
+                String note,
+                BigDecimal dailyUsdt,
+                BigDecimal dailyNex,
+                String status,
+                LocalDateTime now) {
+            DevicePhoneTierRewardView reward = new DevicePhoneTierRewardView(
+                    tier,
+                    name,
+                    note,
+                    dailyUsdt,
+                    dailyNex,
+                    status,
+                    now,
+                    now);
+            phoneTierRewards.put(tier, reward);
+            return reward;
+        }
+
+        @Override
+        public Optional<DevicePhoneTierRewardView> updatePhoneTierReward(
+                Integer tier,
+                DevicePhoneTierRewardUpdateRequest request,
+                LocalDateTime now) {
+            DevicePhoneTierRewardView current = phoneTierRewards.get(tier);
+            if (current == null) {
+                return Optional.empty();
+            }
+            DevicePhoneTierRewardView updated = new DevicePhoneTierRewardView(
+                    current.tier(),
+                    current.name(),
+                    current.note(),
+                    request.dailyUsdt() == null ? current.dailyUsdt() : request.dailyUsdt(),
+                    request.dailyNex() == null ? current.dailyNex() : request.dailyNex(),
+                    current.status(),
+                    current.createdAt(),
+                    now);
+            phoneTierRewards.put(tier, updated);
+            return Optional.of(updated);
         }
 
         @Override

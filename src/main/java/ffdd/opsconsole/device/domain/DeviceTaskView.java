@@ -11,6 +11,12 @@ public record DeviceTaskView(
         String requirement,
         BigDecimal saturation,
         String status,
+        String taskClass,
+        String model,
+        BigDecimal minReward,
+        BigDecimal maxReward,
+        String minVram,
+        String killInit,
         LocalDateTime createdAt,
         LocalDateTime updatedAt) {
 }

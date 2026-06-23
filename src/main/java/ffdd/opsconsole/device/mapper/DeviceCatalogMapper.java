@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
+import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.infrastructure.DeviceSkuEntity;
@@ -65,6 +66,23 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             unit_text AS unit,
             requirement,
             saturation,
+            status,
+            task_class AS taskClass,
+            model_name AS model,
+            min_reward AS minReward,
+            max_reward AS maxReward,
+            min_vram AS minVram,
+            kill_init AS killInit,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+            """;
+
+    String PHONE_TIER_COLUMNS = """
+            tier,
+            name,
+            note,
+            daily_usdt AS dailyUsdt,
+            daily_nex AS dailyNex,
             status,
             created_at AS createdAt,
             updated_at AS updatedAt
@@ -261,6 +279,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               requirement VARCHAR(128) NOT NULL DEFAULT 'S1+',
               saturation DECIMAL(7,4) NOT NULL DEFAULT 0,
               status VARCHAR(32) NOT NULL DEFAULT 'active',
+              task_class VARCHAR(64) NOT NULL DEFAULT 'llm-inference',
+              model_name VARCHAR(128) NOT NULL DEFAULT '',
+              min_reward DECIMAL(18,4) NOT NULL DEFAULT 0,
+              max_reward DECIMAL(18,4) NOT NULL DEFAULT 0,
+              min_vram VARCHAR(64) NOT NULL DEFAULT '',
+              kill_init VARCHAR(32) NOT NULL DEFAULT '派发中',
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -270,6 +294,44 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTaskTable();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_admin_device_task'
+               AND COLUMN_NAME = 'task_class'
+            """)
+    int countTaskExtensionColumn();
+
+    @Update("""
+            ALTER TABLE nx_admin_device_task
+              ADD COLUMN task_class VARCHAR(64) NOT NULL DEFAULT 'llm-inference' AFTER status,
+              ADD COLUMN model_name VARCHAR(128) NOT NULL DEFAULT '' AFTER task_class,
+              ADD COLUMN min_reward DECIMAL(18,4) NOT NULL DEFAULT 0 AFTER model_name,
+              ADD COLUMN max_reward DECIMAL(18,4) NOT NULL DEFAULT 0 AFTER min_reward,
+              ADD COLUMN min_vram VARCHAR(64) NOT NULL DEFAULT '' AFTER max_reward,
+              ADD COLUMN kill_init VARCHAR(32) NOT NULL DEFAULT '派发中' AFTER min_vram
+            """)
+    void addTaskExtensionColumns();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_phone_tier_reward (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              tier INT NOT NULL,
+              name VARCHAR(64) NOT NULL,
+              note VARCHAR(255) NOT NULL DEFAULT '',
+              daily_usdt DECIMAL(18,4) NOT NULL DEFAULT 0,
+              daily_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
+              status VARCHAR(32) NOT NULL DEFAULT 'active',
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_admin_phone_tier_reward (tier),
+              KEY idx_admin_phone_tier_reward_status (status,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createPhoneTierRewardTable();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_admin_device_order (
@@ -797,10 +859,13 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Insert("""
             INSERT INTO nx_admin_device_task (
-              task_id, name, price, unit_text, requirement, saturation, status, created_at, updated_at, is_deleted
+              task_id, name, price, unit_text, requirement, saturation, status,
+              task_class, model_name, min_reward, max_reward, min_vram, kill_init,
+              created_at, updated_at, is_deleted
             ) VALUES (
               #{task.taskId}, #{task.name}, #{task.price}, #{task.unit}, #{task.requirement}, #{task.saturation},
-              #{task.status}, #{task.createdAt}, #{task.updatedAt}, 0
+              #{task.status}, #{task.taskClass}, #{task.model}, #{task.minReward}, #{task.maxReward},
+              #{task.minVram}, #{task.killInit}, #{task.createdAt}, #{task.updatedAt}, 0
             )
             """)
     int insertTask(@Param("task") TaskWrite task);
@@ -813,6 +878,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    requirement = #{task.requirement},
                    saturation = #{task.saturation},
                    status = #{task.status},
+                   task_class = #{task.taskClass},
+                   model_name = #{task.model},
+                   min_reward = #{task.minReward},
+                   max_reward = #{task.maxReward},
+                   min_vram = #{task.minVram},
+                   kill_init = #{task.killInit},
                    updated_at = #{task.updatedAt}
              WHERE task_id = #{task.taskId} AND is_deleted = 0
             """)
@@ -838,6 +909,92 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              WHERE task_id = #{taskId} AND is_deleted = 0
             """)
     int softDeleteTask(@Param("taskId") String taskId, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_admin_device_task
+               SET task_class = CASE task_id
+                     WHEN 'TK-1' THEN 'llm-inference'
+                     WHEN 'TK-2' THEN 'llm-inference'
+                     WHEN 'TK-3' THEN 'image-gen'
+                     WHEN 'TK-4' THEN 'video-render'
+                     WHEN 'TK-5' THEN 'fine-tune'
+                     WHEN 'TK-6' THEN 'embedding'
+                     ELSE task_class END,
+                   model_name = CASE task_id
+                     WHEN 'TK-1' THEN 'Llama-3.1-405B'
+                     WHEN 'TK-2' THEN 'Llama-3.1-70B'
+                     WHEN 'TK-3' THEN 'SDXL'
+                     WHEN 'TK-4' THEN 'HunyuanVideo'
+                     WHEN 'TK-5' THEN 'LoRA'
+                     WHEN 'TK-6' THEN 'BGE-M3'
+                     ELSE model_name END,
+                   min_reward = CASE task_id
+                     WHEN 'TK-1' THEN 0.80
+                     WHEN 'TK-2' THEN 0.30
+                     WHEN 'TK-3' THEN 0.20
+                     WHEN 'TK-4' THEN 1.60
+                     WHEN 'TK-5' THEN 3.00
+                     WHEN 'TK-6' THEN 0.06
+                     ELSE min_reward END,
+                   max_reward = CASE task_id
+                     WHEN 'TK-1' THEN 2.40
+                     WHEN 'TK-2' THEN 0.90
+                     WHEN 'TK-3' THEN 0.70
+                     WHEN 'TK-4' THEN 4.20
+                     WHEN 'TK-5' THEN 7.50
+                     WHEN 'TK-6' THEN 0.22
+                     ELSE max_reward END,
+                   min_vram = CASE task_id
+                     WHEN 'TK-1' THEN '80GB'
+                     WHEN 'TK-2' THEN '24GB'
+                     WHEN 'TK-3' THEN '12GB'
+                     WHEN 'TK-4' THEN '48GB'
+                     WHEN 'TK-5' THEN '48GB'
+                     WHEN 'TK-6' THEN '8GB'
+                     ELSE min_vram END,
+                   kill_init = '派发中'
+             WHERE is_deleted = 0
+               AND task_id IN ('TK-1','TK-2','TK-3','TK-4','TK-5','TK-6')
+               AND (model_name = '' OR min_reward = 0 OR max_reward = 0 OR min_vram = '')
+            """)
+    int backfillDefaultTaskExtensions();
+
+    @Select("""
+            SELECT
+            """ + PHONE_TIER_COLUMNS + """
+              FROM nx_admin_phone_tier_reward
+             WHERE is_deleted = 0
+             ORDER BY tier ASC
+            """)
+    List<DevicePhoneTierRewardView> listPhoneTierRewards();
+
+    @Select("""
+            SELECT
+            """ + PHONE_TIER_COLUMNS + """
+              FROM nx_admin_phone_tier_reward
+             WHERE tier = #{tier} AND is_deleted = 0
+             LIMIT 1
+            """)
+    DevicePhoneTierRewardView findPhoneTierReward(@Param("tier") Integer tier);
+
+    @Insert("""
+            INSERT INTO nx_admin_phone_tier_reward (
+              tier, name, note, daily_usdt, daily_nex, status, created_at, updated_at, is_deleted
+            ) VALUES (
+              #{row.tier}, #{row.name}, #{row.note}, #{row.dailyUsdt}, #{row.dailyNex},
+              #{row.status}, #{row.createdAt}, #{row.updatedAt}, 0
+            )
+            """)
+    int insertPhoneTierReward(@Param("row") PhoneTierRewardWrite row);
+
+    @Update("""
+            UPDATE nx_admin_phone_tier_reward
+               SET daily_usdt = #{row.dailyUsdt},
+                   daily_nex = #{row.dailyNex},
+                   updated_at = #{row.updatedAt}
+             WHERE tier = #{row.tier} AND is_deleted = 0
+            """)
+    int updatePhoneTierReward(@Param("row") PhoneTierRewardWrite row);
 
     @Select("""
             <script>
@@ -1070,6 +1227,23 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String unit,
             String requirement,
             BigDecimal saturation,
+            String status,
+            String taskClass,
+            String model,
+            BigDecimal minReward,
+            BigDecimal maxReward,
+            String minVram,
+            String killInit,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt) {
+    }
+
+    record PhoneTierRewardWrite(
+            Integer tier,
+            String name,
+            String note,
+            BigDecimal dailyUsdt,
+            BigDecimal dailyNex,
             String status,
             LocalDateTime createdAt,
             LocalDateTime updatedAt) {

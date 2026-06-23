@@ -10,11 +10,13 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
@@ -158,7 +160,21 @@ class OpsDeviceControllerTest {
     @Test
     void taskCrudDelegatesWithIdempotencyHeader() {
         DeviceTaskQueryRequest query = new DeviceTaskQueryRequest("active", "LLM", 1L, 20L);
-        DeviceTaskUpsertRequest request = new DeviceTaskUpsertRequest("LLM 推理 70B", new BigDecimal("0.46"), "/job", "S1+", new BigDecimal("0.61"), "active", "new task", "superadmin");
+        DeviceTaskUpsertRequest request = new DeviceTaskUpsertRequest(
+                "LLM 推理 70B",
+                new BigDecimal("0.46"),
+                "/job",
+                "S1+",
+                new BigDecimal("0.61"),
+                "active",
+                "llm-inference",
+                "Llama-3.1-70B",
+                new BigDecimal("0.30"),
+                new BigDecimal("0.90"),
+                "24GB",
+                "派发中",
+                "new task",
+                "superadmin");
         DeviceTaskPriceRequest price = new DeviceTaskPriceRequest(new BigDecimal("0.60"), "rebalance", "superadmin");
         DeviceTaskStatusRequest status = new DeviceTaskStatusRequest("inactive", "retire", "superadmin");
         when(deviceService.tasks(query)).thenReturn(ApiResult.ok(new PageResult<>(0, 1, 20, List.of())));
@@ -178,6 +194,20 @@ class OpsDeviceControllerTest {
         verify(deviceService).updateTaskPrice("TK-1", "idem-task", price);
         verify(deviceService).updateTaskStatus("TK-1", "idem-task", status);
         verify(deviceService).deleteTask("TK-1", "idem-task", status);
+    }
+
+    @Test
+    void phoneTierRewardsDelegateWithIdempotencyHeader() {
+        DevicePhoneTierRewardUpdateRequest request =
+                new DevicePhoneTierRewardUpdateRequest(new BigDecimal("0.07"), null, "tier rebalance", "superadmin");
+        when(deviceService.phoneTierRewards()).thenReturn(ApiResult.ok(List.of(mock(DevicePhoneTierRewardView.class))));
+        when(deviceService.updatePhoneTierReward(3, "idem-tier", request)).thenReturn(ApiResult.ok(mock(DevicePhoneTierRewardView.class)));
+
+        assertThat(controller.phoneTierRewards().getData()).hasSize(1);
+        assertThat(controller.updatePhoneTierReward(3, "idem-tier", request).getCode()).isZero();
+
+        verify(deviceService).phoneTierRewards();
+        verify(deviceService).updatePhoneTierReward(3, "idem-tier", request);
     }
 
     @Test

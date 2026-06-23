@@ -6,6 +6,7 @@ import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuUpsertRequest;
+import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import java.math.BigDecimal;
@@ -51,6 +52,24 @@ public interface DeviceCatalogRepository {
     Optional<DeviceTaskView> updateTaskStatus(String taskId, String status, LocalDateTime now);
 
     boolean softDeleteTask(String taskId, LocalDateTime now);
+
+    List<DevicePhoneTierRewardView> listPhoneTierRewards();
+
+    Optional<DevicePhoneTierRewardView> findPhoneTierReward(Integer tier);
+
+    DevicePhoneTierRewardView createPhoneTierReward(
+            Integer tier,
+            String name,
+            String note,
+            java.math.BigDecimal dailyUsdt,
+            java.math.BigDecimal dailyNex,
+            String status,
+            LocalDateTime now);
+
+    Optional<DevicePhoneTierRewardView> updatePhoneTierReward(
+            Integer tier,
+            DevicePhoneTierRewardUpdateRequest request,
+            LocalDateTime now);
 
     PageResult<DeviceOrderView> pageOrders(DeviceOrderQueryRequest request);
 

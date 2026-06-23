@@ -9,6 +9,7 @@ import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
+import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
@@ -16,6 +17,7 @@ import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewUpsertRequest;
+import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskQueryRequest;
@@ -63,6 +65,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         mapper.widenSkuImagePreviewUrlColumn();
         mapper.createReviewTable();
         mapper.createTaskTable();
+        if (mapper.countTaskExtensionColumn() == 0) {
+            mapper.addTaskExtensionColumns();
+        }
+        mapper.backfillDefaultTaskExtensions();
+        mapper.createPhoneTierRewardTable();
         mapper.createOrderTable();
         mapper.createGenerationGateTable();
         mapper.widenGenerationGatePhaseColumn();
@@ -206,6 +213,52 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     @Override
     public boolean softDeleteTask(String taskId, LocalDateTime now) {
         return mapper.softDeleteTask(taskId, now) > 0;
+    }
+
+    @Override
+    public List<DevicePhoneTierRewardView> listPhoneTierRewards() {
+        return mapper.listPhoneTierRewards();
+    }
+
+    @Override
+    public Optional<DevicePhoneTierRewardView> findPhoneTierReward(Integer tier) {
+        return Optional.ofNullable(mapper.findPhoneTierReward(tier));
+    }
+
+    @Override
+    public DevicePhoneTierRewardView createPhoneTierReward(
+            Integer tier,
+            String name,
+            String note,
+            BigDecimal dailyUsdt,
+            BigDecimal dailyNex,
+            String status,
+            LocalDateTime now) {
+        mapper.insertPhoneTierReward(phoneTierRewardWrite(tier, name, note, dailyUsdt, dailyNex, status, now, now));
+        return findPhoneTierReward(tier).orElseThrow();
+    }
+
+    @Override
+    public Optional<DevicePhoneTierRewardView> updatePhoneTierReward(
+            Integer tier,
+            DevicePhoneTierRewardUpdateRequest request,
+            LocalDateTime now) {
+        DevicePhoneTierRewardView before = findPhoneTierReward(tier).orElse(null);
+        if (before == null) {
+            return Optional.empty();
+        }
+        BigDecimal dailyUsdt = request.dailyUsdt() == null ? before.dailyUsdt() : valueOrZero(request.dailyUsdt());
+        BigDecimal dailyNex = request.dailyNex() == null ? before.dailyNex() : valueOrZero(request.dailyNex());
+        int updated = mapper.updatePhoneTierReward(phoneTierRewardWrite(
+                before.tier(),
+                before.name(),
+                before.note(),
+                dailyUsdt,
+                dailyNex,
+                before.status(),
+                before.createdAt(),
+                now));
+        return updated == 0 ? Optional.empty() : findPhoneTierReward(tier);
     }
 
     @Override
@@ -457,6 +510,32 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 StringUtils.hasText(request.requirement()) ? request.requirement().trim() : "S1+",
                 valueOrZero(request.saturation()),
                 taskStatus(request.status()),
+                StringUtils.hasText(request.taskClass()) ? request.taskClass().trim() : "llm-inference",
+                StringUtils.hasText(request.model()) ? request.model().trim() : "",
+                valueOrZero(request.minReward()),
+                valueOrZero(request.maxReward()),
+                StringUtils.hasText(request.minVram()) ? request.minVram().trim() : "",
+                StringUtils.hasText(request.killInit()) ? request.killInit().trim() : "派发中",
+                createdAt,
+                updatedAt);
+    }
+
+    private DeviceCatalogMapper.PhoneTierRewardWrite phoneTierRewardWrite(
+            Integer tier,
+            String name,
+            String note,
+            BigDecimal dailyUsdt,
+            BigDecimal dailyNex,
+            String status,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt) {
+        return new DeviceCatalogMapper.PhoneTierRewardWrite(
+                tier,
+                StringUtils.hasText(name) ? name.trim() : "",
+                StringUtils.hasText(note) ? note.trim() : "",
+                valueOrZero(dailyUsdt),
+                valueOrZero(dailyNex),
+                StringUtils.hasText(status) ? status.trim() : "active",
                 createdAt,
                 updatedAt);
     }

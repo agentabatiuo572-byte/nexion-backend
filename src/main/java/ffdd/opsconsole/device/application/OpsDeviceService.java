@@ -12,6 +12,7 @@ import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
+import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
@@ -25,6 +26,7 @@ import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
+import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewStatusRequest;
@@ -66,6 +68,8 @@ public class OpsDeviceService {
     private static final Set<String> TASK_STATUSES = Set.of("active", "paused", "inactive");
     private static final Set<String> TASK_UNITS = Set.of("/job", "/1k", "/min");
     private static final Set<String> TASK_REQUIREMENTS = Set.of("手机+", "S1+", "需 NexionBox Pro", "需 NexionRack");
+    private static final Set<String> TASK_CLASSES = Set.of("llm-inference", "image-gen", "video-render", "fine-tune", "embedding");
+    private static final Set<String> TASK_KILL_INIT_STATES = Set.of("派发中", "已 kill", "限流中");
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of("payment_failed", "expired", "refunded", "provisioning_failed");
     private static final Set<String> ORDER_FINAL_STATES = Set.of("active", "refunded", "cancelled", "payment_failed", "expired", "provisioning_failed");
     private static final Set<String> ORDER_CANCELABLE_STATES = Set.of("created", "paid");
@@ -109,12 +113,18 @@ public class OpsDeviceService {
             "promoMinAgeDays",
             "inventorySoftMax");
     private static final List<DefaultTaskSeed> DEFAULT_E2_TASKS = List.of(
-            new DefaultTaskSeed("TK-1", "LLM 推理 405B", "1.20", "/job", "需 NexionBox Pro", "0.82"),
-            new DefaultTaskSeed("TK-2", "LLM 推理 70B", "0.46", "/job", "S1+", "0.61"),
-            new DefaultTaskSeed("TK-3", "图像生成 SDXL", "0.34", "/job", "S1+", "0.55"),
-            new DefaultTaskSeed("TK-4", "视频渲染", "2.80", "/job", "需 NexionRack", "0.74"),
-            new DefaultTaskSeed("TK-5", "微调 / LoRA", "5.10", "/job", "需 NexionRack", "0.48"),
-            new DefaultTaskSeed("TK-6", "Embedding 批处理", "0.12", "/1k", "S1+", "0.39"));
+            new DefaultTaskSeed("TK-1", "LLM 推理 405B", "1.20", "/job", "需 NexionBox Pro", "0.82", "llm-inference", "Llama-3.1-405B", "0.80", "2.40", "80GB", "派发中"),
+            new DefaultTaskSeed("TK-2", "LLM 推理 70B", "0.46", "/job", "S1+", "0.61", "llm-inference", "Llama-3.1-70B", "0.30", "0.90", "24GB", "派发中"),
+            new DefaultTaskSeed("TK-3", "图像生成 SDXL", "0.34", "/job", "S1+", "0.55", "image-gen", "SDXL", "0.20", "0.70", "12GB", "派发中"),
+            new DefaultTaskSeed("TK-4", "视频渲染", "2.80", "/job", "需 NexionRack", "0.74", "video-render", "HunyuanVideo", "1.60", "4.20", "48GB", "派发中"),
+            new DefaultTaskSeed("TK-5", "微调 / LoRA", "5.10", "/job", "需 NexionRack", "0.48", "fine-tune", "LoRA", "3.00", "7.50", "48GB", "派发中"),
+            new DefaultTaskSeed("TK-6", "Embedding 批处理", "0.12", "/1k", "S1+", "0.39", "embedding", "BGE-M3", "0.06", "0.22", "8GB", "派发中"));
+    private static final List<DefaultPhoneTierRewardSeed> DEFAULT_PHONE_TIER_REWARDS = List.of(
+            new DefaultPhoneTierRewardSeed(1, "入门档", "低端机 / 信号缺失兜底", "0.04", "6"),
+            new DefaultPhoneTierRewardSeed(2, "标准档", "中端机", "0.05", "8"),
+            new DefaultPhoneTierRewardSeed(3, "主流档", "典型机 · 锚定营销 $0.06", "0.06", "10"),
+            new DefaultPhoneTierRewardSeed(4, "高性能档", "次旗舰", "0.08", "13"),
+            new DefaultPhoneTierRewardSeed(5, "旗舰档", "旗舰 SoC", "0.095", "16"));
 
     private final DeviceOpsRepository deviceRepository;
     private final DeviceCatalogRepository catalogRepository;
@@ -345,6 +355,59 @@ public class OpsDeviceService {
         return ApiResult.ok(page);
     }
 
+    @Transactional
+    public ApiResult<List<DevicePhoneTierRewardView>> phoneTierRewards() {
+        List<DevicePhoneTierRewardView> rewards = catalogRepository.listPhoneTierRewards();
+        if (rewards.isEmpty()) {
+            seedDefaultPhoneTierRewards(LocalDateTime.now(clock));
+            rewards = catalogRepository.listPhoneTierRewards();
+        }
+        return ApiResult.ok(rewards);
+    }
+
+    @Transactional
+    public ApiResult<DevicePhoneTierRewardView> updatePhoneTierReward(
+            Integer tier,
+            String idempotencyKey,
+            DevicePhoneTierRewardUpdateRequest request) {
+        ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (command != null) {
+            return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        if (tier == null || tier < 1 || tier > 5) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_INVALID");
+        }
+        if ((request.dailyUsdt() == null || request.dailyUsdt().compareTo(BigDecimal.ZERO) <= 0)
+                && (request.dailyNex() == null || request.dailyNex().compareTo(BigDecimal.ZERO) <= 0)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_REWARD_REQUIRED");
+        }
+        if (request.dailyUsdt() != null && request.dailyUsdt().compareTo(BigDecimal.ZERO) <= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_USDT_INVALID");
+        }
+        if (request.dailyNex() != null && request.dailyNex().compareTo(BigDecimal.ZERO) <= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_NEX_INVALID");
+        }
+        if (catalogRepository.listPhoneTierRewards().isEmpty()) {
+            seedDefaultPhoneTierRewards(LocalDateTime.now(clock));
+        }
+        DevicePhoneTierRewardView before = catalogRepository.findPhoneTierReward(tier).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "PHONE_TIER_NOT_FOUND");
+        }
+        DevicePhoneTierRewardView updated = catalogRepository
+                .updatePhoneTierReward(tier, request, LocalDateTime.now(clock))
+                .orElse(before);
+        audit("E2_PHONE_TIER_REWARD_CHANGED", "PHONE_TIER_REWARD", String.valueOf(tier), request.operator(), detail(
+                "tier", tier,
+                "beforeDailyUsdt", before.dailyUsdt(),
+                "afterDailyUsdt", updated.dailyUsdt(),
+                "beforeDailyNex", before.dailyNex(),
+                "afterDailyNex", updated.dailyNex(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
+    }
+
     public ApiResult<DeviceTaskView> createTask(String idempotencyKey, DeviceTaskUpsertRequest request) {
         ApiResult<DeviceTaskView> guard = requireTaskCommand(idempotencyKey, request);
         if (guard != null) {
@@ -356,6 +419,12 @@ public class OpsDeviceService {
                 "taskId", created.taskId(),
                 "name", created.name(),
                 "price", created.price(),
+                "taskClass", created.taskClass(),
+                "model", created.model(),
+                "minReward", created.minReward(),
+                "maxReward", created.maxReward(),
+                "minVram", created.minVram(),
+                "killInit", created.killInit(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(created);
@@ -380,6 +449,18 @@ public class OpsDeviceService {
                 "afterPrice", updated.price(),
                 "beforeRequirement", before.requirement(),
                 "afterRequirement", updated.requirement(),
+                "beforeTaskClass", before.taskClass(),
+                "afterTaskClass", updated.taskClass(),
+                "beforeModel", before.model(),
+                "afterModel", updated.model(),
+                "beforeMinReward", before.minReward(),
+                "afterMinReward", updated.minReward(),
+                "beforeMaxReward", before.maxReward(),
+                "afterMaxReward", updated.maxReward(),
+                "beforeMinVram", before.minVram(),
+                "afterMinVram", updated.minVram(),
+                "beforeKillInit", before.killInit(),
+                "afterKillInit", updated.killInit(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
@@ -1050,6 +1131,24 @@ public class OpsDeviceService {
         if (normalizeTaskStatus(request.status()) == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_STATUS_INVALID");
         }
+        if (!allows(request.taskClass(), TASK_CLASSES)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_CLASS_INVALID");
+        }
+        if (!StringUtils.hasText(request.model())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_MODEL_REQUIRED");
+        }
+        if (request.minReward() == null
+                || request.maxReward() == null
+                || request.minReward().compareTo(BigDecimal.ZERO) <= 0
+                || request.maxReward().compareTo(request.minReward()) < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_REWARD_RANGE_INVALID");
+        }
+        if (!StringUtils.hasText(request.minVram())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_MIN_VRAM_REQUIRED");
+        }
+        if (!allows(request.killInit(), TASK_KILL_INIT_STATES)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_KILL_INIT_INVALID");
+        }
         return null;
     }
 
@@ -1067,6 +1166,22 @@ public class OpsDeviceService {
                 continue;
             }
             catalogRepository.createTask(seed.taskId(), seed.toRequest(), now);
+        }
+    }
+
+    private void seedDefaultPhoneTierRewards(LocalDateTime now) {
+        for (DefaultPhoneTierRewardSeed seed : DEFAULT_PHONE_TIER_REWARDS) {
+            if (catalogRepository.findPhoneTierReward(seed.tier()).isPresent()) {
+                continue;
+            }
+            catalogRepository.createPhoneTierReward(
+                    seed.tier(),
+                    seed.name(),
+                    seed.note(),
+                    new BigDecimal(seed.dailyUsdt()),
+                    new BigDecimal(seed.dailyNex()),
+                    "active",
+                    now);
         }
     }
 
@@ -1755,7 +1870,13 @@ public class OpsDeviceService {
             String price,
             String unit,
             String requirement,
-            String saturation) {
+            String saturation,
+            String taskClass,
+            String model,
+            String minReward,
+            String maxReward,
+            String minVram,
+            String killInit) {
 
         private DeviceTaskUpsertRequest toRequest() {
             return new DeviceTaskUpsertRequest(
@@ -1765,9 +1886,23 @@ public class OpsDeviceService {
                     requirement,
                     new BigDecimal(saturation),
                     "active",
+                    taskClass,
+                    model,
+                    new BigDecimal(minReward),
+                    new BigDecimal(maxReward),
+                    minVram,
+                    killInit,
                     "E2 default seed",
                     "system");
         }
+    }
+
+    private record DefaultPhoneTierRewardSeed(
+            Integer tier,
+            String name,
+            String note,
+            String dailyUsdt,
+            String dailyNex) {
     }
 
 }
