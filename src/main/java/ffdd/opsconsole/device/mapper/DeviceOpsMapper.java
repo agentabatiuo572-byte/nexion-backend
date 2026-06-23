@@ -66,7 +66,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                AND (
                  d.status NOT IN ('ONLINE','BUSY')
                  OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST')
-                OR r.heartbeat_at &lt; DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+                OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)
                )
             """)
     @Lang(RawLanguageDriver.class)
