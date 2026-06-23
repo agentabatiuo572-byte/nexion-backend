@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.device.application.OpsDeviceService;
+import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
@@ -16,6 +17,7 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
@@ -107,6 +109,32 @@ class OpsDeviceControllerTest {
         assertThat(controller.pauseDatacenter("HK-1", "idem-dc", request).getCode()).isZero();
 
         verify(deviceService).pauseDatacenter("HK-1", "idem-dc", request);
+    }
+
+    @Test
+    void datacenterCrudDelegatesWithIdempotencyHeader() {
+        DeviceDatacenterUpsertRequest request = new DeviceDatacenterUpsertRequest(
+                "us-east-2",
+                "美国 · 弗吉尼亚",
+                "active",
+                10,
+                "sync dc catalog",
+                "superadmin");
+        DatacenterOpsRequest deleteRequest = new DatacenterOpsRequest("remove test dc", "superadmin");
+        when(deviceService.datacenters()).thenReturn(ApiResult.ok(List.of()));
+        when(deviceService.createDatacenter("idem-dc", request)).thenReturn(ApiResult.ok(mock(DeviceDatacenterView.class)));
+        when(deviceService.updateDatacenter("us-east-2", "idem-dc", request)).thenReturn(ApiResult.ok(mock(DeviceDatacenterView.class)));
+        when(deviceService.deleteDatacenter("us-east-2", "idem-dc", deleteRequest)).thenReturn(ApiResult.ok(Map.of("deleted", true)));
+
+        assertThat(controller.datacenters().getCode()).isZero();
+        assertThat(controller.createDatacenter("idem-dc", request).getCode()).isZero();
+        assertThat(controller.updateDatacenter("us-east-2", "idem-dc", request).getCode()).isZero();
+        assertThat(controller.deleteDatacenter("us-east-2", "idem-dc", deleteRequest).getData()).containsEntry("deleted", true);
+
+        verify(deviceService).datacenters();
+        verify(deviceService).createDatacenter("idem-dc", request);
+        verify(deviceService).updateDatacenter("us-east-2", "idem-dc", request);
+        verify(deviceService).deleteDatacenter("us-east-2", "idem-dc", deleteRequest);
     }
 
     @Test

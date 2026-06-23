@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
@@ -18,6 +19,7 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateArchiveRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
@@ -71,6 +73,7 @@ public class OpsDeviceService {
     private static final Set<String> TASK_REQUIREMENTS = Set.of("手机+", "S1+", "需 NexionBox Pro", "需 NexionRack");
     private static final Set<String> TASK_CLASSES = Set.of("llm-inference", "image-gen", "video-render", "fine-tune", "embedding");
     private static final Set<String> TASK_KILL_INIT_STATES = Set.of("派发中", "已 kill", "限流中");
+    private static final Set<String> DATACENTER_STATUSES = Set.of("active", "maintenance", "disabled");
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of("payment_failed", "expired", "refunded", "provisioning_failed");
     private static final Set<String> ORDER_FINAL_STATES = Set.of("active", "refunded", "cancelled", "payment_failed", "expired", "provisioning_failed");
     private static final Set<String> ORDER_CANCELABLE_STATES = Set.of("created", "paid");
@@ -139,12 +142,16 @@ public class OpsDeviceService {
         response.put("domain", "E");
         response.put("service", "nexion-backend");
         response.put("generatedAt", LocalDateTime.now(clock));
-        response.put("sources", List.of("nx_user_device", "nx_user_device_runtime", "nx_compute_dc_ops_state"));
+        response.put("sources", List.of("nx_user_device", "nx_user_device_runtime", "nx_compute_datacenter", "nx_compute_dc_ops_state"));
         return ApiResult.ok(response);
     }
 
     public ApiResult<PageResult<DeviceOpsView>> devices(DeviceOpsQueryRequest request) {
         return ApiResult.ok(deviceRepository.pageDevices(request));
+    }
+
+    public ApiResult<List<DeviceDatacenterView>> datacenters() {
+        return ApiResult.ok(deviceRepository.datacenterSummaries());
     }
 
     public ApiResult<List<DeviceOpsView>> userDevices(Long userId, int limit) {
@@ -1008,6 +1015,72 @@ public class OpsDeviceService {
         return ApiResult.ok(restored);
     }
 
+    public ApiResult<DeviceDatacenterView> createDatacenter(String idempotencyKey, DeviceDatacenterUpsertRequest request) {
+        ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, true);
+        if (guard != null) {
+            return guard;
+        }
+        String dc = normalizeDc(request.dcLocation());
+        if (deviceRepository.findDatacenter(dc).isPresent()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_ALREADY_EXISTS");
+        }
+        DeviceDatacenterUpsertRequest normalized = normalizeDatacenterRequest(dc, request);
+        DeviceDatacenterView created = deviceRepository.createDatacenter(normalized, operator(request.operator()), LocalDateTime.now(clock));
+        audit("E5_DATACENTER_CREATED", "DEVICE_DATACENTER", created.dcLocation(), request.operator(), detail(
+                "dcLocation", created.dcLocation(),
+                "regionLabel", created.regionLabel(),
+                "status", created.status(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(created);
+    }
+
+    public ApiResult<DeviceDatacenterView> updateDatacenter(String dcLocation, String idempotencyKey, DeviceDatacenterUpsertRequest request) {
+        ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, false);
+        if (guard != null) {
+            return guard;
+        }
+        String dc = normalizeDc(dcLocation);
+        DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
+        }
+        if (StringUtils.hasText(request.dcLocation()) && !dc.equals(request.dcLocation().trim())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_LOCATION_IMMUTABLE");
+        }
+        DeviceDatacenterUpsertRequest normalized = normalizeDatacenterRequest(dc, request);
+        DeviceDatacenterView updated = deviceRepository.updateDatacenter(dc, normalized, operator(request.operator()), LocalDateTime.now(clock)).orElse(before);
+        audit("E5_DATACENTER_UPDATED", "DEVICE_DATACENTER", dc, request.operator(), detail(
+                "dcLocation", dc,
+                "beforeRegionLabel", before.regionLabel(),
+                "afterRegionLabel", updated.regionLabel(),
+                "beforeStatus", before.status(),
+                "afterStatus", updated.status(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
+    }
+
+    public ApiResult<Map<String, Object>> deleteDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String dc = normalizeDc(dcLocation);
+        DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
+        }
+        deviceRepository.softDeleteDatacenter(dc, operator(request.operator()), LocalDateTime.now(clock));
+        audit("E5_DATACENTER_DELETED", "DEVICE_DATACENTER", dc, request.operator(), detail(
+                "dcLocation", dc,
+                "regionLabel", before.regionLabel(),
+                "status", before.status(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(detail("dcLocation", dc, "deleted", true));
+    }
+
     public ApiResult<Map<String, Object>> pauseDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -1050,6 +1123,26 @@ public class OpsDeviceService {
         }
         if (!StringUtils.hasText(reason)) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
+    private ApiResult<DeviceDatacenterView> requireDatacenterCommand(String idempotencyKey, DeviceDatacenterUpsertRequest request, boolean create) {
+        ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (command != null) {
+            return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_REQUEST_REQUIRED");
+        }
+        if (create && !StringUtils.hasText(request.dcLocation())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_LOCATION_REQUIRED");
+        }
+        if (!StringUtils.hasText(request.regionLabel())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_REGION_LABEL_REQUIRED");
+        }
+        if (normalizeDatacenterStatus(request.status()) == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_STATUS_INVALID");
         }
         return null;
     }
@@ -1782,6 +1875,28 @@ public class OpsDeviceService {
             throw new IllegalArgumentException("dcLocation is required");
         }
         return dcLocation.trim();
+    }
+
+    private DeviceDatacenterUpsertRequest normalizeDatacenterRequest(String dcLocation, DeviceDatacenterUpsertRequest request) {
+        return new DeviceDatacenterUpsertRequest(
+                dcLocation,
+                request.regionLabel().trim(),
+                normalizeDatacenterStatus(request.status()),
+                normalizeDatacenterSortOrder(request.sortOrder()),
+                request.reason(),
+                request.operator());
+    }
+
+    private String normalizeDatacenterStatus(String status) {
+        String normalized = StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "active";
+        return DATACENTER_STATUSES.contains(normalized) ? normalized : null;
+    }
+
+    private int normalizeDatacenterSortOrder(Integer sortOrder) {
+        if (sortOrder == null) {
+            return 100;
+        }
+        return Math.max(0, Math.min(9999, sortOrder));
     }
 
     private String normalizeSkuId(String skuId, String name) {

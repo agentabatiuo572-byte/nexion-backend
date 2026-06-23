@@ -1665,6 +1665,20 @@ CREATE TABLE IF NOT EXISTS nx_user_device_runtime (
   KEY idx_device_runtime_heartbeat (heartbeat_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_compute_datacenter (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  dc_location VARCHAR(128) NOT NULL,
+  region_label VARCHAR(128) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'active',
+  sort_order INT NOT NULL DEFAULT 100,
+  updated_by VARCHAR(96) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_compute_datacenter_location (dc_location),
+  KEY idx_compute_datacenter_status_sort (is_deleted, status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_compute_dc_ops_state (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   dc_location VARCHAR(128) NOT NULL,

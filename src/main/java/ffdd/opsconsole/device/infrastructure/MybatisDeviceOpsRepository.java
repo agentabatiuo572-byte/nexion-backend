@@ -2,10 +2,12 @@ package ffdd.opsconsole.device.infrastructure;
 
 
 import lombok.RequiredArgsConstructor;
+import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.domain.DeviceTradeinTxView;
+import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -23,6 +25,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     private final DeviceOpsMapper mapper;
+    private volatile boolean datacenterCatalogReady;
 
     @Override
     public Map<String, Object> overviewCounters() {
@@ -139,25 +142,41 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
-    public List<Map<String, Object>> datacenterSummaries() {
+    public List<DeviceDatacenterView> datacenterSummaries() {
+        ensureDatacenterCatalogReady();
         return mapper.datacenterSummaries().stream()
-                .map(row -> {
-                    Map<String, Object> value = new LinkedHashMap<>();
-                    value.put("dcLocation", row.dcLocation());
-                    value.put("totalDevices", row.totalDevices());
-                    value.put("onlineDevices", row.onlineDevices());
-                    value.put("pendingRecycleDevices", row.pendingRecycleDevices());
-                    value.put("abnormalDevices", row.abnormalDevices());
-                    value.put("avgGpuUsage", row.avgGpuUsage());
-                    value.put("avgGpuTempC", row.avgGpuTempC());
-                    value.put("avgGpuPowerW", row.avgGpuPowerW());
-                    value.put("dispatchPaused", row.dispatchPaused() != null && row.dispatchPaused() == 1);
-                    value.put("pausedReason", row.pausedReason());
-                    value.put("pausedAt", row.pausedAt());
-                    value.put("resumedAt", row.resumedAt());
-                    return value;
-                })
+                .map(this::toDatacenterView)
                 .toList();
+    }
+
+    @Override
+    public Optional<DeviceDatacenterView> findDatacenter(String dcLocation) {
+        ensureDatacenterCatalogReady();
+        return Optional.ofNullable(mapper.findDatacenter(dcLocation))
+                .map(this::toDatacenterView);
+    }
+
+    @Override
+    public DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
+        ensureDatacenterCatalogReady();
+        mapper.insertDatacenter(request.dcLocation(), request.regionLabel(), request.status(), request.sortOrder(), operator);
+        return findDatacenter(request.dcLocation()).orElseThrow();
+    }
+
+    @Override
+    public Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
+        ensureDatacenterCatalogReady();
+        int updated = mapper.updateDatacenter(dcLocation, request.regionLabel(), request.status(), request.sortOrder(), operator);
+        if (updated == 0) {
+            return Optional.empty();
+        }
+        return findDatacenter(dcLocation);
+    }
+
+    @Override
+    public boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now) {
+        ensureDatacenterCatalogReady();
+        return mapper.softDeleteDatacenter(dcLocation, operator, now) > 0;
     }
 
     @Override
@@ -178,6 +197,38 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         if (updated == 0) {
             mapper.insertDatacenterState(dcLocation, pausedValue, reason, paused ? now : null, paused ? null : now, operator);
         }
+    }
+
+    private void ensureDatacenterCatalogReady() {
+        if (datacenterCatalogReady) {
+            return;
+        }
+        mapper.ensureDatacenterCatalogTable();
+        if (mapper.countDatacenterCatalogRows() == 0) {
+            mapper.seedDefaultDatacenters();
+        }
+        datacenterCatalogReady = true;
+    }
+
+    private DeviceDatacenterView toDatacenterView(DeviceOpsMapper.DatacenterSummaryRow row) {
+        return new DeviceDatacenterView(
+                row.dcLocation(),
+                row.regionLabel(),
+                row.status(),
+                row.sortOrder(),
+                safeLong(row.totalDevices()),
+                safeLong(row.onlineDevices()),
+                safeLong(row.pendingRecycleDevices()),
+                safeLong(row.abnormalDevices()),
+                safe(row.avgGpuUsage()),
+                safe(row.avgGpuTempC()),
+                safe(row.avgGpuPowerW()),
+                row.dispatchPaused() != null && row.dispatchPaused() == 1,
+                row.pausedReason(),
+                row.pausedAt(),
+                row.resumedAt(),
+                row.createdAt(),
+                row.updatedAt());
     }
 
     private Map<String, String> defaultE3Config() {

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.device.domain;
 
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -26,7 +27,15 @@ public interface DeviceOpsRepository {
 
     void upsertE3Config(String key, String value, String valueType, String operator);
 
-    List<Map<String, Object>> datacenterSummaries();
+    List<DeviceDatacenterView> datacenterSummaries();
+
+    Optional<DeviceDatacenterView> findDatacenter(String dcLocation);
+
+    DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now);
+
+    Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now);
+
+    boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now);
 
     void pauseDatacenter(String dcLocation, String reason, String operator, LocalDateTime now);
 

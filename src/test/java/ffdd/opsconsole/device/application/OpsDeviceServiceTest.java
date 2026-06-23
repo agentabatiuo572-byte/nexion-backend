@@ -13,6 +13,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
@@ -25,6 +26,7 @@ import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.domain.DeviceTradeinTxView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderStateRequest;
@@ -53,6 +55,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -263,6 +266,62 @@ class OpsDeviceServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(deviceRepository.pausedDc).isEqualTo("HK-1");
         assertThat(deviceRepository.pauseReason).isEqualTo("maintenance");
+    }
+
+    @Test
+    void datacenterCrudRequiresCommandAndAudits() {
+        DeviceDatacenterUpsertRequest createRequest = new DeviceDatacenterUpsertRequest(
+                "us-east-2",
+                "美国 · 弗吉尼亚",
+                "active",
+                10,
+                "seed dc card",
+                "superadmin");
+
+        ApiResult<DeviceDatacenterView> created = service.createDatacenter("idem-dc-create", createRequest);
+        ApiResult<DeviceDatacenterView> updated = service.updateDatacenter(
+                "us-east-2",
+                "idem-dc-update",
+                new DeviceDatacenterUpsertRequest(
+                        "us-east-2",
+                        "美国 · 弗吉尼亚东区",
+                        "maintenance",
+                        11,
+                        "rename dc card",
+                        "superadmin"));
+        ApiResult<Map<String, Object>> deleted = service.deleteDatacenter(
+                "us-east-2",
+                "idem-dc-delete",
+                new DatacenterOpsRequest("remove dc card", "superadmin"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(created.getData().regionLabel()).isEqualTo("美国 · 弗吉尼亚");
+        assertThat(updated.getCode()).isZero();
+        assertThat(updated.getData().status()).isEqualTo("maintenance");
+        assertThat(deleted.getData()).containsEntry("deleted", true);
+        assertThat(deviceRepository.datacenters).doesNotContainKey("us-east-2");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService, times(3)).record(captor.capture());
+        assertThat(captor.getAllValues()).extracting(AuditLogWriteRequest::getAction)
+                .containsExactly("E5_DATACENTER_CREATED", "E5_DATACENTER_UPDATED", "E5_DATACENTER_DELETED");
+    }
+
+    @Test
+    void createDatacenterRejectsInvalidInput() {
+        ApiResult<DeviceDatacenterView> missingKey = service.createDatacenter(
+                "",
+                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "active", 10, "seed", "superadmin"));
+        ApiResult<DeviceDatacenterView> missingRegion = service.createDatacenter(
+                "idem-dc",
+                new DeviceDatacenterUpsertRequest("us-east-2", "", "active", 10, "seed", "superadmin"));
+        ApiResult<DeviceDatacenterView> invalidStatus = service.createDatacenter(
+                "idem-dc",
+                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "online", 10, "seed", "superadmin"));
+
+        assertThat(missingKey.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
+        assertThat(missingRegion.getMessage()).isEqualTo("DATACENTER_REGION_LABEL_REQUIRED");
+        assertThat(invalidStatus.getMessage()).isEqualTo("DATACENTER_STATUS_INVALID");
     }
 
     @Test
@@ -953,6 +1012,7 @@ class OpsDeviceServiceTest {
     private static final class FakeDeviceOpsRepository implements DeviceOpsRepository {
         private DeviceOpsView device;
         private final Map<String, String> config = new LinkedHashMap<>(Map.of("promoCooldownDays", "14"));
+        private final Map<String, DeviceDatacenterView> datacenters = new LinkedHashMap<>();
         private String pausedDc;
         private String pauseReason;
         private String lastTradeinOperation;
@@ -1022,8 +1082,36 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public List<Map<String, Object>> datacenterSummaries() {
-            return List.of();
+        public List<DeviceDatacenterView> datacenterSummaries() {
+            return new ArrayList<>(datacenters.values());
+        }
+
+        @Override
+        public Optional<DeviceDatacenterView> findDatacenter(String dcLocation) {
+            return Optional.ofNullable(datacenters.get(dcLocation));
+        }
+
+        @Override
+        public DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
+            DeviceDatacenterView view = dcView(request, now, now);
+            datacenters.put(request.dcLocation(), view);
+            return view;
+        }
+
+        @Override
+        public Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
+            DeviceDatacenterView before = datacenters.get(dcLocation);
+            if (before == null) {
+                return Optional.empty();
+            }
+            DeviceDatacenterView view = dcView(request, before.createdAt(), now);
+            datacenters.put(dcLocation, view);
+            return Optional.of(view);
+        }
+
+        @Override
+        public boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now) {
+            return datacenters.remove(dcLocation) != null;
         }
 
         @Override
@@ -1034,6 +1122,27 @@ class OpsDeviceServiceTest {
 
         @Override
         public void resumeDatacenter(String dcLocation, String operator, LocalDateTime now) {
+        }
+
+        private static DeviceDatacenterView dcView(DeviceDatacenterUpsertRequest request, LocalDateTime createdAt, LocalDateTime updatedAt) {
+            return new DeviceDatacenterView(
+                    request.dcLocation(),
+                    request.regionLabel(),
+                    request.status(),
+                    request.sortOrder(),
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    BigDecimal.ZERO,
+                    BigDecimal.ZERO,
+                    BigDecimal.ZERO,
+                    false,
+                    null,
+                    null,
+                    null,
+                    createdAt,
+                    updatedAt);
         }
 
         private static DeviceTradeinTxView tx(String operation) {

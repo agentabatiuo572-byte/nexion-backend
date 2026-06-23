@@ -371,28 +371,158 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                        @Param("valueType") String valueType, @Param("operator") String operator,
                        @Param("sortOrder") int sortOrder);
 
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_compute_datacenter (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              dc_location VARCHAR(128) NOT NULL,
+              region_label VARCHAR(128) NOT NULL,
+              status VARCHAR(24) NOT NULL DEFAULT 'active',
+              sort_order INT NOT NULL DEFAULT 100,
+              updated_by VARCHAR(96) NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_compute_datacenter_location (dc_location),
+              KEY idx_compute_datacenter_status_sort (is_deleted, status, sort_order)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void ensureDatacenterCatalogTable();
+
+    @Select("SELECT COUNT(*) FROM nx_compute_datacenter")
+    long countDatacenterCatalogRows();
+
+    @Insert("""
+            INSERT INTO nx_compute_datacenter(dc_location, region_label, status, sort_order, updated_by, is_deleted)
+            VALUES
+              ('us-east-2', '美国 · 弗吉尼亚', 'active', 10, 'seed', 0),
+              ('eu-west-1', '欧洲 · 都柏林', 'active', 20, 'seed', 0),
+              ('ap-southeast-1', '亚太 · 新加坡', 'active', 30, 'seed', 0)
+            ON DUPLICATE KEY UPDATE dc_location = VALUES(dc_location)
+            """)
+    int seedDefaultDatacenters();
+
     @Select("""
-            SELECT COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AS dcLocation,
-                   COUNT(*) AS totalDevices,
-                   SUM(CASE WHEN d.status IN ('ONLINE','BUSY') THEN 1 ELSE 0 END) AS onlineDevices,
-                   SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
-                   SUM(CASE WHEN d.status NOT IN ('ONLINE','BUSY') OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 1 ELSE 0 END) AS abnormalDevices,
-                   COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
-                   COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
-                   COALESCE(AVG(r.gpu_power_w), 0) AS avgGpuPowerW,
-                   MAX(s.dispatch_paused) AS dispatchPaused,
-                   MAX(s.paused_reason) AS pausedReason,
-                   MAX(s.paused_at) AS pausedAt,
-                   MAX(s.resumed_at) AS resumedAt
-              FROM nx_user_device d
-              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-              LEFT JOIN nx_compute_dc_ops_state s
-                ON s.dc_location = COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AND s.is_deleted = 0
-             WHERE d.is_deleted = 0
-             GROUP BY COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED')
-             ORDER BY totalDevices DESC, dcLocation ASC
+            SELECT dc.dc_location AS dcLocation,
+                   dc.region_label AS regionLabel,
+                   dc.status,
+                   dc.sort_order AS sortOrder,
+                   COALESCE(m.totalDevices, 0) AS totalDevices,
+                   COALESCE(m.onlineDevices, 0) AS onlineDevices,
+                   COALESCE(m.pendingRecycleDevices, 0) AS pendingRecycleDevices,
+                   COALESCE(m.abnormalDevices, 0) AS abnormalDevices,
+                   COALESCE(m.avgGpuUsage, 0) AS avgGpuUsage,
+                   COALESCE(m.avgGpuTempC, 0) AS avgGpuTempC,
+                   COALESCE(m.avgGpuPowerW, 0) AS avgGpuPowerW,
+                   COALESCE(s.dispatch_paused, 0) AS dispatchPaused,
+                   s.paused_reason AS pausedReason,
+                   s.paused_at AS pausedAt,
+                   s.resumed_at AS resumedAt,
+                   dc.created_at AS createdAt,
+                   dc.updated_at AS updatedAt
+              FROM nx_compute_datacenter dc
+              LEFT JOIN (
+                    SELECT COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AS dcLocation,
+                           COUNT(*) AS totalDevices,
+                           SUM(CASE WHEN d.status IN ('ONLINE','BUSY') THEN 1 ELSE 0 END) AS onlineDevices,
+                           SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
+                           SUM(CASE WHEN d.status NOT IN ('ONLINE','BUSY') OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 1 ELSE 0 END) AS abnormalDevices,
+                           COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
+                           COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
+                           COALESCE(AVG(r.gpu_power_w), 0) AS avgGpuPowerW
+                      FROM nx_user_device d
+                      LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
+                     WHERE d.is_deleted = 0
+                     GROUP BY COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED')
+              ) m ON m.dcLocation = dc.dc_location
+              LEFT JOIN nx_compute_dc_ops_state s ON s.dc_location = dc.dc_location AND s.is_deleted = 0
+             WHERE dc.is_deleted = 0
+             ORDER BY dc.sort_order ASC, dc.dc_location ASC
             """)
     List<DatacenterSummaryRow> datacenterSummaries();
+
+    @Select("""
+            SELECT dc.dc_location AS dcLocation,
+                   dc.region_label AS regionLabel,
+                   dc.status,
+                   dc.sort_order AS sortOrder,
+                   COALESCE(m.totalDevices, 0) AS totalDevices,
+                   COALESCE(m.onlineDevices, 0) AS onlineDevices,
+                   COALESCE(m.pendingRecycleDevices, 0) AS pendingRecycleDevices,
+                   COALESCE(m.abnormalDevices, 0) AS abnormalDevices,
+                   COALESCE(m.avgGpuUsage, 0) AS avgGpuUsage,
+                   COALESCE(m.avgGpuTempC, 0) AS avgGpuTempC,
+                   COALESCE(m.avgGpuPowerW, 0) AS avgGpuPowerW,
+                   COALESCE(s.dispatch_paused, 0) AS dispatchPaused,
+                   s.paused_reason AS pausedReason,
+                   s.paused_at AS pausedAt,
+                   s.resumed_at AS resumedAt,
+                   dc.created_at AS createdAt,
+                   dc.updated_at AS updatedAt
+              FROM nx_compute_datacenter dc
+              LEFT JOIN (
+                    SELECT COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AS dcLocation,
+                           COUNT(*) AS totalDevices,
+                           SUM(CASE WHEN d.status IN ('ONLINE','BUSY') THEN 1 ELSE 0 END) AS onlineDevices,
+                           SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
+                           SUM(CASE WHEN d.status NOT IN ('ONLINE','BUSY') OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 1 ELSE 0 END) AS abnormalDevices,
+                           COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
+                           COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
+                           COALESCE(AVG(r.gpu_power_w), 0) AS avgGpuPowerW
+                      FROM nx_user_device d
+                      LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
+                     WHERE d.is_deleted = 0
+                     GROUP BY COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED')
+              ) m ON m.dcLocation = dc.dc_location
+              LEFT JOIN nx_compute_dc_ops_state s ON s.dc_location = dc.dc_location AND s.is_deleted = 0
+             WHERE dc.is_deleted = 0
+               AND dc.dc_location = #{dcLocation}
+            """)
+    DatacenterSummaryRow findDatacenter(@Param("dcLocation") String dcLocation);
+
+    @Insert("""
+            INSERT INTO nx_compute_datacenter(dc_location, region_label, status, sort_order, updated_by, is_deleted)
+            VALUES(#{dcLocation}, #{regionLabel}, #{status}, #{sortOrder}, #{operator}, 0)
+            ON DUPLICATE KEY UPDATE
+                   region_label = VALUES(region_label),
+                   status = VALUES(status),
+                   sort_order = VALUES(sort_order),
+                   updated_by = VALUES(updated_by),
+                   is_deleted = 0,
+                   updated_at = NOW()
+            """)
+    int insertDatacenter(@Param("dcLocation") String dcLocation,
+                         @Param("regionLabel") String regionLabel,
+                         @Param("status") String status,
+                         @Param("sortOrder") int sortOrder,
+                         @Param("operator") String operator);
+
+    @Update("""
+            UPDATE nx_compute_datacenter
+               SET region_label = #{regionLabel},
+                   status = #{status},
+                   sort_order = #{sortOrder},
+                   updated_by = #{operator},
+                   updated_at = NOW()
+             WHERE dc_location = #{dcLocation}
+               AND is_deleted = 0
+            """)
+    int updateDatacenter(@Param("dcLocation") String dcLocation,
+                         @Param("regionLabel") String regionLabel,
+                         @Param("status") String status,
+                         @Param("sortOrder") int sortOrder,
+                         @Param("operator") String operator);
+
+    @Update("""
+            UPDATE nx_compute_datacenter
+               SET is_deleted = 1,
+                   updated_by = #{operator},
+                   updated_at = #{now}
+             WHERE dc_location = #{dcLocation}
+               AND is_deleted = 0
+            """)
+    int softDeleteDatacenter(@Param("dcLocation") String dcLocation,
+                             @Param("operator") String operator,
+                             @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_compute_dc_ops_state
@@ -449,6 +579,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
 
     record DatacenterSummaryRow(
             String dcLocation,
+            String regionLabel,
+            String status,
+            Integer sortOrder,
             Long totalDevices,
             Long onlineDevices,
             Long pendingRecycleDevices,
@@ -459,7 +592,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             Integer dispatchPaused,
             String pausedReason,
             LocalDateTime pausedAt,
-            LocalDateTime resumedAt) {
+            LocalDateTime resumedAt,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt) {
     }
 
     record TradeinOverviewMetrics(BigDecimal averageAgeMonths, Long cliffDeviceCount) {

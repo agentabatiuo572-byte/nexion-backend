@@ -855,6 +855,17 @@ ON DUPLICATE KEY UPDATE
   status = VALUES(status),
   sort_order = VALUES(sort_order);
 
+INSERT INTO nx_compute_datacenter(dc_location, region_label, status, sort_order, updated_by, is_deleted)
+VALUES
+  ('us-east-2', '美国 · 弗吉尼亚', 'active', 10, 'seed', 0),
+  ('eu-west-1', '欧洲 · 都柏林', 'active', 20, 'seed', 0),
+  ('ap-southeast-1', '亚太 · 新加坡', 'active', 30, 'seed', 0)
+ON DUPLICATE KEY UPDATE
+  region_label = VALUES(region_label),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order),
+  is_deleted = VALUES(is_deleted);
+
 INSERT INTO nx_compute_task (id, task_no, user_id, user_device_id, task_type, client_name, status, started_at, completed_at)
 VALUES
   (1, 'TASK-20260522-0001', 10001, 1, 'IMAGE_INFERENCE', 'Nexion Demo', 'COMPLETED', NOW(), NOW())

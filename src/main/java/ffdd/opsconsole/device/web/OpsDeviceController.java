@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
+import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
@@ -14,6 +15,7 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateArchiveRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
@@ -335,6 +337,34 @@ public class OpsDeviceController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceRestoreRequest request) {
         return deviceService.restoreDevice(deviceId, idempotencyKey, request);
+    }
+
+    @GetMapping("/datacenters")
+    public ApiResult<List<DeviceDatacenterView>> datacenters() {
+        return deviceService.datacenters();
+    }
+
+    @PostMapping("/datacenters")
+    public ApiResult<DeviceDatacenterView> createDatacenter(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceDatacenterUpsertRequest request) {
+        return deviceService.createDatacenter(idempotencyKey, request);
+    }
+
+    @PatchMapping("/datacenters/{dcLocation}")
+    public ApiResult<DeviceDatacenterView> updateDatacenter(
+            @PathVariable String dcLocation,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceDatacenterUpsertRequest request) {
+        return deviceService.updateDatacenter(dcLocation, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/datacenters/{dcLocation}")
+    public ApiResult<Map<String, Object>> deleteDatacenter(
+            @PathVariable String dcLocation,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DatacenterOpsRequest request) {
+        return deviceService.deleteDatacenter(dcLocation, idempotencyKey, request);
     }
 
     @PostMapping("/datacenters/{dcLocation}/pause")
