@@ -19,6 +19,7 @@ import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
+import ffdd.opsconsole.device.dto.DeviceOrderStateRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
@@ -227,6 +228,14 @@ public class OpsDeviceController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceOrderActionRequest request) {
         return deviceService.terminalOrder(orderNo, idempotencyKey, request);
+    }
+
+    @PatchMapping("/orders/{orderNo}/state")
+    public ApiResult<DeviceOrderView> updateOrderState(
+            @PathVariable String orderNo,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceOrderStateRequest request) {
+        return deviceService.updateOrderState(orderNo, idempotencyKey, request);
     }
 
     @GetMapping("/e1/generation-gates")

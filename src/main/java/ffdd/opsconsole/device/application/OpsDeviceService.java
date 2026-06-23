@@ -23,6 +23,7 @@ import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
+import ffdd.opsconsole.device.dto.DeviceOrderStateRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
@@ -73,6 +74,7 @@ public class OpsDeviceService {
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of("payment_failed", "expired", "refunded", "provisioning_failed");
     private static final Set<String> ORDER_FINAL_STATES = Set.of("active", "refunded", "cancelled", "payment_failed", "expired", "provisioning_failed");
     private static final Set<String> ORDER_CANCELABLE_STATES = Set.of("created", "paid");
+    private static final List<String> ORDER_MAIN_FLOW = List.of("created", "paid", "allocating", "active");
     private static final Set<String> TRADEIN_OPERATIONS = Set.of("recycle", "replace", "deactivate");
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
@@ -588,6 +590,40 @@ public class OpsDeviceService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ORDER_TERMINAL_STATE_INVALID");
         }
         return transitionOrder(orderNo, idempotencyKey, request, terminal, "E4_ORDER_TERMINALIZED");
+    }
+
+    public ApiResult<DeviceOrderView> updateOrderState(String orderNo, String idempotencyKey, DeviceOrderStateRequest request) {
+        ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (command != null) {
+            return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        String toState = normalizeOrderState(request.state());
+        if (!ORDER_MAIN_FLOW.contains(toState)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ORDER_STATE_INVALID");
+        }
+        String normalizedOrderNo = normalizeId(orderNo);
+        DeviceOrderView before = catalogRepository.findOrder(normalizedOrderNo).orElse(null);
+        if (before == null) {
+            return ApiResult.fail(404, "ORDER_NOT_FOUND");
+        }
+        String fromState = normalizeOrderState(before.state());
+        if (toState.equals(fromState)) {
+            return ApiResult.ok(before);
+        }
+        if (!canMoveOrderMainState(fromState, toState)) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        DeviceOrderView updated = catalogRepository.updateOrderState(normalizedOrderNo, toState, LocalDateTime.now(clock)).orElse(before);
+        audit("E4_ORDER_STATE_CHANGED", "DEVICE_ORDER", normalizedOrderNo, request.operator(), detail(
+                "orderNo", normalizedOrderNo,
+                "fromState", fromState,
+                "toState", toState,
+                "amount", before.amount(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(updated);
     }
 
     public ApiResult<Map<String, Object>> e1GenerationGates() {
@@ -1265,6 +1301,18 @@ public class OpsDeviceService {
             return !ORDER_FINAL_STATES.contains(fromState);
         }
         return false;
+    }
+
+    private boolean canMoveOrderMainState(String fromState, String toState) {
+        if (ORDER_FINAL_STATES.contains(fromState)) {
+            return false;
+        }
+        if ("failed".equals(fromState) && "allocating".equals(toState)) {
+            return true;
+        }
+        int fromIndex = ORDER_MAIN_FLOW.indexOf(fromState);
+        int toIndex = ORDER_MAIN_FLOW.indexOf(toState);
+        return fromIndex >= 0 && toIndex >= 0 && Math.abs(toIndex - fromIndex) == 1;
     }
 
     private ApiResult<DeviceOpsView> requireDeviceCommand(Long deviceId, String idempotencyKey, DeviceRestoreRequest request) {

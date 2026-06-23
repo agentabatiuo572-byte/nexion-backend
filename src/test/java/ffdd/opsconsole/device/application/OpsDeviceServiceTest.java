@@ -27,6 +27,7 @@ import ffdd.opsconsole.device.domain.DeviceTradeinTxView;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
+import ffdd.opsconsole.device.dto.DeviceOrderStateRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
@@ -655,6 +656,49 @@ class OpsDeviceServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_TERMINALIZED");
+    }
+
+    @Test
+    void updateOrderStateAllowsAdjacentMainPathAndWritesAudit() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<DeviceOrderView> result = service.updateOrderState(
+                "OD-1",
+                "idem-order-state",
+                new DeviceOrderStateRequest("allocating", "manual advance", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().state()).isEqualTo("allocating");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_STATE_CHANGED");
+    }
+
+    @Test
+    void updateOrderStateAllowsFailedRetryToAllocating() {
+        catalogRepository.order = order("OD-1", "failed");
+
+        ApiResult<DeviceOrderView> result = service.updateOrderState(
+                "OD-1",
+                "idem-order-retry",
+                new DeviceOrderStateRequest("allocating", "retry allocation", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().state()).isEqualTo("allocating");
+    }
+
+    @Test
+    void updateOrderStateRejectsSkippingMainPath() {
+        catalogRepository.order = order("OD-1", "created");
+
+        ApiResult<DeviceOrderView> result = service.updateOrderState(
+                "OD-1",
+                "idem-order-skip",
+                new DeviceOrderStateRequest("active", "skip flow", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        verify(auditLogService, never()).record(any());
     }
 
     @SuppressWarnings("unchecked")

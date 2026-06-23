@@ -55,6 +55,61 @@ public class OpsAdminAccountService {
     private static final Pattern SECURITY_BASELINE_REGISTRATION_PATTERN =
             Pattern.compile("^a1\\.security\\.baseline\\.([a-z][a-z0-9_-]*)\\.registered$");
     private static final String RBAC_ACTION_PREFIX = "a1.rbac.action.";
+    private static final List<AdminAccountOverview.RoleDefinition> DEFAULT_ROLE_DEFINITIONS = List.of(
+            new AdminAccountOverview.RoleDefinition("super", "超管", "超", "var(--ink-2)",
+                    "全域读写 + 全域执行;账号治理与系统参数的唯一操作 / 留痕角色", "全部 12 域"),
+            new AdminAccountOverview.RoleDefinition("finance", "财务", "财", "var(--success)",
+                    "储备与应付对账、提现放行、覆盖率监控;资金类动作执行门槛为 lead/超管", "B · D · L,资金类执行"),
+            new AdminAccountOverview.RoleDefinition("risk", "风控", "风", "var(--danger)",
+                    "反作弊、KYC 复审、风险披露、应急止血;合规审查 V1 由风控代行", "K · J · C4/C6 · I5"),
+            new AdminAccountOverview.RoleDefinition("growth", "增长", "增", "var(--warning)",
+                    "节奏 dial、试用、任务活动、增长类实验;不碰资金放行与安全配置", "H · B4,增长类 flag/实验"),
+            new AdminAccountOverview.RoleDefinition("content", "内容", "内", "var(--admin-cat-5, #9B89E0)",
+                    "全站文案、推送、通知、信任内容、课程;高敏合规内容只能草拟", "I 域全部"),
+            new AdminAccountOverview.RoleDefinition("support", "客服", "客", "var(--a-ac)",
+                    "单用户范围受限操作:小额调整发起、协助 KYC 标记;确认必须主管层", "C 域单用户视图"),
+            new AdminAccountOverview.RoleDefinition("audit", "只读审计", "审", "var(--ink-3)",
+                    "零写权;全量查询与脱敏导出,取证专用", "全域只读"));
+    private static final Map<String, AdminAccountOverview.RoleDefinition> DEFAULT_ROLE_DEFINITION_BY_KEY =
+            DEFAULT_ROLE_DEFINITIONS.stream().collect(Collectors.toMap(
+                    AdminAccountOverview.RoleDefinition::key,
+                    role -> role,
+                    (left, right) -> left,
+                    LinkedHashMap::new));
+    private static final List<AdminAccountOverview.RbacAction> DEFAULT_RBAC_ACTIONS = List.of(
+            new AdminAccountOverview.RbacAction("balance_adjust", "余额/资产调整(C3)", "用户/风控", List.of("C", "C", "-", "-", "-", "M", "R")),
+            new AdminAccountOverview.RbacAction("user_freeze", "账户冻结/解冻(C2)", "用户/风控", List.of("C", "-", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("withdraw_approve", "提现放行/冻结(D2)", "资金", List.of("C", "M", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("bill_adjust", "账单手工调整(D4)", "资金", List.of("C", "M", "-", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("coverage_line", "覆盖率红黄线(B1)", "资金", List.of("C", "M", "-", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("withdraw_param", "提现参数(D5)", "资金", List.of("C", "M", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("risk_model", "风险模型权重(K4)", "用户/风控", List.of("C", "-", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("kyc_decide", "大额 KYC 裁决(K5)", "用户/风控", List.of("C", "-", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("phase_dial", "Phase dial(H1)", "增长/内容", List.of("C", "-", "C", "M", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("content_publish", "文案/课程发布(I)", "增长/内容", List.of("C", "-", "-", "-", "M", "-", "R")),
+            new AdminAccountOverview.RbacAction("disclosure_publish", "风险披露发布(I5)", "增长/内容", List.of("C", "-", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("killswitch_toggle", "功能闸熔断(J1)", "基座/应急", List.of("C", "M", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("geo_block", "地区屏蔽(J2)", "基座/应急", List.of("C", "-", "M", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("feature_flag", "feature flag(A3)", "基座/应急", List.of("C", "-", "-", "M", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("operator_governance", "运营账号治理(A1)", "基座/应急", List.of("M", "-", "-", "-", "-", "-", "R")),
+            new AdminAccountOverview.RbacAction("audit_export", "审计全量导出(A2)", "基座/应急", List.of("M", "-", "-", "-", "-", "-", "M")));
+    private static final List<AdminAccountOverview.SecurityBaseline> DEFAULT_SECURITY_BASELINES = List.of(
+            new AdminAccountOverview.SecurityBaseline("tfa_required", "强制双因子(全角色)",
+                    "没绑双因子完不成登录——安全基线,不开口子", "强制开启", true),
+            new AdminAccountOverview.SecurityBaseline("least_priv", "最小权限默认",
+                    "新账号默认无任何写权,角色要显式分配", "默认拒绝", true),
+            new AdminAccountOverview.SecurityBaseline("min_supers", "最少有效超管",
+                    "少于 2 个时账号治理类操作全部被服务器拒绝(防权限死锁)", ">= 2 个", true),
+            new AdminAccountOverview.SecurityBaseline("session", "session 时限",
+                    "滑动过期 + 绝对上限,对下一次登录签发生效", "30min / 8h", false),
+            new AdminAccountOverview.SecurityBaseline("lock", "登录失败短锁",
+                    "连错几次触发短锁及锁定时长", "5 次 / 15min", false));
+    private static final Map<String, AdminAccountOverview.SecurityBaseline> DEFAULT_SECURITY_BASELINE_BY_KEY =
+            DEFAULT_SECURITY_BASELINES.stream().collect(Collectors.toMap(
+                    AdminAccountOverview.SecurityBaseline::key,
+                    baseline -> baseline,
+                    (left, right) -> left,
+                    LinkedHashMap::new));
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
@@ -412,13 +467,15 @@ public class OpsAdminAccountService {
     }
 
     private List<AdminAccountOverview.RoleDefinition> roleDefinitions(Map<String, PlatformConfigItem> configs) {
-        return configs.keySet().stream()
+        Map<String, AdminAccountOverview.RoleDefinition> roles = new LinkedHashMap<>(DEFAULT_ROLE_DEFINITION_BY_KEY);
+        configs.keySet().stream()
                 .map(ROLE_REGISTRATION_PATTERN::matcher)
                 .filter(Matcher::matches)
                 .map(matcher -> matcher.group(1))
                 .sorted(Comparator.comparingInt(role -> roleSort(role, configs)))
                 .map(role -> roleDefinition(role, configs))
-                .toList();
+                .forEach(role -> roles.put(role.key(), role));
+        return new ArrayList<>(roles.values());
     }
 
     private AdminAccountOverview.RoleDefinition roleDefinition(String role, Map<String, PlatformConfigItem> configs) {
@@ -467,9 +524,15 @@ public class OpsAdminAccountService {
     }
 
     private List<AdminAccountOverview.RbacAction> rbacActions(Map<String, PlatformConfigItem> configs) {
-        return configs.entrySet().stream()
+        Map<String, AdminAccountOverview.RbacAction> actions = new LinkedHashMap<>();
+        DEFAULT_RBAC_ACTIONS.forEach(action -> actions.put(action.id(), withGrantOverrides(action, configs)));
+        configs.entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(RBAC_ACTION_PREFIX))
                 .filter(entry -> !entry.getKey().substring(RBAC_ACTION_PREFIX.length()).contains("."))
+                .sorted(Comparator.comparingInt(entry -> {
+                    String id = entry.getKey().substring(RBAC_ACTION_PREFIX.length());
+                    return number(configs, RBAC_ACTION_PREFIX + id + ".sort", 9999);
+                }))
                 .map(entry -> {
                     String id = entry.getKey().substring(RBAC_ACTION_PREFIX.length());
                     return withGrantOverrides(new AdminAccountOverview.RbacAction(
@@ -478,8 +541,8 @@ public class OpsAdminAccountService {
                             text(configs, RBAC_ACTION_PREFIX + id + ".domainGroup", ""),
                             roleKeys(configs).stream().map(this::defaultGrant).toList()), configs);
                 })
-                .sorted(Comparator.comparingInt(action -> number(configs, RBAC_ACTION_PREFIX + action.id() + ".sort", 9999)))
-                .toList();
+                .forEach(action -> actions.put(action.id(), action));
+        return new ArrayList<>(actions.values());
     }
 
     private Optional<AdminAccountOverview.RbacAction> rbacAction(String actionId, Map<String, PlatformConfigItem> configs) {
@@ -500,7 +563,9 @@ public class OpsAdminAccountService {
     }
 
     private List<AdminAccountOverview.SecurityBaseline> securityBaselines(Map<String, PlatformConfigItem> configs) {
-        return configs.keySet().stream()
+        Map<String, AdminAccountOverview.SecurityBaseline> baselines = new LinkedHashMap<>();
+        DEFAULT_SECURITY_BASELINES.forEach(baseline -> baselines.put(baseline.key(), withSecurityValue(baseline, configs)));
+        configs.keySet().stream()
                 .map(SECURITY_BASELINE_REGISTRATION_PATTERN::matcher)
                 .filter(Matcher::matches)
                 .map(matcher -> matcher.group(1))
@@ -510,26 +575,38 @@ public class OpsAdminAccountService {
                         configs,
                         "a1.security.baseline." + item.key() + ".sort",
                         9999)))
-                .toList();
+                .forEach(baseline -> baselines.put(baseline.key(), baseline));
+        return new ArrayList<>(baselines.values());
     }
 
     private Optional<AdminAccountOverview.SecurityBaseline> securityBaseline(String key, Map<String, PlatformConfigItem> configs) {
         String prefix = "a1.security.baseline." + key + ".";
         if (!"true".equalsIgnoreCase(text(configs, prefix + "registered", "false"))) {
-            return Optional.empty();
+            return Optional.ofNullable(DEFAULT_SECURITY_BASELINE_BY_KEY.get(key))
+                    .map(baseline -> withSecurityValue(baseline, configs));
         }
         String configuredValue = text(configs, prefix + "value", "");
-        String value = switch (key) {
-            case "session" -> sessionValue(configs, configuredValue);
-            case "lock" -> lockValue(configs, configuredValue);
-            default -> configuredValue;
-        };
-        return Optional.of(new AdminAccountOverview.SecurityBaseline(
+        return Optional.of(withSecurityValue(new AdminAccountOverview.SecurityBaseline(
                 key,
                 text(configs, prefix + "label", key),
                 text(configs, prefix + "description", ""),
+                configuredValue,
+                Boolean.parseBoolean(text(configs, prefix + "locked", "false"))), configs));
+    }
+
+    private AdminAccountOverview.SecurityBaseline withSecurityValue(
+            AdminAccountOverview.SecurityBaseline baseline, Map<String, PlatformConfigItem> configs) {
+        String value = switch (baseline.key()) {
+            case "session" -> sessionValue(configs, baseline.value());
+            case "lock" -> lockValue(configs, baseline.value());
+            default -> baseline.value();
+        };
+        return new AdminAccountOverview.SecurityBaseline(
+                baseline.key(),
+                baseline.name(),
+                baseline.sub(),
                 value,
-                Boolean.parseBoolean(text(configs, prefix + "locked", "false"))));
+                baseline.locked());
     }
 
     private String sessionValue(Map<String, PlatformConfigItem> configs, String configuredValue) {
@@ -676,13 +753,9 @@ public class OpsAdminAccountService {
     }
 
     private List<String> roleKeys(Map<String, PlatformConfigItem> configs) {
-        List<String> keys = configs.keySet().stream()
-                .map(ROLE_REGISTRATION_PATTERN::matcher)
-                .filter(Matcher::matches)
-                .map(matcher -> matcher.group(1))
-                .sorted(Comparator.comparingInt(role -> roleSort(role, configs)))
+        return roleDefinitions(configs).stream()
+                .map(AdminAccountOverview.RoleDefinition::key)
                 .toList();
-        return keys.isEmpty() ? List.of("super") : keys;
     }
 
     private String defaultRole(AdminEntity admin, Map<String, PlatformConfigItem> configs) {
