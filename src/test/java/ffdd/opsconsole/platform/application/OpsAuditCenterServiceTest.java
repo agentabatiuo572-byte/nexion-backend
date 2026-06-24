@@ -12,6 +12,9 @@ import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
+import ffdd.opsconsole.platform.mapper.AuditConfirmCategoryMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationHistoryMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
@@ -33,7 +36,11 @@ import org.mockito.ArgumentCaptor;
 class OpsAuditCenterServiceTest {
     private final InMemoryPlatformConfigRepository repository = new InMemoryPlatformConfigRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsAuditCenterService service = new OpsAuditCenterService(repository, auditLogService);
+    private final AuditOperationTicketMapper ticketMapper = mock(AuditOperationTicketMapper.class);
+    private final AuditOperationHistoryMapper historyMapper = mock(AuditOperationHistoryMapper.class);
+    private final AuditConfirmCategoryMapper confirmCategoryMapper = mock(AuditConfirmCategoryMapper.class);
+    private final OpsAuditCenterService service =
+            new OpsAuditCenterService(repository, auditLogService, ticketMapper, historyMapper, confirmCategoryMapper);
 
     @BeforeEach
     void setUp() {

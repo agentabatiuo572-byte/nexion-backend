@@ -132,7 +132,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                AND asset = 'USDT'
                AND status IN ('SUCCESS', 'PENDING')
                AND created_at >= #{startAt}
-              AND created_at &lt; #{endAt}
+               AND created_at < #{endAt}
             """)
     @Lang(RawLanguageDriver.class)
     BigDecimal sumNetUsdtFlowBetween(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);

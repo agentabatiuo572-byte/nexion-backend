@@ -1894,6 +1894,31 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO nx_config_item (config_key, config_value, value_type, config_group, visibility, remark, status)
 VALUES
+  ('feature.ab.newWithdrawFlow', '灰度 20%', 'STRING', 'admin_feature_flag', 'ADMIN', '新版提现流程实验||新提现页与旧版 A/B,对比转化与流失||全量随机||增长可发起', 1),
+  ('feature.ab.homeBannerExp', 'on', 'STRING', 'admin_feature_flag', 'ADMIN', '首页 Banner 实验||活动入口 Banner 素材与排序实验||注册周 >=W20||增长可发起', 1),
+  ('feature.exp.questBoostAB', 'on', 'STRING', 'admin_feature_flag', 'ADMIN', '任务加成实验||新手任务收益加成实验||P3 阶段用户||增长可发起', 1),
+  ('feature.core.sse_v2', '灰度 50%', 'STRING', 'admin_feature_flag', 'ADMIN', 'SSE v2 通道||新推送链路灰度,观察重连率与延迟||全量随机||超管(平台能力)', 1),
+  ('feature.ops.maintenanceBanner', 'off', 'STRING', 'admin_feature_flag', 'ADMIN', '维护公告横幅||后台统一维护公告开关||全量||风控/超管(运维)', 1),
+  ('killswitch.withdraw', 'enabled', 'STRING', 'admin_killswitch', 'ADMIN', '提现||2d 前 · risk@nexion / super@nexion||risk@nexion / super@nexion', 1),
+  ('killswitch.staking', 'enabled', 'STRING', 'admin_killswitch', 'ADMIN', '质押||6d 前 · ops@nexion / super@nexion||ops@nexion / super@nexion', 1),
+  ('killswitch.genesis', 'enabled', 'STRING', 'admin_killswitch', 'ADMIN', 'Genesis 入口||3h 前 · ops@nexion / super@nexion||ops@nexion / super@nexion', 1),
+  ('killswitch.exchange', 'enabled', 'STRING', 'admin_killswitch', 'ADMIN', '交易||1d 前 · exchange@nexion / super@nexion||exchange@nexion / super@nexion', 1),
+  ('killswitch.trial', 'enabled', 'STRING', 'admin_killswitch', 'ADMIN', '试用权益||5d 前 · growth@nexion / super@nexion||growth@nexion / super@nexion', 1),
+  ('killswitch.geo-block', 'empty-list', 'STRING', 'admin_killswitch', 'ADMIN', '地区屏蔽||-||- / -', 1),
+  ('admin.health.event_pipeline', '正常 · 延迟 1.2s', 'STRING', 'admin_system_health', 'ADMIN', '事件管道(采集 -> 事件库)||ok', 1),
+  ('admin.health.ledger_write', '正常 · p99 84ms', 'STRING', 'admin_system_health', 'ADMIN', '账本写入(资金事务)||ok', 1),
+  ('admin.health.admin_api_availability', '99.98%', 'STRING', 'admin_system_health', 'ADMIN', '后台接口可用性(24h)||ok', 1),
+  ('admin.health.sse', '轻度抖动 · 重连率 2.1%', 'STRING', 'admin_system_health', 'ADMIN', 'SSE 推送通道(配置失效广播)||warn', 1)
+ON DUPLICATE KEY UPDATE
+  config_value = VALUES(config_value),
+  value_type = VALUES(value_type),
+  config_group = VALUES(config_group),
+  visibility = VALUES(visibility),
+  remark = VALUES(remark),
+  status = VALUES(status);
+
+INSERT INTO nx_config_item (config_key, config_value, value_type, config_group, visibility, remark, status)
+VALUES
   ('growth.phase.current_month', '7', 'NUMBER', 'growth', 'ADMIN', 'H1 current platform month used by E1 generation gates.', 1),
   ('growth.phase.current', 'P3', 'STRING', 'growth', 'ADMIN', 'H1 current phase used by E1 generation gates.', 1),
   ('device.e1.phaseOrder', 'P1,P2,P3,P4,P5,P6', 'STRING', 'device_e1_generation_gate', 'ADMIN', 'E1 generation phase order.', 1),

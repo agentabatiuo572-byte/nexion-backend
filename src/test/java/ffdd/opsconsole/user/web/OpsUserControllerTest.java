@@ -112,12 +112,12 @@ class OpsUserControllerTest {
 
     @Test
     void profile360DelegatesToAggregator() {
-        when(user360Service.detail(2231L)).thenReturn(ApiResult.ok(Map.of("summary", Map.of("userId", 2231L))));
+        when(user360Service.detail("usr_84F2")).thenReturn(ApiResult.ok(Map.of("summary", Map.of("userNo", "U00088421"))));
 
-        ApiResult<Map<String, Object>> result = controller.profile360(2231L);
+        ApiResult<Map<String, Object>> result = controller.profile360("usr_84F2");
 
         assertThat(result.getCode()).isZero();
-        verify(user360Service).detail(2231L);
+        verify(user360Service).detail("usr_84F2");
     }
 
     @Test
@@ -188,7 +188,7 @@ class OpsUserControllerTest {
 
     @Test
     void assetAdjustmentListDelegatesQuery() {
-        UserAssetAdjustmentQueryRequest request = new UserAssetAdjustmentQueryRequest("PENDING_REVIEW", "NEX", 1L, null, 1, 20);
+        UserAssetAdjustmentQueryRequest request = new UserAssetAdjustmentQueryRequest("PENDING_REVIEW", "NEX", 1L, null, 1, 20, null);
 
         controller.assetAdjustments(request);
 

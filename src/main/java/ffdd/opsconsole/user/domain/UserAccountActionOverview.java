@@ -5,6 +5,7 @@ import java.util.List;
 public record UserAccountActionOverview(
         List<UserAccountView> accounts,
         List<UserAccountListEntryView> accountLists,
+        List<UserSessionView> sessions,
         List<UserImpersonationSessionView> impersonations,
         long frozenUsers,
         long activeSessions,

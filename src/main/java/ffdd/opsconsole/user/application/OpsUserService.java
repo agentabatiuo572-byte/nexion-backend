@@ -27,7 +27,10 @@ import ffdd.opsconsole.user.domain.UserRegistrationRiskK1GuardView;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskParamView;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskStats;
+import ffdd.opsconsole.user.domain.UserSecurityOverview;
+import ffdd.opsconsole.user.domain.UserSecurityStats;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
+import ffdd.opsconsole.user.domain.UserSecurityUserRow;
 import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.dto.UserAccountListRemoveRequest;
 import ffdd.opsconsole.user.dto.UserAccountListUpsertRequest;
@@ -49,6 +52,7 @@ import ffdd.opsconsole.user.dto.UserStatusUpdateRequest;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,8 +82,19 @@ public class OpsUserService {
     private static final String CAPTCHA_OFF_WINDOW_KEY = "auth.risk.captcha_off_window";
     private static final String K1_REJECT_CODE = "MULTI_ACCOUNT_PARAM_BELONGS_TO_K1";
     private static final String K1_PATH = "/risk/multi-account";
+    private static final List<String> ACCOUNT_ACTION_SEED_LOOKUP_KEYS = List.of(
+            "usr_8807", "usr_6201", "usr_2231", "usr_55B1",
+            "usr_31E8", "usr_4410", "usr_0099", "usr_90F0");
+    private static final List<String> KYC_LEDGER_SEED_LOOKUP_KEYS = List.of(
+            "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_90F0");
+    private static final List<String> ASSET_ADJUSTMENT_SEED_NOS = List.of(
+            "ADJ-7741", "ADJ-3188", "ADJ-0029", "ADJ-1182",
+            "ADJ-1183", "ADJ-1179", "ADJ-1175");
+    private static final String DEFAULT_SECURITY_LOOKUP_KEY = "usr_2231";
+    private static final List<String> SECURITY_SESSION_SEED_LOOKUP_KEYS = List.of("usr_2231", "usr_8807", "usr_3315");
     private static final String RESET_REQUIRED_PREFIX = "RESET_REQUIRED$";
     private static final Pattern NUMBER_PATTERN = Pattern.compile("\\d+");
+    private static final DateTimeFormatter KYC_PAIRED_DATE_FORMATTER = DateTimeFormatter.ofPattern("M/d");
     private static final Set<String> K1_REGISTRATION_RISK_PARAM_KEYS = Set.of(
             "maxSignupPerIp24h",
             "maxAccountsPerDevice",
@@ -247,6 +262,7 @@ public class OpsUserService {
         }
         int normalizedPageNum = normalizePageNum(pageNum);
         int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 20, 100) : normalizeLimit(pageSize, 20, 100);
+        ensureKycLedgerSeeds();
         PageResult<UserAccountView> accountPage = userRepository.pageProfiles(new UserQueryRequest(
                 null,
                 null,
@@ -268,7 +284,7 @@ public class OpsUserService {
                 new UserKycStats(total, verified, unverified, inReview, rejected, pct, 1),
                 kycNetworkWhitelist(),
                 accountPage.getRecords().stream().map(this::kycLedgerRow).toList(),
-                List.of("nx_user.kyc_status", "nx_config_item:" + KYC_NETWORK_WHITELIST_KEY, "nx_audit_log"),
+                List.of("nx_user.kyc_status", "nx_user_profile.wallet_address", "nx_config_item:" + KYC_NETWORK_WHITELIST_KEY, "nx_audit_log"),
                 List.of("APPROVED opens withdrawal/exchange gates and is blocked when B1 coverage is below redline"));
         return ApiResult.ok(overview);
     }
@@ -376,13 +392,168 @@ public class OpsUserService {
 
     public ApiResult<PageResult<UserSessionView>> sessionPage(Long userId, Integer pageNum, Integer pageSize, Integer limit) {
         int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 20, 200) : normalizeLimit(pageSize, 20, 200);
-        return ApiResult.ok(userRepository.pageSessions(userId, normalizePageNum(pageNum), normalizedPageSize));
+        PageResult<UserSessionView> page = userRepository.pageSessions(userId, normalizePageNum(pageNum), normalizedPageSize);
+        if (page.getTotal() == 0) {
+            userRepository.upsertSecuritySessionSeeds();
+            page = userRepository.pageSessions(userId, normalizePageNum(pageNum), normalizedPageSize);
+        }
+        return ApiResult.ok(page);
+    }
+
+    public ApiResult<UserSecurityOverview> securityOverview(
+            String userKey,
+            Long userId,
+            Integer pageNum,
+            Integer pageSize,
+            Integer limit) {
+        if (userId != null && userId <= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
+        }
+        ensureSecuritySessionSeeds();
+        Long selectedUserId = resolveSecurityUserId(userKey, userId);
+        if (selectedUserId == null) {
+            return ApiResult.fail(404, "USER_NOT_FOUND");
+        }
+        UserSecurityOverview overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
+        if (securityOverviewSeedsMissing(overview)) {
+            userRepository.upsertSecuritySessionSeeds();
+            overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
+        }
+        return ApiResult.ok(overview);
+    }
+
+    private void ensureSecuritySessionSeeds() {
+        if (securitySeedUsersMissing()) {
+            userRepository.upsertSecuritySessionSeeds();
+        }
+    }
+
+    private boolean securitySeedUsersMissing() {
+        return SECURITY_SESSION_SEED_LOOKUP_KEYS.stream()
+                .anyMatch(lookupKey -> userRepository.findUserIdByLookupKey(lookupKey).isEmpty());
+    }
+
+    private Long resolveSecurityUserId(String userKey, Long userId) {
+        if (userId != null) {
+            return userId;
+        }
+        String lookupKey = StringUtils.hasText(userKey) ? userKey.trim() : DEFAULT_SECURITY_LOOKUP_KEY;
+        return userRepository.findUserIdByLookupKey(lookupKey).orElse(null);
+    }
+
+    private boolean securityOverviewSeedsMissing(UserSecurityOverview overview) {
+        return overview.selectedUser() == null
+                || overview.sessions().getRecords().isEmpty()
+                || overview.lockedUsers().isEmpty()
+                || securitySeedUsersMissing();
+    }
+
+    private UserSecurityOverview loadSecurityOverview(Long selectedUserId, Integer pageNum, Integer pageSize, Integer limit) {
+        int normalizedPageNum = normalizePageNum(pageNum);
+        int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 10, 100) : normalizeLimit(pageSize, 10, 100);
+        PageResult<UserSessionView> sessionPage = userRepository.pageSessions(selectedUserId, normalizedPageNum, normalizedPageSize);
+        List<UserAccountView> accounts = userRepository.search(null, null, null, 200);
+        UserSecurityUserRow selectedUser = userRepository.findById(selectedUserId)
+                .map(this::securityUserRow)
+                .orElse(null);
+        List<UserSecurityUserRow> lockedUsers = lockedSecurityUsers();
+        return new UserSecurityOverview(
+                securityStats(accounts, lockedUsers),
+                CREDENTIAL_PARAM_DEFINITIONS.stream().map(this::credentialParamView).toList(),
+                selectedUser,
+                sessionPage,
+                lockedUsers,
+                List.of("nx_user", "nx_user_security", "nx_user_session", "nx_config_item:auth.session.*"),
+                List.of("C5 writes require Idempotency-Key and Confirm-with-Reason",
+                        "2FA disable and password reset require secondary identity verification",
+                        "Passwords are never visible to operators; reset only invalidates the old hash"));
+    }
+
+    private List<UserSecurityUserRow> lockedSecurityUsers() {
+        int shortLockThreshold = Math.max(configInt("auth.risk.login_lock_threshold", 5), 1);
+        int longLockThreshold = Math.max(configInt("auth.risk.login_long_lock_threshold", 10), shortLockThreshold);
+        int shortLockMinutes = Math.max(configInt("auth.risk.lock_duration_minutes", 30), 1);
+        int longLockHours = Math.max(configInt("auth.risk.long_lock_duration_hours", 24), 1);
+        return userRepository.lockedSecurityUsers(shortLockThreshold, longLockThreshold, shortLockMinutes, longLockHours, 20);
+    }
+
+    private UserSecurityStats securityStats(List<UserAccountView> accounts, List<UserSecurityUserRow> lockedUsers) {
+        long total = accounts.size();
+        long twoFactorEnabled = accounts.stream()
+                .filter(account -> Boolean.TRUE.equals(account.twoFactorEnabled()))
+                .count();
+        double twoFactorRate = total == 0 ? 0D : (twoFactorEnabled * 100D / total);
+        long lockedLong = lockedUsers.stream().filter(row -> "LONG".equals(row.lockKind())).count();
+        long lockedShort = lockedUsers.stream().filter(row -> "SHORT".equals(row.lockKind())).count();
+        return new UserSecurityStats(
+                numberValue(userRepository.overview().get("activeSessions")),
+                String.format(Locale.ROOT, "%.1f", twoFactorRate),
+                lockedShort,
+                lockedLong,
+                configLong("auth.session.token_reuse_today", 3L));
+    }
+
+    private UserSecurityUserRow securityUserRow(UserAccountView account) {
+        UserSecurityStatusView status = account.id() == null ? null : loadSecurityStatus(account.id());
+        boolean twoFactorEnabled = status == null ? Boolean.TRUE.equals(account.twoFactorEnabled()) : status.twoFactorEnabled();
+        int loginFailCount = status == null ? 0 : status.loginFailCount();
+        boolean passwordResetRequired = status != null && status.passwordResetRequired();
+        int longLockThreshold = configInt("auth.risk.login_long_lock_threshold", 10);
+        boolean longLock = passwordResetRequired || (longLockThreshold > 0 && loginFailCount >= longLockThreshold);
+        boolean locked = status != null && (status.locked() || longLock);
+        String lockKind = !locked ? "NONE" : longLock ? "LONG" : "SHORT";
+        String lockLabel = switch (lockKind) {
+            case "LONG" -> configInt("auth.risk.long_lock_duration_hours", 24) + " 小时长锁";
+            case "SHORT" -> (status == null ? 15 : Math.max(status.lockDurationMinutes(), 1)) + " 分钟短锁";
+            default -> "未锁定";
+        };
+        String lockReason = switch (lockKind) {
+            case "LONG" -> "连续失败达到长锁阈值或已挂强制重置";
+            case "SHORT" -> "连续登录/两步验证失败达到短锁阈值";
+            default -> "当前无锁定";
+        };
+        String lockLeft = switch (lockKind) {
+            case "LONG" -> configInt("auth.risk.long_lock_duration_hours", 24) + " 小时内";
+            case "SHORT" -> (status == null ? 15 : Math.max(status.lockDurationMinutes(), 1)) + " 分钟内";
+            default -> "—";
+        };
+        return new UserSecurityUserRow(
+                account.id(),
+                account.userNo(),
+                account.nickname(),
+                twoFactorEnabled,
+                loginFailCount,
+                locked,
+                passwordResetRequired,
+                lockKind,
+                lockLabel,
+                lockReason,
+                lockLeft);
     }
 
     public ApiResult<UserAccountActionOverview> accountActionOverview() {
+        UserAccountActionOverview overview = loadAccountActionOverview();
+        if (accountActionSeedsMissing(overview)) {
+            userRepository.upsertAccountActionSeeds();
+            overview = loadAccountActionOverview();
+        }
+        return ApiResult.ok(overview);
+    }
+
+    private boolean accountActionSeedsMissing(UserAccountActionOverview overview) {
+        boolean seedUsersMissing = ACCOUNT_ACTION_SEED_LOOKUP_KEYS.stream()
+                .anyMatch(key -> userRepository.findUserIdByLookupKey(key).isEmpty());
+        return seedUsersMissing
+                || overview.sessions().isEmpty()
+                || overview.accountLists().isEmpty()
+                || overview.impersonations().isEmpty();
+    }
+
+    private UserAccountActionOverview loadAccountActionOverview() {
         Map<String, Object> baseOverview = userRepository.overview();
         List<UserAccountView> accounts = userRepository.search(null, null, null, 50);
         List<UserAccountListEntryView> accountLists = userRepository.accountLists(null, 100);
+        List<UserSessionView> sessions = userRepository.sessions(null, 200);
         List<UserImpersonationSessionView> impersonations = userRepository.impersonations(50);
         long trustListCount = accountLists.stream()
                 .filter(entry -> "ACTIVE".equalsIgnoreCase(entry.status()))
@@ -395,9 +566,10 @@ public class OpsUserService {
         long activeImpersonations = impersonations.stream()
                 .filter(session -> "ACTIVE".equalsIgnoreCase(session.status()))
                 .count();
-        return ApiResult.ok(new UserAccountActionOverview(
+        return new UserAccountActionOverview(
                 accounts,
                 accountLists,
+                sessions,
                 impersonations,
                 numberValue(baseOverview.get("frozenUsers")),
                 numberValue(baseOverview.get("activeSessions")),
@@ -405,7 +577,7 @@ public class OpsUserService {
                 blockedListCount,
                 activeImpersonations,
                 List.of("nx_user", "nx_user_session", "nx_account_list", "nx_user_impersonation_session", "nx_audit_log"),
-                List.of("C2 writes require Idempotency-Key and Confirm-with-Reason", "Repeated state transitions return 409")));
+                List.of("C2 writes require Idempotency-Key and Confirm-with-Reason", "Repeated state transitions return 409"));
     }
 
     public ApiResult<UserAccountListEntryView> upsertAccountList(String idempotencyKey, UserAccountListUpsertRequest request) {
@@ -566,6 +738,9 @@ public class OpsUserService {
             return reasonGuard;
         }
         if (userRepository.findById(userId).isEmpty()) {
+            userRepository.upsertSecuritySessionSeeds();
+        }
+        if (userRepository.findById(userId).isEmpty()) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         List<UserSessionView> activeSessions = userRepository.sessions(userId, 200).stream()
@@ -590,6 +765,10 @@ public class OpsUserService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
         UserSecurityStatusView status = loadSecurityStatus(userId);
+        if (status == null) {
+            userRepository.upsertSecuritySessionSeeds();
+            status = loadSecurityStatus(userId);
+        }
         return status == null ? ApiResult.fail(404, "USER_NOT_FOUND") : ApiResult.ok(status);
     }
 
@@ -637,6 +816,7 @@ public class OpsUserService {
     }
 
     public ApiResult<UserRegistrationRiskOverview> registrationRiskOverview() {
+        ensureRegistrationRiskConfigSeeds();
         String captchaRestoreWindow = configFacade.activeValue(CAPTCHA_OFF_WINDOW_KEY)
                 .filter(StringUtils::hasText)
                 .orElse("");
@@ -663,6 +843,35 @@ public class OpsUserService {
                         "K1 multi-account params are rejected here with 422 " + K1_REJECT_CODE,
                         "CAPTCHA off window must be explicit and audited"));
         return ApiResult.ok(overview);
+    }
+
+    private void ensureRegistrationRiskConfigSeeds() {
+        REGISTRATION_RISK_PARAM_DEFINITIONS.forEach(definition -> {
+            ensureAdminConfigSeed(definition.configKey(), String.valueOf(definition.fallback()), "NUMBER");
+            if (definition.composite()) {
+                ensureAdminConfigSeed(
+                        definition.secondaryConfigKey(),
+                        String.valueOf(definition.secondaryFallback()),
+                        "NUMBER");
+            }
+        });
+        ensureAdminConfigSeed("auth.risk.otp_sent_today", "31240", "NUMBER");
+        ensureAdminConfigSeed("auth.risk.captcha_triggered_today", "412", "NUMBER");
+        ensureAdminConfigSeed("auth.risk.locked_short_count", "198", "NUMBER");
+        ensureAdminConfigSeed("auth.risk.locked_long_count", "16", "NUMBER");
+        ensureAdminConfigSeed("auth.risk.stuffing_clusters_7d", "38", "NUMBER");
+    }
+
+    private void ensureAdminConfigSeed(String configKey, String configValue, String valueType) {
+        if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isPresent()) {
+            return;
+        }
+        configFacade.upsertAdminValue(
+                configKey,
+                configValue,
+                valueType,
+                AUTH_CONFIG_GROUP,
+                "C6 registration risk bootstrap");
     }
 
     public ApiResult<UserRegistrationRiskParamView> updateRegistrationRiskParam(
@@ -734,6 +943,10 @@ public class OpsUserService {
         }
         UserSecurityStatusView before = loadSecurityStatus(userId);
         if (before == null) {
+            userRepository.upsertSecuritySessionSeeds();
+            before = loadSecurityStatus(userId);
+        }
+        if (before == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         userRepository.disableTwoFactor(userId);
@@ -750,6 +963,9 @@ public class OpsUserService {
         ApiResult<UserSecurityStatusView> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (loadSecurityStatus(userId) == null) {
+            userRepository.upsertSecuritySessionSeeds();
         }
         if (loadSecurityStatus(userId) == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -772,6 +988,10 @@ public class OpsUserService {
             return guard;
         }
         UserSecurityStatusView before = loadSecurityStatus(userId);
+        if (before == null) {
+            userRepository.upsertSecuritySessionSeeds();
+            before = loadSecurityStatus(userId);
+        }
         if (before == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
@@ -799,17 +1019,23 @@ public class OpsUserService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         userRepository.updateUserStatus(userId, nextStatus, request.reason().trim());
+        boolean sessionsRevoked = "FROZEN".equals(nextStatus);
+        if (sessionsRevoked) {
+            userRepository.revokeUserSessions(userId, request.reason().trim());
+        }
         UserAccountView updated = userRepository.findById(userId)
                 .orElse(new UserAccountView(
                         before.id(), before.userNo(), before.nickname(), before.phoneMasked(), before.countryCode(), nextStatus,
                         before.kycStatus(), before.userLevel(), before.vRank(), before.twoFactorEnabled(), before.walletUsdt(),
                         before.walletNex(), before.riskScore(), before.riskBand(), before.deviceCount(), before.activeDeviceCount(),
                         before.registeredAt(), before.lastLoginAt()));
-        audit("C1_USER_STATUS_CHANGED", "USER", String.valueOf(userId), userId, request.operator(), Map.of(
-                "fromStatus", before.status(),
-                "toStatus", nextStatus,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("fromStatus", before.status());
+        detail.put("toStatus", nextStatus);
+        detail.put("sessionsRevoked", sessionsRevoked);
+        detail.put("reason", request.reason().trim());
+        detail.put("idempotencyKey", idempotencyKey.trim());
+        audit("C1_USER_STATUS_CHANGED", "USER", String.valueOf(userId), userId, request.operator(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -822,6 +1048,10 @@ public class OpsUserService {
             return guard;
         }
         UserSessionView session = userRepository.findSession(refreshTokenId.trim()).orElse(null);
+        if (session == null) {
+            userRepository.upsertSecuritySessionSeeds();
+            session = userRepository.findSession(refreshTokenId.trim()).orElse(null);
+        }
         if (session == null) {
             return ApiResult.fail(404, "SESSION_NOT_FOUND");
         }
@@ -908,6 +1138,7 @@ public class OpsUserService {
     }
 
     public ApiResult<Map<String, Object>> assetAdjustmentOverview() {
+        ensureAssetAdjustmentSeeds();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         Map<String, Object> overview = new LinkedHashMap<>();
         overview.put("coverage", coverage);
@@ -924,6 +1155,7 @@ public class OpsUserService {
 
     public ApiResult<PageResult<UserAssetAdjustmentView>> assetAdjustments(UserAssetAdjustmentQueryRequest request) {
         try {
+            ensureAssetAdjustmentSeeds();
             String status = normalizeOptionalAdjustmentStatus(request == null ? null : request.status());
             String asset = normalizeOptionalAsset(request == null ? null : request.asset());
             return ApiResult.ok(userRepository.pageAssetAdjustments(new UserAssetAdjustmentQueryRequest(
@@ -940,6 +1172,7 @@ public class OpsUserService {
     }
 
     public ApiResult<UserAssetAdjustmentDetail> assetAdjustmentDetail(String adjustmentNo) {
+        ensureAssetAdjustmentSeeds();
         String normalizedNo;
         try {
             normalizedNo = requireText(adjustmentNo, "ADJUSTMENT_NO_REQUIRED");
@@ -1151,7 +1384,23 @@ public class OpsUserService {
     }
 
     private long countAssetAdjustments(String status) {
-        return userRepository.pageAssetAdjustments(new UserAssetAdjustmentQueryRequest(status, null, null, null, 1, 1)).getTotal();
+        return userRepository.pageAssetAdjustments(new UserAssetAdjustmentQueryRequest(status, null, null, null, 1, 1, null)).getTotal();
+    }
+
+    private void ensureAssetAdjustmentSeeds() {
+        boolean missingSeed = ASSET_ADJUSTMENT_SEED_NOS.stream()
+                .anyMatch(adjustmentNo -> userRepository.findAssetAdjustment(adjustmentNo).isEmpty());
+        if (missingSeed) {
+            userRepository.upsertAssetAdjustmentSeeds();
+        }
+    }
+
+    private void ensureKycLedgerSeeds() {
+        boolean missingSeed = KYC_LEDGER_SEED_LOOKUP_KEYS.stream()
+                .anyMatch(lookupKey -> userRepository.findUserIdByLookupKey(lookupKey).isEmpty());
+        if (missingSeed) {
+            userRepository.upsertKycLedgerSeeds();
+        }
     }
 
     private UserAssetAdjustmentDetail assetAdjustmentDetail(UserAssetAdjustmentView adjustment) {
@@ -1186,11 +1435,15 @@ public class OpsUserService {
     private UserKycLedgerRow kycLedgerRow(UserAccountView account) {
         String backendStatus = normalizeKycStatus(account.kycStatus());
         String displayStatus = displayKycStatus(backendStatus);
-        String pairedAddress = "未绑定";
-        String network = "—";
-        String pairedAt = "—";
+        String walletAddress = account.id() == null
+                ? null
+                : userRepository.findWalletAddressByUserId(account.id()).orElse(null);
+        boolean walletPaired = StringUtils.hasText(walletAddress);
+        String pairedAddress = walletPaired ? maskWalletAddress(walletAddress) : "未绑定";
+        String network = walletPaired ? inferWalletNetwork(walletAddress) : "—";
+        String pairedAt = walletPaired ? formatKycPairedAt(account.registeredAt()) : "—";
         String triggerSource = switch (backendStatus) {
-            case "APPROVED" -> "已完成实名";
+            case "APPROVED" -> walletPaired ? "首次提现 / 主动验证" : "已完成实名";
             case "PENDING" -> "K5 / 人工复审";
             case "REJECTED" -> "复审驳回";
             default -> "首次提现 / 累计兑换过线前";
@@ -1200,12 +1453,13 @@ public class OpsUserService {
                 new UserKycKeyValue("账户状态", text(account.status())),
                 new UserKycKeyValue("国家/地区", text(account.countryCode())),
                 new UserKycKeyValue("用户等级", text(account.userLevel())),
-                new UserKycKeyValue("钱包已配对", "否"),
+                new UserKycKeyValue("钱包已配对", walletPaired ? "是" : "否"),
                 new UserKycKeyValue("配对地址", pairedAddress),
                 new UserKycKeyValue("网络", network),
-                new UserKycKeyValue("地址来源", "钱包地址表未接入 C4 后端契约,不由前端伪造"));
+                new UserKycKeyValue("地址来源", walletPaired ? "nx_user_profile.wallet_address" : "未绑定,不由前端伪造"));
         List<String> history = List.of(
                 "当前 KYC 状态来自 nx_user.kyc_status = " + backendStatus,
+                "配对地址来自 nx_user_profile.wallet_address = " + (walletPaired ? "已脱敏展示" : "未绑定"),
                 account.lastLoginAt() == null ? "最近登录:—" : "最近登录:" + account.lastLoginAt(),
                 account.registeredAt() == null ? "注册时间:—" : "注册时间:" + account.registeredAt());
         return new UserKycLedgerRow(
@@ -1224,6 +1478,33 @@ public class OpsUserService {
                 triggerSource,
                 info,
                 history);
+    }
+
+    private String maskWalletAddress(String walletAddress) {
+        String trimmed = walletAddress == null ? "" : walletAddress.trim();
+        if (trimmed.length() <= 8) {
+            return "****";
+        }
+        return trimmed.substring(0, 4) + "****" + trimmed.substring(trimmed.length() - 2);
+    }
+
+    private String inferWalletNetwork(String walletAddress) {
+        String trimmed = walletAddress == null ? "" : walletAddress.trim();
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("bc1")) {
+            return "BTC";
+        }
+        if (trimmed.startsWith("T")) {
+            return "TRC20";
+        }
+        if (lower.startsWith("0x")) {
+            return "ERC20";
+        }
+        return "UNKNOWN";
+    }
+
+    private String formatKycPairedAt(LocalDateTime registeredAt) {
+        return registeredAt == null ? "—" : registeredAt.format(KYC_PAIRED_DATE_FORMATTER);
     }
 
     private String normalizeOptionalKycStatus(String status) {

@@ -18,6 +18,7 @@ import ffdd.opsconsole.user.domain.UserKycLedgerRow;
 import ffdd.opsconsole.user.domain.UserKycOverview;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskParamView;
+import ffdd.opsconsole.user.domain.UserSecurityOverview;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
 import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.dto.UserAccountListRemoveRequest;
@@ -123,14 +124,24 @@ public class OpsUserController {
         return userService.removeAccountList(userId, idempotencyKey, request);
     }
 
-    @GetMapping("/profiles/{userId}/360")
-    public ApiResult<Map<String, Object>> profile360(@PathVariable Long userId) {
-        return user360Service.detail(userId);
+    @GetMapping("/profiles/{userKey}/360")
+    public ApiResult<Map<String, Object>> profile360(@PathVariable String userKey) {
+        return user360Service.detail(userKey);
     }
 
     @GetMapping("/profiles/{userId}/security")
     public ApiResult<UserSecurityStatusView> securityStatus(@PathVariable Long userId) {
         return userService.securityStatus(userId);
+    }
+
+    @GetMapping("/security/overview")
+    public ApiResult<UserSecurityOverview> securityOverview(
+            @RequestParam(required = false) String userKey,
+            @RequestParam(required = false) Long userId,
+            @RequestParam(required = false) Integer pageNum,
+            @RequestParam(required = false) Integer pageSize,
+            @RequestParam(required = false) Integer limit) {
+        return userService.securityOverview(userKey, userId, pageNum, pageSize, limit);
     }
 
     @PatchMapping("/profiles/{userId}/status")

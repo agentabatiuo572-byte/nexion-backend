@@ -21,9 +21,6 @@ class OpsPlatformConfigControllerTest {
     @Test
     void overviewDelegatesToPlatformApplicationService() {
         PlatformConfigOverview overview = new PlatformConfigOverview(
-                "2026-06-17T00:00:00",
-                Map.of(),
-                Map.of(),
                 List.of(),
                 List.of(),
                 List.of(),

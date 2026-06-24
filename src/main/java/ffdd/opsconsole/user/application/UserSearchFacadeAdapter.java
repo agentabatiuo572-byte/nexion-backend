@@ -22,7 +22,7 @@ public class UserSearchFacadeAdapter implements UserSearchFacade {
         if (!StringUtils.hasText(q)) {
             return List.of();
         }
-        ApiResult<List<UserAccountView>> result = userService.profiles(new UserQueryRequest(q, null, null, limit));
+        ApiResult<List<UserAccountView>> result = userService.profiles(new UserQueryRequest(q, null, null, null, null, null, limit));
         if (result == null || result.getCode() != 0 || result.getData() == null) {
             return List.of();
         }

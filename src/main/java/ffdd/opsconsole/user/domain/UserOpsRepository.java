@@ -20,7 +20,28 @@ public interface UserOpsRepository {
 
     Optional<UserAccountView> findById(Long userId);
 
+    Optional<Long> findUserIdByLookupKey(String lookupKey);
+
+    void upsertUser360Seed(User360Seed seed);
+
+    void upsertAccountActionSeeds();
+
+    void upsertKycLedgerSeeds();
+
+    void upsertAssetAdjustmentSeeds();
+
+    void upsertSecuritySessionSeeds();
+
+    Optional<String> findWalletAddressByUserId(Long userId);
+
     Optional<UserSecurityStatusView> securityStatus(Long userId);
+
+    List<UserSecurityUserRow> lockedSecurityUsers(
+            int shortLockThreshold,
+            int longLockThreshold,
+            int shortLockMinutes,
+            int longLockHours,
+            int limit);
 
     List<UserSessionView> sessions(Long userId, int limit);
 

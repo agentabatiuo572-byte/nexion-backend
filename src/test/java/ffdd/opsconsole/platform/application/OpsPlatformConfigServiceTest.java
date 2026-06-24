@@ -29,16 +29,28 @@ class OpsPlatformConfigServiceTest {
     private final OpsPlatformConfigService service = new OpsPlatformConfigService(repository, auditLogService);
 
     @Test
-    void overviewKeepsA3RuntimeDefaultsAndExcludesSunsetGates() {
+    void overviewSeedsRemainingA3DataAndExcludesDeletedDomains() {
+        repository.put(activeConfig(90L, "admin.system.ntp_source", "pool.ntp.org"));
+        repository.put(activeConfig(91L, "admin.idempotency.window_hours", "24"));
+
         ApiResult<PlatformConfigOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().idempotency()).containsEntry("windowHours", 24);
         assertThat(result.getData().featureFlags()).extracting(flag -> flag.get("key"))
                 .contains("ab.newWithdrawFlow", "core.sse_v2");
         assertThat(result.getData().killSwitches()).extracting(gate -> gate.get("key"))
                 .contains("withdraw", "geo-block")
                 .doesNotContain("premium", "nex-v2", "points");
+        assertThat(result.getData().systemHealth()).extracting(row -> row.get("name"))
+                .contains("事件管道(采集 -> 事件库)", "后台接口可用性(24h)")
+                .doesNotContain("NTP 同步");
+        assertThat(repository.items)
+                .containsKeys(
+                        "feature.ab.newWithdrawFlow",
+                        "killswitch.withdraw",
+                        "admin.health.event_pipeline");
+        assertThat(repository.items.get("admin.system.ntp_source").status()).isZero();
+        assertThat(repository.items.get("admin.idempotency.window_hours").status()).isZero();
     }
 
     @Test
@@ -117,13 +129,23 @@ class OpsPlatformConfigServiceTest {
         return (Map<String, Object>) detail;
     }
 
+    private static PlatformConfigItem activeConfig(Long id, String key, String value) {
+        LocalDateTime now = LocalDateTime.now();
+        return new PlatformConfigItem(id, key, value, "STRING", "admin_a3", "ADMIN", "legacy A3 config", 1, now, now);
+    }
+
     private static final class InMemoryPlatformConfigRepository implements PlatformConfigRepository {
         private final Map<String, PlatformConfigItem> items = new LinkedHashMap<>();
         private long sequence = 1L;
 
+        private void put(PlatformConfigItem item) {
+            items.put(item.configKey(), item);
+        }
+
         @Override
         public Optional<PlatformConfigItem> findActiveByKey(String configKey) {
-            return Optional.ofNullable(items.get(configKey));
+            return Optional.ofNullable(items.get(configKey))
+                    .filter(item -> item.status() != null && item.status() == 1);
         }
 
         @Override

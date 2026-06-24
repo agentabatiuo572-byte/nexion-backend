@@ -1,10 +1,5 @@
 package ffdd.opsconsole.platform.application;
 
-
-import lombok.RequiredArgsConstructor;
-import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.audit.AuditLogService;
-import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
@@ -12,6 +7,9 @@ import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.PlatformConfigOverview;
 import ffdd.opsconsole.platform.dto.PlatformConfigResponse;
 import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
+import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.time.LocalDateTime;
@@ -24,40 +22,63 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsPlatformConfigService {
-    private static final String GROUP_A3 = "admin_a3";
     private static final String GROUP_FLAG = "admin_feature_flag";
     private static final String GROUP_GATE = "admin_killswitch";
+    private static final String GROUP_HEALTH = "admin_system_health";
+    private static final String META_DELIMITER = "||";
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Pattern CONFIG_SUFFIX_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{1,96}$");
-    private static final Set<String> ACTIVE_GROUPS = Set.of(GROUP_A3, GROUP_FLAG, GROUP_GATE);
+    private static final Set<String> ACTIVE_GROUPS = Set.of(GROUP_FLAG, GROUP_GATE, GROUP_HEALTH);
+    private static final Set<String> DELETED_CONFIG_KEYS = Set.of(
+            "admin.system.clock_drift_ms",
+            "admin.system.clock_threshold_ms",
+            "admin.system.ntp_source",
+            "admin.idempotency.window_hours",
+            "admin.idempotency.blocked_24h");
+
+    private static final List<FeatureSeed> FEATURE_SEEDS = List.of(
+            new FeatureSeed("ab.newWithdrawFlow", "新版提现流程实验", "新提现页与旧版 A/B,对比转化与流失", "灰度 20%", "全量随机", "增长可发起"),
+            new FeatureSeed("ab.homeBannerExp", "首页 Banner 实验", "活动入口 Banner 素材与排序实验", "on", "注册周 >=W20", "增长可发起"),
+            new FeatureSeed("exp.questBoostAB", "任务加成实验", "新手任务收益加成实验", "on", "P3 阶段用户", "增长可发起"),
+            new FeatureSeed("core.sse_v2", "SSE v2 通道", "新推送链路灰度,观察重连率与延迟", "灰度 50%", "全量随机", "超管(平台能力)"),
+            new FeatureSeed("ops.maintenanceBanner", "维护公告横幅", "后台统一维护公告开关", "off", "全量", "风控/超管(运维)"));
+
+    private static final List<GateSeed> GATE_SEEDS = List.of(
+            new GateSeed("withdraw", "提现", "enabled", "2d 前 · risk@nexion / super@nexion", "risk@nexion / super@nexion"),
+            new GateSeed("staking", "质押", "enabled", "6d 前 · ops@nexion / super@nexion", "ops@nexion / super@nexion"),
+            new GateSeed("genesis", "Genesis 入口", "enabled", "3h 前 · ops@nexion / super@nexion", "ops@nexion / super@nexion"),
+            new GateSeed("exchange", "交易", "enabled", "1d 前 · exchange@nexion / super@nexion", "exchange@nexion / super@nexion"),
+            new GateSeed("trial", "试用权益", "enabled", "5d 前 · growth@nexion / super@nexion", "growth@nexion / super@nexion"),
+            new GateSeed("geo-block", "地区屏蔽", "empty-list", "-", "- / -"));
+
+    private static final List<HealthSeed> HEALTH_SEEDS = List.of(
+            new HealthSeed("event_pipeline", "事件管道(采集 -> 事件库)", "正常 · 延迟 1.2s", "ok"),
+            new HealthSeed("ledger_write", "账本写入(资金事务)", "正常 · p99 84ms", "ok"),
+            new HealthSeed("admin_api_availability", "后台接口可用性(24h)", "99.98%", "ok"),
+            new HealthSeed("sse", "SSE 推送通道(配置失效广播)", "轻度抖动 · 重连率 2.1%", "warn"));
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
 
     public ApiResult<PlatformConfigOverview> overview() {
+        ensureSeedData();
         Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
         List<Map<String, Object>> flags = featureFlags(configs);
         List<Map<String, Object>> gates = killSwitches(configs);
+        List<Map<String, Object>> health = systemHealth(configs);
         int upGates = (int) gates.stream()
                 .filter(gate -> Boolean.TRUE.equals(gate.get("up")))
                 .count();
         return ApiResult.ok(new PlatformConfigOverview(
-                LocalDateTime.now().format(ISO),
-                Map.of(
-                        "driftMillis", number(configs, "admin.system.clock_drift_ms", 4),
-                        "driftThresholdMillis", number(configs, "admin.system.clock_threshold_ms", 100),
-                        "ntpSource", text(configs, "admin.system.ntp_source", "pool.ntp.org x3")),
-                Map.of(
-                        "windowHours", number(configs, "admin.idempotency.window_hours", 24),
-                        "blocked24h", number(configs, "admin.idempotency.blocked_24h", 0)),
                 flags,
                 gates,
-                systemHealth(configs),
+                health,
                 Map.of(
                         "flagCount", flags.size(),
                         "flagGrayCount", flags.stream().filter(flag -> String.valueOf(flag.get("status")).contains("灰度")).count(),
@@ -112,6 +133,46 @@ public class OpsPlatformConfigService {
         return ApiResult.ok(toResponse(saved));
     }
 
+    private void ensureSeedData() {
+        retireDeletedConfigData();
+        FEATURE_SEEDS.forEach(seed -> ensureConfig(seed.configKey(), seed.status(), GROUP_FLAG, seed.remark()));
+        GATE_SEEDS.forEach(seed -> ensureConfig(seed.configKey(), seed.status(), GROUP_GATE, seed.remark()));
+        HEALTH_SEEDS.forEach(seed -> ensureConfig(seed.configKey(), seed.metric(), GROUP_HEALTH, seed.remark()));
+    }
+
+    private void retireDeletedConfigData() {
+        DELETED_CONFIG_KEYS.forEach(configKey -> configRepository.findActiveByKey(configKey)
+                .ifPresent(item -> configRepository.save(new PlatformConfigItem(
+                        item.id(),
+                        item.configKey(),
+                        item.configValue(),
+                        item.valueType(),
+                        item.configGroup(),
+                        item.visibility(),
+                        "A3 deleted config domain retired",
+                        0,
+                        item.createdAt(),
+                        LocalDateTime.now()))));
+    }
+
+    private void ensureConfig(String configKey, String configValue, String configGroup, String remark) {
+        if (configRepository.findActiveByKey(configKey).isPresent()) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        configRepository.save(new PlatformConfigItem(
+                null,
+                configKey,
+                configValue,
+                "STRING",
+                configGroup,
+                "ADMIN",
+                remark,
+                1,
+                now,
+                now));
+    }
+
     private Map<String, PlatformConfigItem> loadConfigMap(Collection<String> groups) {
         return configRepository.findActiveByGroups(groups).stream()
                 .collect(Collectors.toMap(
@@ -122,86 +183,79 @@ public class OpsPlatformConfigService {
     }
 
     private List<Map<String, Object>> featureFlags(Map<String, PlatformConfigItem> configs) {
-        return List.of(
-                feature(configs, "ab.newWithdrawFlow", "灰度 20%", "全量随机", "增长可发起"),
-                feature(configs, "ab.homeBannerExp", "on", "注册周 >=W20", "增长可发起"),
-                feature(configs, "exp.questBoostAB", "on", "P3 阶段用户", "增长可发起"),
-                feature(configs, "core.sse_v2", "灰度 50%", "全量随机", "超管(平台能力)"),
-                feature(configs, "ops.maintenanceBanner", "off", "全量", "风控/超管(运维)"));
+        return FEATURE_SEEDS.stream()
+                .map(seed -> feature(configs, seed))
+                .toList();
     }
 
-    private Map<String, Object> feature(
-            Map<String, PlatformConfigItem> configs, String key, String fallbackStatus, String scope, String owner) {
-        String configKey = "feature." + key;
-        PlatformConfigItem item = configs.get(configKey);
+    private Map<String, Object> feature(Map<String, PlatformConfigItem> configs, FeatureSeed seed) {
+        PlatformConfigItem item = configs.get(seed.configKey());
+        List<String> meta = metaParts(item, 4);
         return Map.of(
-                "key", key,
-                "status", item == null ? fallbackStatus : item.configValue(),
-                "scope", scope,
-                "lastChange", item == null || item.updatedAt() == null ? "后端默认值" : item.updatedAt().format(ISO),
-                "resourceOwner", owner);
+                "key", seed.key(),
+                "name", metaValue(meta, 0, seed.name()),
+                "desc", metaValue(meta, 1, seed.description()),
+                "status", valueOf(item, seed.status()),
+                "scope", metaValue(meta, 2, seed.scope()),
+                "lastChange", updatedAt(item),
+                "resourceOwner", metaValue(meta, 3, seed.owner()));
     }
 
     private List<Map<String, Object>> killSwitches(Map<String, PlatformConfigItem> configs) {
-        return List.of(
-                gate(configs, "exchange", "enabled"),
-                gate(configs, "withdraw", "enabled"),
-                gate(configs, "deposit", "enabled"),
-                gate(configs, "staking", "enabled"),
-                gate(configs, "missions", "enabled"),
-                gate(configs, "commerce", "enabled"),
-                gate(configs, "geo-block", "empty-list"));
+        return GATE_SEEDS.stream()
+                .map(seed -> gate(configs, seed))
+                .toList();
     }
 
-    private Map<String, Object> gate(Map<String, PlatformConfigItem> configs, String key, String fallbackStatus) {
-        String configKey = "killswitch." + key;
-        PlatformConfigItem item = configs.get(configKey);
-        String status = item == null ? fallbackStatus : item.configValue();
+    private Map<String, Object> gate(Map<String, PlatformConfigItem> configs, GateSeed seed) {
+        PlatformConfigItem item = configs.get(seed.configKey());
+        List<String> meta = metaParts(item, 3);
+        String status = normalizeGateDisplay(valueOf(item, seed.status()));
         return Map.of(
-                "key", key,
+                "key", seed.key(),
+                "name", metaValue(meta, 0, seed.name()),
                 "status", status,
-                "up", "enabled".equalsIgnoreCase(status) || "empty-list".equalsIgnoreCase(status),
-                "lastChange", item == null || item.updatedAt() == null ? "后端默认值" : item.updatedAt().format(ISO),
-                "chain", item == null || !StringUtils.hasText(item.remark()) ? "system / config" : item.remark());
+                "up", isGateUp(status),
+                "lastChange", metaValue(meta, 1, updatedAt(item)),
+                "chain", metaValue(meta, 2, seed.chain()));
     }
 
     private List<Map<String, Object>> systemHealth(Map<String, PlatformConfigItem> configs) {
+        List<Map<String, Object>> seededHealth = HEALTH_SEEDS.stream()
+                .map(seed -> health(configs, seed))
+                .collect(Collectors.toList());
+        seededHealth.add(jvmHealth());
+        return seededHealth;
+    }
+
+    private Map<String, Object> health(Map<String, PlatformConfigItem> configs, HealthSeed seed) {
+        PlatformConfigItem item = configs.get(seed.configKey());
+        List<String> meta = metaParts(item, 2);
+        return Map.of(
+                "name", metaValue(meta, 0, seed.name()),
+                "tone", metaValue(meta, 1, seed.tone()),
+                "metric", valueOf(item, seed.metric()));
+    }
+
+    private Map<String, Object> jvmHealth() {
         MemoryMXBean memory = ManagementFactory.getMemoryMXBean();
         long usedMb = memory.getHeapMemoryUsage().getUsed() / 1024 / 1024;
         long maxMb = Math.max(1, memory.getHeapMemoryUsage().getMax() / 1024 / 1024);
-        return List.of(
-                Map.of("name", "事件管道(采集 -> 去重 -> 事件库)", "tone", "ok", "metric", text(configs, "admin.health.event_pipeline", "正常 · 延迟 1.2s")),
-                Map.of("name", "账本写入(资金事务)", "tone", "ok", "metric", text(configs, "admin.health.ledger_write", "正常 · p99 84ms")),
-                Map.of("name", "后台接口可用性(24h)", "tone", "ok", "metric", text(configs, "admin.health.admin_api_availability", "99.98%")),
-                Map.of("name", "JVM 堆内存", "tone", usedMb * 100 / maxMb > 85 ? "warn" : "ok", "metric", usedMb + "MB / " + maxMb + "MB"),
-                Map.of("name", "SSE 推送通道(配置失效广播)", "tone", "warn", "metric", text(configs, "admin.health.sse", "轻度抖动 · 重连率 2.1%")));
+        return Map.of(
+                "name", "JVM 堆内存",
+                "tone", usedMb * 100 / maxMb > 85 ? "warn" : "ok",
+                "metric", usedMb + "MB / " + maxMb + "MB");
     }
 
     private ConfigCommand commandFor(PlatformConfigUpdateRequest request) {
         String kind = trimToLower(request.kind());
         return switch (kind) {
-            case "ntp" -> new ConfigCommand(kind, "admin.system.ntp_source", normalizeTextValue(request.value()), GROUP_A3,
-                    remarkFor(request), "ADMIN_SYSTEM_PARAM_CHANGED");
-            case "idempotency" -> new ConfigCommand(kind, "admin.idempotency.window_hours", normalizeIdempotencyHours(request.value()), GROUP_A3,
-                    remarkFor(request), "ADMIN_SYSTEM_PARAM_CHANGED");
             case "flag" -> new ConfigCommand(kind, "feature." + normalizeSuffix(request.flagKey(), "flagKey"),
                     normalizeTextValue(request.value()), GROUP_FLAG, remarkFor(request), "ADMIN_FEATURE_FLAG_CHANGED");
             case "gate" -> new ConfigCommand(kind, "killswitch." + normalizeSuffix(request.gateKey(), "gateKey"),
                     normalizeGateValue(request.value()), GROUP_GATE, remarkFor(request), "ADMIN_KILL_SWITCH_CHANGED");
             default -> throw new IllegalArgumentException("Unsupported A3 config kind: " + request.kind());
         };
-    }
-
-    private String normalizeIdempotencyHours(String value) {
-        String normalized = normalizeTextValue(value).replaceAll("[^0-9]", "");
-        if (!StringUtils.hasText(normalized)) {
-            throw new IllegalArgumentException("idempotency window must be numeric hours");
-        }
-        int hours = Integer.parseInt(normalized);
-        if (hours < 1 || hours > 72) {
-            throw new IllegalArgumentException("idempotency window must be 1-72 hours");
-        }
-        return String.valueOf(hours);
     }
 
     private String normalizeGateValue(String value) {
@@ -244,17 +298,40 @@ public class OpsPlatformConfigService {
         return "A3 " + trimToLower(request.kind()) + " change: " + request.reason().trim();
     }
 
-    private String text(Map<String, PlatformConfigItem> configs, String key, String fallback) {
-        PlatformConfigItem item = configs.get(key);
+    private String valueOf(PlatformConfigItem item, String fallback) {
         return item == null || !StringUtils.hasText(item.configValue()) ? fallback : item.configValue();
     }
 
-    private int number(Map<String, PlatformConfigItem> configs, String key, int fallback) {
-        try {
-            return Integer.parseInt(text(configs, key, String.valueOf(fallback)).replaceAll("[^0-9-]", ""));
-        } catch (NumberFormatException ex) {
+    private String updatedAt(PlatformConfigItem item) {
+        return item == null || item.updatedAt() == null ? "后端种子" : item.updatedAt().format(ISO);
+    }
+
+    private static String joinMeta(String... parts) {
+        return String.join(META_DELIMITER, parts);
+    }
+
+    private List<String> metaParts(PlatformConfigItem item, int expectedParts) {
+        if (item == null || !StringUtils.hasText(item.remark())) {
+            return List.of();
+        }
+        String[] parts = item.remark().split("\\|\\|", -1);
+        return parts.length >= expectedParts ? List.of(parts) : List.of();
+    }
+
+    private String metaValue(List<String> meta, int index, String fallback) {
+        if (index >= meta.size() || !StringUtils.hasText(meta.get(index))) {
             return fallback;
         }
+        return meta.get(index);
+    }
+
+    private String normalizeGateDisplay(String status) {
+        return "empty-list".equalsIgnoreCase(status) ? "空列表 · 无封锁" : status;
+    }
+
+    private boolean isGateUp(String status) {
+        return Set.of("enabled", "on", "true", "空列表 · 无封锁")
+                .contains(status.toLowerCase(Locale.ROOT));
     }
 
     private PlatformConfigResponse toResponse(PlatformConfigItem item) {
@@ -280,5 +357,35 @@ public class OpsPlatformConfigService {
     }
 
     private record ConfigCommand(String kind, String configKey, String value, String group, String remark, String action) {
+    }
+
+    private record FeatureSeed(String key, String name, String description, String status, String scope, String owner) {
+        private String configKey() {
+            return "feature." + key;
+        }
+
+        private String remark() {
+            return joinMeta(name, description, scope, owner);
+        }
+    }
+
+    private record GateSeed(String key, String name, String status, String lastChange, String chain) {
+        private String configKey() {
+            return "killswitch." + key;
+        }
+
+        private String remark() {
+            return joinMeta(name, lastChange, chain);
+        }
+    }
+
+    private record HealthSeed(String key, String name, String metric, String tone) {
+        private String configKey() {
+            return "admin.health." + key;
+        }
+
+        private String remark() {
+            return joinMeta(name, tone);
+        }
     }
 }
