@@ -10,7 +10,15 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
+import ffdd.opsconsole.market.domain.GenesisNodeView;
+import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
+import ffdd.opsconsole.market.domain.GenesisSeriesView;
 import ffdd.opsconsole.market.domain.NexMarketRepository;
+import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
+import ffdd.opsconsole.market.domain.RepurchaseStatsView;
+import ffdd.opsconsole.market.domain.RepurchaseStatusView;
+import ffdd.opsconsole.market.domain.StakingPositionView;
+import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -68,6 +76,43 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void overviewSeedsMissingDbAndConfigBeforeReadingMarketCurve() {
+        configFacade.values.clear();
+        marketRepository.latestPrice = Optional.empty();
+        marketRepository.latestSparkline = Optional.empty();
+
+        ApiResult<Map<String, Object>> result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.marketSeeded).isTrue();
+        assertThat(configFacade.values)
+                .containsKeys(
+                        "wallet.nex_market.weekly_curve",
+                        "wallet.exchange.nex_usdt_price",
+                        "wallet.nex_market.control.schedule",
+                        "wallet.nex_market.control.pin",
+                        "wallet.nex_market.control.loop",
+                        "wallet.nex_market.paused");
+        assertThat((BigDecimal) result.getData().get("currentPrice")).isEqualByComparingTo("0.171");
+        assertThat((List<?>) result.getData().get("frames"))
+                .extracting("targetPrice")
+                .contains(new BigDecimal("0.17100000"));
+    }
+
+    @Test
+    void curveHistorySeedsMissingDbBeforeReadingSparkline() {
+        configFacade.values.clear();
+        marketRepository.latestPrice = Optional.empty();
+        marketRepository.latestSparkline = Optional.empty();
+
+        ApiResult<Map<String, Object>> result = service.curveHistory();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.marketSeeded).isTrue();
+        assertThat((List<?>) result.getData().get("points")).isNotEmpty();
+    }
+
+    @Test
     void exchangeOverviewUsesServerOrdersConfigAndJ1Switch() {
         marketRepository.orders = List.of(exchange("EX-Q-1", "QUEUED"), exchange("EX-KYC-1", "KYC_REQUIRED"));
         configFacade.values.put("wallet.exchange.platform_daily_cap_usdt", "20000");
@@ -80,6 +125,37 @@ class OpsNexMarketServiceTest {
         assertThat((List<?>) result.getData().get("queue")).hasSize(1);
         assertThat(detailMap(result.getData().get("swap"))).containsEntry("enabled", false);
         assertThat((List<?>) result.getData().get("geoBlocked")).isNotEmpty();
+    }
+
+    @Test
+    void exchangeOverviewSeedsMissingDbBeforeReadingOrdersAndGates() {
+        marketRepository.orders = List.of();
+
+        ApiResult<Map<String, Object>> result = service.exchangeOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.exchangeSeeded).isTrue();
+        assertThat((List<?>) result.getData().get("queue"))
+                .extracting("exchangeNo")
+                .containsExactly("DEMO-EX-QUEUE-1", "DEMO-EX-QUEUE-2");
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("queueDepth", 2L)
+                .containsEntry("gateKyc", 1L)
+                .containsEntry("gateUser", 1L)
+                .containsEntry("gatePlatform", 1L);
+    }
+
+    @Test
+    void exchangeOverviewSeedsWhenExistingOrdersDoNotProvideQueueOrGates() {
+        marketRepository.orders = List.of(exchange("EX-DONE-1", "COMPLETED"));
+
+        ApiResult<Map<String, Object>> result = service.exchangeOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.exchangeSeeded).isTrue();
+        assertThat((List<?>) result.getData().get("queue"))
+                .extracting("exchangeNo")
+                .containsExactly("DEMO-EX-QUEUE-1", "DEMO-EX-QUEUE-2");
     }
 
     @Test
@@ -208,6 +284,51 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void updateScheduleControlNormalizesTimeAndWritesConfig() {
+        ApiResult<Map<String, Object>> result = service.updateControl(
+                "idem-schedule",
+                "schedule",
+                new NexMarketValueUpdateRequest("每日 08:30 Asia/Shanghai 自动推进", "change daily advance time", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("wallet.nex_market.control.schedule", "每日 08:30 Asia/Shanghai 自动推进");
+    }
+
+    @Test
+    void updateScheduleControlRejectsInvalidTime() {
+        configFacade.values.put("wallet.nex_market.control.schedule", "每日 00:00 UTC 自动推进");
+
+        ApiResult<Map<String, Object>> result = service.updateControl(
+                "idem-schedule-invalid",
+                "schedule",
+                new NexMarketValueUpdateRequest("每天凌晨", "bad schedule", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("G3_SCHEDULE_INVALID");
+        assertThat(configFacade.values)
+                .containsEntry("wallet.nex_market.control.schedule", "每日 00:00 UTC 自动推进");
+    }
+
+    @Test
+    void scheduledAdvanceSkipsWhenEnginePaused() {
+        configFacade.values.put("wallet.nex_market.paused", "true");
+
+        service.advanceScheduledFrame();
+
+        assertThat(marketRepository.lastPrice).isNull();
+    }
+
+    @Test
+    void scheduledAdvanceSkipsWhenPinned() {
+        configFacade.values.put("wallet.nex_market.control.pin", "D3");
+
+        service.advanceScheduledFrame();
+
+        assertThat(marketRepository.lastPrice).isNull();
+    }
+
+    @Test
     void updateOverridePricePublishesMarketPriceAndAudits() {
         ApiResult<Map<String, Object>> result = service.updateOverride(
                 "idem-price",
@@ -255,6 +376,27 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void repurchaseOverviewSeedsMissingDbBeforeReadingPositionsAndBuckets() {
+        marketRepository.repurchasePositions = List.of();
+
+        ApiResult<Map<String, Object>> result = service.repurchaseOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.repurchaseSeeded).isTrue();
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("ordersMonth", 3L)
+                .containsEntry("principalUsd", new BigDecimal("6800"));
+        assertThat(result.getData().get("amountDistribution"))
+                .isEqualTo("$100 tier 20% / $200 tier 20% / $500 tier 20% / $1,000 tier 20% / $5,000 tier 20%");
+        assertThat((List<?>) result.getData().get("statusBreakdown"))
+                .extracting("status")
+                .containsExactly("pending_lock", "active", "mature_unclaimed", "early_withdrawn");
+        assertThat((List<?>) result.getData().get("sources"))
+                .asList()
+                .contains("nx_staking_product:repurchase", "nx_staking_position:repurchase");
+    }
+
+    @Test
     void raisingRepurchaseApyBelowCoverageRedlineReturns422() {
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
         configFacade.values.put("G.repurchase.apy", "35");
@@ -299,9 +441,61 @@ class OpsNexMarketServiceTest {
         assertThat((List<?>) result.getData().get("nodes"))
                 .extracting("id")
                 .contains("#0042", "#0117", "#0233");
+        assertThat((List<?>) result.getData().get("sources"))
+                .asList()
+                .contains("nx_genesis_series", "nx_genesis_holding", "nx_genesis_order");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+    }
+
+    @Test
+    void genesisNodeLedgerIsPaginated() {
+        ApiResult<Map<String, Object>> firstPage = service.genesisOverview(1, 2);
+
+        assertThat(firstPage.getCode()).isZero();
+        assertThat((List<?>) firstPage.getData().get("nodes"))
+                .extracting("id")
+                .containsExactly("#0042", "#0117");
+        assertThat(detailMap(firstPage.getData().get("nodePage")))
+                .containsEntry("page", 1)
+                .containsEntry("pageSize", 2)
+                .containsEntry("total", 3L)
+                .containsEntry("totalPages", 2)
+                .containsEntry("hasNext", true);
+
+        ApiResult<Map<String, Object>> secondPage = service.genesisOverview(2, 2);
+
+        assertThat(secondPage.getCode()).isZero();
+        assertThat((List<?>) secondPage.getData().get("nodes"))
+                .extracting("id")
+                .containsExactly("#0233");
+        assertThat(detailMap(secondPage.getData().get("nodePage")))
+                .containsEntry("page", 2)
+                .containsEntry("hasPrev", true)
+                .containsEntry("hasNext", false);
+    }
+
+    @Test
+    void genesisOverviewSeedsMissingDbBeforeReadingSeriesAndNodeLedger() {
+        marketRepository.genesisSeries = Optional.empty();
+        marketRepository.genesisNodes = List.of();
+        marketRepository.genesisSecondaryStats = new GenesisSecondaryStatsView(
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                0L,
+                0L);
+
+        ApiResult<Map<String, Object>> result = service.genesisOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.genesisSeeded).isTrue();
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("totalSlots", new BigDecimal("1000"))
+                .containsEntry("sold", 847);
+        assertThat((List<?>) result.getData().get("nodes"))
+                .extracting("id")
+                .containsExactly("#0042", "#0117", "#0233");
     }
 
     @Test
@@ -361,13 +555,34 @@ class OpsNexMarketServiceTest {
         assertThat(detailMap(result.getData().get("stats"))).containsEntry("stakingGateOn", false);
         assertThat((List<?>) result.getData().get("pools"))
                 .extracting("tierKey")
-                .contains("usdt30d", "usdt180d", "nex365d");
+                .containsExactly("usdt30d", "usdt90d", "usdt180d", "usdt365d");
         assertThat((List<?>) result.getData().get("positions"))
                 .extracting("status")
                 .contains("pending_lock", "active", "mature_unclaimed", "early_withdrawn");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+    }
+
+    @Test
+    void stakingOverviewSeedsMissingDbBeforeReadingPoolsAndPositions() {
+        marketRepository.stakingProducts = List.of();
+        marketRepository.stakingPositions = List.of();
+
+        ApiResult<Map<String, Object>> result = service.stakingOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(marketRepository.stakingSeeded).isTrue();
+        assertThat((List<?>) result.getData().get("pools"))
+                .extracting("tierKey")
+                .containsExactly("usdt30d", "usdt90d", "usdt180d", "usdt365d");
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("activeCount", 2L)
+                .containsEntry("matureCount", 2L)
+                .containsEntry("pendingCount", 1L);
+        assertThat((List<?>) result.getData().get("positions"))
+                .extracting("rows")
+                .allSatisfy(rows -> assertThat((List<?>) rows).isNotEmpty());
     }
 
     @Test
@@ -389,7 +604,7 @@ class OpsNexMarketServiceTest {
     void loweringLongTermStakingApyBelowShortTermReturns422() {
         ApiResult<Map<String, Object>> result = service.updateStakingPoolParam(
                 "idem-g1-order",
-                "nex180d",
+                "usdt180d",
                 "apy",
                 new NexMarketValueUpdateRequest("10", "test ordered tiers", "superadmin"));
 
@@ -432,11 +647,11 @@ class OpsNexMarketServiceTest {
     void killingStakingTierWritesConfigAndAudits() {
         ApiResult<Map<String, Object>> result = service.updateStakingPoolKillStatus(
                 "idem-g1-kill",
-                "nex365d",
+                "usdt365d",
                 new NexMarketValueUpdateRequest("true", "slash open positions by published incident plan", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("G.staking.nex365d.killed", "true");
+        assertThat(configFacade.values).containsEntry("G.staking.usdt365d.killed", "true");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -508,22 +723,59 @@ class OpsNexMarketServiceTest {
 
     private static final class FakeNexMarketRepository implements NexMarketRepository {
         private BigDecimal lastPrice;
+        private Optional<BigDecimal> latestPrice = Optional.of(new BigDecimal("0.171"));
+        private Optional<String> latestSparkline = Optional.empty();
         private List<ExchangeOrderView> orders = List.of();
+        private List<StakingProductView> stakingProducts = defaultStakingProducts();
+        private List<StakingPositionView> stakingPositions = defaultStakingPositions();
+        private List<StakingPositionView> repurchasePositions = defaultRepurchasePositions();
+        private Optional<GenesisSeriesView> genesisSeries = Optional.of(defaultGenesisSeries());
+        private GenesisSecondaryStatsView genesisSecondaryStats = defaultGenesisSecondaryStats();
+        private List<GenesisNodeView> genesisNodes = defaultGenesisNodes();
+        private boolean marketSeeded;
+        private boolean exchangeSeeded;
+        private boolean stakingSeeded;
+        private boolean repurchaseSeeded;
+        private boolean genesisSeeded;
         private final List<String> cancelled = new java.util.ArrayList<>();
 
         @Override
         public Optional<BigDecimal> latestNexUsdtPrice() {
-            return Optional.of(new BigDecimal("0.171"));
+            return latestPrice;
         }
 
         @Override
         public Optional<String> latestNexSparkline() {
-            return Optional.empty();
+            return latestSparkline;
         }
 
         @Override
         public void publishNexUsdtPrice(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt) {
             lastPrice = priceUsdt;
+            latestPrice = Optional.of(priceUsdt);
+            latestSparkline = Optional.ofNullable(sparklineJson);
+        }
+
+        @Override
+        public void ensureNexMarketSeedData(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt) {
+            if (latestPrice.isEmpty() || latestSparkline.isEmpty()) {
+                marketSeeded = true;
+                latestPrice = Optional.of(priceUsdt);
+                latestSparkline = Optional.ofNullable(sparklineJson);
+            }
+        }
+
+        @Override
+        public void ensureExchangeSeedData() {
+            if (orders.isEmpty() || orders.stream().noneMatch(order -> List.of(
+                    "QUEUED",
+                    "KYC_REQUIRED",
+                    "USER_CAP",
+                    "PLATFORM_CAP",
+                    "GEO_BLOCKED").contains(order.status()))) {
+                exchangeSeeded = true;
+                orders = defaultExchangeOrders();
+            }
         }
 
         @Override
@@ -561,6 +813,292 @@ class OpsNexMarketServiceTest {
         public boolean cancelQueuedExchange(String exchangeNo) {
             cancelled.add(exchangeNo);
             return true;
+        }
+
+        @Override
+        public void ensureStakingSeedData() {
+            if (stakingProducts.isEmpty() || stakingPositions.isEmpty()) {
+                stakingSeeded = true;
+            }
+            if (stakingProducts.isEmpty()) {
+                stakingProducts = defaultStakingProducts();
+            }
+            if (stakingPositions.isEmpty()) {
+                stakingPositions = defaultStakingPositions();
+            }
+        }
+
+        @Override
+        public List<StakingProductView> stakingProducts() {
+            return stakingProducts;
+        }
+
+        @Override
+        public BigDecimal stakingEstimatedInterestUsdt() {
+            return stakingPositions.stream()
+                    .filter(position -> List.of("ACTIVE", "MATURE_UNCLAIMED").contains(position.status()))
+                    .map(StakingPositionView::estimatedInterestUsdt)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+        }
+
+        @Override
+        public long stakingPositionCountByStatus(String status) {
+            return stakingPositions.stream()
+                    .filter(position -> status.equals(position.status()))
+                    .count();
+        }
+
+        @Override
+        public long stakingEarlyWithdrawnCountSince(LocalDateTime since) {
+            return stakingPositions.stream()
+                    .filter(position -> "EARLY_WITHDRAWN".equals(position.status()))
+                    .filter(position -> position.earlyWithdrawnAt() != null && !position.earlyWithdrawnAt().isBefore(since))
+                    .count();
+        }
+
+        @Override
+        public List<StakingPositionView> stakingPositionsByStatus(String status, int limit) {
+            return stakingPositions.stream()
+                    .filter(position -> status.equals(position.status()))
+                    .limit(limit)
+                    .toList();
+        }
+
+        @Override
+        public void ensureRepurchaseSeedData() {
+            if (repurchasePositions.isEmpty()) {
+                repurchaseSeeded = true;
+                repurchasePositions = defaultRepurchasePositions();
+            }
+        }
+
+        @Override
+        public RepurchaseStatsView repurchaseStatsSince(LocalDateTime since) {
+            long ordersMonth = repurchasePositions.stream()
+                    .filter(position -> !position.lockedAt().isBefore(since))
+                    .count();
+            BigDecimal principalUsd = repurchasePositions.stream()
+                    .filter(position -> List.of("PENDING_LOCK", "ACTIVE", "MATURE_UNCLAIMED").contains(position.status()))
+                    .map(StakingPositionView::amountUsdt)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal estimatedInterestUsd = repurchasePositions.stream()
+                    .filter(position -> List.of("PENDING_LOCK", "ACTIVE", "MATURE_UNCLAIMED").contains(position.status()))
+                    .map(StakingPositionView::estimatedInterestUsdt)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            return new RepurchaseStatsView(ordersMonth, principalUsd, estimatedInterestUsd);
+        }
+
+        @Override
+        public List<RepurchaseStatusView> repurchaseStatusBreakdown() {
+            return List.of("PENDING_LOCK", "ACTIVE", "MATURE_UNCLAIMED", "EARLY_WITHDRAWN").stream()
+                    .map(status -> {
+                        List<StakingPositionView> rows = repurchasePositions.stream()
+                                .filter(position -> status.equals(position.status()))
+                                .toList();
+                        BigDecimal amountUsd = rows.stream()
+                                .map(StakingPositionView::amountUsdt)
+                                .reduce(BigDecimal.ZERO, BigDecimal::add);
+                        return new RepurchaseStatusView(status, (long) rows.size(), amountUsd);
+                    })
+                    .filter(row -> row.orderCount() > 0)
+                    .toList();
+        }
+
+        @Override
+        public List<RepurchaseAmountBucketView> repurchaseAmountBuckets() {
+            Map<BigDecimal, List<StakingPositionView>> buckets = repurchasePositions.stream()
+                    .filter(position -> List.of("PENDING_LOCK", "ACTIVE", "MATURE_UNCLAIMED").contains(position.status()))
+                    .collect(java.util.stream.Collectors.groupingBy(StakingPositionView::amountUsdt, java.util.TreeMap::new, java.util.stream.Collectors.toList()));
+            return buckets.entrySet().stream()
+                    .map(entry -> new RepurchaseAmountBucketView(
+                            entry.getKey(),
+                            (long) entry.getValue().size(),
+                            entry.getValue().stream()
+                                    .map(StakingPositionView::amountUsdt)
+                                    .reduce(BigDecimal.ZERO, BigDecimal::add)))
+                    .toList();
+        }
+
+        @Override
+        public void ensureGenesisSeedData() {
+            if (genesisSeries.isEmpty() || genesisNodes.isEmpty()) {
+                genesisSeeded = true;
+                genesisSeries = Optional.of(defaultGenesisSeries());
+                genesisSecondaryStats = defaultGenesisSecondaryStats();
+                genesisNodes = defaultGenesisNodes();
+            }
+        }
+
+        @Override
+        public Optional<GenesisSeriesView> activeGenesisSeries() {
+            return genesisSeries;
+        }
+
+        @Override
+        public GenesisSecondaryStatsView genesisSecondaryStats(LocalDateTime since) {
+            return genesisSecondaryStats;
+        }
+
+        @Override
+        public long genesisHoldingCount() {
+            return genesisNodes.size();
+        }
+
+        @Override
+        public List<GenesisNodeView> genesisNodes(int offset, int limit) {
+            return genesisNodes.stream().skip(offset).limit(limit).toList();
+        }
+
+        private static GenesisSeriesView defaultGenesisSeries() {
+            return new GenesisSeriesView(
+                    1L,
+                    "GENESIS-2026",
+                    "Genesis Node",
+                    1000,
+                    847,
+                    new BigDecimal("9999"),
+                    250,
+                    "ACTIVE");
+        }
+
+        private static GenesisSecondaryStatsView defaultGenesisSecondaryStats() {
+            return new GenesisSecondaryStatsView(
+                    new BigDecimal("12400"),
+                    new BigDecimal("186000"),
+                    38L,
+                    612L);
+        }
+
+        private static List<GenesisNodeView> defaultGenesisNodes() {
+            LocalDateTime now = LocalDateTime.parse("2026-06-17T00:00:00");
+            return List.of(
+                    genesisNode(42L, 10042L, "#0042", "usr_31E8", "primary", "ACTIVE", now.minusDays(160), new BigDecimal("9999")),
+                    genesisNode(117L, 10117L, "#0117", "usr_19C7", "secondary transfer 05-12", "ACTIVE", now.minusDays(29), new BigDecimal("11200")),
+                    genesisNode(233L, 10233L, "#0233", "usr_84F2", "primary", "LISTED", now.minusDays(125), new BigDecimal("12800")));
+        }
+
+        private static GenesisNodeView genesisNode(
+                Long id,
+                Long userId,
+                String holdingNo,
+                String ownerCode,
+                String sourceLabel,
+                String status,
+                LocalDateTime acquiredAt,
+                BigDecimal acquiredPriceUsdt) {
+            return new GenesisNodeView(
+                    id,
+                    userId,
+                    "U" + String.format("%08d", userId),
+                    ownerCode,
+                    holdingNo,
+                    "GENESIS-2026",
+                    acquiredPriceUsdt,
+                    sourceLabel,
+                    status,
+                    "LISTED".equals(status) ? "二级挂单中" : "持有计分红",
+                    "LISTED".equals(status) ? "dim" : "ok",
+                    acquiredAt,
+                    acquiredAt.plusDays(1));
+        }
+
+        private static List<StakingProductView> defaultStakingProducts() {
+            return List.of(
+                    stakingProduct(1L, "USDT_30D", 30, "1200", "500", "100", "100"),
+                    stakingProduct(2L, "USDT_90D", 90, "3500", "1500", "500", "1000"),
+                    stakingProduct(3L, "USDT_180D", 180, "8000", "3000", "1000", "1000"),
+                    stakingProduct(4L, "USDT_365D", 365, "18000", "5000", "5000", "5000"));
+        }
+
+        private static StakingProductView stakingProduct(
+                long id,
+                String productCode,
+                int termDays,
+                String apyBps,
+                String penaltyBps,
+                String minAmount,
+                String lockedUsd) {
+            return new StakingProductView(
+                    id,
+                    productCode,
+                    "USDT · " + termDays + "d",
+                    "USDT",
+                    termDays,
+                    new BigDecimal(apyBps),
+                    new BigDecimal(penaltyBps),
+                    new BigDecimal(minAmount),
+                    (int) id * 10,
+                    "ACTIVE",
+                    new BigDecimal(lockedUsd),
+                    1L);
+        }
+
+        private static List<StakingPositionView> defaultStakingPositions() {
+            LocalDateTime now = LocalDateTime.parse("2026-06-17T00:00:00");
+            return List.of(
+                    stakingPosition(1L, "POS-9081", "USDT_90D", "USDT · 90d", "500", "3500", "1500", 90, "PENDING_LOCK", now.minusDays(1), now.plusDays(89), "0", null),
+                    stakingPosition(2L, "POS-7102", "USDT_180D", "USDT · 180d", "1000", "8000", "3000", 180, "ACTIVE", now.minusDays(90), now.plusDays(90), "197.26", null),
+                    stakingPosition(3L, "POS-6339", "USDT_365D", "USDT · 365d", "5000", "18000", "5000", 365, "ACTIVE", now.minusDays(120), now.plusDays(245), "295.89", null),
+                    stakingPosition(4L, "POS-5412", "USDT_30D", "USDT · 30d", "100", "1200", "500", 30, "MATURE_UNCLAIMED", now.minusDays(40), now.minusDays(10), "0.99", null),
+                    stakingPosition(5L, "POS-5520", "USDT_90D", "USDT · 90d", "500", "3500", "1500", 90, "MATURE_UNCLAIMED", now.minusDays(100), now.minusDays(10), "43.15", null),
+                    stakingPosition(6L, "POS-5019", "USDT_365D", "USDT · 365d", "5000", "18000", "5000", 365, "EARLY_WITHDRAWN", now.minusDays(30), now.plusDays(335), "0", now.minusDays(2)));
+        }
+
+        private static List<StakingPositionView> defaultRepurchasePositions() {
+            LocalDateTime now = LocalDateTime.parse("2026-06-17T00:00:00");
+            return List.of(
+                    stakingPosition(101L, "RPI-1001", "REPURCHASE_90D", "复投激励 · 90d", "100", "3500", "1500", 90, "PENDING_LOCK", now.minusDays(1), now.plusDays(89), "8.63", null),
+                    stakingPosition(102L, "RPI-1002", "REPURCHASE_90D", "复投激励 · 90d", "200", "3500", "1500", 90, "ACTIVE", now.minusDays(7), now.plusDays(83), "17.26", null),
+                    stakingPosition(103L, "RPI-1003", "REPURCHASE_90D", "复投激励 · 90d", "500", "3500", "1500", 90, "ACTIVE", now.minusDays(12), now.plusDays(78), "43.15", null),
+                    stakingPosition(104L, "RPI-1004", "REPURCHASE_90D", "复投激励 · 90d", "1000", "3500", "1500", 90, "MATURE_UNCLAIMED", now.minusDays(95), now.minusDays(5), "86.30", null),
+                    stakingPosition(105L, "RPI-1005", "REPURCHASE_90D", "复投激励 · 90d", "5000", "3500", "1500", 90, "MATURE_UNCLAIMED", now.minusDays(99), now.minusDays(9), "431.51", null),
+                    stakingPosition(106L, "RPI-1006", "REPURCHASE_90D", "复投激励 · 90d", "10000", "3500", "1500", 90, "EARLY_WITHDRAWN", now.minusDays(32), now.plusDays(58), "0", now.minusDays(1)));
+        }
+
+        private static List<ExchangeOrderView> defaultExchangeOrders() {
+            return List.of(
+                    exchange("DEMO-EX-NEX-USDT-1", "COMPLETED"),
+                    exchange("DEMO-EX-QUEUE-1", "QUEUED"),
+                    exchange("DEMO-EX-QUEUE-2", "QUEUED"),
+                    exchange("DEMO-EX-KYC-1", "KYC_REQUIRED"),
+                    exchange("DEMO-EX-USERCAP-1", "USER_CAP"),
+                    exchange("DEMO-EX-PLATFORMCAP-1", "PLATFORM_CAP"));
+        }
+
+        private static StakingPositionView stakingPosition(
+                long id,
+                String positionNo,
+                String productCode,
+                String productName,
+                String amountUsdt,
+                String apyBps,
+                String earlyPenaltyBps,
+                int termDays,
+                String status,
+                LocalDateTime lockedAt,
+                LocalDateTime unlockAt,
+                String interestUsdt,
+                LocalDateTime earlyWithdrawnAt) {
+            return new StakingPositionView(
+                    id,
+                    10000L + id,
+                    "U" + String.format("%08d", 10000 + id),
+                    "demo-user-" + id,
+                    positionNo,
+                    productCode,
+                    productName,
+                    new BigDecimal(amountUsdt),
+                    new BigDecimal(apyBps),
+                    new BigDecimal(earlyPenaltyBps),
+                    termDays,
+                    lockedAt,
+                    unlockAt,
+                    new BigDecimal(interestUsdt),
+                    status,
+                    status,
+                    "ACTIVE".equals(status) ? "ok" : "warn",
+                    null,
+                    earlyWithdrawnAt);
         }
     }
 }

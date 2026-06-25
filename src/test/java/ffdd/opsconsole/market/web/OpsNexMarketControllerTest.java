@@ -88,11 +88,11 @@ class OpsNexMarketControllerTest {
 
     @Test
     void genesisDelegatesToService() {
-        when(marketService.genesisOverview()).thenReturn(ApiResult.ok(Map.of("domain", "G4")));
+        when(marketService.genesisOverview(2, 20)).thenReturn(ApiResult.ok(Map.of("domain", "G4")));
 
-        assertThat(controller.genesis().getData()).containsEntry("domain", "G4");
+        assertThat(controller.genesis(2, 20).getData()).containsEntry("domain", "G4");
 
-        verify(marketService).genesisOverview();
+        verify(marketService).genesisOverview(2, 20);
     }
 
     @Test

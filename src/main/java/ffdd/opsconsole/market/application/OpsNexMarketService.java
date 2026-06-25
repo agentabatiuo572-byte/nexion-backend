@@ -9,7 +9,13 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
+import ffdd.opsconsole.market.domain.GenesisNodeView;
+import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
+import ffdd.opsconsole.market.domain.GenesisSeriesView;
 import ffdd.opsconsole.market.domain.NexMarketRepository;
+import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
+import ffdd.opsconsole.market.domain.RepurchaseStatsView;
+import ffdd.opsconsole.market.domain.RepurchaseStatusView;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -17,6 +23,8 @@ import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveFrame;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import ffdd.opsconsole.market.domain.StakingPositionView;
+import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -33,6 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
@@ -56,8 +65,13 @@ public class OpsNexMarketService {
     private static final String COST_BASIS_KEY = "wallet.nex_market.cost_basis";
     private static final String PAUSED_KEY = "wallet.nex_market.paused";
     private static final String CONTROL_PREFIX = "wallet.nex_market.control.";
+    private static final String SCHEDULE_CONTROL_KEY = CONTROL_PREFIX + "schedule";
+    private static final String PIN_CONTROL_KEY = CONTROL_PREFIX + "pin";
+    private static final String LOOP_CONTROL_KEY = CONTROL_PREFIX + "loop";
     private static final String GENESIS_PREFIX = "G.genesis.";
     private static final String GENESIS_KILLSWITCH_KEY = "J.killswitch.genesis";
+    private static final String GENESIS_DAILY_VOLUME_BASE_KEY = "wallet.genesis.daily_volume_base_usdt";
+    private static final String GENESIS_SECONDARY_FLOOR_KEY = "wallet.genesis.secondary_floor_usdt";
     private static final int GENESIS_SOLD = 847;
     private static final BigDecimal GENESIS_DAILY_VOLUME_BASE = new BigDecimal("24200000");
     private static final BigDecimal GENESIS_SECONDARY_FLOOR = new BigDecimal("12400");
@@ -66,20 +80,16 @@ public class OpsNexMarketService {
     private static final int GENESIS_SECONDARY_OWNERS = 612;
     private static final String GENESIS_TODAY_BATCH = "GD-0611";
     private static final BigDecimal GENESIS_ACCRUAL_DAYS = new BigDecimal("31.6");
+    private static final int GENESIS_NODE_DEFAULT_PAGE_SIZE = 10;
+    private static final int GENESIS_NODE_MAX_PAGE_SIZE = 50;
     private static final String STAKING_PREFIX = "G.staking.";
     private static final String STAKING_KILLSWITCH_KEY = "J.killswitch.staking";
-    private static final BigDecimal STAKING_USDT_POOL_USD = new BigDecimal("1250000");
-    private static final BigDecimal STAKING_NEX_POOL_USD = new BigDecimal("250000");
-    private static final BigDecimal STAKING_INTEREST_USD = new BigDecimal("312000");
-    private static final int STAKING_PENDING_COUNT = 18;
-    private static final int STAKING_ACTIVE_COUNT = 3180;
-    private static final int STAKING_MATURE_COUNT = 232;
-    private static final int STAKING_EARLY_MONTH_COUNT = 41;
     private static final String REPURCHASE_PREFIX = "G.repurchase.";
     private static final BigDecimal REPURCHASE_PRINCIPAL_USD = new BigDecimal("390000");
     private static final int REPURCHASE_LOCK_DAYS = 90;
     private static final int REPURCHASE_ORDERS_MONTH = 1840;
     private static final BigDecimal REPURCHASE_RATE = new BigDecimal("26.9");
+    private static final String REPURCHASE_RATE_KEY = REPURCHASE_PREFIX + "rate";
     private static final List<String> CONTROL_KEYS = List.of("schedule", "pin", "loop");
     private static final List<String> EXCHANGE_QUEUE_STATUSES = List.of("QUEUED");
     private static final List<String> OVERRIDE_KEYS = List.of(
@@ -93,6 +103,7 @@ public class OpsNexMarketService {
     private final Clock clock;
 
     public ApiResult<Map<String, Object>> exchangeOverview() {
+        marketRepository.ensureExchangeSeedData();
         BigDecimal platformCap = readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000"));
         BigDecimal todayUsd = marketRepository.todayExchangeCompletedUsdt();
         long gateKyc = marketRepository.todayExchangeCountByStatus("KYC_REQUIRED");
@@ -256,7 +267,20 @@ public class OpsNexMarketService {
     }
 
     public ApiResult<Map<String, Object>> stakingOverview() {
-        List<Map<String, Object>> pools = stakingPoolDefs().stream().map(this::stakingPoolRow).toList();
+        List<StakingPoolDef> poolDefs = stakingPoolDefs();
+        List<Map<String, Object>> pools = poolDefs.stream().map(this::stakingPoolRow).toList();
+        BigDecimal usdtPoolUsd = poolDefs.stream()
+                .filter(pool -> "USDT".equalsIgnoreCase(pool.product()))
+                .map(StakingPoolDef::lockedUsd)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal nexPoolUsd = poolDefs.stream()
+                .filter(pool -> "NEX".equalsIgnoreCase(pool.product()))
+                .map(StakingPoolDef::lockedUsd)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        long pendingCount = marketRepository.stakingPositionCountByStatus("PENDING_LOCK");
+        long activeCount = marketRepository.stakingPositionCountByStatus("ACTIVE");
+        long matureCount = marketRepository.stakingPositionCountByStatus("MATURE_UNCLAIMED");
+        long earlyWithdrawnMonth = marketRepository.stakingEarlyWithdrawnCountSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
         long killedCount = pools.stream()
                 .filter(pool -> Boolean.TRUE.equals(pool.get("killed")))
                 .count();
@@ -264,15 +288,15 @@ public class OpsNexMarketService {
         response.put("domain", "G1");
         response.put("product", "staking");
         response.put("stats", map(
-                "lockedTotalUsd", STAKING_USDT_POOL_USD.add(STAKING_NEX_POOL_USD),
-                "usdtPoolUsd", STAKING_USDT_POOL_USD,
-                "nexPoolUsd", STAKING_NEX_POOL_USD,
-                "interestUsd", STAKING_INTEREST_USD,
-                "positionCount", STAKING_ACTIVE_COUNT + STAKING_MATURE_COUNT,
-                "activeCount", STAKING_ACTIVE_COUNT,
-                "matureCount", STAKING_MATURE_COUNT,
-                "pendingCount", STAKING_PENDING_COUNT,
-                "earlyWithdrawnMonth", STAKING_EARLY_MONTH_COUNT,
+                "lockedTotalUsd", usdtPoolUsd.add(nexPoolUsd),
+                "usdtPoolUsd", usdtPoolUsd,
+                "nexPoolUsd", nexPoolUsd,
+                "interestUsd", marketRepository.stakingEstimatedInterestUsdt(),
+                "positionCount", activeCount + matureCount,
+                "activeCount", activeCount,
+                "matureCount", matureCount,
+                "pendingCount", pendingCount,
+                "earlyWithdrawnMonth", earlyWithdrawnMonth,
                 "killedCount", killedCount,
                 "stakingGateOn", stakingGateOn()));
         response.put("gate", map(
@@ -295,6 +319,7 @@ public class OpsNexMarketService {
         response.put("sources", List.of(
                 "nx_config_item:" + STAKING_PREFIX + "*",
                 "nx_config_item:" + STAKING_KILLSWITCH_KEY,
+                "nx_staking_product",
                 "nx_staking_position",
                 "nx_wallet_ledger:staking",
                 "B1 coverage facade"));
@@ -425,19 +450,24 @@ public class OpsNexMarketService {
     }
 
     public ApiResult<Map<String, Object>> repurchaseOverview() {
-        BigDecimal apy = repurchaseNumberValue(repurchaseParamDef("apy"));
+        ensureRepurchaseDefaults();
+        marketRepository.ensureRepurchaseSeedData();
+        RepurchaseStatsView repurchaseStats = marketRepository.repurchaseStatsSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
+        BigDecimal principalUsd = safeBig(repurchaseStats.principalUsd());
+        BigDecimal estimatedInterestUsd = safeBig(repurchaseStats.estimatedInterestUsd());
         BigDecimal lotteryPerOrder = repurchaseNumberValue(repurchaseParamDef("lottery"));
+        long ordersMonth = safeLong(repurchaseStats.ordersMonth());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G7");
         response.put("product", "repurchase");
         response.put("asset", "USDT");
         response.put("currentNexPrice", currentPrice());
         response.put("stats", map(
-                "ordersMonth", REPURCHASE_ORDERS_MONTH,
-                "principalUsd", REPURCHASE_PRINCIPAL_USD,
-                "matureUsd", repurchaseMatureUsd(REPURCHASE_PRINCIPAL_USD, apy),
-                "ticketsMonth", lotteryPerOrder.multiply(BigDecimal.valueOf(REPURCHASE_ORDERS_MONTH)).setScale(0, RoundingMode.HALF_UP),
-                "reinvestRate", REPURCHASE_RATE,
+                "ordersMonth", ordersMonth,
+                "principalUsd", principalUsd,
+                "matureUsd", principalUsd.add(estimatedInterestUsd).setScale(2, RoundingMode.HALF_UP),
+                "ticketsMonth", lotteryPerOrder.multiply(BigDecimal.valueOf(ordersMonth)).setScale(0, RoundingMode.HALF_UP),
+                "reinvestRate", readDecimal(REPURCHASE_RATE_KEY, REPURCHASE_RATE),
                 "lockDays", REPURCHASE_LOCK_DAYS));
         response.put("params", repurchaseParamDefs().stream().map(this::repurchaseParamRow).toList());
         response.put("phaseGate", map(
@@ -446,20 +476,20 @@ public class OpsNexMarketService {
                 "value", readText("growth.reinvest.multiplier", "1x; month 5-6 can be 2x"),
                 "linkedDomain", "H1",
                 "readonly", true));
+        response.put("statusBreakdown", repurchaseStatusBreakdown());
         response.put("stateMachine", List.of(
                 "pending_lock",
                 "active",
                 "mature_unclaimed",
                 "claimed",
                 "early_withdrawn"));
-        response.put("amountDistribution", readText(
-                REPURCHASE_PREFIX + "distribution",
-                "$100 tier 62% / $200 tier 21% / $500 tier 12% / $1,000 tier 5%"));
+        response.put("amountDistribution", repurchaseAmountDistribution(marketRepository.repurchaseAmountBuckets()));
         response.put("coverage", repurchaseCoverage());
         response.put("serverCanonical", true);
         response.put("sunsetExclusions", List.of("Premium", "NEX v2", "Points"));
         response.put("sources", List.of(
                 "nx_config_item:" + REPURCHASE_PREFIX + "*",
+                "nx_staking_product:repurchase",
                 "nx_wallet_ledger:wallet.reinvest",
                 "nx_staking_position:repurchase",
                 "B1 coverage facade"));
@@ -502,44 +532,64 @@ public class OpsNexMarketService {
     }
 
     public ApiResult<Map<String, Object>> genesisOverview() {
+        return genesisOverview(1, GENESIS_NODE_DEFAULT_PAGE_SIZE);
+    }
+
+    public ApiResult<Map<String, Object>> genesisOverview(Integer page, Integer pageSize) {
+        marketRepository.ensureGenesisSeedData();
+        GenesisSeriesView series = genesisSeriesOrFallback();
+        ensureGenesisConfigDefaults(series);
+        GenesisSecondaryStatsView secondaryStats = marketRepository.genesisSecondaryStats(LocalDateTime.now(clock).minusHours(24));
         BigDecimal supply = genesisNumberValue(genesisParamDef("supply"));
         BigDecimal unitPrice = genesisNumberValue(genesisParamDef("price"));
         BigDecimal dividendPct = genesisNumberValue(genesisParamDef("dividend"));
         BigDecimal royaltyPct = genesisNumberValue(genesisParamDef("royalty"));
-        BigDecimal poolToday = GENESIS_DAILY_VOLUME_BASE
+        long holdingCount = marketRepository.genesisHoldingCount();
+        PageSpec nodePage = pageSpec(page, pageSize, holdingCount);
+        int sold = Math.max(
+                Math.max(0, series.soldSupply() == null ? 0 : series.soldSupply()),
+                Math.toIntExact(Math.min(Integer.MAX_VALUE, holdingCount)));
+        BigDecimal seriesSupply = BigDecimal.valueOf(series.totalSupply() == null || series.totalSupply() <= 0 ? 0 : series.totalSupply());
+        supply = supply.max(seriesSupply).max(BigDecimal.valueOf(sold));
+        BigDecimal dailyVolumeBase = readDecimal(GENESIS_DAILY_VOLUME_BASE_KEY, GENESIS_DAILY_VOLUME_BASE);
+        BigDecimal poolToday = dailyVolumeBase
                 .multiply(dividendPct)
                 .divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
         BigDecimal perSlotPerDay = poolToday.divide(supply, 8, RoundingMode.HALF_UP);
         BigDecimal floorPerNodePerDay = unitPrice
                 .multiply(dividendPct)
                 .divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
-        BigDecimal payoutToday = perSlotPerDay.multiply(BigDecimal.valueOf(GENESIS_SOLD)).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal payoutToday = perSlotPerDay.multiply(BigDecimal.valueOf(sold)).setScale(2, RoundingMode.HALF_UP);
         BigDecimal genesisAccrual = floorPerNodePerDay
-                .multiply(BigDecimal.valueOf(GENESIS_SOLD))
+                .multiply(BigDecimal.valueOf(sold))
                 .multiply(GENESIS_ACCRUAL_DAYS)
                 .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal secondaryFloor = safeBig(secondaryStats.floorUsdt());
+        if (secondaryFloor.compareTo(BigDecimal.ZERO) <= 0) {
+            secondaryFloor = readDecimal(GENESIS_SECONDARY_FLOOR_KEY, GENESIS_SECONDARY_FLOOR);
+        }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G4");
         response.put("product", "genesis");
         response.put("asset", "GENESIS_NODE");
         response.put("stats", map(
                 "totalSlots", supply.setScale(0, RoundingMode.HALF_UP),
-                "sold", GENESIS_SOLD,
+                "sold", sold,
                 "unitPrice", unitPrice,
-                "unsold", supply.subtract(BigDecimal.valueOf(GENESIS_SOLD)).max(BigDecimal.ZERO).setScale(0, RoundingMode.HALF_UP),
-                "soldPct", percent(BigDecimal.valueOf(GENESIS_SOLD), supply),
+                "unsold", supply.subtract(BigDecimal.valueOf(sold)).max(BigDecimal.ZERO).setScale(0, RoundingMode.HALF_UP),
+                "soldPct", percent(BigDecimal.valueOf(sold), supply),
                 "genesisAccrualUsd", genesisAccrual,
                 "marketOn", genesisMarketOn(),
                 "todayBatch", GENESIS_TODAY_BATCH,
                 "secondary", map(
-                        "floor", GENESIS_SECONDARY_FLOOR,
-                        "vol24h", GENESIS_SECONDARY_VOL_24H,
-                        "listed", GENESIS_SECONDARY_LISTED,
-                        "owners", GENESIS_SECONDARY_OWNERS,
+                        "floor", secondaryFloor,
+                        "vol24h", safeBig(secondaryStats.volume24hUsdt()),
+                        "listed", secondaryStats.listedCount() == null ? 0L : secondaryStats.listedCount(),
+                        "owners", secondaryStats.ownerCount() == null ? 0L : secondaryStats.ownerCount(),
                         "royaltyPct", royaltyPct)));
         response.put("params", genesisParamDefs().stream().map(this::genesisParamRow).toList());
         response.put("dividend", map(
-                "dailyVolumeBase", GENESIS_DAILY_VOLUME_BASE,
+                "dailyVolumeBase", dailyVolumeBase,
                 "dividendPct", dividendPct,
                 "poolToday", poolToday.setScale(2, RoundingMode.HALF_UP),
                 "perSlotPerDay", perSlotPerDay.setScale(2, RoundingMode.HALF_UP),
@@ -552,7 +602,13 @@ public class OpsNexMarketService {
                 "configKey", GENESIS_KILLSWITCH_KEY,
                 "linkedDomain", "J1"));
         response.put("geoBlocked", blockedCountryViews());
-        response.put("nodes", genesisNodes(perSlotPerDay, floorPerNodePerDay));
+        response.put("nodes", genesisNodes(
+                perSlotPerDay,
+                floorPerNodePerDay,
+                royaltyPct,
+                nodePage.offset(),
+                nodePage.pageSize()));
+        response.put("nodePage", nodePageMap(nodePage));
         response.put("stateMachine", List.of("minted", "held", "listed", "sold"));
         response.put("coverage", genesisCoverage());
         response.put("serverCanonical", true);
@@ -560,8 +616,10 @@ public class OpsNexMarketService {
         response.put("sources", List.of(
                 "nx_config_item:" + GENESIS_PREFIX + "*",
                 "nx_config_item:" + GENESIS_KILLSWITCH_KEY,
-                "nx_genesis_node",
-                "nx_genesis_dividend_batch",
+                "nx_config_item:" + GENESIS_DAILY_VOLUME_BASE_KEY,
+                "nx_genesis_series",
+                "nx_genesis_holding",
+                "nx_genesis_order",
                 "B1 coverage facade"));
         return ApiResult.ok(response);
     }
@@ -663,8 +721,9 @@ public class OpsNexMarketService {
     }
 
     public ApiResult<Map<String, Object>> overview() {
+        ensureNexMarketSeedData();
         List<NexMarketCurveFrame> frames = loadCurve();
-        int activeDay = activeDayIndex();
+        int activeDay = effectiveActiveDayIndex();
         NexMarketCurveFrame activeFrame = frameFor(frames, activeDay);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G3");
@@ -684,6 +743,7 @@ public class OpsNexMarketService {
     }
 
     public ApiResult<Map<String, Object>> curveHistory() {
+        ensureNexMarketSeedData();
         List<BigDecimal> values = marketRepository.latestNexSparkline()
                 .map(this::readSparkline)
                 .filter(list -> !list.isEmpty())
@@ -742,11 +802,11 @@ public class OpsNexMarketService {
         }
         String curveJson = writeCurve(frames);
         configFacade.upsertAdminValue(WEEKLY_CURVE_KEY, curveJson, "JSON", "wallet", "G3 weekly NEX market curve");
-        applyFrame(frameFor(frames, activeDayIndex()), frames);
+        applyFrame(frameFor(frames, effectiveActiveDayIndex()), frames);
         audit("G3_WEEKLY_CURVE_CHANGED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
                 "oldPeakPrice", weekPeak(before),
                 "newPeakPrice", weekPeak(frames),
-                "activeDayIndex", activeDayIndex(),
+                "activeDayIndex", effectiveActiveDayIndex(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return overview();
@@ -767,6 +827,13 @@ public class OpsNexMarketService {
             return validation("VALUE_REQUIRED");
         }
         String value = request.value().trim();
+        if ("schedule".equals(controlKey)) {
+            NexMarketSchedule schedule = NexMarketSchedule.parse(value);
+            if (schedule.fallback()) {
+                return validation("G3_SCHEDULE_INVALID");
+            }
+            value = schedule.displayValue();
+        }
         String configKey = CONTROL_PREFIX + controlKey;
         configFacade.upsertAdminValue(configKey, value, "STRING", "wallet", "G3 NEX market curve control");
         audit("G3_CONTROL_CHANGED", "NEX_MARKET_CONTROL", configKey, request.operator(), Map.of(
@@ -814,7 +881,7 @@ public class OpsNexMarketService {
             return guard;
         }
         List<NexMarketCurveFrame> frames = loadCurve();
-        NexMarketCurveFrame activeFrame = frameFor(frames, activeDayIndex());
+        NexMarketCurveFrame activeFrame = frameFor(frames, effectiveActiveDayIndex());
         applyFrame(activeFrame, frames);
         audit("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
                 "activeDayIndex", activeFrame.dayIndex(),
@@ -827,8 +894,91 @@ public class OpsNexMarketService {
     }
 
     void advanceScheduledFrame() {
+        ensureNexMarketSeedData();
+        if (enginePaused() || pinnedDayIndex().isPresent()) {
+            return;
+        }
         List<NexMarketCurveFrame> frames = loadCurve();
-        applyFrame(frameFor(frames, activeDayIndex()), frames);
+        NexMarketCurveFrame activeFrame = frameFor(frames, activeDayIndex());
+        applyFrame(activeFrame, frames);
+        audit("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, "system", Map.of(
+                "activeDayIndex", activeFrame.dayIndex(),
+                "targetPrice", activeFrame.targetPrice(),
+                "pumpProbability", activeFrame.pumpProbability(),
+                "volatilityPct", activeFrame.volatilityPct(),
+                "schedule", currentSchedule().displayValue(),
+                "serverScheduled", true));
+    }
+
+    NexMarketSchedule currentSchedule() {
+        return NexMarketSchedule.parse(readText(SCHEDULE_CONTROL_KEY, NexMarketSchedule.DEFAULT_DISPLAY));
+    }
+
+    private void ensureNexMarketSeedData() {
+        BigDecimal seedPrice = configFacade.activeValue(CURRENT_PRICE_KEY)
+                .flatMap(value -> Optional.ofNullable(parseDecimal(value, null)))
+                .or(() -> marketRepository.latestNexUsdtPrice())
+                .orElse(new BigDecimal("0.171"))
+                .setScale(8, RoundingMode.HALF_UP);
+        List<NexMarketCurveFrame> seedFrames = configFacade.activeValue(WEEKLY_CURVE_KEY)
+                .filter(StringUtils::hasText)
+                .map(this::readCurve)
+                .orElseGet(this::seedCurve);
+        NexMarketCurveFrame activeFrame = frameFor(seedFrames, effectiveActiveDayIndex());
+
+        upsertMissingConfig(WEEKLY_CURVE_KEY, writeCurve(seedFrames), "JSON", "wallet", "G3 weekly NEX market curve seed");
+        upsertMissingConfig(CURRENT_PRICE_KEY, seedPrice.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active NEX price seed");
+        upsertMissingConfig(PUMP_PROBABILITY_KEY, activeFrame.pumpProbability().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active pump probability seed");
+        upsertMissingConfig(VOLATILITY_KEY, activeFrame.volatilityPct().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active volatility seed");
+        upsertMissingConfig(ORACLE_KEY, "内部做市", "STRING", "wallet", "G3 oracle source seed");
+        upsertMissingConfig(DEVIATION_KEY, "5", "NUMBER", "wallet", "G3 oracle deviation alert seed");
+        upsertMissingConfig(COST_BASIS_KEY, "0.085", "NUMBER", "wallet", "G3 NEX cost basis seed");
+        upsertMissingConfig(PAUSED_KEY, "false", "BOOLEAN", "wallet", "G3 NEX market engine pause seed");
+        upsertMissingConfig(SCHEDULE_CONTROL_KEY, NexMarketSchedule.DEFAULT_DISPLAY, "STRING", "wallet", "G3 NEX market curve schedule seed");
+        upsertMissingConfig(PIN_CONTROL_KEY, "未钉住", "STRING", "wallet", "G3 NEX market curve pin seed");
+        upsertMissingConfig(LOOP_CONTROL_KEY, "循环", "STRING", "wallet", "G3 NEX market curve loop seed");
+
+        marketRepository.ensureNexMarketSeedData(
+                seedPrice,
+                BigDecimal.ZERO,
+                sparklineJson(seedFrames),
+                LocalDateTime.now(clock));
+    }
+
+    private GenesisSeriesView genesisSeriesOrFallback() {
+        return marketRepository.activeGenesisSeries().orElseGet(() -> new GenesisSeriesView(
+                0L,
+                "GENESIS-2026",
+                "Genesis Node",
+                1000,
+                GENESIS_SOLD,
+                new BigDecimal("9999"),
+                250,
+                "ACTIVE"));
+    }
+
+    private void ensureGenesisConfigDefaults(GenesisSeriesView series) {
+        int totalSupply = series.totalSupply() == null || series.totalSupply() <= 0 ? 1000 : series.totalSupply();
+        BigDecimal price = safeBig(series.priceUsdt()).compareTo(BigDecimal.ZERO) > 0
+                ? series.priceUsdt()
+                : new BigDecimal("9999");
+        int royaltyBps = series.royaltyBps() == null || series.royaltyBps() < 0 ? 250 : series.royaltyBps();
+        BigDecimal royaltyPct = BigDecimal.valueOf(royaltyBps).divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+
+        upsertMissingConfig(GENESIS_PREFIX + "supply", String.valueOf(totalSupply), "NUMBER", "market", "G4 Genesis total supply seed");
+        upsertMissingConfig(GENESIS_PREFIX + "price", price.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(), "NUMBER", "market", "G4 Genesis primary price seed");
+        upsertMissingConfig(GENESIS_PREFIX + "dividend", "0.1", "NUMBER", "market", "G4 Genesis daily dividend rate seed");
+        upsertMissingConfig(GENESIS_PREFIX + "royalty", royaltyPct.stripTrailingZeros().toPlainString(), "NUMBER", "market", "G4 Genesis secondary royalty seed");
+        upsertMissingConfig(GENESIS_PREFIX + "divBase", "platform daily volume * 0.1% / 1000 slots", "STRING", "market", "G4 Genesis dividend base seed");
+        upsertMissingConfig(GENESIS_DAILY_VOLUME_BASE_KEY, GENESIS_DAILY_VOLUME_BASE.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G4 Genesis daily volume base seed");
+        upsertMissingConfig(GENESIS_SECONDARY_FLOOR_KEY, GENESIS_SECONDARY_FLOOR.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G4 Genesis secondary floor fallback seed");
+        upsertMissingConfig(GENESIS_KILLSWITCH_KEY, "on", "STRING", "admin_killswitch", "G4 Genesis market switch seed");
+    }
+
+    private void upsertMissingConfig(String configKey, String configValue, String valueType, String configGroup, String remark) {
+        if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isEmpty()) {
+            configFacade.upsertAdminValue(configKey, configValue, valueType, configGroup, remark);
+        }
     }
 
     private ApiResult<Map<String, Object>> updateCurrentPriceOverride(
@@ -1007,6 +1157,17 @@ public class OpsNexMarketService {
         return frames;
     }
 
+    private List<NexMarketCurveFrame> seedCurve() {
+        return List.of(
+                new NexMarketCurveFrame(0, new BigDecimal("0.17100000"), new BigDecimal("0.55"), new BigDecimal("3.0000")),
+                new NexMarketCurveFrame(1, new BigDecimal("0.17400000"), new BigDecimal("0.58"), new BigDecimal("3.0000")),
+                new NexMarketCurveFrame(2, new BigDecimal("0.17800000"), new BigDecimal("0.60"), new BigDecimal("4.0000")),
+                new NexMarketCurveFrame(3, new BigDecimal("0.18100000"), new BigDecimal("0.62"), new BigDecimal("4.0000")),
+                new NexMarketCurveFrame(4, new BigDecimal("0.18400000"), new BigDecimal("0.65"), new BigDecimal("5.0000")),
+                new NexMarketCurveFrame(5, new BigDecimal("0.18200000"), new BigDecimal("0.58"), new BigDecimal("4.0000")),
+                new NexMarketCurveFrame(6, new BigDecimal("0.17900000"), new BigDecimal("0.52"), new BigDecimal("3.0000")));
+    }
+
     private boolean curveRaisesLiability(List<NexMarketCurveFrame> before, List<NexMarketCurveFrame> after) {
         BigDecimal oldPeak = weekPeak(before);
         BigDecimal newPeak = weekPeak(after);
@@ -1038,6 +1199,22 @@ public class OpsNexMarketService {
 
     private int activeDayIndex() {
         return LocalDate.now(clock.withZone(ZoneOffset.UTC)).getDayOfWeek().getValue() - 1;
+    }
+
+    private int effectiveActiveDayIndex() {
+        return pinnedDayIndex().orElseGet(this::activeDayIndex);
+    }
+
+    private Optional<Integer> pinnedDayIndex() {
+        String value = readText(PIN_CONTROL_KEY, "未钉住").trim().toUpperCase(Locale.ROOT);
+        if (!value.matches("D[1-7]")) {
+            return Optional.empty();
+        }
+        return Optional.of(Integer.parseInt(value.substring(1)) - 1);
+    }
+
+    private boolean enginePaused() {
+        return Boolean.TRUE.equals(parseBooleanValue(readText(PAUSED_KEY, "false")));
     }
 
     private BigDecimal currentPrice() {
@@ -1099,9 +1276,24 @@ public class OpsNexMarketService {
 
     private List<Map<String, Object>> controls() {
         return List.of(
-                control("schedule", "自动按日推进", "每日 00:00 UTC server cron 推进到当前关键帧", "每日 00:00 自动推进"),
+                scheduleControl(),
                 control("pin", "钉住某日(pin)", "钉在指定日做演示 / 应急冻结,自动推进暂停", "未钉住"),
                 control("loop", "跑完循环 / 停末值(loop)", "D7 之后回到 D1 循环,或停在末日值", "循环"));
+    }
+
+    private Map<String, Object> scheduleControl() {
+        NexMarketSchedule schedule = currentSchedule();
+        Map<String, Object> control = control(
+                "schedule",
+                "自动按日推进",
+                "按可配置 server cron 推进到当前关键帧;格式:每日 HH:mm [ZoneId] 自动推进",
+                NexMarketSchedule.DEFAULT_DISPLAY);
+        control.put("value", schedule.displayValue());
+        control.put("rawValue", schedule.rawValue());
+        control.put("cronExpression", schedule.cronExpression());
+        control.put("zone", schedule.zoneId().getId());
+        control.put("fallback", schedule.fallback());
+        return control;
     }
 
     private Map<String, Object> control(String key, String name, String description, String defaultValue) {
@@ -1120,7 +1312,7 @@ public class OpsNexMarketService {
         overrides.put("oracle", readText(ORACLE_KEY, "内部做市"));
         overrides.put("deviationPct", readText(DEVIATION_KEY, "5"));
         overrides.put("costBasis", readText(COST_BASIS_KEY, "0.085"));
-        overrides.put("paused", Boolean.TRUE.equals(parseBooleanValue(readText(PAUSED_KEY, "false"))));
+        overrides.put("paused", enginePaused());
         return overrides;
     }
 
@@ -1135,15 +1327,20 @@ public class OpsNexMarketService {
     }
 
     private List<StakingPoolDef> stakingPoolDefs() {
-        return List.of(
-                new StakingPoolDef("USDT", "usdt30d", 30, "30d", "12", "5", "100", new BigDecimal("270000"), "USDT", false),
-                new StakingPoolDef("USDT", "usdt90d", 90, "90d", "35", "15", "500", new BigDecimal("430000"), "USDT", false),
-                new StakingPoolDef("USDT", "usdt180d", 180, "180d", "80", "30", "1000", new BigDecimal("350000"), "USDT", true),
-                new StakingPoolDef("USDT", "usdt365d", 365, "365d", "180", "50", "5000", new BigDecimal("200000"), "USDT", true),
-                new StakingPoolDef("NEX", "nex30d", 30, "30d", "5", "5", "1000", new BigDecimal("80000"), "NEX", false),
-                new StakingPoolDef("NEX", "nex90d", 90, "90d", "12", "15", "5000", new BigDecimal("70000"), "NEX", false),
-                new StakingPoolDef("NEX", "nex180d", 180, "180d", "20", "30", "10000", new BigDecimal("60000"), "NEX", false),
-                new StakingPoolDef("NEX", "nex365d", 365, "365d", "35", "50", "20000", new BigDecimal("40000"), "NEX", false));
+        marketRepository.ensureStakingSeedData();
+        return marketRepository.stakingProducts().stream()
+                .map(product -> new StakingPoolDef(
+                        product.asset(),
+                        stakingTierKey(product.productCode()),
+                        product.termDays() == null ? 0 : product.termDays(),
+                        (product.termDays() == null ? 0 : product.termDays()) + "d",
+                        percentFromBps(product.apyBps()),
+                        percentFromBps(product.earlyPenaltyBps()),
+                        safeBig(product.minAmount()).setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(),
+                        safeBig(product.lockedUsd()),
+                        product.asset(),
+                        product.termDays() != null && product.termDays() >= 180))
+                .toList();
     }
 
     private StakingPoolDef stakingPoolDef(String rawTierKey) {
@@ -1295,9 +1492,25 @@ public class OpsNexMarketService {
     }
 
     private String displayStakingLocked(BigDecimal value) {
-        return "$" + value.divide(BigDecimal.valueOf(1_000_000), 2, RoundingMode.HALF_UP)
+        return "$" + safeBig(value).divide(BigDecimal.valueOf(1_000_000), 2, RoundingMode.HALF_UP)
                 .stripTrailingZeros()
                 .toPlainString() + "M";
+    }
+
+    private String stakingTierKey(String productCode) {
+        if (!StringUtils.hasText(productCode)) {
+            return "";
+        }
+        return productCode.trim()
+                .toLowerCase(Locale.ROOT)
+                .replace("_", "")
+                .replace("-", "");
+    }
+
+    private String percentFromBps(BigDecimal bps) {
+        return safeBig(bps).divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP)
+                .stripTrailingZeros()
+                .toPlainString();
     }
 
     private Map<String, Object> stakingCoverage() {
@@ -1311,51 +1524,137 @@ public class OpsNexMarketService {
 
     private List<Map<String, Object>> stakingPositionGroups() {
         return List.of(
-                stakingPositionGroup(
-                        "pending_lock",
-                        "pending_lock 待确认",
-                        "支付或链上确认中,服务器确认后进入 active。",
-                        STAKING_PENDING_COUNT,
-                        List.of(
-                                stakingPosition("POS-9081", "U00019081", "USDT 90d", "$500", "waiting payment confirmation"),
-                                stakingPosition("POS-9087", "U00019087", "NEX 30d", "1,000 NEX", "chain confirmation 2/6"))),
-                stakingPositionGroup(
-                        "active",
-                        "active 计息中",
-                        "按开仓时锁定 APY 线性计息,参数更新不追溯。",
-                        STAKING_ACTIVE_COUNT,
-                        List.of(
-                                stakingPosition("POS-7102", "U00017102", "USDT 180d", "$1,000", "D90 / 180, accrued $197.26"),
-                                stakingPosition("POS-6339", "U00016339", "NEX 365d", "20,000 NEX", "D120 / 365, accrued 230 NEX"))),
-                stakingPositionGroup(
-                        "mature_unclaimed",
-                        "mature_unclaimed 到期未领",
-                        "到期后生成待领取本息,claim 写 D4 账单。",
-                        STAKING_MATURE_COUNT,
-                        List.of(
-                                stakingPosition("POS-5412", "U00015412", "USDT 30d", "$100", "matured 2026-06-14"),
-                                stakingPosition("POS-5520", "U00015520", "NEX 90d", "5,000 NEX", "matured 2026-06-15"))),
-                stakingPositionGroup(
-                        "early_withdrawn",
-                        "本月 early_withdrawn 提前赎回",
-                        "提前赎回按本金罚款并没收未领取利息。",
-                        STAKING_EARLY_MONTH_COUNT,
-                        List.of(
-                                stakingPosition("POS-5019", "U00015019", "USDT 365d", "$5,000", "penalty 50%, interest forfeited"),
-                                stakingPosition("POS-5027", "U00015027", "NEX 180d", "10,000 NEX", "penalty 30%, interest forfeited"))));
+                stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", "PENDING_LOCK"),
+                stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", "ACTIVE"),
+                stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取本息,claim 写 D4 账单。", "MATURE_UNCLAIMED"),
+                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前赎回", "提前赎回按本金罚款并没收未领取利息。", "EARLY_WITHDRAWN"));
     }
 
     private Map<String, Object> stakingPositionGroup(
             String status,
             String label,
             String note,
-            int count,
-            List<Map<String, Object>> rows) {
+            String repositoryStatus) {
+        List<Map<String, Object>> rows = marketRepository.stakingPositionsByStatus(repositoryStatus, 50).stream()
+                .map(this::stakingPosition)
+                .toList();
+        long count = "EARLY_WITHDRAWN".equals(repositoryStatus)
+                ? marketRepository.stakingEarlyWithdrawnCountSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay())
+                : marketRepository.stakingPositionCountByStatus(repositoryStatus);
         return map("status", status, "label", label, "note", note, "count", count, "rows", rows);
     }
 
-    private Map<String, Object> stakingPosition(String positionNo, String userNo, String tier, String amount, String note) {
-        return map("positionNo", positionNo, "userNo", userNo, "tier", tier, "amount", amount, "note", note);
+    private Map<String, Object> stakingPosition(StakingPositionView position) {
+        return map(
+                "positionNo", position.positionNo(),
+                "userNo", position.userNo(),
+                "nickname", position.nickname(),
+                "tier", position.productName(),
+                "amount", displayUsd(safeBig(position.amountUsdt())),
+                "status", position.status(),
+                "statusLabel", position.statusLabel(),
+                "statusTone", position.statusTone(),
+                "note", stakingPositionNote(position));
+    }
+
+    private String stakingPositionNote(StakingPositionView position) {
+        String status = position.status() == null ? "" : position.status().toUpperCase(Locale.ROOT);
+        return switch (status) {
+            case "PENDING_LOCK" -> "waiting payment confirmation";
+            case "ACTIVE" -> "D" + stakingElapsedDays(position.lockedAt()) + " / " + position.termDays()
+                    + ", accrued " + displayUsd(safeBig(position.estimatedInterestUsdt()));
+            case "MATURE_UNCLAIMED" -> "matured " + (position.unlockAt() == null ? "-" : position.unlockAt().toLocalDate());
+            case "EARLY_WITHDRAWN" -> "penalty " + percentFromBps(position.earlyPenaltyBps()) + "%, interest forfeited";
+            case "CLAIMED" -> "claimed " + (position.claimedAt() == null ? "-" : position.claimedAt().toLocalDate());
+            default -> status;
+        };
+    }
+
+    private long stakingElapsedDays(LocalDateTime lockedAt) {
+        if (lockedAt == null) {
+            return 0;
+        }
+        return Math.max(0, ChronoUnit.DAYS.between(lockedAt.toLocalDate(), LocalDate.now(clock)));
+    }
+
+    private void ensureRepurchaseDefaults() {
+        repurchaseParamDefs().forEach(def -> upsertMissingConfig(
+                def.configKey(),
+                def.defaultValue(),
+                def.valueType(),
+                "market",
+                "G7 repurchase parameter seed"));
+        upsertMissingConfig(
+                REPURCHASE_RATE_KEY,
+                REPURCHASE_RATE.stripTrailingZeros().toPlainString(),
+                "NUMBER",
+                "market",
+                "G7 repurchase funnel rate seed");
+        upsertMissingConfig(
+                "growth.reinvest.multiplier",
+                "1x; month 5-6 can be 2x",
+                "STRING",
+                "growth",
+                "G7 readonly H1 reinvest multiplier seed");
+    }
+
+    private List<Map<String, Object>> repurchaseStatusBreakdown() {
+        return marketRepository.repurchaseStatusBreakdown().stream()
+                .map(row -> {
+                    String status = StringUtils.hasText(row.status()) ? row.status().trim().toLowerCase(Locale.ROOT) : "unknown";
+                    return map(
+                            "status", status,
+                            "label", repurchaseStatusLabel(status),
+                            "count", safeLong(row.orderCount()),
+                            "principalUsd", safeBig(row.principalUsd()),
+                            "principalDisplay", displayUsd(safeBig(row.principalUsd())),
+                            "tone", repurchaseStatusTone(status));
+                })
+                .toList();
+    }
+
+    private String repurchaseAmountDistribution(List<RepurchaseAmountBucketView> buckets) {
+        long total = buckets.stream()
+                .mapToLong(bucket -> safeLong(bucket.orderCount()))
+                .sum();
+        if (total <= 0) {
+            return "-";
+        }
+        return String.join(" / ", buckets.stream()
+                .map(bucket -> displayWholeUsd(safeBig(bucket.amountUsdt()))
+                        + " tier "
+                        + percent(BigDecimal.valueOf(safeLong(bucket.orderCount())), BigDecimal.valueOf(total))
+                                .setScale(0, RoundingMode.HALF_UP)
+                                .stripTrailingZeros()
+                                .toPlainString()
+                        + "%")
+                .toList());
+    }
+
+    private String displayWholeUsd(BigDecimal value) {
+        return "$" + String.format(Locale.US, "%,d", safeBig(value).setScale(0, RoundingMode.HALF_UP).longValue());
+    }
+
+    private String repurchaseStatusLabel(String status) {
+        return switch (status) {
+            case "pending_lock" -> "待确认";
+            case "active" -> "90 天锁仓中";
+            case "mature_unclaimed" -> "到期未领取";
+            case "claimed" -> "已领取";
+            case "early_withdrawn" -> "提前赎回";
+            case "slashed" -> "已扣罚";
+            case "refunded" -> "已退款";
+            default -> status;
+        };
+    }
+
+    private String repurchaseStatusTone(String status) {
+        return switch (status) {
+            case "active", "claimed" -> "ok";
+            case "pending_lock", "mature_unclaimed" -> "warn";
+            case "early_withdrawn", "slashed" -> "bad";
+            default -> "dim";
+        };
     }
 
     private List<RepurchaseParamDef> repurchaseParamDefs() {
@@ -1554,6 +1853,10 @@ public class OpsNexMarketService {
         return value == null ? BigDecimal.ZERO : value;
     }
 
+    private long safeLong(Long value) {
+        return value == null ? 0L : value;
+    }
+
     private List<GenesisParamDef> genesisParamDefs() {
         return List.of(
                 genesisParamDef("supply"),
@@ -1650,7 +1953,7 @@ public class OpsNexMarketService {
             return null;
         }
         if (def.kind() == GenesisParamKind.INTEGER) {
-            if (value.compareTo(BigDecimal.valueOf(GENESIS_SOLD)) < 0 || value.compareTo(new BigDecimal("100000")) > 0) {
+            if (value.compareTo(BigDecimal.valueOf(currentGenesisSoldSupply())) < 0 || value.compareTo(new BigDecimal("100000")) > 0) {
                 return null;
             }
             return value.setScale(0, RoundingMode.HALF_UP).toPlainString();
@@ -1666,6 +1969,14 @@ public class OpsNexMarketService {
             return null;
         }
         return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+    }
+
+    private int currentGenesisSoldSupply() {
+        marketRepository.ensureGenesisSeedData();
+        GenesisSeriesView series = genesisSeriesOrFallback();
+        return Math.max(
+                Math.max(0, series.soldSupply() == null ? 0 : series.soldSupply()),
+                Math.toIntExact(Math.min(Integer.MAX_VALUE, marketRepository.genesisHoldingCount())));
     }
 
     private boolean genesisParamLoosens(GenesisParamDef def, String oldValue, String newValue) {
@@ -1708,75 +2019,89 @@ public class OpsNexMarketService {
                 "precheck", "raising supply, sale price, daily dividend rate, restoring the market, or changing payout basis requires B1 coverage redline check");
     }
 
-    private List<Map<String, Object>> genesisNodes(BigDecimal perSlotPerDay, BigDecimal floorPerNodePerDay) {
+    private PageSpec pageSpec(Integer requestedPage, Integer requestedPageSize, long total) {
+        int safePageSize = requestedPageSize == null
+                ? GENESIS_NODE_DEFAULT_PAGE_SIZE
+                : Math.max(1, Math.min(GENESIS_NODE_MAX_PAGE_SIZE, requestedPageSize));
+        int totalPages = total <= 0 ? 1 : (int) Math.ceil((double) total / safePageSize);
+        int safePage = requestedPage == null ? 1 : Math.max(1, requestedPage);
+        safePage = Math.min(safePage, totalPages);
+        int offset = Math.max(0, (safePage - 1) * safePageSize);
+        return new PageSpec(safePage, safePageSize, total, totalPages, offset);
+    }
+
+    private Map<String, Object> nodePageMap(PageSpec page) {
+        return map(
+                "page", page.page(),
+                "pageSize", page.pageSize(),
+                "total", page.total(),
+                "totalPages", page.totalPages(),
+                "hasPrev", page.page() > 1,
+                "hasNext", page.page() < page.totalPages());
+    }
+
+    private List<Map<String, Object>> genesisNodes(
+            BigDecimal perSlotPerDay,
+            BigDecimal floorPerNodePerDay,
+            BigDecimal royaltyPct,
+            int offset,
+            int limit) {
         String perSlot = displayUsd(perSlotPerDay.setScale(2, RoundingMode.HALF_UP)) + " / day";
         String floor = displayUsd(floorPerNodePerDay.setScale(2, RoundingMode.HALF_UP)) + " / day";
-        return List.of(
-                genesisNode(
-                        "#0042",
-                        "usr_31E8",
-                        "primary",
-                        displayUsd(new BigDecimal("3840")),
-                        "held",
-                        "持有计分红",
-                        "ok",
-                        "2026-01 primary " + displayUsd(new BigDecimal("9999")),
-                        List.of(
-                                map("label", "Lifetime dividend", "value", displayUsd(new BigDecimal("3840")) + " (160 days)"),
-                                map("label", "Current daily dividend", "value", perSlot),
-                                map("label", "Guaranteed accrual basis", "value", floor),
-                                map("label", "Last payout", "value", "today 00:00 batch")),
-                        List.of(map("time", "-", "event", "Primary holder, no secondary transfer", "royalty", "-"))),
-                genesisNode(
-                        "#0117",
-                        "usr_19C7",
-                        "secondary transfer 05-12",
-                        displayUsd(new BigDecimal("696")),
-                        "held",
-                        "持有计分红",
-                        "ok",
-                        "2026-01 primary, transferred on 2026-05-12",
-                        List.of(
-                                map("label", "Lifetime dividend after transfer", "value", displayUsd(new BigDecimal("696")) + " (29 days)"),
-                                map("label", "Current daily dividend", "value", perSlot),
-                                map("label", "Transfer rule", "value", "Dividend follows NFT holder")),
-                        List.of(map("time", "2026-05-12", "event", "usr_3990 -> usr_19C7 secondary trade " + displayUsd(new BigDecimal("11200")), "royalty", "2.5% deducted"))),
-                genesisNode(
-                        "#0233",
-                        "usr_84F2",
-                        "primary",
-                        displayUsd(new BigDecimal("3000")),
-                        "listed",
-                        "二级挂单中",
-                        "dim",
-                        "2026-02 primary " + displayUsd(new BigDecimal("9999")),
-                        List.of(
-                                map("label", "Lifetime dividend", "value", displayUsd(new BigDecimal("3000")) + " (125 days)"),
-                                map("label", "Current daily dividend", "value", perSlot),
-                                map("label", "Listing price", "value", displayUsd(new BigDecimal("12800")))),
-                        List.of(map("time", "2026-05-28", "event", "usr_84F2 listed on secondary market " + displayUsd(new BigDecimal("12800")), "royalty", "pending"))));
+        LocalDate today = LocalDate.now(clock);
+        return marketRepository.genesisNodes(offset, limit).stream()
+                .map(node -> genesisNode(node, today, perSlotPerDay, perSlot, floor, royaltyPct))
+                .toList();
     }
 
     private Map<String, Object> genesisNode(
-            String id,
-            String owner,
-            String source,
-            String lifetimeDividend,
-            String status,
-            String statusLabel,
-            String statusTone,
-            String buy,
-            List<Map<String, Object>> dividends,
-            List<Map<String, Object>> transfers) {
+            GenesisNodeView node,
+            LocalDate today,
+            BigDecimal perSlotPerDay,
+            String perSlot,
+            String floor,
+            BigDecimal royaltyPct) {
+        LocalDate acquiredDate = node.acquiredAt() == null ? today : node.acquiredAt().toLocalDate();
+        long days = Math.max(0, ChronoUnit.DAYS.between(acquiredDate, today));
+        BigDecimal lifetime = perSlotPerDay
+                .multiply(BigDecimal.valueOf(days))
+                .setScale(2, RoundingMode.HALF_UP);
+        String status = node.status() == null ? "held" : node.status().toLowerCase(Locale.ROOT);
+        if ("active".equals(status)) {
+            status = "held";
+        }
+        List<Map<String, Object>> dividends = new ArrayList<>();
+        dividends.add(map("label", "Lifetime dividend", "value", displayUsd(lifetime) + " (" + days + " days)"));
+        dividends.add(map("label", "Current daily dividend", "value", perSlot));
+        dividends.add(map("label", "Guaranteed accrual basis", "value", floor));
+        dividends.add(map("label", "Last payout", "value", "today 00:00 batch"));
+
+        List<Map<String, Object>> transfers = new ArrayList<>();
+        String dateLabel = acquiredDate.toString();
+        String source = StringUtils.hasText(node.sourceLabel()) ? node.sourceLabel() : "primary";
+        if (source.toLowerCase(Locale.ROOT).contains("secondary")) {
+            transfers.add(map(
+                    "time", dateLabel,
+                    "event", "secondary trade acquired by " + node.ownerCode() + " " + displayUsd(safeBig(node.acquiredPriceUsdt())),
+                    "royalty", displayPct(royaltyPct) + " deducted"));
+        } else if ("listed".equals(status)) {
+            transfers.add(map(
+                    "time", dateLabel,
+                    "event", node.ownerCode() + " listed on secondary market " + displayUsd(safeBig(node.acquiredPriceUsdt())),
+                    "royalty", "pending"));
+        } else {
+            transfers.add(map("time", "-", "event", "Primary holder, no secondary transfer", "royalty", "-"));
+        }
         return map(
-                "id", id,
-                "owner", owner,
+                "id", node.holdingNo(),
+                "owner", node.ownerCode(),
+                "userNo", node.userNo(),
                 "source", source,
-                "lifetimeDividend", lifetimeDividend,
+                "lifetimeDividend", displayUsd(lifetime),
                 "status", status,
-                "statusLabel", statusLabel,
-                "statusTone", statusTone,
-                "buy", buy,
+                "statusLabel", StringUtils.hasText(node.statusLabel()) ? node.statusLabel() : status,
+                "statusTone", StringUtils.hasText(node.statusTone()) ? node.statusTone() : "dim",
+                "buy", dateLabel + " " + source + " " + displayUsd(safeBig(node.acquiredPriceUsdt())),
                 "dividends", dividends,
                 "transfers", transfers);
     }
@@ -2134,6 +2459,9 @@ public class OpsNexMarketService {
             String note,
             boolean b1RedlineTriggered,
             GenesisParamKind kind) {
+    }
+
+    private record PageSpec(int page, int pageSize, long total, int totalPages, int offset) {
     }
 
     private record CountrySeed(String code, String name, String status, String reason) {

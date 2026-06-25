@@ -12,6 +12,20 @@ public interface NexMarketRepository {
 
     void publishNexUsdtPrice(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt);
 
+    void ensureNexMarketSeedData(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt);
+
+    void ensureExchangeSeedData();
+
+    void ensureGenesisSeedData();
+
+    Optional<GenesisSeriesView> activeGenesisSeries();
+
+    GenesisSecondaryStatsView genesisSecondaryStats(LocalDateTime since);
+
+    long genesisHoldingCount();
+
+    List<GenesisNodeView> genesisNodes(int offset, int limit);
+
     BigDecimal todayExchangeCompletedUsdt();
 
     long queuedExchangeCount();
@@ -23,4 +37,24 @@ public interface NexMarketRepository {
     Optional<ExchangeOrderView> findExchangeOrder(String exchangeNo);
 
     boolean cancelQueuedExchange(String exchangeNo);
+
+    void ensureStakingSeedData();
+
+    List<StakingProductView> stakingProducts();
+
+    BigDecimal stakingEstimatedInterestUsdt();
+
+    long stakingPositionCountByStatus(String status);
+
+    long stakingEarlyWithdrawnCountSince(LocalDateTime since);
+
+    List<StakingPositionView> stakingPositionsByStatus(String status, int limit);
+
+    void ensureRepurchaseSeedData();
+
+    RepurchaseStatsView repurchaseStatsSince(LocalDateTime since);
+
+    List<RepurchaseStatusView> repurchaseStatusBreakdown();
+
+    List<RepurchaseAmountBucketView> repurchaseAmountBuckets();
 }

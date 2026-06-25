@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.infrastructure.ExchangeOrderEntity;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -30,6 +32,41 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                AND UPPER(status) = 'QUEUED'
             """)
     long countQueued();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_exchange_order
+             WHERE is_deleted = 0
+            """)
+    long countOrders();
+
+    @Insert("""
+            INSERT INTO nx_exchange_order
+              (user_id, exchange_no, from_asset, to_asset, from_amount, to_amount, rate, status, created_at, updated_at, is_deleted)
+            VALUES
+              (#{userId}, #{exchangeNo}, #{fromAsset}, #{toAsset}, #{fromAmount}, #{toAmount}, #{rate}, #{status}, #{createdAt}, #{createdAt}, 0)
+            ON DUPLICATE KEY UPDATE
+              user_id = VALUES(user_id),
+              from_asset = VALUES(from_asset),
+              to_asset = VALUES(to_asset),
+              from_amount = VALUES(from_amount),
+              to_amount = VALUES(to_amount),
+              rate = VALUES(rate),
+              status = VALUES(status),
+              created_at = VALUES(created_at),
+              updated_at = VALUES(updated_at),
+              is_deleted = 0
+            """)
+    int upsertSeedOrder(
+            @Param("userId") Long userId,
+            @Param("exchangeNo") String exchangeNo,
+            @Param("fromAsset") String fromAsset,
+            @Param("toAsset") String toAsset,
+            @Param("fromAmount") BigDecimal fromAmount,
+            @Param("toAmount") BigDecimal toAmount,
+            @Param("rate") BigDecimal rate,
+            @Param("status") String status,
+            @Param("createdAt") LocalDateTime createdAt);
 
     @Select("""
             SELECT COUNT(1)

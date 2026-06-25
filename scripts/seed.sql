@@ -948,10 +948,10 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO nx_staking_product
   (id, product_code, name, asset, term_days, apy_bps, early_penalty_bps, min_amount, sort_order, status, is_deleted)
 VALUES
-  (1, 'USDT_30D', 'USDT · 30d', 'USDT', 30, 2800.000000, 200.000000, 50.000000, 10, 'ACTIVE', 0),
-  (2, 'USDT_90D', 'USDT · 90d', 'USDT', 90, 6800.000000, 300.000000, 50.000000, 20, 'ACTIVE', 0),
-  (3, 'USDT_180D', 'USDT · 180d', 'USDT', 180, 12000.000000, 500.000000, 100.000000, 30, 'ACTIVE', 0),
-  (4, 'USDT_365D', 'USDT · 365d', 'USDT', 365, 18000.000000, 800.000000, 100.000000, 40, 'ACTIVE', 0)
+  (1, 'USDT_30D', 'USDT · 30d', 'USDT', 30, 1200.000000, 500.000000, 100.000000, 10, 'ACTIVE', 0),
+  (2, 'USDT_90D', 'USDT · 90d', 'USDT', 90, 3500.000000, 1500.000000, 500.000000, 20, 'ACTIVE', 0),
+  (3, 'USDT_180D', 'USDT · 180d', 'USDT', 180, 8000.000000, 3000.000000, 1000.000000, 30, 'ACTIVE', 0),
+  (4, 'USDT_365D', 'USDT · 365d', 'USDT', 365, 18000.000000, 5000.000000, 5000.000000, 40, 'ACTIVE', 0)
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
   asset = VALUES(asset),
@@ -961,6 +961,150 @@ ON DUPLICATE KEY UPDATE
   min_amount = VALUES(min_amount),
   sort_order = VALUES(sort_order),
   status = VALUES(status),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_staking_position
+  (user_id, position_no, product_id, product_code, product_name, amount_usdt, apy_bps, early_penalty_bps,
+   term_days, locked_at, unlock_at, estimated_interest_usdt, status, claimed_at, early_withdrawn_at, is_deleted)
+SELECT 19081, 'POS-9081', product.id, product.product_code, product.name, 500.000000, product.apy_bps, product.early_penalty_bps,
+       product.term_days, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 DAY), DATE_ADD(DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 DAY), INTERVAL product.term_days DAY),
+       0.000000, 'PENDING_LOCK', NULL, NULL, 0
+  FROM nx_staking_product product
+ WHERE product.product_code = 'USDT_90D'
+ON DUPLICATE KEY UPDATE
+  product_id = VALUES(product_id),
+  product_code = VALUES(product_code),
+  product_name = VALUES(product_name),
+  amount_usdt = VALUES(amount_usdt),
+  apy_bps = VALUES(apy_bps),
+  early_penalty_bps = VALUES(early_penalty_bps),
+  term_days = VALUES(term_days),
+  locked_at = VALUES(locked_at),
+  unlock_at = VALUES(unlock_at),
+  estimated_interest_usdt = VALUES(estimated_interest_usdt),
+  status = VALUES(status),
+  claimed_at = VALUES(claimed_at),
+  early_withdrawn_at = VALUES(early_withdrawn_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_staking_position
+  (user_id, position_no, product_id, product_code, product_name, amount_usdt, apy_bps, early_penalty_bps,
+   term_days, locked_at, unlock_at, estimated_interest_usdt, status, claimed_at, early_withdrawn_at, is_deleted)
+SELECT 17102, 'POS-7102', product.id, product.product_code, product.name, 1000.000000, product.apy_bps, product.early_penalty_bps,
+       product.term_days, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 90 DAY), DATE_ADD(DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 90 DAY), INTERVAL product.term_days DAY),
+       197.260000, 'ACTIVE', NULL, NULL, 0
+  FROM nx_staking_product product
+ WHERE product.product_code = 'USDT_180D'
+ON DUPLICATE KEY UPDATE
+  product_id = VALUES(product_id),
+  product_code = VALUES(product_code),
+  product_name = VALUES(product_name),
+  amount_usdt = VALUES(amount_usdt),
+  apy_bps = VALUES(apy_bps),
+  early_penalty_bps = VALUES(early_penalty_bps),
+  term_days = VALUES(term_days),
+  locked_at = VALUES(locked_at),
+  unlock_at = VALUES(unlock_at),
+  estimated_interest_usdt = VALUES(estimated_interest_usdt),
+  status = VALUES(status),
+  claimed_at = VALUES(claimed_at),
+  early_withdrawn_at = VALUES(early_withdrawn_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_staking_position
+  (user_id, position_no, product_id, product_code, product_name, amount_usdt, apy_bps, early_penalty_bps,
+   term_days, locked_at, unlock_at, estimated_interest_usdt, status, claimed_at, early_withdrawn_at, is_deleted)
+SELECT 16339, 'POS-6339', product.id, product.product_code, product.name, 5000.000000, product.apy_bps, product.early_penalty_bps,
+       product.term_days, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 DAY), DATE_ADD(DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 DAY), INTERVAL product.term_days DAY),
+       295.890000, 'ACTIVE', NULL, NULL, 0
+  FROM nx_staking_product product
+ WHERE product.product_code = 'USDT_365D'
+ON DUPLICATE KEY UPDATE
+  product_id = VALUES(product_id),
+  product_code = VALUES(product_code),
+  product_name = VALUES(product_name),
+  amount_usdt = VALUES(amount_usdt),
+  apy_bps = VALUES(apy_bps),
+  early_penalty_bps = VALUES(early_penalty_bps),
+  term_days = VALUES(term_days),
+  locked_at = VALUES(locked_at),
+  unlock_at = VALUES(unlock_at),
+  estimated_interest_usdt = VALUES(estimated_interest_usdt),
+  status = VALUES(status),
+  claimed_at = VALUES(claimed_at),
+  early_withdrawn_at = VALUES(early_withdrawn_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_staking_position
+  (user_id, position_no, product_id, product_code, product_name, amount_usdt, apy_bps, early_penalty_bps,
+   term_days, locked_at, unlock_at, estimated_interest_usdt, status, claimed_at, early_withdrawn_at, is_deleted)
+SELECT 15412, 'POS-5412', product.id, product.product_code, product.name, 100.000000, product.apy_bps, product.early_penalty_bps,
+       product.term_days, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 40 DAY), DATE_ADD(DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 40 DAY), INTERVAL product.term_days DAY),
+       0.990000, 'MATURE_UNCLAIMED', NULL, NULL, 0
+  FROM nx_staking_product product
+ WHERE product.product_code = 'USDT_30D'
+ON DUPLICATE KEY UPDATE
+  product_id = VALUES(product_id),
+  product_code = VALUES(product_code),
+  product_name = VALUES(product_name),
+  amount_usdt = VALUES(amount_usdt),
+  apy_bps = VALUES(apy_bps),
+  early_penalty_bps = VALUES(early_penalty_bps),
+  term_days = VALUES(term_days),
+  locked_at = VALUES(locked_at),
+  unlock_at = VALUES(unlock_at),
+  estimated_interest_usdt = VALUES(estimated_interest_usdt),
+  status = VALUES(status),
+  claimed_at = VALUES(claimed_at),
+  early_withdrawn_at = VALUES(early_withdrawn_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_staking_position
+  (user_id, position_no, product_id, product_code, product_name, amount_usdt, apy_bps, early_penalty_bps,
+   term_days, locked_at, unlock_at, estimated_interest_usdt, status, claimed_at, early_withdrawn_at, is_deleted)
+SELECT 15520, 'POS-5520', product.id, product.product_code, product.name, 500.000000, product.apy_bps, product.early_penalty_bps,
+       product.term_days, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 100 DAY), DATE_ADD(DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 100 DAY), INTERVAL product.term_days DAY),
+       43.150000, 'MATURE_UNCLAIMED', NULL, NULL, 0
+  FROM nx_staking_product product
+ WHERE product.product_code = 'USDT_90D'
+ON DUPLICATE KEY UPDATE
+  product_id = VALUES(product_id),
+  product_code = VALUES(product_code),
+  product_name = VALUES(product_name),
+  amount_usdt = VALUES(amount_usdt),
+  apy_bps = VALUES(apy_bps),
+  early_penalty_bps = VALUES(early_penalty_bps),
+  term_days = VALUES(term_days),
+  locked_at = VALUES(locked_at),
+  unlock_at = VALUES(unlock_at),
+  estimated_interest_usdt = VALUES(estimated_interest_usdt),
+  status = VALUES(status),
+  claimed_at = VALUES(claimed_at),
+  early_withdrawn_at = VALUES(early_withdrawn_at),
+  is_deleted = VALUES(is_deleted);
+
+INSERT INTO nx_staking_position
+  (user_id, position_no, product_id, product_code, product_name, amount_usdt, apy_bps, early_penalty_bps,
+   term_days, locked_at, unlock_at, estimated_interest_usdt, status, claimed_at, early_withdrawn_at, is_deleted)
+SELECT 15019, 'POS-5019', product.id, product.product_code, product.name, 5000.000000, product.apy_bps, product.early_penalty_bps,
+       product.term_days, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 30 DAY), DATE_ADD(DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 30 DAY), INTERVAL product.term_days DAY),
+       0.000000, 'EARLY_WITHDRAWN', NULL, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 2 DAY), 0
+  FROM nx_staking_product product
+ WHERE product.product_code = 'USDT_365D'
+ON DUPLICATE KEY UPDATE
+  product_id = VALUES(product_id),
+  product_code = VALUES(product_code),
+  product_name = VALUES(product_name),
+  amount_usdt = VALUES(amount_usdt),
+  apy_bps = VALUES(apy_bps),
+  early_penalty_bps = VALUES(early_penalty_bps),
+  term_days = VALUES(term_days),
+  locked_at = VALUES(locked_at),
+  unlock_at = VALUES(unlock_at),
+  estimated_interest_usdt = VALUES(estimated_interest_usdt),
+  status = VALUES(status),
+  claimed_at = VALUES(claimed_at),
+  early_withdrawn_at = VALUES(early_withdrawn_at),
   is_deleted = VALUES(is_deleted);
 
 INSERT INTO nx_earning_milestone_rule

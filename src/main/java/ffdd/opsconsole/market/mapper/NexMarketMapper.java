@@ -10,6 +10,15 @@ import org.apache.ibatis.annotations.Select;
 
 public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
     @Select("""
+            SELECT COUNT(*)
+              FROM nx_price_index
+             WHERE is_deleted = 0
+               AND status = 'ACTIVE'
+               AND metric_code IN ('NEX','NEX_USDT')
+            """)
+    int countActiveNexUsdtPrices();
+
+    @Select("""
             SELECT price_usdt
               FROM nx_price_index
              WHERE is_deleted = 0
