@@ -150,8 +150,9 @@ public class OpsFinanceController {
             @RequestParam(required = false) Integer pageNum,
             @RequestParam(required = false) Integer pageSize,
             @RequestParam(required = false) BigDecimal minAmount,
+            @RequestParam(required = false) BigDecimal maxAmount,
             @RequestParam(required = false) Integer minRiskScore) {
-        return financeService.withdrawals(new WithdrawalQueryRequest(status, userId, keyword, pageNum, pageSize, minAmount, minRiskScore));
+        return financeService.withdrawals(new WithdrawalQueryRequest(status, userId, keyword, pageNum, pageSize, minAmount, maxAmount, minRiskScore));
     }
 
     @GetMapping("/withdrawals/{withdrawalNo}")

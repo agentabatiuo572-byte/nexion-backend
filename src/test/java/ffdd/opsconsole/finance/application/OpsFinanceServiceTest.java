@@ -23,6 +23,7 @@ import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Collection;
@@ -38,9 +39,10 @@ class OpsFinanceServiceTest {
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeWithdrawalOrderRepository withdrawalRepository = new FakeWithdrawalOrderRepository();
     private final FakeDepositOpsRepository depositOpsRepository = new FakeDepositOpsRepository();
+    private final FakeUserSeedRepository userSeedRepository = new FakeUserSeedRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsFinanceService service =
-            new OpsFinanceService(configFacade, coverageFacade, withdrawalRepository, depositOpsRepository, auditLogService);
+            new OpsFinanceService(configFacade, coverageFacade, withdrawalRepository, depositOpsRepository, userSeedRepository, auditLogService);
 
     @Test
     void withdrawalParamsIncludeCoverageAndConfigValues() {
@@ -56,6 +58,17 @@ class OpsFinanceServiceTest {
                 .containsEntry("maxBalanceRatio", new BigDecimal("0.75"))
                 .containsEntry("coverageRatio", new BigDecimal("110.00"))
                 .containsEntry("redlinePct", new BigDecimal("85.00"));
+    }
+
+    @Test
+    void withdrawalParamsSeedsDefaultsIntoConfigWhenMissing() {
+        ApiResult<Map<String, Object>> result = service.withdrawalParams();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("withdrawal.daily_count_limit", "1")
+                .containsEntry("withdrawal.max_balance_pct", "0.80")
+                .containsEntry("withdrawal.fee_rate", "0.02");
     }
 
     @Test
@@ -121,6 +134,32 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void reviewWithdrawalRejectsApproveWhenD5DailyLimitExceeded() {
+        configFacade.values.put("withdrawal.daily_count_limit", "1");
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", 2);
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalAllowsApproveAfterD5DailyLimitRaised() {
+        configFacade.values.put("withdrawal.daily_count_limit", "2");
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", 2);
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("PENDING_CHAIN");
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("PENDING_CHAIN");
+    }
+
+    @Test
     void topupOverviewAggregatesDepositsAndConfigState() {
         depositOpsRepository.aggregates = List.of(new DepositAggregateView(
                 "USDT-TRC20",
@@ -139,6 +178,16 @@ class OpsFinanceServiceTest {
                 .containsEntry("diffCount", 1);
         assertThat(result.getData().get("channels").toString()).contains("USDT-TRC20").contains("false");
         assertThat(result.getData().get("bins").toString()).contains("bin-4716");
+    }
+
+    @Test
+    void topupOverviewSeedsFallbackDataWhenDatabaseIsEmpty() {
+        ApiResult<Map<String, Object>> result = service.topupOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(depositOpsRepository.seedCalls).isEqualTo(1);
+        assertThat(userSeedRepository.accountSeedCalls).isEqualTo(1);
+        assertThat(result.getData()).containsEntry("ledgerCount", 1L);
     }
 
     @Test
@@ -174,14 +223,38 @@ class OpsFinanceServiceTest {
         withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
 
         ApiResult<PageResult<WithdrawalOrderView>> result = service.withdrawals(
-                new WithdrawalQueryRequest("REVIEWING", 1001L, "WD", 2, 50, new BigDecimal("1000"), 70));
+                new WithdrawalQueryRequest("REVIEWING", 1001L, "WD", 2, 50, new BigDecimal("1000"), new BigDecimal("5000"), 70));
 
         assertThat(result.getCode()).isZero();
         assertThat(withdrawalRepository.lastStatusFilter).isEqualTo("REVIEWING");
         assertThat(withdrawalRepository.lastUserIdFilter).isEqualTo(1001L);
         assertThat(withdrawalRepository.lastKeywordFilter).isEqualTo("WD");
         assertThat(withdrawalRepository.lastMinAmountFilter).isEqualByComparingTo("1000");
+        assertThat(withdrawalRepository.lastMaxAmountFilter).isEqualByComparingTo("5000");
         assertThat(withdrawalRepository.lastMinRiskScoreFilter).isEqualTo(70);
+    }
+
+    @Test
+    void withdrawalsNormalizesReversedAmountRangeBeforeRepositoryQuery() {
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
+
+        ApiResult<PageResult<WithdrawalOrderView>> result = service.withdrawals(
+                new WithdrawalQueryRequest("REVIEWING", null, null, 1, 20, new BigDecimal("5000"), new BigDecimal("1000"), null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(withdrawalRepository.lastMinAmountFilter).isEqualByComparingTo("1000");
+        assertThat(withdrawalRepository.lastMaxAmountFilter).isEqualByComparingTo("5000");
+    }
+
+    @Test
+    void withdrawalsSeedsFallbackDataWhenDatabaseIsEmpty() {
+        ApiResult<PageResult<WithdrawalOrderView>> result = service.withdrawals(
+                new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(withdrawalRepository.seedCalls).isEqualTo(1);
+        assertThat(result.getData().getTotal()).isEqualTo(1);
+        assertThat(result.getData().getRecords()).extracting(WithdrawalOrderView::withdrawalNo).containsExactly("D2-SEED-WD-1");
     }
 
     @SuppressWarnings("unchecked")
@@ -190,6 +263,10 @@ class OpsFinanceServiceTest {
     }
 
     private static WithdrawalOrderView withdrawal(String withdrawalNo, String status) {
+        return withdrawal(withdrawalNo, status, 1);
+    }
+
+    private static WithdrawalOrderView withdrawal(String withdrawalNo, String status, Integer withdrawalCount24h) {
         return new WithdrawalOrderView(
                 1L,
                 1001L,
@@ -211,7 +288,16 @@ class OpsFinanceServiceTest {
                 null,
                 null,
                 LocalDateTime.now(),
-                LocalDateTime.now());
+                LocalDateTime.now(),
+                "U00001001",
+                "测试用户",
+                "138****0001",
+                "VERIFIED",
+                42,
+                "",
+                withdrawalCount24h,
+                "",
+                "");
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
@@ -242,6 +328,32 @@ class OpsFinanceServiceTest {
         }
     }
 
+    private static final class FakeUserSeedRepository implements UserSeedRepository {
+        private final Map<String, Long> ids = new LinkedHashMap<>();
+        private int accountSeedCalls;
+        private int kycSeedCalls;
+
+        @Override
+        public Optional<Long> findUserIdByLookupKey(String lookupKey) {
+            return Optional.ofNullable(ids.get(lookupKey));
+        }
+
+        @Override
+        public void upsertAccountActionSeeds() {
+            accountSeedCalls++;
+            ids.put("usr_31E8", 1001L);
+            ids.put("usr_2231", 1002L);
+            ids.put("usr_55B1", 1003L);
+            ids.put("usr_8807", 1004L);
+        }
+
+        @Override
+        public void upsertKycLedgerSeeds() {
+            kycSeedCalls++;
+            ids.put("usr_77D4", 1005L);
+        }
+    }
+
     private static final class FakeWithdrawalOrderRepository implements WithdrawalOrderRepository {
         private WithdrawalOrderView order;
         private String lastStatus;
@@ -249,15 +361,18 @@ class OpsFinanceServiceTest {
         private Long lastUserIdFilter;
         private String lastKeywordFilter;
         private BigDecimal lastMinAmountFilter;
+        private BigDecimal lastMaxAmountFilter;
         private Integer lastMinRiskScoreFilter;
+        private int seedCalls;
 
         @Override
         public PageResult<WithdrawalOrderView> page(String status, Long userId, String keyword, BigDecimal minAmount,
-                                                    Integer minRiskScore, int pageNum, int pageSize) {
+                                                    BigDecimal maxAmount, Integer minRiskScore, int pageNum, int pageSize) {
             lastStatusFilter = status;
             lastUserIdFilter = userId;
             lastKeywordFilter = keyword;
             lastMinAmountFilter = minAmount;
+            lastMaxAmountFilter = maxAmount;
             lastMinRiskScoreFilter = minRiskScore;
             return new PageResult<>(order == null ? 0 : 1, pageNum, pageSize, order == null ? List.of() : List.of(order));
         }
@@ -274,12 +389,21 @@ class OpsFinanceServiceTest {
                     order.id(), order.userId(), order.withdrawalNo(), order.asset(), order.chain(), order.amount(), order.fee(),
                     order.targetAddress(), order.riskDecisionId(), order.chainTxHash(), status, order.chainSubmittedAt(),
                     order.completedAt(), order.failedAt(), failureReason, order.chainBroadcastAttempts(), order.nextBroadcastAt(),
-                    order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt());
+                    order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
+                    order.nickname(), order.phoneMasked(), order.kycStatus(), order.riskScore(), order.hitRules(),
+                    order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
+        }
+
+        @Override
+        public void seedD2FallbackData(Map<String, Long> userIds) {
+            seedCalls++;
+            order = withdrawal("D2-SEED-WD-1", "REVIEWING");
         }
     }
 
     private static final class FakeDepositOpsRepository implements DepositOpsRepository {
         private List<DepositAggregateView> aggregates = List.of();
+        private int seedCalls;
 
         @Override
         public List<DepositAggregateView> aggregateToday() {
@@ -319,6 +443,17 @@ class OpsFinanceServiceTest {
         @Override
         public int markChargebackRefunded(String caseNo, String reason) {
             return 0;
+        }
+
+        @Override
+        public void seedD1FallbackData(Map<String, Long> userIds) {
+            seedCalls++;
+            aggregates = List.of(new DepositAggregateView(
+                    "USDT-TRC20",
+                    1L,
+                    new BigDecimal("50.00"),
+                    1L,
+                    new BigDecimal("50.00")));
         }
     }
 }

@@ -17,6 +17,7 @@ import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
+import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -36,6 +37,7 @@ class OpsTreasuryServiceTest {
 
     private final FakeTreasuryLedgerRepository ledgerRepository = new FakeTreasuryLedgerRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeUserSeedRepository userSeedRepository = new FakeUserSeedRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsTreasuryService service = service();
 
@@ -45,7 +47,8 @@ class OpsTreasuryServiceTest {
                 configFacade,
                 auditLogService,
                 CLOCK,
-                new TreasuryDualLedgerProperties());
+                new TreasuryDualLedgerProperties(),
+                userSeedRepository);
         return service;
     }
 
@@ -95,6 +98,21 @@ class OpsTreasuryServiceTest {
                 .extracting(account -> account.get("key"))
                 .contains("nex_payable")
                 .doesNotContain("nexv2", "premium", "points");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void dualLedgerSeedsFallbackTreasuryDataWhenDatabaseIsEmpty() {
+        Map<String, Object> dualLedger = service.dualLedger().getData();
+
+        assertThat(ledgerRepository.seedCalls).isEqualTo(1);
+        assertThat(userSeedRepository.accountSeedCalls).isEqualTo(1);
+        assertThat((Map<String, Object>) dualLedger.get("snapshot"))
+                .containsEntry("liabilitiesUsd", new BigDecimal("250.00"));
+        assertThat(configFacade.values).containsKeys(
+                "wallet.dual-ledger.reserve-usd",
+                "wallet.dual-ledger.redline-pct",
+                "wallet.dual-ledger.scope");
     }
 
     @Test
@@ -193,6 +211,16 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    void ledgerBillsSeedsFallbackRowsWhenDatabaseIsEmpty() {
+        var result = service.ledgerBills(new TreasuryLedgerQueryRequest(null, null, null, 1, 20));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(ledgerRepository.seedCalls).isEqualTo(1);
+        assertThat(result.getData().getTotal()).isEqualTo(1);
+        assertThat(result.getData().getRecords()).extracting(TreasuryLedgerBillView::bizNo).containsExactly("D4-SEED-BILL-1");
+    }
+
+    @Test
     void ledgerAdjustmentCreatesPendingReviewAndAudits() {
         TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
                 10001L,
@@ -263,6 +291,32 @@ class OpsTreasuryServiceTest {
         }
     }
 
+    private static final class FakeUserSeedRepository implements UserSeedRepository {
+        private final Map<String, Long> ids = new LinkedHashMap<>();
+        private int accountSeedCalls;
+        private int kycSeedCalls;
+
+        @Override
+        public Optional<Long> findUserIdByLookupKey(String lookupKey) {
+            return Optional.ofNullable(ids.get(lookupKey));
+        }
+
+        @Override
+        public void upsertAccountActionSeeds() {
+            accountSeedCalls++;
+            ids.put("usr_31E8", 1001L);
+            ids.put("usr_2231", 1002L);
+            ids.put("usr_55B1", 1003L);
+            ids.put("usr_8807", 1004L);
+        }
+
+        @Override
+        public void upsertKycLedgerSeeds() {
+            kycSeedCalls++;
+            ids.put("usr_77D4", 1005L);
+        }
+    }
+
     private static final class FakeTreasuryLedgerRepository implements TreasuryLedgerRepository {
         private long countValue;
         private long activeQueueCount;
@@ -282,6 +336,7 @@ class OpsTreasuryServiceTest {
         private String lastBillType;
         private Long lastBillUserId;
         private String lastBillKeyword;
+        private int seedCalls;
 
         @Override
         public long countDeposits(LocalDateTime since, String status) {
@@ -404,6 +459,25 @@ class OpsTreasuryServiceTest {
                     "relatedBizNo", relatedBizNo,
                     "reason", reason,
                     "operator", operator));
+        }
+
+        @Override
+        public void seedD4FallbackData(Map<String, Long> userIds) {
+            seedCalls++;
+            usdtAvailable = new BigDecimal("250.00");
+            bills.add(new TreasuryLedgerBillView(
+                    1L,
+                    1001L,
+                    "D4-SEED-BILL-1",
+                    "DEPOSIT",
+                    "USDT",
+                    "IN",
+                    new BigDecimal("250.00"),
+                    new BigDecimal("250.00"),
+                    "SUCCESS",
+                    "fallback treasury bill",
+                    LocalDateTime.now(CLOCK),
+                    LocalDateTime.now(CLOCK)));
         }
     }
 }

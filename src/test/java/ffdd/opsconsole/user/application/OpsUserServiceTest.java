@@ -115,6 +115,21 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void profilePageSeedsC1AccountsWhenMissingThenQueriesAgain() {
+        userRepository.c2SeedPresent = false;
+
+        ApiResult<PageResult<UserAccountView>> result = service.profilePage(
+                new UserQueryRequest("Marcus", null, null, null, 1, 10, null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(userRepository.accountActionSeedWrites).isEqualTo(1);
+        assertThat(result.getData().getRecords())
+                .extracting(UserAccountView::userNo)
+                .contains("U00008807");
+        assertThat(userRepository.lastProfileRequest.keyword()).isEqualTo("Marcus");
+    }
+
+    @Test
     void accountActionOverviewReturnsServerCanonicalListsAndImpersonations() {
         userRepository.sessions.put("rt-existing", new UserSessionView(
                 1L, "rt-existing", "web", "10.0.0.*", "ACTIVE",

@@ -9,7 +9,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentQueryRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 
-public interface UserOpsRepository {
+public interface UserOpsRepository extends UserSeedRepository {
     Map<String, Object> overview();
 
     List<UserAccountView> search(String keyword, String status, String kycStatus, int limit);

@@ -25,6 +25,7 @@ import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -60,14 +61,18 @@ public class OpsFinanceService {
     private static final Set<String> REVIEWABLE = Set.of("REVIEWING", "DELAYED");
     private static final Set<String> REJECTABLE = Set.of("REVIEWING", "DELAYED", "FROZEN", "PENDING_CHAIN", "CHAIN_SUBMITTED", "DEAD");
     private static final Set<String> FINAL_STATUSES = Set.of("SUCCESS", "FAILED", "REJECTED");
+    private static final List<String> D_SEED_USER_KEYS = List.of(
+            "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
 
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
     private final WithdrawalOrderRepository withdrawalRepository;
     private final DepositOpsRepository depositOpsRepository;
+    private final UserSeedRepository userSeedRepository;
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> topupOverview() {
+        ensureD1FallbackSeedData();
         List<DepositChannelView> channels = topupChannels();
         List<DepositReconciliationRowView> reconciliation = reconciliationRows();
         BigDecimal ledgerTotal = reconciliation.stream()
@@ -106,6 +111,7 @@ public class OpsFinanceService {
     }
 
     public ApiResult<PageResult<DepositFlowView>> topupFlows(String status, Long userId, String keyword, Integer pageNum, Integer pageSize) {
+        ensureD1FallbackSeedData();
         int normalizedPageNum = clamp(pageNum == null ? 1 : pageNum, 1, 10_000);
         int normalizedPageSize = clamp(pageSize == null ? 20 : pageSize, 1, 100);
         List<String> statuses = TOPUP_FLOW_STATUSES.getOrDefault(normalizeFlowStatus(status), List.of());
@@ -262,6 +268,7 @@ public class OpsFinanceService {
     }
 
     public ApiResult<Map<String, Object>> withdrawalParams() {
+        ensureD5ConfigDefaults();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         BigDecimal maxBalanceRatio = configDecimal("withdrawal.max_balance_pct", new BigDecimal("0.80"));
         BigDecimal feeRate = configDecimal("withdrawal.fee_rate", new BigDecimal("0.02"));
@@ -281,6 +288,7 @@ public class OpsFinanceService {
     }
 
     public ApiResult<PageResult<WithdrawalOrderView>> withdrawals(WithdrawalQueryRequest request) {
+        ensureD2FallbackSeedData();
         int pageNum = clamp(request == null || request.pageNum() == null ? 1 : request.pageNum(), 1, 10_000);
         int pageSize = clamp(request == null || request.pageSize() == null ? 20 : request.pageSize(), 1, 100);
         String status = request == null ? null : trimToNull(request.status());
@@ -289,10 +297,18 @@ public class OpsFinanceService {
         BigDecimal minAmount = request == null || request.minAmount() == null || request.minAmount().compareTo(BigDecimal.ZERO) < 0
                 ? null
                 : request.minAmount();
+        BigDecimal maxAmount = request == null || request.maxAmount() == null || request.maxAmount().compareTo(BigDecimal.ZERO) < 0
+                ? null
+                : request.maxAmount();
+        if (minAmount != null && maxAmount != null && minAmount.compareTo(maxAmount) > 0) {
+            BigDecimal originalMin = minAmount;
+            minAmount = maxAmount;
+            maxAmount = originalMin;
+        }
         Integer minRiskScore = request == null || request.minRiskScore() == null
                 ? null
                 : clamp(request.minRiskScore(), 0, 100);
-        return ApiResult.ok(withdrawalRepository.page(status, userId, keyword, minAmount, minRiskScore, pageNum, pageSize));
+        return ApiResult.ok(withdrawalRepository.page(status, userId, keyword, minAmount, maxAmount, minRiskScore, pageNum, pageSize));
     }
 
     public ApiResult<Map<String, Object>> updateWithdrawalParam(String idempotencyKey, WithdrawalParamUpdateRequest request) {
@@ -329,6 +345,7 @@ public class OpsFinanceService {
         if (!StringUtils.hasText(withdrawalNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_NO_REQUIRED");
         }
+        ensureD2FallbackSeedData();
         return withdrawalRepository.findByWithdrawalNo(withdrawalNo.trim())
                 .map(ApiResult::ok)
                 .orElseGet(() -> ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND"));
@@ -342,6 +359,7 @@ public class OpsFinanceService {
         if (guard != null) {
             return guard;
         }
+        ensureD2FallbackSeedData();
         WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo.trim()).orElse(null);
         if (order == null) {
             return ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND");
@@ -352,6 +370,10 @@ public class OpsFinanceService {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        int dailyLimitCount = withdrawalDailyLimitCount();
+        if ("APPROVE".equals(action) && exceedsDailyLimit(order, dailyLimitCount)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
         }
         String failureReason = "REJECTED".equals(newStatus) ? request.reason().trim() : null;
         withdrawalRepository.updateStatus(order.withdrawalNo(), newStatus, failureReason);
@@ -399,6 +421,7 @@ public class OpsFinanceService {
     }
 
     private List<DepositChannelView> topupChannels() {
+        ensureD1ConfigDefaults();
         return TOPUP_CHANNELS.stream()
                 .map(channel -> new DepositChannelView(
                         channel.id(),
@@ -410,6 +433,7 @@ public class OpsFinanceService {
     }
 
     private List<DepositCardRiskParamView> topupCardParams() {
+        ensureD1ConfigDefaults();
         return TOPUP_CARD_PARAMS.stream()
                 .map(param -> new DepositCardRiskParamView(
                         param.key(),
@@ -490,6 +514,72 @@ public class OpsFinanceService {
 
     private List<DepositChargebackView> chargebacks() {
         return depositOpsRepository.chargebacks();
+    }
+
+    private void ensureD1FallbackSeedData() {
+        ensureD1ConfigDefaults();
+        if (hasD1LiveData()) {
+            return;
+        }
+        depositOpsRepository.seedD1FallbackData(seedUserIds());
+    }
+
+    private boolean hasD1LiveData() {
+        return !depositOpsRepository.aggregateToday().isEmpty()
+                || depositOpsRepository.cardPaidCountToday() > 0
+                || !depositOpsRepository.chargebacks().isEmpty()
+                || !depositOpsRepository.failedPaymentRiskRows(1).isEmpty();
+    }
+
+    private void ensureD2FallbackSeedData() {
+        PageResult<WithdrawalOrderView> firstPage = withdrawalRepository.page(null, null, null, null, null, null, 1, 1);
+        if (firstPage.getTotal() > 0) {
+            return;
+        }
+        withdrawalRepository.seedD2FallbackData(seedUserIds());
+    }
+
+    private Map<String, Long> seedUserIds() {
+        boolean missing = D_SEED_USER_KEYS.stream()
+                .anyMatch(key -> userSeedRepository.findUserIdByLookupKey(key).isEmpty());
+        if (missing) {
+            userSeedRepository.upsertAccountActionSeeds();
+            userSeedRepository.upsertKycLedgerSeeds();
+        }
+        Map<String, Long> ids = new LinkedHashMap<>();
+        for (String key : D_SEED_USER_KEYS) {
+            userSeedRepository.findUserIdByLookupKey(key).ifPresent(id -> ids.put(key, id));
+        }
+        return ids;
+    }
+
+    private void ensureD1ConfigDefaults() {
+        seedConfigIfAbsent("finance.topup.psp.primary", "Checkout.com", "STRING", TOPUP_CONFIG_GROUP, "D1 primary card PSP");
+        seedConfigIfAbsent("finance.topup.fee_buffer_usd", "18.90", "NUMBER", TOPUP_CONFIG_GROUP, "D1 card fee buffer");
+        for (TopupChannelDef channel : TOPUP_CHANNELS) {
+            seedConfigIfAbsent(channelConfigKey(channel.code(), "fee"), channel.defaultFee(), "STRING", TOPUP_CONFIG_GROUP, "D1 topup channel fee");
+            seedConfigIfAbsent(channelConfigKey(channel.code(), "min_amount"), channel.defaultMinAmount(), "STRING", TOPUP_CONFIG_GROUP, "D1 topup channel min amount");
+            seedConfigIfAbsent(channelConfigKey(channel.code(), "enabled"), String.valueOf(channel.defaultEnabled()), "BOOLEAN", TOPUP_CONFIG_GROUP, "D1 topup channel enabled");
+        }
+        for (TopupCardParamDef param : TOPUP_CARD_PARAMS) {
+            seedConfigIfAbsent(cardParamConfigKey(param.key()), param.defaultValue(), "STRING", TOPUP_CONFIG_GROUP, "D1 card risk parameter");
+        }
+    }
+
+    private void ensureD5ConfigDefaults() {
+        seedConfigIfAbsent("withdrawal.daily_count_limit", "1", "NUMBER", "wallet", "D5 withdrawal daily count");
+        seedConfigIfAbsent("withdrawal.max_balance_pct", "0.80", "NUMBER", "wallet", "D5 withdrawal balance cap");
+        seedConfigIfAbsent("withdrawal.fee_rate", "0.02", "NUMBER", "wallet", "D5 withdrawal fee rate");
+        seedConfigIfAbsent("withdrawal.min_usdt", "20", "NUMBER", "wallet", "D5 minimum withdrawal USDT");
+        seedConfigIfAbsent("withdrawal.trc20.enabled", "true", "BOOLEAN", "wallet", "D5 TRC20 withdrawal enabled");
+        seedConfigIfAbsent("withdrawal.erc20.enabled", "true", "BOOLEAN", "wallet", "D5 ERC20 withdrawal enabled");
+    }
+
+    private void seedConfigIfAbsent(String key, String value, String type, String group, String remark) {
+        if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
+            return;
+        }
+        configFacade.upsertAdminValue(key, value, type, group, remark);
     }
 
     private TopupChannelDef topupChannel(String channelCode) {
@@ -629,6 +719,19 @@ public class OpsFinanceService {
             case "REJECT" -> REJECTABLE.contains(current) ? "REJECTED" : null;
             default -> null;
         };
+    }
+
+    private int withdrawalDailyLimitCount() {
+        ensureD5ConfigDefaults();
+        int count = configDecimal("withdrawal.daily_count_limit", BigDecimal.ONE)
+                .setScale(0, RoundingMode.DOWN)
+                .intValue();
+        return clamp(count, 1, 10);
+    }
+
+    private boolean exceedsDailyLimit(WithdrawalOrderView order, int dailyLimitCount) {
+        Integer count24h = order.withdrawalCount24h();
+        return count24h != null && count24h > dailyLimitCount;
     }
 
     private String normalizeParamKey(String key) {

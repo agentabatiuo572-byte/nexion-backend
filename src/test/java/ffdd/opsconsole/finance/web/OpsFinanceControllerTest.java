@@ -14,6 +14,7 @@ import ffdd.opsconsole.finance.dto.TopupCommandRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -75,12 +76,12 @@ class OpsFinanceControllerTest {
     @Test
     void withdrawalsDelegatesPagingQueryToFinanceService() {
         PageResult<WithdrawalOrderView> page = new PageResult<>(0, 2, 50, List.of());
-        when(financeService.withdrawals(new WithdrawalQueryRequest("REVIEWING", 1001L, "WD", 2, 50))).thenReturn(ApiResult.ok(page));
+        when(financeService.withdrawals(new WithdrawalQueryRequest("REVIEWING", 1001L, "WD", 2, 50, new BigDecimal("100"), new BigDecimal("5000"), null))).thenReturn(ApiResult.ok(page));
 
-        ApiResult<PageResult<WithdrawalOrderView>> result = controller.withdrawals("REVIEWING", 1001L, "WD", 2, 50, null, null);
+        ApiResult<PageResult<WithdrawalOrderView>> result = controller.withdrawals("REVIEWING", 1001L, "WD", 2, 50, new BigDecimal("100"), new BigDecimal("5000"), null);
 
         assertThat(result.getData()).isSameAs(page);
-        verify(financeService).withdrawals(new WithdrawalQueryRequest("REVIEWING", 1001L, "WD", 2, 50));
+        verify(financeService).withdrawals(new WithdrawalQueryRequest("REVIEWING", 1001L, "WD", 2, 50, new BigDecimal("100"), new BigDecimal("5000"), null));
     }
 
     @Test

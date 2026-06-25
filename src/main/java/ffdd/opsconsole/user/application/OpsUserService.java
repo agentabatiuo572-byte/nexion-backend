@@ -237,6 +237,7 @@ public class OpsUserService {
     }
 
     public ApiResult<List<UserAccountView>> profiles(UserQueryRequest request) {
+        ensureC1ProfileSeeds();
         int limit = normalizeLimit(request == null ? null : request.limit(), 50, 100);
         return ApiResult.ok(userRepository.search(
                 request == null ? null : request.keyword(),
@@ -246,7 +247,16 @@ public class OpsUserService {
     }
 
     public ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request) {
+        ensureC1ProfileSeeds();
         return ApiResult.ok(userRepository.pageProfiles(request));
+    }
+
+    private void ensureC1ProfileSeeds() {
+        boolean seedUsersMissing = ACCOUNT_ACTION_SEED_LOOKUP_KEYS.stream()
+                .anyMatch(key -> userRepository.findUserIdByLookupKey(key).isEmpty());
+        if (seedUsersMissing) {
+            userRepository.upsertAccountActionSeeds();
+        }
     }
 
     public ApiResult<UserKycOverview> kycOverview(String status, Integer limit) {

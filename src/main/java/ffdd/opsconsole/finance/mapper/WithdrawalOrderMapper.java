@@ -5,6 +5,7 @@ import ffdd.opsconsole.finance.domain.WithdrawalOrderView;
 import ffdd.opsconsole.finance.infrastructure.WithdrawalOrderEntity;
 import java.math.BigDecimal;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Lang;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -12,6 +13,70 @@ import org.apache.ibatis.annotations.Update;
 import org.apache.ibatis.scripting.defaults.RawLanguageDriver;
 
 public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity> {
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_withdrawal_order
+             WHERE is_deleted = 0
+               AND withdrawal_no LIKE 'D2-SEED-%'
+            """)
+    long countD2SeedWithdrawals();
+
+    @Insert("""
+            INSERT INTO nx_withdrawal_order (
+                withdrawal_no, user_id, asset, chain, amount, fee, target_address, risk_decision_id,
+                chain_tx_hash, status, chain_submitted_at, completed_at, failed_at, failure_reason,
+                chain_broadcast_attempts, next_broadcast_at, last_broadcast_error, broadcast_dead_at,
+                created_at, updated_at, is_deleted
+            )
+            VALUES (
+                #{withdrawalNo}, #{userId}, #{asset}, #{chain}, #{amount}, #{fee}, #{targetAddress}, NULL,
+                #{chainTxHash}, #{status},
+                CASE WHEN #{chainSubmitted} THEN DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE) ELSE NULL END,
+                CASE WHEN #{completed} THEN DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE) ELSE NULL END,
+                CASE WHEN #{failed} THEN DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE) ELSE NULL END,
+                #{failureReason}, #{broadcastAttempts},
+                CASE WHEN #{nextBroadcastMinutes} IS NULL THEN NULL ELSE DATE_ADD(NOW(), INTERVAL #{nextBroadcastMinutes} MINUTE) END,
+                #{lastBroadcastError}, NULL,
+                DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE), DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE), 0
+            )
+            ON DUPLICATE KEY UPDATE
+                user_id = VALUES(user_id),
+                asset = VALUES(asset),
+                chain = VALUES(chain),
+                amount = VALUES(amount),
+                fee = VALUES(fee),
+                target_address = VALUES(target_address),
+                chain_tx_hash = VALUES(chain_tx_hash),
+                status = VALUES(status),
+                chain_submitted_at = VALUES(chain_submitted_at),
+                completed_at = VALUES(completed_at),
+                failed_at = VALUES(failed_at),
+                failure_reason = VALUES(failure_reason),
+                chain_broadcast_attempts = VALUES(chain_broadcast_attempts),
+                next_broadcast_at = VALUES(next_broadcast_at),
+                last_broadcast_error = VALUES(last_broadcast_error),
+                created_at = VALUES(created_at),
+                updated_at = VALUES(updated_at),
+                is_deleted = 0
+            """)
+    int insertD2SeedWithdrawal(@Param("withdrawalNo") String withdrawalNo,
+                               @Param("userId") Long userId,
+                               @Param("asset") String asset,
+                               @Param("chain") String chain,
+                               @Param("amount") BigDecimal amount,
+                               @Param("fee") BigDecimal fee,
+                               @Param("targetAddress") String targetAddress,
+                               @Param("chainTxHash") String chainTxHash,
+                               @Param("status") String status,
+                               @Param("chainSubmitted") boolean chainSubmitted,
+                               @Param("completed") boolean completed,
+                               @Param("failed") boolean failed,
+                               @Param("failureReason") String failureReason,
+                               @Param("broadcastAttempts") int broadcastAttempts,
+                               @Param("nextBroadcastMinutes") Integer nextBroadcastMinutes,
+                               @Param("lastBroadcastError") String lastBroadcastError,
+                               @Param("minutesAgo") int minutesAgo);
+
     @Select("""
             <script>
             SELECT COUNT(DISTINCT w.id)
@@ -29,6 +94,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              <if test='status != null and status != ""'>AND w.status = #{status}</if>
              <if test='userId != null'>AND w.user_id = #{userId}</if>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
+             <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
              <if test='minRiskScore != null'>AND COALESCE(rd.risk_score, 0) &gt;= #{minRiskScore}</if>
              <if test='keyword != null and keyword != ""'>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
@@ -42,6 +108,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             """)
     long countPage(@Param("status") String status, @Param("userId") Long userId,
                    @Param("keyword") String keyword, @Param("minAmount") BigDecimal minAmount,
+                   @Param("maxAmount") BigDecimal maxAmount,
                    @Param("minRiskScore") Integer minRiskScore);
 
     @Select("""
@@ -114,6 +181,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              <if test='status != null and status != ""'>AND w.status = #{status}</if>
              <if test='userId != null'>AND w.user_id = #{userId}</if>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
+             <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
              <if test='minRiskScore != null'>AND COALESCE(rd.risk_score, 0) &gt;= #{minRiskScore}</if>
              <if test='keyword != null and keyword != ""'>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
@@ -129,6 +197,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             """)
     List<WithdrawalOrderView> page(@Param("status") String status, @Param("userId") Long userId,
                                    @Param("keyword") String keyword, @Param("minAmount") BigDecimal minAmount,
+                                   @Param("maxAmount") BigDecimal maxAmount,
                                    @Param("minRiskScore") Integer minRiskScore, @Param("pageSize") int pageSize,
                                    @Param("offset") int offset);
 
@@ -157,7 +226,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    CONCAT('U', LPAD(w.user_id, 8, '0')) AS userNo,
                    u.nickname AS nickname,
                    CASE
-                      WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
+                      WHEN u.phone IS NULL OR LENGTH(u.phone) < 7 THEN u.phone
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
                    COALESCE(u.kyc_status, 'PENDING') AS kycStatus,
@@ -169,7 +238,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                         WHERE w2.user_id = w.user_id
                           AND w2.is_deleted = 0
                           AND w2.created_at >= DATE_SUB(w.created_at, INTERVAL 24 HOUR)
-                         AND w2.created_at &lt;= w.created_at
+                         AND w2.created_at <= w.created_at
                    ) AS withdrawalCount24h,
                    CONCAT(
                        'created:', DATE_FORMAT(w.created_at, '%Y-%m-%d %H:%i'),

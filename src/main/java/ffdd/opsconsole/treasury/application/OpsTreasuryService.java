@@ -14,6 +14,7 @@ import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
+import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -38,14 +39,18 @@ public class OpsTreasuryService {
     private static final String HEALTHY_CONFIG_KEY = "wallet.dual-ledger.healthy-pct";
     private static final String RUN_RISK_CONFIG_KEY = "wallet.dual-ledger.run-risk-pct";
     private static final String SCOPE_CONFIG_KEY = "wallet.dual-ledger.scope";
+    private static final List<String> D_SEED_USER_KEYS = List.of(
+            "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
 
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
     private final TreasuryDualLedgerProperties dualLedgerProperties;
+    private final UserSeedRepository userSeedRepository;
 
     public ApiResult<Map<String, Object>> overview(int days) {
+        ensureD3FallbackSeedData();
         int normalizedDays = normalizeDays(days);
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime since = now.minusDays(normalizedDays - 1L).toLocalDate().atStartOfDay();
@@ -81,6 +86,7 @@ public class OpsTreasuryService {
     }
 
     public ApiResult<Map<String, Object>> dualLedger() {
+        ensureD3FallbackSeedData();
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
@@ -249,6 +255,7 @@ public class OpsTreasuryService {
     }
 
     public ApiResult<PageResult<TreasuryLedgerBillView>> ledgerBills(TreasuryLedgerQueryRequest request) {
+        ensureD4FallbackSeedData();
         int pageNum = clamp(request == null || request.pageNum() == null ? 1 : request.pageNum(), 1, 10_000);
         int pageSize = clamp(request == null || request.pageSize() == null ? 20 : request.pageSize(), 1, 100);
         String type = normalizeLedgerType(request == null ? null : request.type());
@@ -264,6 +271,7 @@ public class OpsTreasuryService {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
+        ensureD4FallbackSeedData();
         List<TreasuryLedgerBillView> rows = ledgerRepository.userLedgerRows(userId, 50);
         Map<String, BigDecimal> sums = new LinkedHashMap<>();
         for (TreasuryLedgerBillView row : rows) {
@@ -354,6 +362,62 @@ public class OpsTreasuryService {
                 .result("SUCCESS")
                 .detail(detail)
                 .build());
+    }
+
+    private void ensureD3FallbackSeedData() {
+        ensureD3ConfigDefaults();
+        if (treasuryLiabilitiesPresent()) {
+            return;
+        }
+        ledgerRepository.seedD4FallbackData(seedUserIds());
+    }
+
+    private void ensureD4FallbackSeedData() {
+        ensureD3ConfigDefaults();
+        if (ledgerRepository.countLedgerBills(null, null, null) > 0) {
+            return;
+        }
+        ledgerRepository.seedD4FallbackData(seedUserIds());
+    }
+
+    private boolean treasuryLiabilitiesPresent() {
+        return safe(ledgerRepository.sumUsdtAvailable()).compareTo(BigDecimal.ZERO) > 0
+                || safe(ledgerRepository.sumPendingWithdraw()).compareTo(BigDecimal.ZERO) > 0
+                || safe(ledgerRepository.sumNexAvailable()).compareTo(BigDecimal.ZERO) > 0
+                || safe(ledgerRepository.sumActiveWithdrawalQueueUsdt()).compareTo(BigDecimal.ZERO) > 0
+                || ledgerRepository.countActiveWithdrawalQueue() > 0
+                || safe(ledgerRepository.sumPendingCommissionUsdt()).compareTo(BigDecimal.ZERO) > 0
+                || ledgerRepository.countLedgerBills(null, null, null) > 0;
+    }
+
+    private Map<String, Long> seedUserIds() {
+        boolean missing = D_SEED_USER_KEYS.stream()
+                .anyMatch(key -> userSeedRepository.findUserIdByLookupKey(key).isEmpty());
+        if (missing) {
+            userSeedRepository.upsertAccountActionSeeds();
+            userSeedRepository.upsertKycLedgerSeeds();
+        }
+        Map<String, Long> ids = new LinkedHashMap<>();
+        for (String key : D_SEED_USER_KEYS) {
+            userSeedRepository.findUserIdByLookupKey(key).ifPresent(id -> ids.put(key, id));
+        }
+        return ids;
+    }
+
+    private void ensureD3ConfigDefaults() {
+        seedConfigIfAbsent(RESERVE_CONFIG_KEY, money(dualLedgerProperties.getReserveUsd()).toPlainString(), "NUMBER", "wallet", "D3 treasury reserve");
+        seedConfigIfAbsent(NEX_USD_RATE_CONFIG_KEY, safe(dualLedgerProperties.getNexUsdRate()).toPlainString(), "NUMBER", "wallet", "D3 NEX USD rate");
+        seedConfigIfAbsent(REDLINE_CONFIG_KEY, safe(dualLedgerProperties.getRedlinePct()).toPlainString(), "NUMBER", "wallet", "D3 coverage redline");
+        seedConfigIfAbsent(HEALTHY_CONFIG_KEY, safe(dualLedgerProperties.getHealthyPct()).toPlainString(), "NUMBER", "wallet", "D3 healthy coverage");
+        seedConfigIfAbsent(RUN_RISK_CONFIG_KEY, safe(dualLedgerProperties.getRunRiskPct()).toPlainString(), "NUMBER", "wallet", "D3 run risk threshold");
+        seedConfigIfAbsent(SCOPE_CONFIG_KEY, "all active liabilities", "STRING", "wallet", "D3 dual-ledger scope");
+    }
+
+    private void seedConfigIfAbsent(String key, String value, String type, String group, String remark) {
+        if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
+            return;
+        }
+        configFacade.upsertAdminValue(key, value, type, group, remark);
     }
 
     private int normalizeDays(int days) {
