@@ -33,6 +33,19 @@ public class OpsGrowthController {
         return growthService.phaseSandboxPreview();
     }
 
+    @GetMapping("/rhythm")
+    public ApiResult<Map<String, Object>> rhythm() {
+        return growthService.rhythm();
+    }
+
+    @PatchMapping("/rhythm/{paramKey}")
+    public ApiResult<Map<String, Object>> updateRhythmParam(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String paramKey,
+            @RequestBody GrowthConfigUpdateRequest request) {
+        return growthService.updateRhythmParam(idempotencyKey, paramKey, request);
+    }
+
     @GetMapping("/trials")
     public ApiResult<Map<String, Object>> trials() {
         return growthService.trials();

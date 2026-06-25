@@ -2,16 +2,22 @@ package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.infrastructure.AuditConfirmCategoryEntity;
+import ffdd.opsconsole.platform.infrastructure.AuditOperationHistoryEntity;
+import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AuditConfirmCategoryMapper;
 import ffdd.opsconsole.platform.mapper.AuditOperationHistoryMapper;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
@@ -24,11 +30,14 @@ import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -41,9 +50,19 @@ class OpsAuditCenterServiceTest {
     private final AuditConfirmCategoryMapper confirmCategoryMapper = mock(AuditConfirmCategoryMapper.class);
     private final OpsAuditCenterService service =
             new OpsAuditCenterService(repository, auditLogService, ticketMapper, historyMapper, confirmCategoryMapper);
+    private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
+    private final List<AuditOperationHistoryEntity> historyRows = new ArrayList<>();
+    private final List<AuditConfirmCategoryEntity> categoryRows = new ArrayList<>();
+    private long entitySequence = 1L;
 
     @BeforeEach
     void setUp() {
+        repository.items.clear();
+        ticketRows.clear();
+        historyRows.clear();
+        categoryRows.clear();
+        entitySequence = 1L;
+
         AuditStatsSummaryResponse summary = new AuditStatsSummaryResponse();
         summary.setTotal(3482L);
         summary.setByResult(List.of());
@@ -52,6 +71,63 @@ class OpsAuditCenterServiceTest {
         when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(new AuditLogRecord()));
         when(auditLogService.topActions(any(AuditStatsQueryRequest.class)))
                 .thenReturn(List.of(new AuditStatsBucket("A2_OPERATION_APPROVED", 2L)));
+
+        when(ticketMapper.selectCount(any())).thenAnswer(invocation -> ticketRows.values().stream().filter(OpsAuditCenterServiceTest::active).count());
+        when(ticketMapper.insert(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
+            AuditOperationTicketEntity row = invocation.getArgument(0);
+            if (row.getId() == null) {
+                row.setId(entitySequence++);
+            }
+            ticketRows.put(row.getOperationId(), row);
+            return 1;
+        });
+        when(ticketMapper.selectList(any())).thenAnswer(invocation -> {
+            boolean terminalOnly = wrapperValues(invocation.getArgument(0)).stream()
+                    .anyMatch(value -> value instanceof Collection<?> values && values.contains("approved"));
+            return ticketRows.values().stream()
+                    .filter(OpsAuditCenterServiceTest::active)
+                    .filter(row -> !terminalOnly || TERMINAL_STATUSES.contains(status(row.getStatus())))
+                    .sorted(Comparator.comparing(AuditOperationTicketEntity::getOperationId).reversed())
+                    .toList();
+        });
+        when(ticketMapper.selectActiveByOperationId(any())).thenAnswer(invocation -> ticketRows.get(invocation.getArgument(0)));
+        when(ticketMapper.updateById(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
+            AuditOperationTicketEntity row = invocation.getArgument(0);
+            ticketRows.put(row.getOperationId(), row);
+            return 1;
+        });
+
+        when(historyMapper.selectCount(any())).thenAnswer(invocation -> historyRows.stream().filter(OpsAuditCenterServiceTest::active).count());
+        when(historyMapper.insert(any(AuditOperationHistoryEntity.class))).thenAnswer(invocation -> {
+            AuditOperationHistoryEntity row = invocation.getArgument(0);
+            if (row.getId() == null) {
+                row.setId(entitySequence++);
+            }
+            historyRows.add(row);
+            return 1;
+        });
+        when(historyMapper.selectList(any())).thenAnswer(invocation -> historyRows.stream()
+                .filter(OpsAuditCenterServiceTest::active)
+                .sorted(Comparator.comparing(AuditOperationHistoryEntity::getId).reversed())
+                .toList());
+
+        when(confirmCategoryMapper.selectCount(any())).thenAnswer(invocation -> categoryRows.stream().filter(OpsAuditCenterServiceTest::active).count());
+        when(confirmCategoryMapper.insert(any(AuditConfirmCategoryEntity.class))).thenAnswer(invocation -> {
+            AuditConfirmCategoryEntity row = invocation.getArgument(0);
+            if (row.getId() == null) {
+                row.setId(entitySequence++);
+            }
+            categoryRows.add(row);
+            return 1;
+        });
+        when(confirmCategoryMapper.selectList(any())).thenAnswer(invocation -> categoryRows.stream()
+                .filter(OpsAuditCenterServiceTest::active)
+                .sorted(Comparator.comparing(AuditConfirmCategoryEntity::getSortOrder).thenComparing(AuditConfirmCategoryEntity::getId))
+                .toList());
+
+        doAnswer(invocation -> null).when(ticketMapper).createTicketTable();
+        doAnswer(invocation -> null).when(historyMapper).createHistoryTable();
+        doAnswer(invocation -> null).when(confirmCategoryMapper).createConfirmCategoryTable();
     }
 
     @Test
@@ -91,7 +167,7 @@ class OpsAuditCenterServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("approved");
-        assertThat(repository.items.get("admin.a2.operation.WO-8852.status").configValue()).isEqualTo("approved");
+        assertThat(ticketRows.get("WO-8852").getStatus()).isEqualTo("approved");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -113,6 +189,38 @@ class OpsAuditCenterServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo("A2_OPERATION_ALREADY_TERMINAL");
+    }
+
+    @Test
+    void createProposalPersistsBackendPendingTicketAndWritesAudit() {
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "Phase dial 调整",
+                "H1 · 周任务倍率",
+                "1.25x",
+                "1.30x",
+                "高翔",
+                "增长",
+                "param",
+                true,
+                false,
+                "增长 lead / 超管",
+                "本周 KPI 节奏校准",
+                "H1");
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.createProposal("idem-proposal-1", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("pending");
+        assertThat(result.getData().action()).isEqualTo("Phase dial 调整");
+        assertThat(ticketRows).containsKey(result.getData().id());
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("A2_OPERATION_PROPOSED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("operationId", result.getData().id())
+                .containsEntry("sourceDomain", "H1")
+                .containsEntry("idempotencyKey", "idem-proposal-1");
     }
 
     @Test
@@ -147,6 +255,31 @@ class OpsAuditCenterServiceTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
+    }
+
+    private static final Set<String> TERMINAL_STATUSES = Set.of("approved", "rejected", "withdrawn", "expired");
+
+    private static String status(String value) {
+        return value == null ? "pending" : value;
+    }
+
+    private static boolean active(AuditOperationTicketEntity row) {
+        return row.getIsDeleted() == null || row.getIsDeleted() == 0;
+    }
+
+    private static boolean active(AuditOperationHistoryEntity row) {
+        return row.getIsDeleted() == null || row.getIsDeleted() == 0;
+    }
+
+    private static boolean active(AuditConfirmCategoryEntity row) {
+        return row.getIsDeleted() == null || row.getIsDeleted() == 0;
+    }
+
+    private static Collection<Object> wrapperValues(Object wrapper) {
+        if (wrapper instanceof LambdaQueryWrapper<?> query) {
+            return query.getParamNameValuePairs().values();
+        }
+        return List.of();
     }
 
     private static final class InMemoryPlatformConfigRepository implements PlatformConfigRepository {

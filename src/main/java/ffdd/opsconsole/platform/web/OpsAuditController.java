@@ -17,6 +17,7 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -99,6 +100,14 @@ public class OpsAuditController {
             @PathVariable String operationId,
             @RequestBody(required = false) AuditOperationDecisionRequest request) {
         return auditCenterService.approve(idempotencyKey, operationId, request);
+    }
+
+    @PostMapping("/operations")
+    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    public ApiResult<AuditCenterOverview.AuditOperationTicket> createOperation(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) AuditOperationProposalRequest request) {
+        return auditCenterService.createProposal(idempotencyKey, request);
     }
 
     @PostMapping("/operations/{operationId}/reject")

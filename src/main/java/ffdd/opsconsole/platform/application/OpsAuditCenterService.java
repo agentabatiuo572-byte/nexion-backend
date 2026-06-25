@@ -13,6 +13,7 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationStats;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationTicket;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.infrastructure.AuditConfirmCategoryEntity;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationHistoryEntity;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
@@ -172,6 +173,82 @@ public class OpsAuditCenterService {
     public ApiResult<AuditOperationTicket> reject(
             String idempotencyKey, String operationId, AuditOperationDecisionRequest request) {
         return decide(idempotencyKey, operationId, request, STATUS_REJECTED, "A2_OPERATION_REJECTED");
+    }
+
+    @Transactional
+    public ApiResult<AuditOperationTicket> createProposal(String idempotencyKey, AuditOperationProposalRequest request) {
+        ensureSeedData();
+        ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey,
+                request == null ? null : request.reason(),
+                request == null ? null : request.operator());
+        if (guard != null) {
+            return guard;
+        }
+        String operationType;
+        String action;
+        String objectText;
+        String beforeValue;
+        String afterValue;
+        String operator;
+        String operatorRole;
+        String roleGate;
+        String reason;
+        String sourceDomain;
+        try {
+            operationType = normalizeOperationType(request.type());
+            action = normalizeLimitedText(request.action(), "ACTION_REQUIRED", 160);
+            objectText = normalizeLimitedText(request.obj(), "OBJECT_REQUIRED", 255);
+            beforeValue = normalizeOptionalText(request.beforeValue(), "—", 128);
+            afterValue = normalizeOptionalText(request.afterValue(), "—", 128);
+            operator = normalizeLimitedText(request.operator(), "OPERATOR_REQUIRED", 128);
+            operatorRole = normalizeOptionalText(request.operatorRole(), "operator", 32);
+            roleGate = normalizeOptionalText(request.roleGate(), "超管", 255);
+            reason = normalizeLimitedText(request.reason(), "REASON_REQUIRED", 512);
+            sourceDomain = normalizeOptionalText(request.sourceDomain(), "A2", 32);
+        } catch (IllegalArgumentException ex) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
+        }
+
+        AuditOperationTicketEntity ticket = new AuditOperationTicketEntity();
+        ticket.setOperationId(nextOperationId());
+        ticket.setAction(action);
+        ticket.setObjectText(objectText);
+        ticket.setBeforeValue(beforeValue);
+        ticket.setAfterValue(afterValue);
+        ticket.setOperatorName(operator);
+        ticket.setOperatorRole(operatorRole);
+        ticket.setOperationType(operationType);
+        ticket.setAmplifies(Boolean.TRUE.equals(request.amplifies()) ? 1 : 0);
+        ticket.setSos(Boolean.TRUE.equals(request.sos()) || "sos".equals(operationType) ? 1 : 0);
+        ticket.setTimeLabel("刚刚");
+        ticket.setMine(0);
+        ticket.setRoleGate(roleGate);
+        ticket.setReason(reason);
+        ticket.setStatus(STATUS_PENDING);
+        ticket.setIsDeleted(0);
+        ticketMapper.insert(ticket);
+
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("A2_OPERATION_PROPOSED")
+                .resourceType("A2_OPERATION")
+                .resourceId(ticket.getOperationId())
+                .bizNo(ticket.getOperationId())
+                .actorType("ADMIN")
+                .actorUsername(ticket.getOperatorName())
+                .result("SUCCESS")
+                .riskLevel(isTrue(ticket.getAmplifies()) || isTrue(ticket.getSos()) ? "HIGH" : "MEDIUM")
+                .detail(Map.of(
+                        "operationId", ticket.getOperationId(),
+                        "action", ticket.getAction(),
+                        "resource", ticket.getObjectText(),
+                        "before", ticket.getBeforeValue(),
+                        "after", ticket.getAfterValue(),
+                        "type", ticket.getOperationType(),
+                        "sourceDomain", sourceDomain,
+                        "reason", ticket.getReason(),
+                        "idempotencyKey", idempotencyKey.trim()))
+                .build());
+        return ApiResult.ok(toTicket(ticket));
     }
 
     public ApiResult<AuditMechanismParam> updateMechanismParam(
@@ -472,6 +549,41 @@ public class OpsAuditCenterService {
         return TERMINAL_STATUSES.contains(normalized) || STATUS_PENDING.equals(normalized) ? normalized : STATUS_PENDING;
     }
 
+    private String nextOperationId() {
+        return "WO-" + DateTimeFormatter.ofPattern("yyMMddHHmmssSSS").format(LocalDateTime.now())
+                + "-" + Math.floorMod(System.nanoTime(), 1000);
+    }
+
+    private String normalizeOperationType(String value) {
+        String normalized = normalizeLimitedText(value, "OPERATION_TYPE_REQUIRED", 32).toLowerCase(Locale.ROOT);
+        if (!Set.of("fund", "param", "acct", "sos").contains(normalized)) {
+            throw new IllegalArgumentException("A2_OPERATION_TYPE_INVALID");
+        }
+        return normalized;
+    }
+
+    private String normalizeOptionalText(String value, String fallback, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return fallback;
+        }
+        return trimToLength(value, maxLength);
+    }
+
+    private String normalizeLimitedText(String value, String message, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            throw new IllegalArgumentException(message);
+        }
+        return trimToLength(value, maxLength);
+    }
+
+    private String trimToLength(String value, int maxLength) {
+        String normalized = value.trim();
+        if (normalized.length() > maxLength) {
+            return normalized.substring(0, maxLength);
+        }
+        return normalized;
+    }
+
     private PlatformConfigItem saveConfig(String configKey, String value, String remark) {
         LocalDateTime now = LocalDateTime.now();
         PlatformConfigItem existing = configRepository.findActiveByKey(configKey).orElseGet(() ->
@@ -607,10 +719,7 @@ public class OpsAuditCenterService {
 
     private Optional<AuditOperationTicketEntity> ticket(String operationId) {
         String normalized = normalizeText(operationId).toUpperCase(Locale.ROOT);
-        return Optional.ofNullable(ticketMapper.selectOne(new LambdaQueryWrapper<AuditOperationTicketEntity>()
-                .eq(AuditOperationTicketEntity::getOperationId, normalized)
-                .eq(AuditOperationTicketEntity::getIsDeleted, 0)
-                .last("LIMIT 1")));
+        return Optional.ofNullable(ticketMapper.selectActiveByOperationId(normalized));
     }
 
     private List<AuditOperationTicketEntity> terminalTickets() {

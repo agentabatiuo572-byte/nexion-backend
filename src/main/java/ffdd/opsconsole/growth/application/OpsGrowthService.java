@@ -35,6 +35,9 @@ public class OpsGrowthService {
     private static final String PHASE_CONFIG_KEY = "platform.phase.config";
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
+    private static final String RHYTHM_TOTAL_MONTHS_KEY = "H1.rhythm.totalMonths";
+    private static final String RHYTHM_CURRENT_MONTH_KEY = "H1.rhythm.currentMonth";
+    private static final String RHYTHM_PHASE_PROGRESS_KEY = "H1.rhythm.phaseProgressPct";
     private static final String MONTH_DIAL_PREFIX = "growth.phase.month.";
     private static final String CONTROL_PREFIX = "growth.phase.control.";
     private static final String OVERRIDE_PREFIX = "growth.phase.override.";
@@ -75,6 +78,8 @@ public class OpsGrowthService {
             "campaignRewardNex",
             "withdrawNexMinBalance",
             "withdrawNexHoldDays");
+    private static final List<Integer> RHYTHM_TOTAL_OPTIONS = List.of(9, 12, 15, 18, 24);
+    private static final List<Integer> RHYTHM_PHASE_WEIGHTS = List.of(2, 2, 3, 1, 2, 2);
     private static final Set<String> PHASE_CONTROL_KEYS = Set.of("schedule", "pin", "override");
     private static final List<String> TRIAL_PARAM_KEYS = List.of(
             "days",
@@ -97,11 +102,14 @@ public class OpsGrowthService {
     private final ObjectMapper objectMapper;
 
     public ApiResult<Map<String, Object>> phases() {
+        ensureRhythmSeedData();
+        int totalMonths = rhythmTotalMonths();
         int currentMonth = currentMonth();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H1");
         response.put("currentMonth", currentMonth);
-        response.put("currentPhase", configFacade.activeValue(CURRENT_PHASE_KEY).orElse(phaseForMonth(currentMonth)));
+        response.put("currentPhase", configFacade.activeValue(CURRENT_PHASE_KEY).orElse(phaseForRhythmMonth(currentMonth, totalMonths)));
+        response.put("rhythm", rhythmOverview());
         response.put("dialCount", 8);
         response.put("phaseConfig", phaseConfig());
         response.put("activeDials", activeDials());
@@ -118,13 +126,16 @@ public class OpsGrowthService {
     }
 
     public ApiResult<Map<String, Object>> phaseSandboxPreview() {
+        ensureRhythmSeedData();
+        int totalMonths = rhythmTotalMonths();
         int currentMonth = currentMonth();
         int nextMonth = Math.min(12, currentMonth + 1);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H1");
         response.put("mode", "READ_ONLY_SANDBOX");
         response.put("currentMonth", currentMonth);
-        response.put("currentPhase", configFacade.activeValue(CURRENT_PHASE_KEY).orElse(phaseForMonth(currentMonth)));
+        response.put("currentPhase", configFacade.activeValue(CURRENT_PHASE_KEY).orElse(phaseForRhythmMonth(currentMonth, totalMonths)));
+        response.put("rhythm", rhythmOverview());
         response.put("coverage", coverage());
         response.put("withdrawNexGate", withdrawGate().getData());
         response.put("nextMonthDials", monthlyDials(currentMonth).get(nextMonth - 1));
@@ -138,6 +149,45 @@ public class OpsGrowthService {
         response.put("writes", false);
         response.put("sources", List.of("nx_config_item:growth.*", "treasury.coverage.snapshot", "withdraw_nex_gate"));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> rhythm() {
+        ensureRhythmSeedData();
+        return ApiResult.ok(rhythmOverview());
+    }
+
+    public ApiResult<Map<String, Object>> updateRhythmParam(
+            String idempotencyKey,
+            String paramKey,
+            GrowthConfigUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        ensureRhythmSeedData();
+        try {
+            String normalizedKey = normalizeRhythmParamKey(paramKey);
+            int totalMonths = rhythmTotalMonths();
+            String normalizedValue = normalizeRhythmValue(normalizedKey, request.value(), totalMonths);
+            int storedCurrentMonth = storedRhythmCurrentMonth();
+            String configKey = rhythmConfigKey(normalizedKey);
+            configFacade.upsertAdminValue(configKey, normalizedValue, "NUMBER", "growth", "H1 rhythm state");
+            if ("currentMonth".equals(normalizedKey)) {
+                configFacade.upsertAdminValue(CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month mirror");
+            }
+            if ("totalMonths".equals(normalizedKey) && storedCurrentMonth > Integer.parseInt(normalizedValue)) {
+                configFacade.upsertAdminValue(RHYTHM_CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month clamp");
+                configFacade.upsertAdminValue(CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month mirror");
+            }
+            audit("H1_RHYTHM_CHANGED", "GROWTH_RHYTHM", configKey, request.operator(), Map.of(
+                    "key", normalizedKey,
+                    "value", normalizedValue,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            return rhythm();
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
     }
 
     public ApiResult<Map<String, Object>> updatePhaseDial(
@@ -1420,6 +1470,115 @@ public class OpsGrowthService {
         }
     }
 
+    private void ensureRhythmSeedData() {
+        seedRhythmValue(RHYTHM_TOTAL_MONTHS_KEY, "12");
+        seedRhythmValue(RHYTHM_CURRENT_MONTH_KEY, "7");
+        seedRhythmValue(RHYTHM_PHASE_PROGRESS_KEY, "58");
+        if (configFacade.activeValue(CURRENT_MONTH_KEY).isEmpty()) {
+            configFacade.upsertAdminValue(CURRENT_MONTH_KEY, "7", "NUMBER", "growth", "H1 rhythm current month mirror");
+        }
+    }
+
+    private void seedRhythmValue(String key, String value) {
+        if (configFacade.activeValue(key).isEmpty()) {
+            configFacade.upsertAdminValue(key, value, "NUMBER", "growth", "H1 rhythm seed");
+        }
+    }
+
+    private Map<String, Object> rhythmOverview() {
+        int totalMonths = rhythmTotalMonths();
+        int currentMonth = rhythmCurrentMonth(totalMonths);
+        int phaseProgressPct = rhythmPhaseProgressPct();
+        String currentPhase = phaseForRhythmMonth(currentMonth, totalMonths);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("domain", "H1");
+        response.put("totalMonths", totalMonths);
+        response.put("currentMonth", currentMonth);
+        response.put("currentPhase", currentPhase);
+        response.put("phaseProgressPct", phaseProgressPct);
+        response.put("options", RHYTHM_TOTAL_OPTIONS);
+        response.put("sources", List.of(
+                "nx_config_item:" + RHYTHM_TOTAL_MONTHS_KEY,
+                "nx_config_item:" + RHYTHM_CURRENT_MONTH_KEY,
+                "nx_config_item:" + RHYTHM_PHASE_PROGRESS_KEY,
+                "nx_config_item:" + CURRENT_MONTH_KEY));
+        return response;
+    }
+
+    private int rhythmTotalMonths() {
+        int total = configDecimal(RHYTHM_TOTAL_MONTHS_KEY, new BigDecimal("12"))
+                .setScale(0, RoundingMode.DOWN)
+                .intValue();
+        return RHYTHM_TOTAL_OPTIONS.contains(total) ? total : 12;
+    }
+
+    private int storedRhythmCurrentMonth() {
+        return configDecimal(RHYTHM_CURRENT_MONTH_KEY, configDecimal(CURRENT_MONTH_KEY, new BigDecimal("7")))
+                .setScale(0, RoundingMode.DOWN)
+                .intValue();
+    }
+
+    private int rhythmCurrentMonth(int totalMonths) {
+        int month = storedRhythmCurrentMonth();
+        if (month < 1) {
+            return 1;
+        }
+        return Math.min(month, totalMonths);
+    }
+
+    private int rhythmPhaseProgressPct() {
+        int progress = configDecimal(RHYTHM_PHASE_PROGRESS_KEY, new BigDecimal("58"))
+                .setScale(0, RoundingMode.DOWN)
+                .intValue();
+        return Math.max(0, Math.min(100, progress));
+    }
+
+    private String normalizeRhythmParamKey(String key) {
+        String normalized = requireText(key, "Rhythm parameter key is required");
+        return switch (normalized) {
+            case "totalMonths", "H1.rhythm.totalMonths" -> "totalMonths";
+            case "currentMonth", "H1.rhythm.currentMonth" -> "currentMonth";
+            case "phaseProgressPct", "H1.rhythm.phaseProgressPct" -> "phaseProgressPct";
+            default -> throw new IllegalArgumentException("RHYTHM_PARAM_KEY_INVALID");
+        };
+    }
+
+    private String rhythmConfigKey(String key) {
+        return switch (key) {
+            case "totalMonths" -> RHYTHM_TOTAL_MONTHS_KEY;
+            case "currentMonth" -> RHYTHM_CURRENT_MONTH_KEY;
+            case "phaseProgressPct" -> RHYTHM_PHASE_PROGRESS_KEY;
+            default -> throw new IllegalArgumentException("RHYTHM_PARAM_KEY_INVALID");
+        };
+    }
+
+    private String normalizeRhythmValue(String key, String raw, int totalMonths) {
+        int value = parseDecimal(raw)
+                .setScale(0, RoundingMode.DOWN)
+                .intValue();
+        return switch (key) {
+            case "totalMonths" -> {
+                if (!RHYTHM_TOTAL_OPTIONS.contains(value)) {
+                    throw new IllegalArgumentException("RHYTHM_TOTAL_MONTHS_INVALID");
+                }
+                yield String.valueOf(value);
+            }
+            case "currentMonth" -> {
+                if (value < 1 || value > totalMonths) {
+                    throw new IllegalArgumentException("RHYTHM_CURRENT_MONTH_OUT_OF_RANGE");
+                }
+                yield String.valueOf(value);
+            }
+            case "phaseProgressPct" -> {
+                if (value < 0 || value > 100) {
+                    throw new IllegalArgumentException("RHYTHM_PHASE_PROGRESS_OUT_OF_RANGE");
+                }
+                yield String.valueOf(value);
+            }
+            default -> throw new IllegalArgumentException("RHYTHM_PARAM_KEY_INVALID");
+        };
+    }
+
     private Map<String, Object> activeDials() {
         Map<String, Object> dials = new LinkedHashMap<>();
         dials.put("inviteRewardMultiplier", configDecimal("growth.phase.invite_reward_multiplier", BigDecimal.ONE));
@@ -1434,10 +1593,12 @@ public class OpsGrowthService {
     }
 
     private int currentMonth() {
-        int month = configDecimal(CURRENT_MONTH_KEY, new BigDecimal("7"))
-                .setScale(0, RoundingMode.DOWN)
-                .intValue();
-        return month >= 1 && month <= 12 ? month : 7;
+        int totalMonths = rhythmTotalMonths();
+        int month = storedRhythmCurrentMonth();
+        if (month < 1) {
+            return 1;
+        }
+        return Math.min(month, totalMonths);
     }
 
     private String phaseForMonth(int month) {
@@ -1455,6 +1616,26 @@ public class OpsGrowthService {
         }
         if (month <= 10) {
             return "P5";
+        }
+        return "P6";
+    }
+
+    private String phaseForRhythmMonth(int month, int totalMonths) {
+        if (totalMonths == 12) {
+            return phaseForMonth(month);
+        }
+        int clampedMonth = Math.max(1, Math.min(month, totalMonths));
+        int weightSum = RHYTHM_PHASE_WEIGHTS.stream().mapToInt(Integer::intValue).sum();
+        int accumulatedWeight = 0;
+        int previousEnd = 0;
+        for (int i = 0; i < RHYTHM_PHASE_WEIGHTS.size(); i++) {
+            accumulatedWeight += RHYTHM_PHASE_WEIGHTS.get(i);
+            int phaseEnd = Math.round((float) accumulatedWeight / weightSum * totalMonths);
+            phaseEnd = Math.max(previousEnd, phaseEnd);
+            if (clampedMonth <= phaseEnd) {
+                return "P" + (i + 1);
+            }
+            previousEnd = phaseEnd;
         }
         return "P6";
     }

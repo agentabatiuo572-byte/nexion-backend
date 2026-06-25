@@ -2,6 +2,8 @@ package ffdd.opsconsole.platform.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTicketEntity> {
@@ -34,4 +36,13 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTicketTable();
+
+    @Select("""
+            SELECT *
+            FROM nx_audit_operation_ticket
+            WHERE operation_id = #{operationId}
+              AND is_deleted = 0
+            LIMIT 1
+            """)
+    AuditOperationTicketEntity selectActiveByOperationId(@Param("operationId") String operationId);
 }
