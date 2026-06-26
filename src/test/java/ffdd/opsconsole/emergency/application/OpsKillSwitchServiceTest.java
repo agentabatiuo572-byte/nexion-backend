@@ -33,6 +33,10 @@ class OpsKillSwitchServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("activeGateCount", 5);
         assertThat(result.getData().get("retiredGates").toString()).contains("premium", "nexv2", "points");
+        assertThat(configFacade.values)
+                .containsEntry("killswitch.withdraw", "enabled")
+                .containsEntry("ops.J.emergency.confirmSlaMins", "15")
+                .containsEntry("emergency.autorule.maturityGap", "$50K");
     }
 
     @Test

@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -67,8 +68,10 @@ public class OpsEmergencyControlController {
     }
 
     @GetMapping("/tamper/overview")
-    public ApiResult<Map<String, Object>> tamperOverview() {
-        return emergencyControlService.tamperOverview();
+    public ApiResult<Map<String, Object>> tamperOverview(
+            @RequestParam(value = "accountPage", defaultValue = "1") int accountPage,
+            @RequestParam(value = "accountPageSize", defaultValue = "5") int accountPageSize) {
+        return emergencyControlService.tamperOverview(accountPage, accountPageSize);
     }
 
     @PatchMapping("/tamper/alert-config")
