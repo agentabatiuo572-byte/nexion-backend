@@ -50,6 +50,7 @@ class OpsI18nLearningServiceTest {
         assertThat(result.getData().namespaces()).extracting(I18nNamespaceView::ns).doesNotContain("premium");
         assertThat(result.getData().sources()).contains("nx_i18n_message", "nx_help_article");
         assertThat(result.getData().stats().integrityIssues()).isEqualTo(10);
+        assertThat(repository.seedCalls).isEqualTo(1);
     }
 
     @Test
@@ -170,6 +171,7 @@ class OpsI18nLearningServiceTest {
                 new I18nIntegrityIssueView("hardcoded", "疑似硬编码", 4, List.of("wallet empty state"), "open")));
         private final List<I18nHardcodedFindingView> findings = List.of(
                 new I18nHardcodedFindingView("wallet 空态", "\"No transactions yet\"", "wallet.emptyState", "open"));
+        private int seedCalls;
         private final List<LearningCourseView> courses = new ArrayList<>(List.of(new LearningCourseView(
                 "what-is-nexion",
                 "What is Nexion",
@@ -189,6 +191,11 @@ class OpsI18nLearningServiceTest {
                 "published",
                 "v4",
                 List.of("{amount}", "{nex}"));
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
+        }
 
         @Override
         public List<I18nNamespaceView> listNamespaces() {

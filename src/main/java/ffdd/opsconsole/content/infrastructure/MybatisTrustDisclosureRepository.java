@@ -41,6 +41,65 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     private final DisclosureGateActionMapper disclosureGateActionMapper;
     private final DisclosureDraftMapper disclosureDraftMapper;
 
+    private static final List<TrustSectionSeed> TRUST_SECTION_SEEDS = List.of(
+            section("financials", "财务透明数字组", "数字组 + 脚注", "v5", "PUBLISHED", "合规 / 超管", true, "05-12", 10),
+            section("leadership", "管理团队", "人员卡 x5(姓名/职务/前公司/占位链接)", "v3", "PUBLISHED", "内容主管", false, "03-08", 20),
+            section("nexNarrative", "NEX 代币叙事", "叙事文案 + 行情 stats + top3 客户榜", "v6", "PUBLISHED", "合规 / 超管", true, "05-26", 30),
+            section("complianceBadges", "合规徽章", "徽章组(SOC2 / ISO27001 / CertiK)", "v2", "PUBLISHED", "合规 / 超管", true, "02-14", 40),
+            section("auditsReserves", "审计与储备证明", "外链占位(链上储备 / 审计报告)", "v4", "PUBLISHED", "合规 / 超管", true, "04-20", 50),
+            section("listings", "交易所与行情外链", "外链占位(PancakeSwap 等)", "v2", "PUBLISHED", "内容主管", false, "01-30", 60));
+
+    private static final List<FieldSeed> FIELD_SEEDS = List.of(
+            field(FINANCIALS, "MRR", "$4.87M", "+22%", 10),
+            field(FINANCIALS, "Active", "184,206", "+38%", 20),
+            field(FINANCIALS, "Devices", "28,432", "+12%", 30),
+            field(FINANCIALS, "Payouts", "$31.2M", "+27%", 40),
+            field("leadership", "成员数", "5 位核心成员", "", 10),
+            field("nexNarrative", "叙事重点", "产能、回购、锁仓与网络增长", "", 10),
+            field("complianceBadges", "徽章", "SOC2 / ISO27001 / CertiK", "", 10),
+            field("auditsReserves", "证明", "链上储备证明 + 审计报告", "", 10),
+            field("listings", "外链", "PancakeSwap / 行情页", "", 10));
+
+    private static final List<JurisdictionSeed> JURISDICTION_SEEDS = List.of(
+            jurisdiction("MAS", "新加坡", "v11", "PUBLISHED", "05-02", 41200L, "100", 0L),
+            jurisdiction("BaFin", "德国", "v11", "PUBLISHED", "05-02", 18600L, "99.7", 4L),
+            jurisdiction("FinCEN", "美国", "v10", "PUBLISHED", "03-18", 52800L, "100", 0L),
+            jurisdiction("SFC", "香港", "v12", "PUBLISHED", "06-08", 9400L, "72", 312L));
+
+    private static final List<ChapterSeed> CHAPTER_SEEDS = List.of(
+            chapter("01", "收益预估不构成承诺", "Earnings estimates are not guarantees", 10),
+            chapter("02", "硬件衰减与产量波动", "Hardware decay & output variance", 20),
+            chapter("03", "NEX 市场风险", "NEX market risk", 30),
+            chapter("04", "提现窗口与合规审查", "Withdrawal windows & compliance review", 40),
+            chapter("05", "质押不可撤销", "Staking is irrevocable", 50),
+            chapter("06", "网络经济与推荐激励", "Network economy & referral incentives", 60),
+            chapter("07", "托管、KYC 与监管管辖", "Custody, KYC & regulatory jurisdiction", 70));
+
+    private static final List<GateSeed> GATE_SEEDS = List.of(
+            gate("withdraw", "提现", "提交提现前服务器先验披露确认", "已实装", "ok", true, 10),
+            gate("staking", "质押锁仓", "App 侧排期接入披露确认", "规划集成 · 待接线", "warn", false, 20),
+            gate(NEX_V2, "NEX v2 历史锁仓", "历史功能只读保留,不再扩展受限动作", "已下线 · 历史兼容", "dim", false, 30));
+
+    @Override
+    public void ensureSeedData(LocalDateTime now) {
+        for (TrustSectionSeed seed : TRUST_SECTION_SEEDS) {
+            ensureTrustSection(seed, now);
+        }
+        for (FieldSeed seed : FIELD_SEEDS) {
+            ensureField(seed, now);
+        }
+        for (JurisdictionSeed seed : JURISDICTION_SEEDS) {
+            ensureJurisdiction(seed, now);
+        }
+        for (ChapterSeed seed : CHAPTER_SEEDS) {
+            ensureChapter("SFC", "v12", seed, now);
+        }
+        for (GateSeed seed : GATE_SEEDS) {
+            ensureGate(seed, now);
+        }
+        ensureDisclosureDraft(now);
+    }
+
     @Override
     public List<TrustSectionView> listTrustSections() {
         return trustSectionMapper.selectList(new LambdaQueryWrapper<TrustSectionEntity>()
@@ -266,6 +325,138 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 .last("LIMIT 1"));
     }
 
+    private void ensureTrustSection(TrustSectionSeed seed, LocalDateTime now) {
+        if (findTrustSectionEntity(seed.key()) != null) {
+            return;
+        }
+        TrustSectionEntity entity = new TrustSectionEntity();
+        entity.setSectionKey(seed.key());
+        entity.setDescription(seed.description());
+        entity.setStructText(seed.structText());
+        entity.setVersionLabel(seed.version());
+        entity.setStatus(seed.status());
+        entity.setRoleGate(seed.roleGate());
+        entity.setHighSensitivity(seed.highSensitivity());
+        entity.setLastChange(seed.lastChange());
+        entity.setSortOrder(seed.sortOrder());
+        entity.setLastOperator("seed");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        trustSectionMapper.insert(entity);
+    }
+
+    private void ensureField(FieldSeed seed, LocalDateTime now) {
+        TrustSectionFieldEntity existing = trustSectionFieldMapper.selectOne(new LambdaQueryWrapper<TrustSectionFieldEntity>()
+                .eq(TrustSectionFieldEntity::getSectionKey, seed.sectionKey())
+                .eq(TrustSectionFieldEntity::getFieldKey, seed.key())
+                .eq(TrustSectionFieldEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return;
+        }
+        TrustSectionFieldEntity entity = new TrustSectionFieldEntity();
+        entity.setSectionKey(seed.sectionKey());
+        entity.setFieldKey(seed.key());
+        entity.setFieldValue(seed.value());
+        entity.setFieldDelta(seed.delta());
+        entity.setSortOrder(seed.sortOrder());
+        entity.setLastOperator("seed");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        trustSectionFieldMapper.insert(entity);
+    }
+
+    private void ensureJurisdiction(JurisdictionSeed seed, LocalDateTime now) {
+        if (findJurisdictionEntity(seed.code()) != null) {
+            return;
+        }
+        DisclosureJurisdictionEntity entity = new DisclosureJurisdictionEntity();
+        entity.setJurisdictionCode(seed.code());
+        entity.setJurisdictionName(seed.name());
+        entity.setVersionLabel(seed.version());
+        entity.setStatus(seed.status());
+        entity.setPublishedAtLabel(seed.publishedAt());
+        entity.setAffectedCount(seed.affected());
+        entity.setAckProgressPct(new BigDecimal(seed.ackPct()));
+        entity.setBlockedCount(seed.blocked());
+        entity.setLastOperator("seed");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        disclosureJurisdictionMapper.insert(entity);
+    }
+
+    private void ensureChapter(String jurisdiction, String version, ChapterSeed seed, LocalDateTime now) {
+        DisclosureChapterEntity existing = disclosureChapterMapper.selectOne(new LambdaQueryWrapper<DisclosureChapterEntity>()
+                .eq(DisclosureChapterEntity::getJurisdictionCode, jurisdiction)
+                .eq(DisclosureChapterEntity::getVersionLabel, version)
+                .eq(DisclosureChapterEntity::getChapterNo, seed.no())
+                .eq(DisclosureChapterEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return;
+        }
+        DisclosureChapterEntity entity = new DisclosureChapterEntity();
+        entity.setJurisdictionCode(jurisdiction);
+        entity.setVersionLabel(version);
+        entity.setChapterNo(seed.no());
+        entity.setZhTitle(seed.zhTitle());
+        entity.setEnTitle(seed.enTitle());
+        entity.setZhBody(seed.zhTitle() + "。请在继续使用相关功能前完成确认。");
+        entity.setEnBody(seed.enTitle() + ". Please acknowledge before continuing related actions.");
+        entity.setSortOrder(seed.sortOrder());
+        entity.setLastOperator("seed");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        disclosureChapterMapper.insert(entity);
+    }
+
+    private void ensureGate(GateSeed seed, LocalDateTime now) {
+        DisclosureGateActionEntity existing = disclosureGateActionMapper.selectOne(new LambdaQueryWrapper<DisclosureGateActionEntity>()
+                .eq(DisclosureGateActionEntity::getActionKey, seed.key())
+                .eq(DisclosureGateActionEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return;
+        }
+        DisclosureGateActionEntity entity = new DisclosureGateActionEntity();
+        entity.setActionKey(seed.key());
+        entity.setActionName(seed.name());
+        entity.setDescription(seed.description());
+        entity.setStatusLabel(seed.status());
+        entity.setTone(seed.tone());
+        entity.setActive(seed.active());
+        entity.setSortOrder(seed.sortOrder());
+        entity.setLastOperator("seed");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        disclosureGateActionMapper.insert(entity);
+    }
+
+    private void ensureDisclosureDraft(LocalDateTime now) {
+        if (findDraftEntity("SFC", "v13") != null) {
+            return;
+        }
+        DisclosureDraftEntity draft = new DisclosureDraftEntity();
+        draft.setJurisdictionCode("SFC");
+        draft.setVersionLabel("v13");
+        draft.setLanguageScope("en+zh");
+        draft.setEffectiveDate("06-30");
+        draft.setRequiresReack(true);
+        draft.setZhBody("香港 SFC 风险披露草稿 v13,发布后需要用户重新确认。");
+        draft.setEnBody("Hong Kong SFC risk disclosure draft v13 requires user re-acknowledgement after publication.");
+        draft.setStatus("DRAFT");
+        draft.setLastOperator("seed");
+        draft.setCreatedAt(now);
+        draft.setUpdatedAt(now);
+        draft.setIsDeleted(0);
+        disclosureDraftMapper.insert(draft);
+    }
+
     private TrustSectionView toTrustSection(TrustSectionEntity entity) {
         return new TrustSectionView(
                 entity.getSectionKey(),
@@ -338,5 +529,40 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
 
     private String operator(String operator) {
         return StringUtils.hasText(operator) ? operator.trim() : "system";
+    }
+
+    private static TrustSectionSeed section(String key, String description, String structText, String version, String status, String roleGate, boolean highSensitivity, String lastChange, int sortOrder) {
+        return new TrustSectionSeed(key, description, structText, version, status, roleGate, highSensitivity, lastChange, sortOrder);
+    }
+
+    private static FieldSeed field(String sectionKey, String key, String value, String delta, int sortOrder) {
+        return new FieldSeed(sectionKey, key, value, delta, sortOrder);
+    }
+
+    private static JurisdictionSeed jurisdiction(String code, String name, String version, String status, String publishedAt, long affected, String ackPct, long blocked) {
+        return new JurisdictionSeed(code, name, version, status, publishedAt, affected, ackPct, blocked);
+    }
+
+    private static ChapterSeed chapter(String no, String zhTitle, String enTitle, int sortOrder) {
+        return new ChapterSeed(no, zhTitle, enTitle, sortOrder);
+    }
+
+    private static GateSeed gate(String key, String name, String description, String status, String tone, boolean active, int sortOrder) {
+        return new GateSeed(key, name, description, status, tone, active, sortOrder);
+    }
+
+    private record TrustSectionSeed(String key, String description, String structText, String version, String status, String roleGate, boolean highSensitivity, String lastChange, int sortOrder) {
+    }
+
+    private record FieldSeed(String sectionKey, String key, String value, String delta, int sortOrder) {
+    }
+
+    private record JurisdictionSeed(String code, String name, String version, String status, String publishedAt, long affected, String ackPct, long blocked) {
+    }
+
+    private record ChapterSeed(String no, String zhTitle, String enTitle, int sortOrder) {
+    }
+
+    private record GateSeed(String key, String name, String description, String status, String tone, boolean active, int sortOrder) {
     }
 }

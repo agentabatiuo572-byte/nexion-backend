@@ -54,6 +54,7 @@ public class OpsTrustDisclosureService {
     private final Clock clock;
 
     public ApiResult<TrustDisclosureOverview> overview() {
+        trustDisclosureRepository.ensureSeedData(now());
         return ApiResult.ok(currentOverview());
     }
 

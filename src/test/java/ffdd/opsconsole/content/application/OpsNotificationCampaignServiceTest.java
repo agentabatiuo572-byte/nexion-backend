@@ -43,6 +43,7 @@ class OpsNotificationCampaignServiceTest {
         assertThat(result.getData().capRules()).hasSize(4);
         assertThat(result.getData().stats().monthScheduled()).isEqualTo(1);
         assertThat(result.getData().sources()).contains("nx_notification_campaign", "nx_notification_cap_rule");
+        assertThat(repository.seedCalls).isEqualTo(1);
     }
 
     @Test
@@ -181,6 +182,7 @@ class OpsNotificationCampaignServiceTest {
     private static final class FakeNotificationCampaignRepository implements NotificationCampaignRepository {
         private final Map<String, NotificationCampaignRow> campaigns = new LinkedHashMap<>();
         private final Map<String, NotificationCapRuleView> caps = new LinkedHashMap<>();
+        private int seedCalls;
 
         private FakeNotificationCampaignRepository() {
             campaigns.put("CMP-2618", campaign("CMP-2618", "6/15 钱包维护窗口公告", "high", "scheduled", "06-15 02:00 排期", "-", "-", null));
@@ -190,6 +192,11 @@ class OpsNotificationCampaignServiceTest {
             caps.put("high", new NotificationCapRuleView("high", "50 条", "高优运营事件", false));
             caps.put("normal", new NotificationCapRuleView("normal", "200 条", "常规运营公告", false));
             caps.put("low", new NotificationCapRuleView("low", "30 条 · TTL 24-48h", "低优教程提示", false));
+        }
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
         }
 
         @Override

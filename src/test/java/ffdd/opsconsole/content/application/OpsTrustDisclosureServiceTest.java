@@ -51,6 +51,7 @@ class OpsTrustDisclosureServiceTest {
         assertThat(result.getData().stats().staleAckUsers()).isEqualTo(2632);
         assertThat(result.getData().gateScope()).isEqualTo("提现");
         assertThat(result.getData().sources()).contains("nx_trust_section", "nx_disclosure_draft");
+        assertThat(repository.seedCalls).isEqualTo(1);
     }
 
     @Test
@@ -174,6 +175,7 @@ class OpsTrustDisclosureServiceTest {
         private final Map<String, DisclosureDraftView> drafts = new LinkedHashMap<>();
         private final Map<String, DisclosureGateActionView> gates = new LinkedHashMap<>();
         private final Set<String> activeGateKeys = new LinkedHashSet<>();
+        private int seedCalls;
 
         private FakeTrustDisclosureRepository() {
             sections.put("financials", new TrustSectionView("financials", "财务透明数字组", "数字组 + 脚注", "v5", "published", "05-12", "合规 / 超管", true));
@@ -184,6 +186,11 @@ class OpsTrustDisclosureServiceTest {
             gates.put("staking", new DisclosureGateActionView("staking", "质押锁仓", "确认状态过期时拦截质押入口", "已实装", "warn", false));
             gates.put("nexv2", new DisclosureGateActionView("nexv2", "NEX v2 历史锁仓", "已下线历史兼容项，只读展示，不允许重新启用", "已下线 · 历史兼容", "dim", false));
             activeGateKeys.add("withdraw");
+        }
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
         }
 
         @Override

@@ -32,11 +32,77 @@ import org.springframework.util.StringUtils;
 public class MybatisI18nLearningRepository implements I18nLearningRepository {
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
 
+    private static final List<NamespaceSeed> NAMESPACE_SEEDS = List.of(
+            namespace("home", 128, 100, "-", "06-09", 10),
+            namespace("binaryHowItWorks", 30, 100, "-", "05-30", 20),
+            namespace("exchangeHowItWorks", 35, 100, "-", "06-02", 30),
+            namespace("marketing", 64, 95, "多版 x3", "06-05", 40),
+            namespace("milestones", 22, 100, "多版 x1", "06-09", 50),
+            namespace("team", 41, 100, "-", "05-30", 60),
+            namespace("wallet", 52, 98, "-", "06-05", 70),
+            namespace("trust", 38, 95, "-", "05-12", 80),
+            namespace("genesis", 29, 99, "-", "05-26", 90),
+            namespace("riskDisclosure", 44, 100, "-", "06-08", 100),
+            namespace("learn", 36, 100, "-", "06-01", 110));
+
+    private static final List<IssueSeed> ISSUE_SEEDS = List.of(
+            issue("missing-zh", "缺镜像 (zh)", 3, "marketing.referral.tagline\nwallet.lowBalance\ntrust.heroSub", 10),
+            issue("missing-en", "缺镜像 (en)", 1, "genesis.dividendNote", 20),
+            issue("placeholder", "占位符不匹配", 2, "milestones.earnCross({n} 词序异常)\nmarketing.bundle.cta({amount} 缺失)", 30),
+            issue("hardcoded", "疑似硬编码", 4, "store/bundle\nwallet空态\nteam邀请卡\nearn任务角标", 40));
+
+    private static final List<FindingSeed> FINDING_SEEDS = List.of(
+            finding("app/store/bundle-card", "Bundle bonus today", "marketing.bundle.bonus", 10),
+            finding("app/wallet/empty-state", "No balance yet", "wallet.emptyState.title", 20),
+            finding("app/team/invite-card", "Invite friends to earn", "team.invite.cardTitle", 30),
+            finding("app/earn/task-chip", "Daily task", "earn.task.dailyChip", 40));
+
+    private static final List<CourseSeed> COURSE_SEEDS = List.of(
+            course("what-is-nexion", "什么是 Nexion", "What is Nexion", "Basics", "Article", "Beginner", "6 min", "10", true, 10),
+            course("how-devices-earn", "设备如何产生收益", "How devices earn", "Basics", "Video", "Beginner", "8 min", "12", false, 20),
+            course("wallet-basics", "钱包基础", "Wallet basics", "Basics", "Article", "Beginner", "5 min", "10", false, 30),
+            course("quests-101", "任务入门", "Quests 101", "Earn", "Hands-on", "Beginner", "7 min", "15", false, 40),
+            course("staking-explained", "锁仓说明", "Staking explained", "Earn", "Article", "Intermediate", "9 min", "20", false, 50),
+            course("royalty-network", "版税网络", "Royalty network", "Team", "Video", "Intermediate", "10 min", "25", false, 60),
+            course("build-your-team", "搭建团队", "Build your team", "Team", "Hands-on", "Beginner", "8 min", "18", false, 70),
+            course("v-rank-path", "V 等级路径", "V-Rank path", "Team", "Article", "Intermediate", "9 min", "22", false, 80),
+            course("ambassador-track", "大使成长路径", "Ambassador track", "Team", "Video", "Advanced", "12 min", "30", false, 90),
+            course("genesis-nodes", "Genesis 节点", "Genesis nodes", "Wealth", "Article", "Advanced", "11 min", "40", false, 100),
+            course("nex-tokenomics", "NEX 经济模型", "NEX tokenomics", "Wealth", "Video", "Intermediate", "10 min", "28", false, 110),
+            course("reinvest-strategy", "复投策略", "Reinvest strategy", "Wealth", "Hands-on", "Intermediate", "9 min", "35", false, 120),
+            course("kyc-express", "KYC Express", "KYC Express", "Security", "Article", "Beginner", "5 min", "12", false, 130),
+            course("2fa-setup", "设置 2FA", "Set up 2FA", "Security", "Hands-on", "Beginner", "4 min", "10", false, 140),
+            course("proof-of-compute", "算力证明", "Proof of compute", "Security", "Video", "Advanced", "13 min", "32", false, 150));
+
     private final I18nNamespaceMapper namespaceMapper;
     private final I18nMessageMapper messageMapper;
     private final I18nIntegrityIssueMapper integrityIssueMapper;
     private final I18nHardcodedFindingMapper hardcodedFindingMapper;
     private final HelpArticleMapper helpArticleMapper;
+
+    @Override
+    public void ensureSeedData(LocalDateTime now) {
+        for (NamespaceSeed seed : NAMESPACE_SEEDS) {
+            ensureNamespace(seed, now);
+        }
+        if (findMessagePair("milestones.earnCross").isEmpty()) {
+            saveMessagePair(
+                    "milestones.earnCross",
+                    "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
+                    "Reinvest {amount} USDT and earn {nex} NEX",
+                    "published",
+                    now);
+        }
+        for (IssueSeed seed : ISSUE_SEEDS) {
+            ensureIssue(seed, now);
+        }
+        for (FindingSeed seed : FINDING_SEEDS) {
+            ensureFinding(seed, now);
+        }
+        for (CourseSeed seed : COURSE_SEEDS) {
+            ensureCourse(seed, now);
+        }
+    }
 
     @Override
     public List<I18nNamespaceView> listNamespaces() {
@@ -200,6 +266,98 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         return messageMapper.selectList(new LambdaQueryWrapper<I18nMessageEntity>()
                 .eq(I18nMessageEntity::getMessageKey, messageKey)
                 .eq(I18nMessageEntity::getIsDeleted, 0));
+    }
+
+    private void ensureNamespace(NamespaceSeed seed, LocalDateTime now) {
+        I18nNamespaceEntity existing = namespaceMapper.selectOne(new LambdaQueryWrapper<I18nNamespaceEntity>()
+                .eq(I18nNamespaceEntity::getNamespaceCode, seed.code())
+                .eq(I18nNamespaceEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return;
+        }
+        I18nNamespaceEntity entity = new I18nNamespaceEntity();
+        entity.setNamespaceCode(seed.code());
+        entity.setKeyCount(seed.keys());
+        entity.setCoveragePct(seed.coverage());
+        entity.setVariants(seed.variants());
+        entity.setLastChange(seed.lastChange());
+        entity.setStatus(1);
+        entity.setSortOrder(seed.sortOrder());
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        namespaceMapper.insert(entity);
+    }
+
+    private void ensureIssue(IssueSeed seed, LocalDateTime now) {
+        I18nIntegrityIssueEntity existing = integrityIssueMapper.selectOne(new LambdaQueryWrapper<I18nIntegrityIssueEntity>()
+                .eq(I18nIntegrityIssueEntity::getIssueCode, seed.code())
+                .eq(I18nIntegrityIssueEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return;
+        }
+        I18nIntegrityIssueEntity entity = new I18nIntegrityIssueEntity();
+        entity.setIssueCode(seed.code());
+        entity.setIssueKind(seed.kind());
+        entity.setIssueCount(seed.count());
+        entity.setSamplesText(seed.samples());
+        entity.setStatus("open");
+        entity.setSortOrder(seed.sortOrder());
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        integrityIssueMapper.insert(entity);
+    }
+
+    private void ensureFinding(FindingSeed seed, LocalDateTime now) {
+        I18nHardcodedFindingEntity existing = hardcodedFindingMapper.selectOne(new LambdaQueryWrapper<I18nHardcodedFindingEntity>()
+                .eq(I18nHardcodedFindingEntity::getLocation, seed.location())
+                .eq(I18nHardcodedFindingEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return;
+        }
+        I18nHardcodedFindingEntity entity = new I18nHardcodedFindingEntity();
+        entity.setLocation(seed.location());
+        entity.setRawCopy(seed.rawCopy());
+        entity.setSuggestedKey(seed.suggestedKey());
+        entity.setStatus("open");
+        entity.setSortOrder(seed.sortOrder());
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        hardcodedFindingMapper.insert(entity);
+    }
+
+    private void ensureCourse(CourseSeed seed, LocalDateTime now) {
+        if (findCourseEntity(seed.id()).isPresent()) {
+            return;
+        }
+        HelpArticleEntity entity = new HelpArticleEntity();
+        String category = seed.category().toLowerCase(Locale.ROOT);
+        entity.setArticleCode("learn." + category + "." + seed.id());
+        entity.setTitle(seed.titleZh());
+        entity.setContent(seed.titleZh() + " 课程正文");
+        entity.setCategory(category);
+        entity.setLevel(seed.level().toLowerCase(Locale.ROOT));
+        entity.setFormat(toDbFormat(seed.format()));
+        entity.setSurface("/learn/" + seed.id());
+        entity.setDurationMin(parseDuration(seed.duration()));
+        entity.setRewardNex(new BigDecimal(seed.rewardNex()));
+        entity.setProgressPct(0);
+        entity.setFeatured(seed.featured() ? 1 : 0);
+        entity.setEmoji(icon(category));
+        entity.setTint(tint(category));
+        entity.setSortOrder(seed.sortOrder());
+        entity.setStatus(1);
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        helpArticleMapper.insert(entity);
+        saveMessagePair("learn." + seed.id() + ".title", seed.titleZh(), seed.titleEn(), "published", now);
+        saveMessagePair("learn." + seed.id() + ".body", seed.titleZh() + " 课程正文", seed.titleEn() + " course body.", "published", now);
     }
 
     private void upsertMessage(String messageKey, String locale, String value, int status, LocalDateTime now) {
@@ -417,5 +575,33 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     private int value(Integer value) {
         return value == null ? 0 : value;
+    }
+
+    private static NamespaceSeed namespace(String code, int keys, int coverage, String variants, String lastChange, int sortOrder) {
+        return new NamespaceSeed(code, keys, coverage, variants, lastChange, sortOrder);
+    }
+
+    private static IssueSeed issue(String code, String kind, int count, String samples, int sortOrder) {
+        return new IssueSeed(code, kind, count, samples, sortOrder);
+    }
+
+    private static FindingSeed finding(String location, String rawCopy, String suggestedKey, int sortOrder) {
+        return new FindingSeed(location, rawCopy, suggestedKey, sortOrder);
+    }
+
+    private static CourseSeed course(String id, String titleZh, String titleEn, String category, String format, String level, String duration, String rewardNex, boolean featured, int sortOrder) {
+        return new CourseSeed(id, titleZh, titleEn, category, format, level, duration, rewardNex, featured, sortOrder);
+    }
+
+    private record NamespaceSeed(String code, int keys, int coverage, String variants, String lastChange, int sortOrder) {
+    }
+
+    private record IssueSeed(String code, String kind, int count, String samples, int sortOrder) {
+    }
+
+    private record FindingSeed(String location, String rawCopy, String suggestedKey, int sortOrder) {
+    }
+
+    private record CourseSeed(String id, String titleZh, String titleEn, String category, String format, String level, String duration, String rewardNex, boolean featured, int sortOrder) {
     }
 }

@@ -67,6 +67,7 @@ public class OpsI18nLearningService {
     private final Clock clock;
 
     public ApiResult<I18nLearningOverview> overview() {
+        learningRepository.ensureSeedData(now());
         return ApiResult.ok(currentOverview());
     }
 

@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Optional;
 
 public interface CopyAbRepository {
+    void ensureSeedData(LocalDateTime now);
+
     List<CopyContentRow> listCopies();
 
     Optional<CopyContentRow> findCopy(String copyKey);

@@ -46,6 +46,7 @@ public class OpsCopyAbService {
     private final Clock clock;
 
     public ApiResult<CopyAbOverview> overview() {
+        copyAbRepository.ensureSeedData(now());
         List<CopyContentRow> copies = copyAbRepository.listCopies();
         List<CopyExperimentRow> experiments = copyAbRepository.listExperiments();
         return ApiResult.ok(new CopyAbOverview(

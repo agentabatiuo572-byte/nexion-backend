@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Optional;
 
 public interface I18nLearningRepository {
+    void ensureSeedData(LocalDateTime now);
+
     List<I18nNamespaceView> listNamespaces();
 
     Optional<I18nMessagePairView> findMessagePair(String messageKey);

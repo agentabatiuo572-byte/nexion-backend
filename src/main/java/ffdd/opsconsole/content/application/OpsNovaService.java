@@ -88,6 +88,7 @@ public class OpsNovaService {
     private final AuditLogService auditLogService;
 
     public ApiResult<NovaOverview> overview() {
+        ensureSeedConfigs();
         Map<String, String> configs = configs();
         List<NovaChannelView> channels = channels(configs);
         int onlineCount = (int) channels.stream().filter(NovaChannelView::enabled).count();
@@ -428,6 +429,39 @@ public class OpsNovaService {
         put(CHANNEL_PREFIX + key + ".deleted", "false", reason);
         if (configFacade.activeValue(CHANNEL_PREFIX + key + ".order").isEmpty()) {
             put(CHANNEL_PREFIX + key + ".order", String.valueOf(1000 + discoveredKeys(configs(), CHANNEL_PREFIX).size()), reason);
+        }
+    }
+
+    private void ensureSeedConfigs() {
+        for (ChannelSeed seed : CHANNEL_SEEDS) {
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".name", seed.name());
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".trigger", seed.trigger());
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".tick", seed.tick());
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".cooldown", seed.cooldown());
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".phaseKeyed", seed.phaseKeyed());
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".ctr", seed.ctr().stripTrailingZeros().toPlainString());
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".on", String.valueOf(seed.enabled()));
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".deleted", "false");
+            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".order", String.valueOf(seed.order()));
+        }
+        for (TemplateSeed seed : TEMPLATE_SEEDS) {
+            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".name", seed.name());
+            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".cta", seed.cta());
+            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".version", seed.version());
+            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".status", seed.status());
+            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".deleted", "false");
+        }
+        for (DistributionSeed seed : DISTRIBUTION_SEEDS) {
+            seedIfMissing(SOCIAL_DIST_PREFIX + seed.key() + ".pct", String.valueOf(seed.pct()));
+        }
+        for (PoolSeed seed : POOL_SEEDS) {
+            seedIfMissing(SOCIAL_POOL_PREFIX + seed.key() + ".count", String.valueOf(seed.count()));
+        }
+    }
+
+    private void seedIfMissing(String key, String value) {
+        if (configFacade.activeValue(key).isEmpty()) {
+            configFacade.upsertAdminValue(key, value, "STRING", GROUP, "I2 Nova seed");
         }
     }
 

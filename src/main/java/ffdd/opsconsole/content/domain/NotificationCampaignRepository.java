@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Optional;
 
 public interface NotificationCampaignRepository {
+    void ensureSeedData(LocalDateTime now);
+
     List<NotificationCampaignRow> listCampaigns();
 
     Optional<NotificationCampaignRow> findCampaign(String campaignNo);

@@ -22,6 +22,45 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     private final NotificationCampaignMapper campaignMapper;
     private final NotificationCapRuleMapper capRuleMapper;
 
+    private static final List<CapSeed> CAP_SEEDS = List.of(
+            cap("critical", "∞ 永不淘汰", "合规重确认 / 风控异动 / 资金账户异动 - 合规硬约束:不可调降,一条都不能丢", true, 10),
+            cap("high", "50 条", "tier 内 LIFO · 高优运营事件优先保留", false, 20),
+            cap("normal", "200 条", "通知中心总上限 · 常规运营公告", false, 30),
+            cap("low", "30 条 · TTL 24-48h", "教程提示等低优 · 数量+时间双闸,过期自动清", false, 40));
+
+    private static final List<CampaignSeed> CAMPAIGN_SEEDS = List.of(
+            campaign("CMP-2618", "6/15 钱包维护窗口公告", "system", "high", "全量", "182K", "SCHEDULED", "06-15 02:00 排期", "-", "-",
+                    "Wallet maintenance window on Jun 15. Withdrawals may be delayed.",
+                    "6 月 15 日钱包维护窗口,提现到账可能延迟。", "/me/notifications/maintenance-0615", "0"),
+            campaign("CMP-2617", "SFC 风险披露重新确认", "compliance", "critical", "SFC 辖区 · 未重确认用户", "9.4K", "SCHEDULED", "06-12 10:00 排期", "-", "-",
+                    "Please review and acknowledge the updated SFC risk disclosure.",
+                    "请阅读并确认新版 SFC 风险披露。", "/me/risk-disclosure", "0"),
+            campaign("CMP-2615", "KYC Express 补资料提醒", "kyc", "high", "近 30 天提现 >$1k", "12.4K", "SENT", "05-31 16:00 已发", "12.4K", "9.1K",
+                    "Your KYC Express review needs one more document.",
+                    "KYC Express 审核还需要补充一项资料。", "/me/kyc", "0"),
+            campaign("CMP-2612", "每周任务刷新", "ops", "normal", "P3 阶段活跃用户", "178K", "SENT", "05-27 09:00 已发", "178K", "104K",
+                    "Weekly quests refreshed. Complete them to keep your rhythm.",
+                    "每周任务已刷新,完成任务保持增长节奏。", "/earn/quests", "0"),
+            campaign("CMP-2609", "服务条款更新确认", "compliance", "critical", "全量", "181K", "SENT", "05-18 12:00 已发", "181K", "152K",
+                    "Terms of service updated. Please review the latest version.",
+                    "服务条款已更新,请查看最新版本。", "/trust", "0"),
+            campaign("CMP-2606", "Learn 新课上线提醒", "learn", "low", "注册 ≤14 天", "20.6K", "SENT", "05-08 18:30 已发", "20.6K", "7.8K",
+                    "New Learn lessons are available for beginners.",
+                    "Learn 新手课程已上线。", "/learn", "0"),
+            campaign("CMP-2619", "复投活动预热", "ops", "normal", "全量", "-", "DRAFT", "-", "-", "-",
+                    "A new reinvestment event is being prepared.",
+                    "新的复投活动正在准备中。", "/reinvest", "1200"));
+
+    @Override
+    public void ensureSeedData(LocalDateTime now) {
+        for (CapSeed seed : CAP_SEEDS) {
+            ensureCap(seed, now);
+        }
+        for (CampaignSeed seed : CAMPAIGN_SEEDS) {
+            ensureCampaign(seed, now);
+        }
+    }
+
     @Override
     public List<NotificationCampaignRow> listCampaigns() {
         return campaignMapper.selectList(new LambdaQueryWrapper<NotificationCampaignEntity>()
@@ -141,6 +180,51 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
                 .last("LIMIT 1"));
     }
 
+    private void ensureCampaign(CampaignSeed seed, LocalDateTime now) {
+        if (findEntity(seed.no()) != null) {
+            return;
+        }
+        NotificationCampaignEntity entity = new NotificationCampaignEntity();
+        entity.setCampaignNo(seed.no());
+        entity.setName(seed.name());
+        entity.setKind(seed.kind());
+        entity.setTier(seed.tier());
+        entity.setAudience(seed.audience());
+        entity.setReachLabel(seed.reach());
+        entity.setStatus(seed.status());
+        entity.setScheduleText(seed.schedule());
+        entity.setSentLabel(seed.sent());
+        entity.setReadLabel(seed.read());
+        entity.setBodyEn(seed.bodyEn());
+        entity.setBodyZh(seed.bodyZh());
+        entity.setSwipeTo(seed.swipeTo());
+        entity.setBudgetUsd(new java.math.BigDecimal(seed.budgetUsd()));
+        entity.setCreatedBy("seed");
+        entity.setLastOperator("seed");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        campaignMapper.insert(entity);
+    }
+
+    private void ensureCap(CapSeed seed, LocalDateTime now) {
+        if (findCapEntity(seed.tier()) != null) {
+            return;
+        }
+        NotificationCapRuleEntity entity = new NotificationCapRuleEntity();
+        entity.setTier(seed.tier());
+        entity.setCapLabel(seed.cap());
+        entity.setPolicy(seed.policy());
+        entity.setLocked(seed.locked() ? 1 : 0);
+        entity.setSortOrder(seed.sortOrder());
+        entity.setStatus(1);
+        entity.setLastOperator("seed");
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        capRuleMapper.insert(entity);
+    }
+
     private NotificationCampaignRow toRow(NotificationCampaignEntity entity) {
         return new NotificationCampaignRow(
                 entity.getCampaignNo(),
@@ -177,5 +261,19 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
 
     private String operator(String operator) {
         return StringUtils.hasText(operator) ? operator.trim() : "system";
+    }
+
+    private static CapSeed cap(String tier, String cap, String policy, boolean locked, int sortOrder) {
+        return new CapSeed(tier, cap, policy, locked, sortOrder);
+    }
+
+    private static CampaignSeed campaign(String no, String name, String kind, String tier, String audience, String reach, String status, String schedule, String sent, String read, String bodyEn, String bodyZh, String swipeTo, String budgetUsd) {
+        return new CampaignSeed(no, name, kind, tier, audience, reach, status, schedule, sent, read, bodyEn, bodyZh, swipeTo, budgetUsd);
+    }
+
+    private record CapSeed(String tier, String cap, String policy, boolean locked, int sortOrder) {
+    }
+
+    private record CampaignSeed(String no, String name, String kind, String tier, String audience, String reach, String status, String schedule, String sent, String read, String bodyEn, String bodyZh, String swipeTo, String budgetUsd) {
     }
 }

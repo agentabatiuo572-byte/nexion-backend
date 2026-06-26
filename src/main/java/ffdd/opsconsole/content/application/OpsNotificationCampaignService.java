@@ -51,6 +51,7 @@ public class OpsNotificationCampaignService {
     private final Clock clock;
 
     public ApiResult<NotificationCampaignOverview> overview() {
+        campaignRepository.ensureSeedData(now());
         List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns();
         return ApiResult.ok(new NotificationCampaignOverview(
                 stats(campaigns),

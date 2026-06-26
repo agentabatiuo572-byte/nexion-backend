@@ -45,6 +45,7 @@ class OpsCopyAbServiceTest {
         assertThat(result.getData().experiments()).hasSize(2);
         assertThat(result.getData().frameworkParams()).hasSize(1);
         assertThat(result.getData().sources()).contains("nx_content_copy", "nx_content_experiment_variant");
+        assertThat(repository.seedCalls).isEqualTo(1);
     }
 
     @Test
@@ -185,6 +186,7 @@ class OpsCopyAbServiceTest {
         private final Map<String, CopyVersionRow> versions = new LinkedHashMap<>();
         private final Map<String, CopyExperimentRow> experiments = new LinkedHashMap<>();
         private final Map<String, CopyFrameworkParamView> framework = new LinkedHashMap<>();
+        private int seedCalls;
 
         private FakeCopyAbRepository() {
             copies.put("home.conversionBanner", copy("home.conversionBanner", "v7", "published", null, null, null));
@@ -194,6 +196,11 @@ class OpsCopyAbServiceTest {
             experiments.put("EXP-2611", experiment("EXP-2611", "running"));
             experiments.put("EXP-2598", experiment("EXP-2598", "discarded"));
             framework.put("split", new CopyFrameworkParamView("split", "分流比例默认", "变体等分", "新实验默认变体等分"));
+        }
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
         }
 
         @Override
