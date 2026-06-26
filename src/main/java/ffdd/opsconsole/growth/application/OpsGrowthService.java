@@ -63,6 +63,21 @@ public class OpsGrowthService {
     private static final String QUEST_PREFIX = "growth.quest.";
     private static final String EVENT_PREFIX = "growth.event.";
     private static final String WHEEL_PREFIX = "growth.wheel.";
+    private static final String QUEST_H3_STATS_KEY = QUEST_PREFIX + "h3_stats";
+    private static final String EVENT_H4_STATS_KEY = EVENT_PREFIX + "h4_stats";
+    private static final String QUEST_DAY_ONE_TASKS_KEY = QUEST_PREFIX + "day_one.tasks";
+    private static final String QUEST_DAY_ONE_STATES_KEY = QUEST_PREFIX + "day_one.states";
+    private static final String QUEST_WEEKLY_TIER1_ROWS_KEY = QUEST_PREFIX + "weekly.t1.rows";
+    private static final String QUEST_WEEKLY_TIER2_ROWS_KEY = QUEST_PREFIX + "weekly.t2.rows";
+    private static final String QUEST_MONTHLY_ROWS_KEY = QUEST_PREFIX + "monthly.rows";
+    private static final String QUEST_TASK_MONITOR_KEY = QUEST_PREFIX + "task_monitor";
+    private static final String QUEST_TASK_CONTRACTS_KEY = QUEST_PREFIX + "task_contracts";
+    private static final String QUEST_PROMO_BANNER_KEY = QUEST_PREFIX + "promo_banner";
+    private static final String EVENT_ROWS_KEY = EVENT_PREFIX + "rows";
+    private static final String EVENT_STATES_KEY = EVENT_PREFIX + "states";
+    private static final String EVENT_TRACKABLES_KEY = EVENT_PREFIX + "trackables";
+    private static final String WHEEL_TIERS_KEY = WHEEL_PREFIX + "tiers";
+    private static final String WHEEL_GUARDS_KEY = WHEEL_PREFIX + "guards";
     private static final String VOUCHER_ROWS_KEY = "growth.voucher.rows";
     private static final String VOUCHER_SKUS_KEY = "growth.voucher.sku_options";
     private static final Set<String> RETIRED_KEYS = Set.of(
@@ -457,6 +472,8 @@ public class OpsGrowthService {
         response.put("weeklyMultipliers", weeklyMultipliers());
         response.put("monthlyMissions", monthlyMissions());
         response.put("taskMonitor", taskMonitor());
+        response.put("taskContracts", taskContracts());
+        response.put("promoBanner", promoBanner());
         response.put("phaseMultiplierReadonly", phaseMultiplierReadonly());
         response.put("events", questEventsList());
         response.put("eventStates", eventStateLegend());
@@ -469,9 +486,15 @@ public class OpsGrowthService {
         response.put("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
         response.put("disabledOutputs", List.of("Premium entitlement writes", "NEX v2 lock rewards", "Points ledger writes"));
         response.put("sources", List.of(
-                "nx_config_item:" + QUEST_PREFIX + "*",
-                "nx_config_item:" + EVENT_PREFIX + "*",
-                "nx_config_item:" + WHEEL_PREFIX + "*"));
+                "nx_config_item:" + QUEST_DAY_ONE_TASKS_KEY,
+                "nx_config_item:" + QUEST_WEEKLY_TIER1_ROWS_KEY,
+                "nx_config_item:" + QUEST_WEEKLY_TIER2_ROWS_KEY,
+                "nx_config_item:" + QUEST_MONTHLY_ROWS_KEY,
+                "nx_config_item:" + QUEST_TASK_CONTRACTS_KEY,
+                "nx_config_item:" + QUEST_PROMO_BANNER_KEY,
+                "nx_config_item:" + EVENT_ROWS_KEY,
+                "nx_config_item:" + WHEEL_TIERS_KEY,
+                "nx_config_item:" + EVENT_TRACKABLES_KEY));
         return ApiResult.ok(response);
     }
 
@@ -483,6 +506,7 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        ensureQuestEventSeedData();
         String normalizedKey;
         try {
             normalizedKey = normalizeQuestConfigKey(configKey);
@@ -520,6 +544,7 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        ensureQuestEventSeedData();
         String id = normalizeEventId(eventId);
         String value;
         try {
@@ -552,6 +577,7 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        ensureQuestEventSeedData();
         String id = normalizeEventId(eventId);
         String status = requireText(request.value(), "Event status is required").toLowerCase(Locale.ROOT);
         if (!EVENT_STATES.contains(status)) {
@@ -582,6 +608,7 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        ensureQuestEventSeedData();
         String id = normalizeEventId(eventId);
         Boolean featured = parseBooleanValue(request.value());
         if (featured == null) {
@@ -990,6 +1017,10 @@ public class OpsGrowthService {
     }
 
     private Map<String, Object> questStats() {
+        return readJsonMap(QUEST_H3_STATS_KEY, defaultQuestStats());
+    }
+
+    private Map<String, Object> defaultQuestStats() {
         return row(
                 "dayOneRate24h", "71%",
                 "dayOneRateGrace", "18%",
@@ -1003,24 +1034,37 @@ public class OpsGrowthService {
 
     private Map<String, Object> eventStats() {
         List<Map<String, Object>> events = questEventsList();
+        Map<String, Object> stats = readJsonMap(EVENT_H4_STATS_KEY, defaultEventStats());
         long ongoing = events.stream().filter(row -> "ongoing".equals(row.get("state"))).count();
         String featured = events.stream()
                 .filter(row -> Boolean.TRUE.equals(row.get("featured")))
                 .map(row -> row.get("name").toString())
                 .findFirst()
                 .orElse("--");
+        Object wheelTodaySpend = stats.remove("wheelTodaySpend");
+        if (wheelTodaySpend == null) {
+            String existingWheelToday = String.valueOf(stats.getOrDefault("wheelToday", "$642"));
+            wheelTodaySpend = existingWheelToday.contains("/")
+                    ? existingWheelToday.substring(0, existingWheelToday.indexOf('/')).trim()
+                    : existingWheelToday;
+        }
+        stats.put("ongoing", ongoing);
+        stats.put("featuredEv", featured);
+        stats.put("wheelToday", wheelTodaySpend + " / " + questConfig("wheel.guards.budget"));
+        return stats;
+    }
+
+    private Map<String, Object> defaultEventStats() {
         return row(
-                "ongoing", ongoing,
-                "featuredEv", featured,
                 "trackJoin", "12.4K",
                 "trackDone", "3.1K",
                 "trackClaim", "2.8K",
-                "wheelToday", "$642 / " + questConfig("wheel.guards.budget"),
+                "wheelTodaySpend", "$642",
                 "geoBlocked", 2);
     }
 
     private List<Map<String, Object>> dayOneTasks() {
-        return defaultDayOneTasks().stream()
+        return dayOneTaskRows().stream()
                 .map(row -> {
                     Map<String, Object> copy = new LinkedHashMap<>(row);
                     int id = Integer.parseInt(copy.get("id").toString());
@@ -1030,17 +1074,25 @@ public class OpsGrowthService {
                 .toList();
     }
 
+    private List<Map<String, Object>> dayOneTaskRows() {
+        return readJsonRows(QUEST_DAY_ONE_TASKS_KEY, defaultDayOneTasks());
+    }
+
     private List<Map<String, Object>> defaultDayOneTasks() {
         return List.of(
-                row("id", 0, "task", "绑卡", "href", "topup?kyc=1", "reward", "50 NEX"),
-                row("id", 1, "task", "逛收益页", "href", "/earn", "reward", "30 NEX"),
-                row("id", 2, "task", "逛商城", "href", "/store", "reward", "50 NEX"),
-                row("id", 3, "task", "看回报率", "href", "/store/roi", "reward", "100 NEX"),
-                row("id", 4, "task", "设资料", "href", "/me/profile", "reward", "80 NEX"),
-                row("id", 5, "task", "邀请好友", "href", "/team/invite", "reward", "200 NEX + $1"));
+                row("id", 0, "task", "绑卡", "href", "topup?kyc=1", "reward", "50 NEX", "status", "active", "completionType", "event", "completionEvent", "kyc.card_bound"),
+                row("id", 1, "task", "逛收益页", "href", "/earn", "reward", "30 NEX", "status", "active", "completionType", "visit", "completionEvent", ""),
+                row("id", 2, "task", "逛商城", "href", "/store", "reward", "50 NEX", "status", "active", "completionType", "visit", "completionEvent", ""),
+                row("id", 3, "task", "看回报率", "href", "/store/roi", "reward", "100 NEX", "status", "active", "completionType", "visit", "completionEvent", ""),
+                row("id", 4, "task", "设资料", "href", "/me/profile", "reward", "80 NEX", "status", "active", "completionType", "event", "completionEvent", "profile.completed"),
+                row("id", 5, "task", "邀请好友", "href", "/team/invite", "reward", "200 NEX + $1", "status", "active", "completionType", "event", "completionEvent", "referral.sent"));
     }
 
     private List<Map<String, Object>> dayOneStates() {
+        return readJsonRows(QUEST_DAY_ONE_STATES_KEY, defaultDayOneStates());
+    }
+
+    private List<Map<String, Object>> defaultDayOneStates() {
         return List.of(
                 row("st", "active", "label", "24h 内 6 项完成领 500", "tone", "ok"),
                 row("st", "grace", "label", "72h 内 200", "tone", "warn"),
@@ -1048,44 +1100,52 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> weeklyTier1() {
-        List<Map<String, Object>> rows = defaultWeeklyTier1();
+        List<Map<String, Object>> rows = weeklyTier1Rows();
         for (int i = 0; i < rows.size(); i++) {
             rows.get(i).put("reward", questConfig("weekly.tier1." + i + ".reward"));
         }
         return rows;
     }
 
+    private List<Map<String, Object>> weeklyTier1Rows() {
+        return readJsonRows(QUEST_WEEKLY_TIER1_ROWS_KEY, defaultWeeklyTier1());
+    }
+
     private List<Map<String, Object>> defaultWeeklyTier1() {
         return new ArrayList<>(List.of(
-                row("cond", "NEX 持有达标", "reward", "3,000"),
-                row("cond", "买 Genesis", "reward", "2,500"),
-                row("cond", "加购硬件", "reward", "2,000"),
-                row("cond", "换新升级", "reward", "1,800"),
-                row("cond", "S1→Pro", "reward", "1,500"),
-                row("cond", "收益加速档位", "reward", "800"),
-                row("cond", "首购设备", "reward", "1,000 + $10"),
-                row("cond", "充值", "reward", "100"),
-                row("cond", "兑底质押", "reward", "250")));
+                row("cond", "NEX 持有达标", "reward", "3,000", "status", "active", "completionType", "event", "completionEvent", "stake.locked"),
+                row("cond", "买 Genesis", "reward", "2,500", "status", "active", "completionType", "event", "completionEvent", "genesis.bought"),
+                row("cond", "加购硬件", "reward", "2,000", "status", "active", "completionType", "event", "completionEvent", "device.bought"),
+                row("cond", "换新升级", "reward", "1,800", "status", "active", "completionType", "event", "completionEvent", "device.tradein"),
+                row("cond", "S1→Pro", "reward", "1,500", "status", "active", "completionType", "event", "completionEvent", "device.upgraded"),
+                row("cond", "收益加速档位", "reward", "800", "status", "active", "completionType", "event", "completionEvent", "cloudshare.bought"),
+                row("cond", "首购设备", "reward", "1,000 + $10", "status", "active", "completionType", "event", "completionEvent", "device.first_bought"),
+                row("cond", "充值", "reward", "100", "status", "active", "completionType", "event", "completionEvent", "wallet.deposited"),
+                row("cond", "兑底质押", "reward", "250", "status", "active", "completionType", "event", "completionEvent", "stake.small")));
     }
 
     private List<Map<String, Object>> weeklyTier2() {
-        List<Map<String, Object>> rows = defaultWeeklyTier2();
+        List<Map<String, Object>> rows = weeklyTier2Rows();
         for (int i = 0; i < rows.size(); i++) {
             rows.get(i).put("reward", questConfig("weekly.tier2." + i + ".reward"));
         }
         return rows;
     }
 
+    private List<Map<String, Object>> weeklyTier2Rows() {
+        return readJsonRows(QUEST_WEEKLY_TIER2_ROWS_KEY, defaultWeeklyTier2());
+    }
+
     private List<Map<String, Object>> defaultWeeklyTier2() {
         return new ArrayList<>(List.of(
-                row("cond", "邀请好友", "reward", "200 + $2"),
-                row("cond", "复投", "reward", "120"),
-                row("cond", "小额质押", "reward", "150"),
-                row("cond", "兑换", "reward", "80"),
-                row("cond", "小充", "reward", "100"),
-                row("cond", "逛商城", "reward", "50"),
-                row("cond", "跑单 50 次", "reward", "80"),
-                row("cond", "看 Genesis", "reward", "60")));
+                row("cond", "邀请好友", "reward", "200 + $2", "status", "active", "completionType", "event", "completionEvent", "referral.sent"),
+                row("cond", "复投", "reward", "120", "status", "active", "completionType", "event", "completionEvent", "reinvest.done"),
+                row("cond", "小额质押", "reward", "150", "status", "active", "completionType", "event", "completionEvent", "stake.small"),
+                row("cond", "兑换", "reward", "80", "status", "active", "completionType", "event", "completionEvent", "exchange.done"),
+                row("cond", "小充", "reward", "100", "status", "active", "completionType", "event", "completionEvent", "wallet.deposited"),
+                row("cond", "逛商城", "reward", "50", "status", "active", "completionType", "visit", "completionEvent", ""),
+                row("cond", "跑单 50 次", "reward", "80", "status", "active", "completionType", "event", "completionEvent", "device.jobs_50"),
+                row("cond", "看 Genesis", "reward", "60", "status", "active", "completionType", "visit", "completionEvent", "")));
     }
 
     private List<Map<String, Object>> weeklyMultipliers() {
@@ -1099,7 +1159,7 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> monthlyMissions() {
-        return defaultMonthlyMissions().stream()
+        return monthlyMissionRows().stream()
                 .map(row -> {
                     Map<String, Object> copy = new LinkedHashMap<>(row);
                     String id = copy.get("id").toString();
@@ -1109,20 +1169,61 @@ public class OpsGrowthService {
                 .toList();
     }
 
+    private List<Map<String, Object>> monthlyMissionRows() {
+        return readJsonRows(QUEST_MONTHLY_ROWS_KEY, defaultMonthlyMissions());
+    }
+
     private List<Map<String, Object>> defaultMonthlyMissions() {
         return List.of(
-                row("id", "mc0", "theme", "地基建设者", "age", "0-2 月", "reward", "1,500", "goals", "累计赚 200 · 绑卡 · 邀 1 人"),
-                row("id", "mc1", "theme", "网络架构师", "age", "2-4 月", "reward", "2,500", "goals", "累计 1,500 · 直推 3 · 周任务 ×4"),
-                row("id", "mc2", "theme", "进阶之路", "age", "4-6 月", "reward", "4,000", "goals", "累计 5,000 · 设备升级 · 加购"),
-                row("id", "mc3", "theme", "钻石段位", "age", "6-9 月", "reward", "6,000", "goals", "累计 15,000 · V4 · 团队 GV"),
-                row("id", "mc4", "theme", "创始人之约", "age", "9+ 月", "reward", "10,000 + 勋章", "goals", "累计 40,000 · NEX 持有 · Genesis"));
+                row("id", "mc0", "theme", "地基建设者", "age", "0-2 月", "reward", "1,500", "goals", "累计赚 200 · 绑卡 · 邀 1 人", "status", "active"),
+                row("id", "mc1", "theme", "网络架构师", "age", "2-4 月", "reward", "2,500", "goals", "累计 1,500 · 直推 3 · 周任务 ×4", "status", "active"),
+                row("id", "mc2", "theme", "进阶之路", "age", "4-6 月", "reward", "4,000", "goals", "累计 5,000 · 设备升级 · 加购", "status", "active"),
+                row("id", "mc3", "theme", "钻石段位", "age", "6-9 月", "reward", "6,000", "goals", "累计 15,000 · V4 · 团队 GV", "status", "active"),
+                row("id", "mc4", "theme", "创始人之约", "age", "9+ 月", "reward", "10,000 + 勋章", "goals", "累计 40,000 · NEX 持有 · Genesis", "status", "active"));
+    }
+
+    private Map<String, Object> promoBanner() {
+        Map<String, Object> banner = readJsonMap(QUEST_PROMO_BANNER_KEY, defaultPromoBanner());
+        for (String key : List.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDevice", "targetDaily", "status")) {
+            banner.put(key, questConfig("promoBanner." + key));
+        }
+        return banner;
+    }
+
+    private Map<String, Object> defaultPromoBanner() {
+        return row(
+                "baseReward", "800",
+                "multiplier", "1.5",
+                "countdownDays", "4",
+                "countdownHours", "12",
+                "targetDevice", "自动(用户最高设备)",
+                "targetDaily", "7.00",
+                "status", "active");
     }
 
     private List<Map<String, Object>> taskMonitor() {
+        return readJsonRows(QUEST_TASK_MONITOR_KEY, defaultTaskMonitor());
+    }
+
+    private List<Map<String, Object>> defaultTaskMonitor() {
         return List.of(
                 row("label", "首日", "note", "进窗 28,940 · 24h 领 71% · 宽限领 18% · 流失 11%"),
                 row("label", "每周", "note", "派发 96K 人 · 一档完成 38K · 二档完成 146K 项"),
                 row("label", "月度", "note", "在途 31,240 · 本月可领 4,120 · 已领 3,880"));
+    }
+
+    private List<Map<String, Object>> taskContracts() {
+        return readJsonRows(QUEST_TASK_CONTRACTS_KEY, defaultTaskContracts());
+    }
+
+    private List<Map<String, Object>> defaultTaskContracts() {
+        return List.of(
+                row("taskId", 0, "taskKey", "h3.day_one.card_bound", "serverEvent", "quest.task_completed", "downstream", "kyc.card_bound", "b3", true, "retentionOnly", false, "day7", "绑卡后留存 + 充值前置", "bi", "l_quest_funnel.card_bound", "sample24h", 4820, "anomalyPct", "0.4%"),
+                row("taskId", 1, "taskKey", "h3.day_one.earn_visit", "serverEvent", "quest.task_completed", "downstream", "page.earn.viewed", "b3", false, "retentionOnly", true, "day7", "收益页回访", "bi", "l_quest_funnel.earn_visit", "sample24h", 7940, "anomalyPct", "0.8%"),
+                row("taskId", 2, "taskKey", "h3.day_one.store_visit", "serverEvent", "quest.task_completed", "downstream", "page.store.viewed", "b3", true, "retentionOnly", false, "day7", "设备转化前置", "bi", "l_quest_funnel.store_visit", "sample24h", 7680, "anomalyPct", "0.6%"),
+                row("taskId", 3, "taskKey", "h3.day_one.roi_visit", "serverEvent", "quest.task_completed", "downstream", "page.store_roi.viewed", "b3", true, "retentionOnly", false, "day7", "ROI 认知转化", "bi", "l_quest_funnel.roi_visit", "sample24h", 6920, "anomalyPct", "0.7%"),
+                row("taskId", 4, "taskKey", "h3.day_one.profile_completed", "serverEvent", "quest.task_completed", "downstream", "profile.completed", "b3", false, "retentionOnly", true, "day7", "账户完整度留存", "bi", "l_quest_funnel.profile_completed", "sample24h", 5310, "anomalyPct", "0.5%"),
+                row("taskId", 5, "taskKey", "h3.day_one.referral_sent", "serverEvent", "quest.task_completed", "downstream", "referral.sent", "b3", true, "retentionOnly", false, "day7", "邀请链路激活", "bi", "l_quest_funnel.referral_sent", "sample24h", 2270, "anomalyPct", "1.1%"));
     }
 
     private Map<String, Object> phaseMultiplierReadonly() {
@@ -1134,7 +1235,7 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> questEventsList() {
-        return defaultQuestEvents().stream()
+        return questEventRows().stream()
                 .map(row -> {
                     Map<String, Object> copy = new LinkedHashMap<>(row);
                     String id = copy.get("id").toString();
@@ -1144,6 +1245,10 @@ public class OpsGrowthService {
                     return copy;
                 })
                 .toList();
+    }
+
+    private List<Map<String, Object>> questEventRows() {
+        return readJsonRows(EVENT_ROWS_KEY, defaultQuestEvents());
     }
 
     private List<Map<String, Object>> defaultQuestEvents() {
@@ -1158,6 +1263,10 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> eventStateLegend() {
+        return readJsonRows(EVENT_STATES_KEY, defaultEventStateLegend());
+    }
+
+    private List<Map<String, Object>> defaultEventStateLegend() {
         return List.of(
                 row("state", "upcoming", "label", "预告", "tone", "dim"),
                 row("state", "ongoing", "label", "进行中", "tone", "ok"),
@@ -1165,6 +1274,10 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> wheelTiers() {
+        return readJsonRows(WHEEL_TIERS_KEY, defaultWheelTiers());
+    }
+
+    private List<Map<String, Object>> defaultWheelTiers() {
         return List.of(
                 row("tier", "安慰奖", "reward", "+5 NEX", "prob", new BigDecimal("38"), "real", false, "kind", "平台内"),
                 row("tier", "微 NEX", "reward", "+10 NEX", "prob", new BigDecimal("24"), "real", false, "kind", "平台内"),
@@ -1177,23 +1290,39 @@ public class OpsGrowthService {
     }
 
     private BigDecimal wheelEvUsd() {
-        return wheelTiers().stream()
+        BigDecimal value = wheelTiers().stream()
                 .filter(row -> Boolean.TRUE.equals(row.get("real")))
                 .map(row -> parseMoney(row.get("reward").toString()).multiply(new BigDecimal(row.get("prob").toString()))
                         .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP))
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP)
                 .stripTrailingZeros();
+        return new BigDecimal(value.toPlainString());
     }
 
     private List<Map<String, Object>> wheelGuards() {
+        List<Map<String, Object>> rows = readJsonRows(WHEEL_GUARDS_KEY, defaultWheelGuards());
+        rows.forEach(row -> {
+            Object key = row.get("key");
+            if (key != null && WHEEL_GUARD_KEYS.contains(key.toString())) {
+                row.put("value", questConfig("wheel.guards." + key));
+            }
+        });
+        return rows;
+    }
+
+    private List<Map<String, Object>> defaultWheelGuards() {
         return List.of(
-                row("key", "budget", "label", "日派彩预算", "value", questConfig("wheel.guards.budget"), "note", "到顶当日只发 NEX/券"),
-                row("key", "cap", "label", "单奖日库存", "value", questConfig("wheel.guards.cap"), "note", ""),
-                row("key", "kill", "label", "真实奖总开关", "value", questConfig("wheel.guards.kill"), "note", "应急一键停发真钱档"));
+                row("key", "budget", "label", "日派彩预算", "value", "$2,000", "note", "到顶当日只发 NEX/券"),
+                row("key", "cap", "label", "单奖日库存", "value", "$500×5 · $20×50 · 券×200", "note", ""),
+                row("key", "kill", "label", "真实奖总开关", "value", "开", "note", "应急一键停发真钱档"));
     }
 
     private List<Map<String, Object>> trackables() {
+        return readJsonRows(EVENT_TRACKABLES_KEY, defaultTrackables());
+    }
+
+    private List<Map<String, Object>> defaultTrackables() {
         return List.of(
                 row("id", "pro-7d", "name", "Pro 限时升级", "cond", "持有 Pro 或以上(设备域)", "join", "8,420", "done", "1,240", "claim", "1,180", "geo", "全区"),
                 row("id", "ref-5", "name", "邀 5 人得 Pro", "cond", "直推数 >= 5(团队域)", "join", "2,180", "done", "312", "claim", "290", "geo", "全区"),
@@ -1701,17 +1830,39 @@ public class OpsGrowthService {
     }
 
     private void ensureQuestEventSeedData() {
+        seedJsonIfMissing(QUEST_H3_STATS_KEY, defaultQuestStats(), "growth", "H3 stats seed");
+        seedJsonIfMissing(EVENT_H4_STATS_KEY, defaultEventStats(), "growth", "H4 stats seed");
+        seedJsonIfMissing(QUEST_DAY_ONE_TASKS_KEY, defaultDayOneTasks(), "growth", "H3 day-one task rows seed");
+        seedJsonIfMissing(QUEST_DAY_ONE_STATES_KEY, defaultDayOneStates(), "growth", "H3 day-one state seed");
+        seedJsonIfMissing(QUEST_WEEKLY_TIER1_ROWS_KEY, defaultWeeklyTier1(), "growth", "H3 weekly tier1 rows seed");
+        seedJsonIfMissing(QUEST_WEEKLY_TIER2_ROWS_KEY, defaultWeeklyTier2(), "growth", "H3 weekly tier2 rows seed");
+        seedJsonIfMissing(QUEST_MONTHLY_ROWS_KEY, defaultMonthlyMissions(), "growth", "H3 monthly mission rows seed");
+        seedJsonIfMissing(QUEST_TASK_MONITOR_KEY, defaultTaskMonitor(), "growth", "H3 task monitor seed");
+        seedJsonIfMissing(QUEST_TASK_CONTRACTS_KEY, defaultTaskContracts(), "growth", "H3 task contract seed");
+        seedJsonIfMissing(QUEST_PROMO_BANNER_KEY, defaultPromoBanner(), "growth", "H3 promo banner seed");
+        seedJsonIfMissing(EVENT_ROWS_KEY, defaultQuestEvents(), "growth", "H4 event rows seed");
+        seedJsonIfMissing(EVENT_STATES_KEY, defaultEventStateLegend(), "growth", "H4 event state seed");
+        seedJsonIfMissing(WHEEL_TIERS_KEY, defaultWheelTiers(), "growth", "H4 wheel tiers seed");
+        seedJsonIfMissing(WHEEL_GUARDS_KEY, defaultWheelGuards(), "growth", "H4 wheel guard rows seed");
+        seedJsonIfMissing(EVENT_TRACKABLES_KEY, defaultTrackables(), "growth", "H4 event trackable seed");
+        backfillJsonRows(QUEST_DAY_ONE_TASKS_KEY, defaultDayOneTasks(), "H3 day-one task rows backfill");
+        backfillJsonRows(QUEST_WEEKLY_TIER1_ROWS_KEY, defaultWeeklyTier1(), "H3 weekly tier1 rows backfill");
+        backfillJsonRows(QUEST_WEEKLY_TIER2_ROWS_KEY, defaultWeeklyTier2(), "H3 weekly tier2 rows backfill");
+        backfillJsonRows(QUEST_MONTHLY_ROWS_KEY, defaultMonthlyMissions(), "H3 monthly mission rows backfill");
+        backfillJsonRows(QUEST_TASK_CONTRACTS_KEY, defaultTaskContracts(), "H3 task contract rows backfill");
+        backfillJsonMap(QUEST_PROMO_BANNER_KEY, defaultPromoBanner(), "H3 promo banner backfill");
+
         seedIfMissing(questConfigStorageKey("dayOne.windowMs"), defaultQuestConfigValue("dayOne.windowMs"), "STRING", "growth", "H3 day-one seed");
         seedIfMissing(questConfigStorageKey("dayOne.triReward"), defaultQuestConfigValue("dayOne.triReward"), "STRING", "growth", "H3 day-one seed");
-        for (int i = 0; i < defaultDayOneTasks().size(); i++) {
-            String key = "dayOne.tasks." + i + ".reward";
+        for (Map<String, Object> task : dayOneTaskRows()) {
+            String key = "dayOne.tasks." + task.get("id") + ".reward";
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 day-one task seed");
         }
-        for (int i = 0; i < defaultWeeklyTier1().size(); i++) {
+        for (int i = 0; i < weeklyTier1Rows().size(); i++) {
             String key = "weekly.tier1." + i + ".reward";
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly tier1 seed");
         }
-        for (int i = 0; i < defaultWeeklyTier2().size(); i++) {
+        for (int i = 0; i < weeklyTier2Rows().size(); i++) {
             String key = "weekly.tier2." + i + ".reward";
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly tier2 seed");
         }
@@ -1720,16 +1871,20 @@ public class OpsGrowthService {
             String key = "weekly.mult." + phase;
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly multiplier seed");
         }
-        for (Map<String, Object> mission : defaultMonthlyMissions()) {
+        for (Map<String, Object> mission : monthlyMissionRows()) {
             String key = "monthly." + mission.get("id") + ".reward";
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 monthly mission seed");
+        }
+        for (String field : List.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDevice", "targetDaily", "status")) {
+            String key = "promoBanner." + field;
+            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), questValueType(key), "growth", "H3 promo banner seed");
         }
         seedIfMissing(questConfigStorageKey("wheel.pool"), defaultQuestConfigValue("wheel.pool"), "STRING", "growth", "H4 wheel seed");
         for (String guard : WHEEL_GUARD_KEYS) {
             String key = "wheel.guards." + guard;
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H4 wheel guard seed");
         }
-        for (Map<String, Object> event : defaultQuestEvents()) {
+        for (Map<String, Object> event : questEventRows()) {
             String id = event.get("id").toString();
             seedIfMissing(EVENT_PREFIX + id + ".status", event.get("state").toString(), "STRING", "growth", "H4 event seed");
             seedIfMissing(EVENT_PREFIX + id + ".reward", event.get("reward").toString(), "STRING", "growth", "H4 event seed");
@@ -1781,6 +1936,92 @@ public class OpsGrowthService {
     private void seedJsonIfMissing(String key, Object value, String group, String remark) {
         if (configFacade.activeValue(key).isEmpty()) {
             writeJsonConfig(key, value, remark, group);
+        }
+    }
+
+    private void backfillJsonRows(String key, List<Map<String, Object>> defaults, String remark) {
+        List<Map<String, Object>> rows = readJsonRows(key, defaults);
+        boolean changed = backfillJsonRowsByIdentity(key, rows, defaults);
+        if (changed) {
+            writeJsonConfig(key, rows, remark, "growth");
+        }
+    }
+
+    private boolean backfillJsonRowsByIdentity(String key, List<Map<String, Object>> rows, List<Map<String, Object>> defaults) {
+        String identityField = jsonRowIdentityField(key);
+        if (!StringUtils.hasText(identityField)) {
+            return backfillJsonRowsByPosition(rows, defaults);
+        }
+        Map<String, Map<String, Object>> existingById = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            Object id = row.get(identityField);
+            if (id != null) {
+                existingById.putIfAbsent(id.toString(), row);
+            }
+        }
+
+        boolean changed = false;
+        for (Map<String, Object> defaultRow : defaults) {
+            Object id = defaultRow.get(identityField);
+            if (id == null) {
+                continue;
+            }
+            Map<String, Object> row = existingById.get(id.toString());
+            if (row == null) {
+                Map<String, Object> copy = new LinkedHashMap<>(defaultRow);
+                rows.add(copy);
+                existingById.put(id.toString(), copy);
+                changed = true;
+                continue;
+            }
+            changed |= backfillJsonRow(row, defaultRow);
+        }
+        return changed;
+    }
+
+    private boolean backfillJsonRowsByPosition(List<Map<String, Object>> rows, List<Map<String, Object>> defaults) {
+        boolean changed = false;
+        for (int i = 0; i < defaults.size(); i++) {
+            if (i >= rows.size()) {
+                rows.add(new LinkedHashMap<>(defaults.get(i)));
+                changed = true;
+                continue;
+            }
+            changed |= backfillJsonRow(rows.get(i), defaults.get(i));
+        }
+        return changed;
+    }
+
+    private boolean backfillJsonRow(Map<String, Object> row, Map<String, Object> defaults) {
+        boolean changed = false;
+        for (Map.Entry<String, Object> entry : defaults.entrySet()) {
+            if (!row.containsKey(entry.getKey()) || row.get(entry.getKey()) == null) {
+                row.put(entry.getKey(), entry.getValue());
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    private String jsonRowIdentityField(String key) {
+        return switch (key) {
+            case QUEST_DAY_ONE_TASKS_KEY, QUEST_MONTHLY_ROWS_KEY -> "id";
+            case QUEST_TASK_CONTRACTS_KEY -> "taskId";
+            default -> "";
+        };
+    }
+
+    private void backfillJsonMap(String key, Map<String, Object> defaults, String remark) {
+        Map<String, Object> row = readJsonMap(key, defaults);
+        boolean changed = false;
+        for (Map.Entry<String, Object> entry : defaults.entrySet()) {
+            if (!row.containsKey(entry.getKey()) || row.get(entry.getKey()) == null) {
+                row.put(entry.getKey(), entry.getValue());
+                changed = true;
+            }
+        }
+        if (changed) {
+            writeJsonConfig(key, row, remark, "growth");
         }
     }
 
@@ -2108,6 +2349,20 @@ public class OpsGrowthService {
             return rows == null ? new ArrayList<>(fallback) : new ArrayList<>(rows);
         } catch (JsonProcessingException ex) {
             return new ArrayList<>(fallback);
+        }
+    }
+
+    private Map<String, Object> readJsonMap(String key, Map<String, Object> fallback) {
+        Optional<String> raw = configFacade.activeValue(key).filter(StringUtils::hasText);
+        if (raw.isEmpty()) {
+            return new LinkedHashMap<>(fallback);
+        }
+        try {
+            Map<String, Object> row = objectMapper.readValue(raw.get(), new TypeReference<Map<String, Object>>() {
+            });
+            return row == null ? new LinkedHashMap<>(fallback) : new LinkedHashMap<>(row);
+        } catch (JsonProcessingException ex) {
+            return new LinkedHashMap<>(fallback);
         }
     }
 
@@ -2497,33 +2752,33 @@ public class OpsGrowthService {
                 .replace("event.", "");
         if (key.matches("dayOne\\.tasks\\.\\d+\\.reward")) {
             int idx = Integer.parseInt(key.split("\\.")[2]);
-            if (idx < 0 || idx >= defaultDayOneTasks().size()) {
+            if (!dayOneTaskExists(idx)) {
                 throw new IllegalArgumentException("QUEST_DAY_ONE_TASK_INVALID");
             }
             return key;
         }
         if (key.matches("dayOne\\.\\d+\\.reward")) {
             int idx = Integer.parseInt(key.split("\\.")[1]);
-            if (idx < 0 || idx >= defaultDayOneTasks().size()) {
+            if (!dayOneTaskExists(idx)) {
                 throw new IllegalArgumentException("QUEST_DAY_ONE_TASK_INVALID");
             }
             return "dayOne.tasks." + idx + ".reward";
         }
         if (key.matches("weekly\\.t1\\.\\d+")) {
             int idx = Integer.parseInt(key.substring("weekly.t1.".length()));
-            return normalizeWeeklyRewardKey("weekly.tier1", idx, defaultWeeklyTier1().size());
+            return normalizeWeeklyRewardKey("weekly.tier1", idx, weeklyTier1Rows().size());
         }
         if (key.matches("weekly\\.tier1\\.\\d+\\.reward")) {
             int idx = Integer.parseInt(key.split("\\.")[2]);
-            return normalizeWeeklyRewardKey("weekly.tier1", idx, defaultWeeklyTier1().size());
+            return normalizeWeeklyRewardKey("weekly.tier1", idx, weeklyTier1Rows().size());
         }
         if (key.matches("weekly\\.t2\\.\\d+")) {
             int idx = Integer.parseInt(key.substring("weekly.t2.".length()));
-            return normalizeWeeklyRewardKey("weekly.tier2", idx, defaultWeeklyTier2().size());
+            return normalizeWeeklyRewardKey("weekly.tier2", idx, weeklyTier2Rows().size());
         }
         if (key.matches("weekly\\.tier2\\.\\d+\\.reward")) {
             int idx = Integer.parseInt(key.split("\\.")[2]);
-            return normalizeWeeklyRewardKey("weekly.tier2", idx, defaultWeeklyTier2().size());
+            return normalizeWeeklyRewardKey("weekly.tier2", idx, weeklyTier2Rows().size());
         }
         if (key.startsWith("weekly.mult.")) {
             String phase = key.substring("weekly.mult.".length()).replace(" 当前", "").trim();
@@ -2532,8 +2787,14 @@ public class OpsGrowthService {
             }
             return "weekly.mult." + phase;
         }
-        if (key.matches("monthly\\.mc[0-4]\\.reward")
-                || Set.of("dayOne.windowMs", "dayOne.triReward", "weekly.champBonus", "wheel.pool").contains(key)) {
+        if (key.matches("monthly\\.[A-Za-z0-9_-]+\\.reward")) {
+            String id = key.split("\\.")[1];
+            if (!monthlyMissionExists(id)) {
+                throw new IllegalArgumentException("QUEST_MONTHLY_MISSION_INVALID");
+            }
+            return key;
+        }
+        if (Set.of("dayOne.windowMs", "dayOne.triReward", "weekly.champBonus", "wheel.pool").contains(key)) {
             return key;
         }
         if (key.startsWith("wheel.guard.")) {
@@ -2546,6 +2807,13 @@ public class OpsGrowthService {
             }
             return key;
         }
+        if (key.startsWith("promoBanner.")) {
+            String field = key.substring("promoBanner.".length());
+            if (!Set.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDevice", "targetDaily", "status").contains(field)) {
+                throw new IllegalArgumentException("QUEST_PROMO_BANNER_FIELD_INVALID");
+            }
+            return key;
+        }
         throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
     }
 
@@ -2554,6 +2822,22 @@ public class OpsGrowthService {
             throw new IllegalArgumentException("QUEST_WEEKLY_REWARD_INVALID");
         }
         return prefix + "." + idx + ".reward";
+    }
+
+    private boolean dayOneTaskExists(int id) {
+        return dayOneTaskRows().stream()
+                .map(row -> row.get("id"))
+                .filter(value -> value != null)
+                .map(Object::toString)
+                .anyMatch(String.valueOf(id)::equals);
+    }
+
+    private boolean monthlyMissionExists(String id) {
+        return monthlyMissionRows().stream()
+                .map(row -> row.get("id"))
+                .filter(value -> value != null)
+                .map(Object::toString)
+                .anyMatch(id::equals);
     }
 
     private String normalizeQuestValue(String key, String raw) {
@@ -2615,6 +2899,9 @@ public class OpsGrowthService {
         if (key.startsWith("wheel.guards.")) {
             return WHEEL_PREFIX + "guard." + key.substring("wheel.guards.".length());
         }
+        if (key.startsWith("promoBanner.")) {
+            return QUEST_PREFIX + "promo_banner." + key.substring("promoBanner.".length());
+        }
         return switch (key) {
             case "dayOne.windowMs" -> QUEST_PREFIX + "day_one.window_ms";
             case "dayOne.triReward" -> QUEST_PREFIX + "day_one.tri_reward";
@@ -2626,16 +2913,16 @@ public class OpsGrowthService {
 
     private String defaultQuestConfigValue(String key) {
         if (key.startsWith("dayOne.tasks.")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return defaultDayOneTasks().get(idx).get("reward").toString();
+            String id = key.split("\\.")[2];
+            return rewardFromRowWithId(dayOneTaskRows(), id, "QUEST_DAY_ONE_TASK_INVALID");
         }
         if (key.startsWith("weekly.tier1.")) {
             int idx = Integer.parseInt(key.split("\\.")[2]);
-            return defaultWeeklyTier1().get(idx).get("reward").toString();
+            return rewardFromRowAt(weeklyTier1Rows(), idx, "QUEST_WEEKLY_REWARD_INVALID");
         }
         if (key.startsWith("weekly.tier2.")) {
             int idx = Integer.parseInt(key.split("\\.")[2]);
-            return defaultWeeklyTier2().get(idx).get("reward").toString();
+            return rewardFromRowAt(weeklyTier2Rows(), idx, "QUEST_WEEKLY_REWARD_INVALID");
         }
         if (key.startsWith("weekly.mult.")) {
             return switch (key.substring("weekly.mult.".length())) {
@@ -2649,11 +2936,7 @@ public class OpsGrowthService {
         }
         if (key.startsWith("monthly.")) {
             String id = key.split("\\.")[1];
-            return defaultMonthlyMissions().stream()
-                    .filter(row -> id.equals(row.get("id")))
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID"))
-                    .get("reward").toString();
+            return rewardFromRowWithId(monthlyMissionRows(), id, "QUEST_MONTHLY_MISSION_INVALID");
         }
         if (key.startsWith("wheel.guards.")) {
             return switch (key.substring("wheel.guards.".length())) {
@@ -2662,6 +2945,13 @@ public class OpsGrowthService {
                 case "kill" -> "开";
                 default -> throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
             };
+        }
+        if (key.startsWith("promoBanner.")) {
+            Object value = readJsonMap(QUEST_PROMO_BANNER_KEY, defaultPromoBanner()).get(key.substring("promoBanner.".length()));
+            if (value == null) {
+                throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
+            }
+            return value.toString();
         }
         return switch (key) {
             case "dayOne.windowMs" -> "24h 全额 / 72h 宽限";
@@ -2672,12 +2962,36 @@ public class OpsGrowthService {
         };
     }
 
+    private String rewardFromRowAt(List<Map<String, Object>> rows, int idx, String errorCode) {
+        if (idx < 0 || idx >= rows.size()) {
+            throw new IllegalArgumentException(errorCode);
+        }
+        Object reward = rows.get(idx).get("reward");
+        if (reward == null) {
+            throw new IllegalArgumentException(errorCode);
+        }
+        return reward.toString();
+    }
+
+    private String rewardFromRowWithId(List<Map<String, Object>> rows, String id, String errorCode) {
+        return rows.stream()
+                .filter(row -> id.equals(String.valueOf(row.get("id"))))
+                .findFirst()
+                .map(row -> row.get("reward"))
+                .filter(value -> value != null)
+                .map(Object::toString)
+                .orElseThrow(() -> new IllegalArgumentException(errorCode));
+    }
+
     private boolean amplifiesQuestValue(String key, String oldValue, String newValue) {
         if (key.startsWith("weekly.mult.")) {
             return numericToken(newValue).compareTo(numericToken(oldValue)) > 0;
         }
         if (key.equals("wheel.pool")) {
             return !oldValue.equals(newValue);
+        }
+        if (key.equals("promoBanner.baseReward") || key.equals("promoBanner.multiplier")) {
+            return numericToken(newValue).compareTo(numericToken(oldValue)) > 0;
         }
         if (key.contains("reward") || key.equals("dayOne.triReward") || key.equals("weekly.champBonus")) {
             return rewardFlow(newValue).compareTo(rewardFlow(oldValue)) > 0;
@@ -2691,6 +3005,9 @@ public class OpsGrowthService {
         }
         if (key.equals("wheel.pool")) {
             return "H4_WHEEL_POOL_CHANGED";
+        }
+        if (key.startsWith("promoBanner.")) {
+            return "H3_PROMO_BANNER_CHANGED";
         }
         return "H3_QUEST_CONFIG_CHANGED";
     }
@@ -2709,7 +3026,7 @@ public class OpsGrowthService {
 
     private String normalizeEventId(String raw) {
         String id = requireText(raw, "Event id is required");
-        boolean exists = defaultQuestEvents().stream().anyMatch(row -> id.equals(row.get("id")));
+        boolean exists = questEventRows().stream().anyMatch(row -> id.equals(row.get("id")));
         if (!exists) {
             throw new IllegalArgumentException("EVENT_NOT_FOUND");
         }
@@ -2717,31 +3034,29 @@ public class OpsGrowthService {
     }
 
     private String eventStatus(String eventId) {
-        Map<String, Object> row = defaultQuestEvents().stream()
-                .filter(event -> eventId.equals(event.get("id")))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("EVENT_NOT_FOUND"));
+        Map<String, Object> row = eventRow(eventId);
         return configFacade.activeValue(EVENT_PREFIX + eventId + ".status")
                 .orElse(row.get("state").toString());
     }
 
     private String eventReward(String eventId) {
-        Map<String, Object> row = defaultQuestEvents().stream()
-                .filter(event -> eventId.equals(event.get("id")))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("EVENT_NOT_FOUND"));
+        Map<String, Object> row = eventRow(eventId);
         return configFacade.activeValue(EVENT_PREFIX + eventId + ".reward")
                 .orElse(row.get("reward").toString());
     }
 
     private boolean eventFeatured(String eventId) {
-        Map<String, Object> row = defaultQuestEvents().stream()
-                .filter(event -> eventId.equals(event.get("id")))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("EVENT_NOT_FOUND"));
+        Map<String, Object> row = eventRow(eventId);
         return configFacade.activeValue(EVENT_PREFIX + eventId + ".featured")
                 .map(value -> Boolean.TRUE.equals(parseBooleanValue(value)))
                 .orElse(Boolean.TRUE.equals(row.get("featured")));
+    }
+
+    private Map<String, Object> eventRow(String eventId) {
+        return questEventRows().stream()
+                .filter(event -> eventId.equals(event.get("id")))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("EVENT_NOT_FOUND"));
     }
 
     private BigDecimal configDecimal(String key, BigDecimal fallback) {

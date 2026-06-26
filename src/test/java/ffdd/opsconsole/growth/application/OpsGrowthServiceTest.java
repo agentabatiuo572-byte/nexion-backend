@@ -181,10 +181,92 @@ class OpsGrowthServiceTest {
         assertThat(result.getData().get("weeklyTier1")).asList().hasSize(9);
         assertThat(result.getData().get("weeklyTier2")).asList().hasSize(8);
         assertThat(result.getData().get("monthlyMissions")).asList().hasSize(5);
+        assertThat(result.getData().get("taskContracts")).asList().hasSize(6);
         assertThat(result.getData().get("events")).asList().hasSize(7);
         assertThat(result.getData().get("wheelTiers")).asList().hasSize(8);
         assertThat(result.getData().get("trackables")).asList().hasSize(4);
-        assertThat(result.getData()).containsKeys("h3Stats", "h4Stats", "wheelEvUsd", "coverage", "sources");
+        assertThat(result.getData()).containsKeys("h3Stats", "h4Stats", "taskContracts", "promoBanner", "wheelEvUsd", "coverage", "sources");
+        assertThat(result.getData().get("dayOneTasks")).asList()
+                .first()
+                .extracting(row -> ((Map<?, ?>) row).get("completionType"))
+                .isEqualTo("event");
+        assertThat(result.getData().get("promoBanner"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("status", "active");
+    }
+
+    @Test
+    void questEventsReadsH3H4RowsFromConfigItems() {
+        configFacade.values.put("growth.quest.day_one.tasks",
+                "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\"}]");
+        configFacade.values.put("growth.quest.weekly.t1.rows",
+                "[{\"cond\":\"DB 一档\",\"reward\":\"22\"}]");
+        configFacade.values.put("growth.quest.weekly.t2.rows",
+                "[{\"cond\":\"DB 二档\",\"reward\":\"33\"}]");
+        configFacade.values.put("growth.quest.monthly.rows",
+                "[{\"id\":\"mcx\",\"theme\":\"DB 月度\",\"age\":\"1 月\",\"reward\":\"44\",\"goals\":\"DB 目标\"}]");
+        configFacade.values.put("growth.quest.task_monitor",
+                "[{\"label\":\"DB 监控\",\"note\":\"来自 nx_config_item\"}]");
+        configFacade.values.put("growth.quest.task_contracts",
+                "[{\"taskId\":0,\"taskKey\":\"db.task\",\"serverEvent\":\"db.server\",\"downstream\":\"db.downstream\",\"b3\":true,\"retentionOnly\":false,\"day7\":\"DB Day7\",\"bi\":\"db.bi\",\"sample24h\":1,\"anomalyPct\":\"0.1%\"}]");
+        configFacade.values.put("growth.quest.promo_banner",
+                "{\"baseReward\":\"900\",\"multiplier\":\"1.2\",\"countdownDays\":\"3\",\"countdownHours\":\"6\",\"targetDevice\":\"DB 设备\",\"targetDaily\":\"8.00\",\"status\":\"paused\"}");
+        configFacade.values.put("growth.event.rows",
+                "[{\"id\":\"db-event\",\"name\":\"DB 活动\",\"kind\":\"db\",\"state\":\"ongoing\",\"reward\":\"55\",\"featured\":true,\"trackable\":true,\"condition\":\"DB 条件\",\"geo\":\"全区\"}]");
+        configFacade.values.put("growth.wheel.tiers",
+                "[{\"tier\":\"DB 奖\",\"reward\":\"$10\",\"prob\":100,\"real\":true,\"kind\":\"真实流出\"}]");
+        configFacade.values.put("growth.event.trackables",
+                "[{\"id\":\"db-event\",\"name\":\"DB 活动\",\"cond\":\"DB 条件\",\"join\":\"1\",\"done\":\"1\",\"claim\":\"1\",\"geo\":\"全区\"}]");
+
+        ApiResult<Map<String, Object>> result = service.questEvents();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("dayOneTasks")).asList()
+                .hasSize(6)
+                .first()
+                .extracting(row -> ((Map<?, ?>) row).get("task"))
+                .isEqualTo("DB 首日任务");
+        assertThat(result.getData().get("dayOneTasks")).asList()
+                .first()
+                .extracting(row -> ((Map<?, ?>) row).get("completionType"))
+                .isEqualTo("event");
+        assertThat(result.getData().get("weeklyTier1")).asList()
+                .hasSize(9)
+                .first()
+                .extracting(row -> ((Map<?, ?>) row).get("cond"))
+                .isEqualTo("DB 一档");
+        assertThat(result.getData().get("weeklyTier2")).asList().hasSize(8);
+        assertThat(result.getData().get("monthlyMissions")).asList()
+                .hasSize(6)
+                .first()
+                .extracting(row -> ((Map<?, ?>) row).get("theme"))
+                .isEqualTo("DB 月度");
+        assertThat(result.getData().get("taskMonitor")).asList()
+                .singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("note"))
+                .isEqualTo("来自 nx_config_item");
+        assertThat(result.getData().get("taskContracts")).asList()
+                .hasSize(6)
+                .first()
+                .extracting(row -> ((Map<?, ?>) row).get("taskKey"))
+                .isEqualTo("db.task");
+        assertThat(result.getData().get("promoBanner"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("baseReward", "900")
+                .containsEntry("status", "paused");
+        assertThat(result.getData().get("events")).asList()
+                .singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("name"))
+                .isEqualTo("DB 活动");
+        assertThat(result.getData().get("wheelTiers")).asList()
+                .singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("tier"))
+                .isEqualTo("DB 奖");
+        assertThat(result.getData().get("trackables")).asList()
+                .singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("name"))
+                .isEqualTo("DB 活动");
+        assertThat(result.getData().get("wheelEvUsd").toString()).isEqualTo("10");
     }
 
     @Test
@@ -485,7 +567,15 @@ class OpsGrowthServiceTest {
                 .containsEntry("growth.trial.param.extensionDays", "3")
                 .containsEntry("growth.trial.param.offsetCap", "$50")
                 .containsEntry("growth.trial.session.usr_9921.state", "active")
+                .containsKey("growth.quest.day_one.tasks")
+                .containsKey("growth.quest.weekly.t1.rows")
+                .containsKey("growth.quest.weekly.t2.rows")
+                .containsKey("growth.quest.monthly.rows")
+                .containsKey("growth.quest.task_monitor")
                 .containsEntry("growth.quest.day_one.task.0.reward", "50 NEX")
+                .containsKey("growth.event.rows")
+                .containsKey("growth.event.trackables")
+                .containsKey("growth.wheel.tiers")
                 .containsEntry("growth.event.pro-7d.status", "ongoing")
                 .containsEntry("growth.checkin.reward_nex", "2")
                 .containsEntry("growth.earn_milestone.earn-500.reward_nex", "250");
