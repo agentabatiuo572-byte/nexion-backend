@@ -21,16 +21,26 @@ import ffdd.opsconsole.risk.domain.RiskScoreContributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreDimensionView;
 import ffdd.opsconsole.risk.domain.RiskScoreDistributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
+import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
 import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
+import ffdd.opsconsole.risk.dto.RiskArbitrageParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
+import ffdd.opsconsole.risk.dto.RiskClusterStatusRequest;
 import ffdd.opsconsole.risk.dto.RiskDecisionRequest;
+import ffdd.opsconsole.risk.dto.RiskKycManualReviewRequest;
+import ffdd.opsconsole.risk.dto.RiskKycReviewDecisionRequest;
+import ffdd.opsconsole.risk.dto.RiskKycReviewOverviewQueryRequest;
+import ffdd.opsconsole.risk.dto.RiskParamUpdateRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleCreateRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleOverviewQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskScoreOverrideRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleStatusRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringOverviewQueryRequest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -146,6 +156,46 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void conditionUpdateRejectsFreeTextWithdrawRuleCondition() {
+        ApiResult<RiskRuleView> result = service.updateWithdrawRuleCondition(
+                "WR-02",
+                "idem-k",
+                new RiskRuleConditionRequest("风险太高就延迟", "bad free text rule condition", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("RULE_CONDITION_INVALID");
+    }
+
+    @Test
+    void createWithdrawRuleAcceptsStructuredRuleCondition() {
+        ApiResult<RiskRuleView> result = service.createWithdrawRule(
+                "idem-k-create",
+                new RiskRuleCreateRequest("速度", "24h >= 4 笔 或 >= $8,000", "delay", "structured velocity rule", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().ruleId()).startsWith("WR-C");
+        assertThat(result.getData().conditionText()).isEqualTo("24h >= 4 笔 或 >= $8,000");
+    }
+
+    @Test
+    void withdrawRuleOverviewReturnsPagedRulesAndHits() {
+        ApiResult<Map<String, Object>> result = service.withdrawRuleOverview(
+                new RiskRuleOverviewQueryRequest(2, 2, 2, 1, "delay"));
+
+        assertThat(result.getCode()).isZero();
+        PageResult<?> rules = (PageResult<?>) result.getData().get("rules");
+        PageResult<?> hits = (PageResult<?>) result.getData().get("hits");
+        assertThat(rules.getTotal()).isEqualTo(5);
+        assertThat(rules.getPageNum()).isEqualTo(2);
+        assertThat(rules.getPageSize()).isEqualTo(2);
+        assertThat(rules.getRecords()).hasSize(2);
+        assertThat(hits.getTotal()).isEqualTo(2);
+        assertThat(hits.getPageNum()).isEqualTo(2);
+        assertThat(hits.getPageSize()).isEqualTo(1);
+        assertThat(hits.getRecords()).hasSize(1);
+    }
+
+    @Test
     void arbitrageActionUpdatesDispositionAndAudits() {
         ApiResult<RiskArbitrageRowView> result = service.executeArbitrageAction(
                 "T-318",
@@ -171,6 +221,28 @@ class OpsRiskServiceTest {
                 new RiskArbitrageActionRequest("repeat action", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void arbitrageParamAcceptsStructuredThresholdValue() {
+        ApiResult<RiskArbitrageParamView> result = service.updateArbitrageParam(
+                "welcomeGiftAnomalyThreshold",
+                "idem-k2-param",
+                new RiskArbitrageParamUpdateRequest(">= 2 笔 / 实体", "tighten welcome gift anomaly line", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().value()).isEqualTo(">= 2 笔 / 实体");
+        assertThat(riskRepository.arbitrageParam("welcomeGiftAnomalyThreshold")).isEqualTo(">= 2 笔 / 实体");
+    }
+
+    @Test
+    void arbitrageParamRejectsFreeTextThresholdValue() {
+        ApiResult<RiskArbitrageParamView> result = service.updateArbitrageParam(
+                "welcomeGiftAnomalyThreshold",
+                "idem-k2-param",
+                new RiskArbitrageParamUpdateRequest("同一人多领就拦", "bad free text threshold", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
     }
 
     @Test
@@ -211,6 +283,37 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void scoringOverviewReturnsPagedManualOverrides() {
+        riskRepository.addScoreOverride(new RiskScoreOverrideView("usr_a", 80, 35, "false positive", "risklead", "5/20", true));
+        riskRepository.addScoreOverride(new RiskScoreOverrideView("usr_b", 40, 75, "raise risk", "risklead", "5/21", true));
+        riskRepository.addScoreOverride(new RiskScoreOverrideView("usr_c", 55, 55, "closed", "risklead", "5/22", false));
+
+        ApiResult<Map<String, Object>> result = service.scoringOverview(new RiskScoringOverviewQueryRequest(2, 2));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("overrides")).isInstanceOf(PageResult.class);
+        PageResult<?> overrides = (PageResult<?>) result.getData().get("overrides");
+        assertThat(overrides.getTotal()).isEqualTo(3);
+        assertThat(overrides.getPageNum()).isEqualTo(2);
+        assertThat(overrides.getPageSize()).isEqualTo(2);
+        assertThat(overrides.getRecords()).hasSize(1);
+        assertThat(result.getData().get("overrideActive")).isEqualTo(2L);
+    }
+
+    @Test
+    void scoreUserSearchReturnsBackendOptionsForCombobox() {
+        ApiResult<List<RiskScoreUserSearchView>> result = service.searchScoreUsers("55", 8);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).hasSize(1);
+        RiskScoreUserSearchView option = result.getData().get(0);
+        assertThat(option.userNo()).isEqualTo("usr_55B1");
+        assertThat(option.label()).contains("usr_55B1");
+        assertThat(option.effectiveScore()).isEqualTo(91);
+        assertThat(option.bandLabel()).isEqualTo("高风险");
+    }
+
+    @Test
     void scoreOverrideUpdatesUserAndAudits() {
         ApiResult<RiskScoreUserView> result = service.overrideScore(
                 "usr_55B1",
@@ -225,15 +328,147 @@ class OpsRiskServiceTest {
         assertThat(captor.getValue().getAction()).isEqualTo("K4_SCORE_OVERRIDDEN");
     }
 
+    @Test
+    void multiAccountParamUpdatesBackendStateAndAudits() {
+        ApiResult<Map<String, Object>> result = service.updateMultiAccountParam(
+                "sameDeviceThreshold",
+                "idem-k1",
+                new RiskParamUpdateRequest("4 devices", "tighten multi account threshold", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.multiAccountParam("sameDeviceThreshold")).isEqualTo("4 devices");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("K1_MULTI_ACCOUNT_PARAM_CHANGED");
+    }
+
+    @Test
+    void multiAccountLinkWeightRequiresThreeWeightsSumToOne() {
+        ApiResult<Map<String, Object>> result = service.updateMultiAccountParam(
+                "linkWeight",
+                "idem-k1",
+                new RiskParamUpdateRequest("设备 0.50 · 支付 0.40 · IP 0.10", "rebalance link strength weights", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.multiAccountParam("linkWeight")).isEqualTo("设备 0.50 · 支付 0.40 · IP 0.10");
+    }
+
+    @Test
+    void multiAccountLinkWeightRejectsFreeText() {
+        ApiResult<Map<String, Object>> result = service.updateMultiAccountParam(
+                "linkWeight",
+                "idem-k1",
+                new RiskParamUpdateRequest("设备优先,其他看情况", "bad free text weight", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    void multiAccountOverviewReturnsPagedLists() {
+        ApiResult<Map<String, Object>> result = service.multiAccountOverview(2, 1, "ip", 2, 1);
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        PageResult<Map<String, String>> clusters = (PageResult<Map<String, String>>) result.getData().get("clusters");
+        @SuppressWarnings("unchecked")
+        PageResult<String> whitelist = (PageResult<String>) result.getData().get("whitelist");
+        assertThat(clusters.getPageNum()).isEqualTo(2);
+        assertThat(clusters.getPageSize()).isEqualTo(1);
+        assertThat(clusters.getTotal()).isEqualTo(2);
+        assertThat(clusters.getRecords()).hasSize(1);
+        assertThat(clusters.getRecords().get(0).get("layer")).isEqualTo("ip");
+        assertThat(whitelist.getPageNum()).isEqualTo(2);
+        assertThat(whitelist.getPageSize()).isEqualTo(1);
+        assertThat(whitelist.getTotal()).isEqualTo(2);
+        assertThat(whitelist.getRecords()).containsExactly("202.120.0.0/16");
+    }
+
+    @Test
+    void multiAccountClusterStatusRejectsUnknownCluster() {
+        ApiResult<Map<String, Object>> result = service.updateMultiAccountClusterStatus(
+                "CL-MISSING",
+                "idem-k1",
+                new RiskClusterStatusRequest("flagged", "ops review missing cluster", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+    }
+
+    @Test
+    void kycManualTicketCreatesBackendTicketAndAudits() {
+        ApiResult<Map<String, Object>> result = service.createManualKycReviewTicket(
+                "idem-k5",
+                new RiskKycManualReviewRequest("usr_55B1", "manual escalation from risk ops", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("K5_KYC_REVIEW_MANUAL_CREATED");
+    }
+
+    @Test
+    void kycReviewOverviewReturnsPagedTriggerQueue() {
+        riskRepository.createManualKycReviewTicket("KR-1", "usr_1", "seed review ticket", "system");
+        riskRepository.createManualKycReviewTicket("KR-2", "usr_2", "seed review ticket", "system");
+        riskRepository.createManualKycReviewTicket("KR-3", "usr_3", "seed review ticket", "system");
+
+        ApiResult<Map<String, Object>> result = service.kycReviewOverview(
+                new RiskKycReviewOverviewQueryRequest(2, 2, "all"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("tickets")).isInstanceOf(PageResult.class);
+        PageResult<?> tickets = (PageResult<?>) result.getData().get("tickets");
+        assertThat(tickets.getTotal()).isEqualTo(3);
+        assertThat(tickets.getPageNum()).isEqualTo(2);
+        assertThat(tickets.getPageSize()).isEqualTo(2);
+        assertThat(tickets.getRecords()).hasSize(1);
+    }
+
+    @Test
+    void kycReviewParamRejectsFreeTextTriggerLine() {
+        ApiResult<Map<String, Object>> result = service.updateKycReviewParam(
+                "reviewTriggerScore",
+                "idem-k5-param",
+                new RiskParamUpdateRequest("高风险就复审", "reject free text trigger line", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("K5_PARAM_VALUE_INVALID");
+    }
+
+    @Test
+    void kycReviewDecisionUpdatesBackendTicketAndAudits() {
+        riskRepository.createManualKycReviewTicket("KR-1", "usr_55B1", "seed review ticket", "system");
+
+        ApiResult<Map<String, Object>> result = service.decideKycReviewTicket(
+                "KR-1",
+                "idem-k5",
+                new RiskKycReviewDecisionRequest("rejected", "failed manual kyc review", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.kycTicketStatus("KR-1")).isEqualTo("rejected");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("K5_KYC_REVIEW_DECIDED");
+    }
+
     private static final class FakeRiskOpsRepository implements RiskOpsRepository {
         private RiskCaseView caseView = new RiskCaseView(
                 "RD-1", 1L, "WITHDRAWAL", "W-1", "US", "L1", "REVIEW", "manual review", 88, "K4", "REVIEWING", null,
                 null, LocalDateTime.now().minusHours(1));
         private final List<RiskRuleView> rules = new ArrayList<>(List.of(
                 new RiskRuleView("WR-01", "金额", "单笔 >= $1,000", "manual", "active", true, LocalDateTime.now().minusDays(7), LocalDateTime.now().minusDays(1)),
+                new RiskRuleView("WR-02", "速度", "24h > 3 笔 或 > $5,000", "delay", "active", true, LocalDateTime.now().minusDays(7), LocalDateTime.now().minusDays(1)),
+                new RiskRuleView("WR-03", "新账户", "注册 < 7 天", "delay", "active", true, LocalDateTime.now().minusDays(7), LocalDateTime.now().minusDays(1)),
+                new RiskRuleView("WR-04", "地址信誉", "黑名单 / 低信誉地址", "freeze", "active", true, LocalDateTime.now().minusDays(7), LocalDateTime.now().minusDays(1)),
                 new RiskRuleView("WR-06", "金额", "单笔 >= $500(P1 期旧线)", "manual", "archived", true, LocalDateTime.now().minusDays(30), LocalDateTime.now().minusDays(20))));
+        private final List<RiskRuleHitView> withdrawHits = new ArrayList<>(List.of(
+                new RiskRuleHitView("WD-1", "usr_1", "$1,200", "WR-01", "金额", "manual", "今天 10:00"),
+                new RiskRuleHitView("WD-2", "usr_2", "$400", "WR-02", "速度", "delay", "今天 10:05"),
+                new RiskRuleHitView("WD-3", "usr_3", "$500", "WR-02", "速度", "delay", "今天 10:10")));
         private final List<RiskArbitrageParamView> arbitrageParams = new ArrayList<>(List.of(
-                new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "sub", "note")));
+                new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "sub", "note"),
+                new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "sub", "note"),
+                new RiskArbitrageParamView("leaderboardVelocityMultiplier", "刷榜增速异常倍数", "> 5x 基线", "sub", "note")));
         private final List<RiskArbitrageRowView> arbitrageRows = new ArrayList<>(List.of(
                 new RiskArbitrageRowView("T-318", "trial", "CL-318", List.of("CL-318", "7 次"), 3, List.of("freeze", "flag"), null)));
         private final List<RiskScoreDimensionView> scoreDimensions = new ArrayList<>(List.of(
@@ -248,7 +483,25 @@ class OpsRiskServiceTest {
                 "usr_55B1", 91, 91, false, "高风险", "bad", "v7", "2 分钟前更新",
                 List.of(new RiskScoreContributionView("多账户命中", "是 · 簇 CL-318", 38)));
         private final List<RiskScoreOverrideView> scoreOverrides = new ArrayList<>();
+        private final Map<String, String> multiAccountParams = new LinkedHashMap<>(Map.of("sameDeviceThreshold", "3 devices"));
+        private final Map<String, String> multiAccountClusters = new LinkedHashMap<>(Map.of("CL-318", "watching"));
+        private final Map<String, String> multiAccountLayers = new LinkedHashMap<>(Map.of("CL-318", "device", "CL-309", "ip", "CL-296", "ip"));
+        private final List<String> ipWhitelistRows = new ArrayList<>(List.of("103.86.44.0/24", "202.120.0.0/16"));
+        private final Map<String, String> kycTickets = new LinkedHashMap<>();
+        private final Map<String, String> kycTicketTypes = new LinkedHashMap<>();
+        private final Map<String, String> kycReviewParams = new LinkedHashMap<>(Map.of(
+                "largeWithdrawReviewUsdt", ">= $1,000",
+                "cumulativeKycThresholdUsdt", "$100",
+                "reviewSlaDays", "7",
+                "reviewTriggerScore", ">= 85"));
         private RiskCaseQueryRequest lastPageRequest;
+
+        private static <T> PageResult<T> pageOf(List<T> rows, int pageNum, int pageSize) {
+            int start = Math.max(0, (pageNum - 1) * pageSize);
+            int end = Math.min(rows.size(), start + pageSize);
+            List<T> records = start >= rows.size() ? List.of() : rows.subList(start, end);
+            return new PageResult<>(rows.size(), pageNum, pageSize, records);
+        }
 
         @Override
         public Map<String, Object> overview() {
@@ -298,6 +551,11 @@ class OpsRiskServiceTest {
         }
 
         @Override
+        public PageResult<RiskRuleView> pageWithdrawRules(int pageNum, int pageSize) {
+            return pageOf(rules, pageNum, pageSize);
+        }
+
+        @Override
         public Optional<RiskRuleView> findWithdrawRule(String ruleId) {
             return rules.stream().filter(rule -> rule.ruleId().equals(ruleId)).findFirst();
         }
@@ -336,7 +594,18 @@ class OpsRiskServiceTest {
 
         @Override
         public List<RiskRuleHitView> withdrawRuleHits(String action, int limit) {
-            return List.of(new RiskRuleHitView("WD-1", "usr_1", "$1,200", "WR-01", "金额", "manual", "今天 10:00"));
+            return withdrawHits.stream()
+                    .filter(hit -> action == null || action.isBlank() || "all".equals(action) || hit.action().equals(action))
+                    .limit(limit)
+                    .toList();
+        }
+
+        @Override
+        public PageResult<RiskRuleHitView> pageWithdrawRuleHits(String action, int pageNum, int pageSize) {
+            List<RiskRuleHitView> filtered = withdrawHits.stream()
+                    .filter(hit -> action == null || action.isBlank() || "all".equals(action) || hit.action().equals(action))
+                    .toList();
+            return pageOf(filtered, pageNum, pageSize);
         }
 
         @Override
@@ -357,6 +626,14 @@ class OpsRiskServiceTest {
                 arbitrageParams.add(new RiskArbitrageParamView(param.key(), param.name(), value, param.sub(), param.note()));
             });
             return arbitrageParams.stream().filter(param -> param.key().equals(key)).findFirst();
+        }
+
+        String arbitrageParam(String key) {
+            return arbitrageParams.stream()
+                    .filter(param -> param.key().equals(key))
+                    .findFirst()
+                    .map(RiskArbitrageParamView::value)
+                    .orElse(null);
         }
 
         @Override
@@ -421,8 +698,38 @@ class OpsRiskServiceTest {
         }
 
         @Override
+        public PageResult<RiskScoreOverrideView> pageScoreOverrides(int pageNum, int pageSize) {
+            return pageOf(scoreOverrides, pageNum, pageSize);
+        }
+
+        @Override
+        public long countActiveScoreOverrides() {
+            return scoreOverrides.stream().filter(row -> Boolean.TRUE.equals(row.active())).count();
+        }
+
+        void addScoreOverride(RiskScoreOverrideView override) {
+            scoreOverrides.add(override);
+        }
+
+        @Override
         public Optional<RiskScoreUserView> findScoreUser(String userNo) {
             return scoreUser.userNo().equals(userNo) ? Optional.of(scoreUser) : Optional.empty();
+        }
+
+        @Override
+        public List<RiskScoreUserSearchView> searchScoreUsers(String keyword, int limit) {
+            if (keyword != null && !scoreUser.userNo().toLowerCase().contains(keyword.toLowerCase())) {
+                return List.of();
+            }
+            return List.of(new RiskScoreUserSearchView(
+                    scoreUser.userNo(),
+                    scoreUser.userNo() + " · 风险评分用户",
+                    scoreUser.bandLabel() + " · 模型 " + scoreUser.modelVersion(),
+                    scoreUser.modelScore(),
+                    scoreUser.effectiveScore(),
+                    scoreUser.bandLabel(),
+                    scoreUser.bandTone(),
+                    scoreUser.overridden()));
         }
 
         @Override
@@ -452,6 +759,114 @@ class OpsRiskServiceTest {
             user.ifPresent(v -> scoreUser = new RiskScoreUserView(
                     userNo, v.modelScore(), v.modelScore(), false, "高风险", "bad", v.modelVersion(), v.updatedText(), v.contributions()));
             return findScoreUser(userNo);
+        }
+
+        @Override
+        public Map<String, Object> multiAccountOverview(Integer clusterPageNum, Integer clusterPageSize, String clusterLayer,
+                                                        Integer whitelistPageNum, Integer whitelistPageSize) {
+            int clusterPage = pageNum(clusterPageNum);
+            int clusterSize = pageSize(clusterPageSize);
+            int whitelistPage = pageNum(whitelistPageNum);
+            int whitelistSize = pageSize(whitelistPageSize);
+            List<Map<String, String>> clusters = multiAccountLayers.entrySet().stream()
+                    .filter(entry -> clusterLayer == null || clusterLayer.equals(entry.getValue()))
+                    .map(entry -> Map.of(
+                            "id", entry.getKey(),
+                            "layer", entry.getValue(),
+                            "status", multiAccountClusters.getOrDefault(entry.getKey(), "detected")))
+                    .toList();
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("params", multiAccountParams);
+            response.put("clusters", new PageResult<>(clusters.size(), clusterPage, clusterSize, page(clusters, clusterPage, clusterSize)));
+            response.put("whitelist", new PageResult<>(ipWhitelistRows.size(), whitelistPage, whitelistSize, page(ipWhitelistRows, whitelistPage, whitelistSize)));
+            return response;
+        }
+
+        @Override
+        public Map<String, Object> updateMultiAccountParam(String key, String value) {
+            multiAccountParams.put(key, value);
+            return multiAccountOverview(1, 5, null, 1, 5);
+        }
+
+        @Override
+        public boolean updateMultiAccountClusterStatus(String clusterId, String status, String reason, String operator) {
+            if (!multiAccountLayers.containsKey(clusterId)) {
+                return false;
+            }
+            multiAccountClusters.put(clusterId, status);
+            return true;
+        }
+
+        String multiAccountParam(String key) {
+            return multiAccountParams.get(key);
+        }
+
+        @Override
+        public void upsertIpWhitelist(String cidr, String note, String operator, String expireText) {
+        }
+
+        @Override
+        public boolean disableIpWhitelist(String cidr, String operator) {
+            return true;
+        }
+
+        @Override
+        public Map<String, Object> kycReviewOverview(Integer ticketPageNum, Integer ticketPageSize, String ticketFilter) {
+            int pageNum = pageNum(ticketPageNum);
+            int pageSize = pageSize(ticketPageSize);
+            List<Map<String, String>> rows = kycTickets.entrySet().stream()
+                    .filter(entry -> ticketFilter == null
+                            || ("overdue".equals(ticketFilter) && "overdue".equals(entry.getValue()))
+                            || ticketFilter.equals(kycTicketTypes.get(entry.getKey())))
+                    .map(entry -> Map.of("id", entry.getKey(), "st", entry.getValue(), "type", kycTicketTypes.getOrDefault(entry.getKey(), "手动触发")))
+                    .toList();
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("params", kycReviewParams);
+            response.put("tickets", new PageResult<>(rows.size(), pageNum, pageSize, page(rows, pageNum, pageSize)));
+            return response;
+        }
+
+        @Override
+        public Map<String, Object> updateKycReviewParam(String key, String value) {
+            kycReviewParams.put(key, value);
+            return kycReviewOverview();
+        }
+
+        @Override
+        public boolean updateKycReviewTicketStatus(String ticketId, String status, String reason, String operator) {
+            if (!kycTickets.containsKey(ticketId)) {
+                return false;
+            }
+            kycTickets.put(ticketId, status);
+            return true;
+        }
+
+        @Override
+        public void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator) {
+            kycTickets.put(ticketId, "triggered");
+            kycTicketTypes.put(ticketId, "手动触发");
+        }
+
+        int kycTicketCount() {
+            return kycTickets.size();
+        }
+
+        String kycTicketStatus(String ticketId) {
+            return kycTickets.get(ticketId);
+        }
+
+        private int pageNum(Integer value) {
+            return value == null || value < 1 ? 1 : value;
+        }
+
+        private int pageSize(Integer value) {
+            return value == null || value < 1 ? 5 : value;
+        }
+
+        private <T> List<T> page(List<T> rows, int pageNum, int pageSize) {
+            int from = Math.min(rows.size(), (pageNum - 1) * pageSize);
+            int to = Math.min(rows.size(), from + pageSize);
+            return rows.subList(from, to);
         }
     }
 }

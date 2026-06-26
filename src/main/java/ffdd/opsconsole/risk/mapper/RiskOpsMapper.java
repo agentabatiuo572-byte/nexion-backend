@@ -18,6 +18,53 @@ import org.apache.ibatis.annotations.Update;
 
 public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
+            CREATE TABLE IF NOT EXISTS nx_risk_decision (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              decision_no VARCHAR(64) NOT NULL,
+              user_id BIGINT NOT NULL,
+              biz_type VARCHAR(64) NOT NULL,
+              biz_no VARCHAR(128) NOT NULL,
+              region VARCHAR(32) DEFAULT NULL,
+              user_level VARCHAR(32) DEFAULT NULL,
+              client_ip VARCHAR(64) DEFAULT NULL,
+              device_fingerprint VARCHAR(128) DEFAULT NULL,
+              decision VARCHAR(64) DEFAULT 'REVIEW',
+              reason VARCHAR(500) DEFAULT NULL,
+              risk_score INT DEFAULT 0,
+              rule_codes VARCHAR(512) DEFAULT NULL,
+              rule_snapshot TEXT DEFAULT NULL,
+              reviewed_by VARCHAR(64) DEFAULT NULL,
+              reviewed_at DATETIME DEFAULT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_risk_decision_no (decision_no),
+              KEY idx_risk_decision_user (user_id,is_deleted),
+              KEY idx_risk_decision_status (decision,reviewed_at,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createRiskDecisionTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_risk_signal (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              signal_no VARCHAR(64) NOT NULL,
+              user_id BIGINT NOT NULL,
+              signal_type VARCHAR(64) NOT NULL,
+              severity VARCHAR(32) NOT NULL,
+              evidence TEXT DEFAULT NULL,
+              created_by VARCHAR(64) DEFAULT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_risk_signal_no (signal_no),
+              KEY idx_risk_signal_user (user_id,is_deleted),
+              KEY idx_risk_signal_type (signal_type,severity,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createRiskSignalTable();
+
+    @Update("""
             CREATE TABLE IF NOT EXISTS nx_admin_risk_withdraw_rule (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
               rule_id VARCHAR(64) NOT NULL,
@@ -221,6 +268,110 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     void createScoreOverrideTable();
 
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_risk_param (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              section_key VARCHAR(32) NOT NULL,
+              param_key VARCHAR(64) NOT NULL,
+              name VARCHAR(128) NOT NULL,
+              value_text VARCHAR(128) NOT NULL,
+              unit_text VARCHAR(64) DEFAULT NULL,
+              sub_text VARCHAR(255) NOT NULL,
+              note_text VARCHAR(1000) NOT NULL,
+              sort_order INT NOT NULL DEFAULT 0,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_admin_risk_param (section_key,param_key),
+              KEY idx_admin_risk_param_section (section_key,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createRiskParamTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_risk_multi_account_cluster (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              cluster_id VARCHAR(64) NOT NULL,
+              dedupe_key VARCHAR(128) NOT NULL,
+              layer_key VARCHAR(32) NOT NULL,
+              layer_label VARCHAR(64) NOT NULL,
+              account_count INT NOT NULL,
+              strength DECIMAL(6,4) NOT NULL,
+              span_text VARCHAR(128) NOT NULL,
+              status VARCHAR(32) NOT NULL,
+              note_text VARCHAR(1000) NOT NULL,
+              gifts_json TEXT DEFAULT NULL,
+              nodes_json TEXT DEFAULT NULL,
+              review_note VARCHAR(1000) DEFAULT NULL,
+              updated_by VARCHAR(64) DEFAULT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_admin_risk_cluster (cluster_id),
+              KEY idx_admin_risk_cluster_status (status,is_deleted),
+              KEY idx_admin_risk_cluster_layer (layer_key,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createMultiAccountClusterTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_risk_ip_whitelist (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              cidr VARCHAR(64) NOT NULL,
+              note_text VARCHAR(255) NOT NULL,
+              operator VARCHAR(64) NOT NULL,
+              expire_text VARCHAR(64) NOT NULL,
+              active TINYINT NOT NULL DEFAULT 1,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_admin_risk_ip_whitelist (cidr),
+              KEY idx_admin_risk_ip_whitelist_active (active,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createIpWhitelistTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_review_ticket (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              ticket_id VARCHAR(64) NOT NULL,
+              ticket_type VARCHAR(64) NOT NULL,
+              user_no VARCHAR(64) NOT NULL,
+              amount_text VARCHAR(64) NOT NULL,
+              cumulative_text VARCHAR(64) NOT NULL,
+              kyc_text VARCHAR(128) NOT NULL,
+              status VARCHAR(32) NOT NULL,
+              sla_pct DECIMAL(6,4) NOT NULL DEFAULT 0,
+              sla_text VARCHAR(64) NOT NULL,
+              info_json TEXT DEFAULT NULL,
+              history_json TEXT DEFAULT NULL,
+              decision_reason VARCHAR(1000) DEFAULT NULL,
+              reviewed_by VARCHAR(64) DEFAULT NULL,
+              reviewed_at DATETIME DEFAULT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_admin_risk_kyc_ticket (ticket_id),
+              KEY idx_admin_risk_kyc_status (status,is_deleted),
+              KEY idx_admin_risk_kyc_user (user_no,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createKycReviewTicketTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_alert (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              tone VARCHAR(32) NOT NULL,
+              title VARCHAR(128) NOT NULL,
+              body VARCHAR(1000) NOT NULL,
+              time_text VARCHAR(64) NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              KEY idx_admin_risk_kyc_alert_tone (tone,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createKycAlertTable();
+
     @Select("SELECT COUNT(*) FROM nx_risk_decision WHERE is_deleted = 0")
     long countRiskCases();
 
@@ -374,6 +525,20 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                @Param("bizNo") String bizNo, @Param("reason") String reason, @Param("riskScore") int riskScore,
                                @Param("ruleCodes") String ruleCodes, @Param("ruleSnapshot") String ruleSnapshot, @Param("operator") String operator);
 
+    @Insert("""
+            INSERT INTO nx_risk_decision (
+                decision_no, user_id, biz_type, biz_no, region, user_level, decision, reason, risk_score, rule_codes, rule_snapshot,
+                created_at, updated_at, is_deleted
+            ) VALUES (
+                #{caseNo}, #{userId}, #{bizType}, #{bizNo}, #{region}, #{userLevel}, #{decision}, #{reason}, #{riskScore}, #{ruleCodes}, #{ruleSnapshot},
+                NOW(), NOW(), 0
+            )
+            """)
+    int insertSeedRiskDecision(@Param("caseNo") String caseNo, @Param("userId") long userId, @Param("bizType") String bizType,
+                               @Param("bizNo") String bizNo, @Param("region") String region, @Param("userLevel") String userLevel,
+                               @Param("decision") String decision, @Param("reason") String reason, @Param("riskScore") int riskScore,
+                               @Param("ruleCodes") String ruleCodes, @Param("ruleSnapshot") String ruleSnapshot);
+
     @Select("SELECT COUNT(*) FROM nx_admin_risk_withdraw_rule WHERE is_deleted = 0")
     long countWithdrawRules();
 
@@ -384,6 +549,15 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
              ORDER BY FIELD(state,'active','paused','draft','archived'), built_in DESC, id ASC
             """)
     List<RiskRuleView> withdrawRules();
+
+    @Select("""
+            SELECT rule_id AS ruleId,dimension,condition_text AS conditionText,action,state,built_in AS builtIn,created_at AS createdAt,updated_at AS updatedAt
+              FROM nx_admin_risk_withdraw_rule
+             WHERE is_deleted = 0
+             ORDER BY FIELD(state,'active','paused','draft','archived'), built_in DESC, id ASC
+             LIMIT #{limit} OFFSET #{offset}
+            """)
+    List<RiskRuleView> withdrawRulesPage(@Param("offset") int offset, @Param("limit") int limit);
 
     @Select("""
             SELECT rule_id AS ruleId,dimension,condition_text AS conditionText,action,state,built_in AS builtIn,created_at AS createdAt,updated_at AS updatedAt
@@ -435,6 +609,16 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     @Select("""
             <script>
+            SELECT COUNT(*)
+              FROM nx_admin_risk_withdraw_hit
+             WHERE is_deleted = 0
+             <if test='action != null and action != "" and action != "all"'>AND action = #{action}</if>
+            </script>
+            """)
+    long countWithdrawHitsByAction(@Param("action") String action);
+
+    @Select("""
+            <script>
             SELECT withdrawal_no AS withdrawalNo,user_no AS userNo,amount_text AS amountText,rule_id AS ruleId,dimension,action,time_text AS timeText
               FROM nx_admin_risk_withdraw_hit
              WHERE is_deleted = 0
@@ -443,6 +627,17 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             </script>
             """)
     List<RiskRuleHitView> withdrawHits(@Param("action") String action, @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT withdrawal_no AS withdrawalNo,user_no AS userNo,amount_text AS amountText,rule_id AS ruleId,dimension,action,time_text AS timeText
+              FROM nx_admin_risk_withdraw_hit
+             WHERE is_deleted = 0
+             <if test='action != null and action != "" and action != "all"'>AND action = #{action}</if>
+             ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<RiskRuleHitView> withdrawHitsPage(@Param("action") String action, @Param("offset") int offset, @Param("limit") int limit);
 
     @Insert("INSERT INTO nx_admin_risk_withdraw_hit (withdrawal_no,user_no,amount_text,rule_id,dimension,action,time_text,is_deleted) VALUES (#{withdrawalNo},#{userNo},#{amountText},#{ruleId},#{dimension},#{action},#{timeText},0)")
     int insertWithdrawHit(@Param("withdrawalNo") String withdrawalNo, @Param("userNo") String userNo,
@@ -598,6 +793,45 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     ScoreUserRecord findScoreUser(@Param("userNo") String userNo);
 
+    @Select("""
+            SELECT s.user_no AS userNo,
+                   s.model_score AS modelScore,
+                   s.model_version AS modelVersion,
+                   s.updated_text AS updatedText,
+                   u.nickname AS nickname,
+                   CASE
+                       WHEN u.phone IS NULL OR LENGTH(u.phone) < 7 THEN u.phone
+                       ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
+                   END AS phoneMasked,
+                   u.referral_code AS referralCode
+              FROM nx_admin_risk_score_user s
+              LEFT JOIN nx_user u
+                ON CONCAT('U', LPAD(u.id, 8, '0')) = s.user_no
+               AND u.is_deleted = 0
+             WHERE s.is_deleted = 0
+               AND (
+                    #{keyword} IS NULL
+                    OR #{keyword} = ''
+                    OR s.user_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.phone LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.referral_code LIKE CONCAT('%', #{keyword}, '%')
+               )
+             ORDER BY
+                   CASE
+                       WHEN s.user_no = #{keyword} THEN 0
+                       WHEN u.referral_code = #{keyword} THEN 1
+                       WHEN s.user_no LIKE CONCAT(#{keyword}, '%') THEN 2
+                       WHEN u.referral_code LIKE CONCAT(#{keyword}, '%') THEN 3
+                       WHEN u.nickname LIKE CONCAT(#{keyword}, '%') THEN 4
+                       ELSE 5
+                   END,
+                   s.updated_at DESC,
+                   s.id DESC
+             LIMIT #{limit}
+            """)
+    List<ScoreUserSearchRecord> searchScoreUsers(@Param("keyword") String keyword, @Param("limit") int limit);
+
     @Insert("INSERT INTO nx_admin_risk_score_user (user_no,model_score,model_version,updated_text,is_deleted) VALUES (#{userNo},#{modelScore},#{modelVersion},#{updatedText},0)")
     int insertScoreUser(@Param("userNo") String userNo, @Param("modelScore") int modelScore,
                         @Param("modelVersion") String modelVersion, @Param("updatedText") String updatedText);
@@ -617,6 +851,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("SELECT COUNT(*) FROM nx_admin_risk_score_override WHERE is_deleted = 0")
     long countScoreOverrides();
 
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_score_override WHERE is_deleted = 0 AND active = 1")
+    long countActiveScoreOverrides();
+
     @Select("""
             SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
               FROM nx_admin_risk_score_override
@@ -625,6 +862,15 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
              LIMIT 20
             """)
     List<RiskScoreOverrideView> scoreOverrides();
+
+    @Select("""
+            SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
+              FROM nx_admin_risk_score_override
+             WHERE is_deleted = 0
+             ORDER BY active DESC, created_at DESC, id DESC
+             LIMIT #{limit} OFFSET #{offset}
+            """)
+    List<RiskScoreOverrideView> scoreOverridesPage(@Param("offset") int offset, @Param("limit") int limit);
 
     @Select("""
             SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
@@ -651,6 +897,216 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                             @Param("operator") String operator, @Param("timeText") String timeText,
                             @Param("active") boolean active);
 
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_param WHERE is_deleted = 0 AND section_key = #{section}")
+    long countRiskParams(@Param("section") String section);
+
+    @Select("""
+            SELECT param_key AS `key`,name,value_text AS value,unit_text AS unit,sub_text AS sub,note_text AS note
+              FROM nx_admin_risk_param
+             WHERE section_key = #{section} AND is_deleted = 0
+             ORDER BY sort_order ASC, id ASC
+            """)
+    List<RiskParamRecord> riskParams(@Param("section") String section);
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_param (section_key,param_key,name,value_text,unit_text,sub_text,note_text,sort_order,is_deleted)
+            VALUES (#{section},#{key},#{name},#{value},#{unit},#{sub},#{note},#{sortOrder},0)
+            """)
+    int insertRiskParam(@Param("section") String section, @Param("key") String key, @Param("name") String name,
+                        @Param("value") String value, @Param("unit") String unit, @Param("sub") String sub,
+                        @Param("note") String note, @Param("sortOrder") int sortOrder);
+
+    @Update("""
+            UPDATE nx_admin_risk_param
+               SET value_text = #{value}, updated_at = NOW()
+             WHERE section_key = #{section} AND param_key = #{key} AND is_deleted = 0
+            """)
+    int updateRiskParam(@Param("section") String section, @Param("key") String key, @Param("value") String value);
+
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_multi_account_cluster WHERE is_deleted = 0")
+    long countMultiAccountClusters();
+
+    @Select("""
+            <script>
+            SELECT COUNT(*)
+              FROM nx_admin_risk_multi_account_cluster
+             WHERE is_deleted = 0
+             <if test="layer != null and layer != ''">
+               AND layer_key = #{layer}
+             </if>
+            </script>
+            """)
+    long countMultiAccountClustersByLayer(@Param("layer") String layer);
+
+    @Select("""
+            SELECT cluster_id AS id,dedupe_key AS `key`,layer_key AS layer,layer_label AS layerLabel,
+                   account_count AS n,strength,span_text AS span,status,note_text AS note,
+                   gifts_json AS giftsJson,nodes_json AS nodesJson,review_note AS reviewNote
+              FROM nx_admin_risk_multi_account_cluster
+             WHERE is_deleted = 0
+             ORDER BY strength DESC, id ASC
+            """)
+    List<MultiAccountClusterRecord> multiAccountClusters();
+
+    @Select("""
+            <script>
+            SELECT cluster_id AS id,dedupe_key AS `key`,layer_key AS layer,layer_label AS layerLabel,
+                   account_count AS n,strength,span_text AS span,status,note_text AS note,
+                   gifts_json AS giftsJson,nodes_json AS nodesJson,review_note AS reviewNote
+              FROM nx_admin_risk_multi_account_cluster
+             WHERE is_deleted = 0
+             <if test="layer != null and layer != ''">
+               AND layer_key = #{layer}
+             </if>
+             ORDER BY strength DESC, id ASC
+             LIMIT #{offset}, #{pageSize}
+            </script>
+            """)
+    List<MultiAccountClusterRecord> pageMultiAccountClusters(@Param("layer") String layer,
+                                                             @Param("offset") int offset,
+                                                             @Param("pageSize") int pageSize);
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_multi_account_cluster (
+                cluster_id,dedupe_key,layer_key,layer_label,account_count,strength,span_text,status,note_text,gifts_json,nodes_json,is_deleted
+            ) VALUES (
+                #{id},#{key},#{layer},#{layerLabel},#{n},#{strength},#{span},#{status},#{note},#{giftsJson},#{nodesJson},0
+            )
+            """)
+    int insertMultiAccountCluster(@Param("id") String id, @Param("key") String key, @Param("layer") String layer,
+                                  @Param("layerLabel") String layerLabel, @Param("n") int n, @Param("strength") double strength,
+                                  @Param("span") String span, @Param("status") String status, @Param("note") String note,
+                                  @Param("giftsJson") String giftsJson, @Param("nodesJson") String nodesJson);
+
+    @Update("""
+            UPDATE nx_admin_risk_multi_account_cluster
+               SET status = #{status}, review_note = #{reason}, updated_by = #{operator}, updated_at = NOW()
+             WHERE cluster_id = #{clusterId} AND is_deleted = 0
+            """)
+    int updateMultiAccountClusterStatus(@Param("clusterId") String clusterId, @Param("status") String status,
+                                        @Param("reason") String reason, @Param("operator") String operator);
+
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_ip_whitelist WHERE is_deleted = 0")
+    long countIpWhitelist();
+
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_ip_whitelist WHERE is_deleted = 0 AND active = 1")
+    long countActiveIpWhitelist();
+
+    @Select("""
+            SELECT cidr,note_text AS note,operator,expire_text AS expireText,active
+              FROM nx_admin_risk_ip_whitelist
+             WHERE is_deleted = 0 AND active = 1
+             ORDER BY id ASC
+            """)
+    List<IpWhitelistRecord> ipWhitelist();
+
+    @Select("""
+            SELECT cidr,note_text AS note,operator,expire_text AS expireText,active
+              FROM nx_admin_risk_ip_whitelist
+             WHERE is_deleted = 0 AND active = 1
+             ORDER BY id ASC
+             LIMIT #{offset}, #{pageSize}
+            """)
+    List<IpWhitelistRecord> pageIpWhitelist(@Param("offset") int offset, @Param("pageSize") int pageSize);
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_ip_whitelist (cidr,note_text,operator,expire_text,active,is_deleted)
+            VALUES (#{cidr},#{note},#{operator},#{expireText},1,0)
+            ON DUPLICATE KEY UPDATE note_text = VALUES(note_text), operator = VALUES(operator), expire_text = VALUES(expire_text), active = 1, updated_at = NOW(), is_deleted = 0
+            """)
+    int upsertIpWhitelist(@Param("cidr") String cidr, @Param("note") String note, @Param("operator") String operator,
+                          @Param("expireText") String expireText);
+
+    @Update("""
+            UPDATE nx_admin_risk_ip_whitelist
+               SET active = 0, operator = #{operator}, updated_at = NOW()
+             WHERE cidr = #{cidr} AND is_deleted = 0
+            """)
+    int disableIpWhitelist(@Param("cidr") String cidr, @Param("operator") String operator);
+
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_kyc_review_ticket WHERE is_deleted = 0")
+    long countKycTickets();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_risk_kyc_review_ticket
+             WHERE is_deleted = 0
+               AND status NOT IN ('passed','rejected')
+            """)
+    long countKycOpenTickets();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_risk_kyc_review_ticket
+             WHERE is_deleted = 0
+               AND status = #{status}
+            """)
+    long countKycTicketsByStatus(@Param("status") String status);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*)
+              FROM nx_admin_risk_kyc_review_ticket
+             WHERE is_deleted = 0
+             <if test='filter != null and filter != ""'>
+               <choose>
+                 <when test='filter == "overdue"'>AND status = 'overdue'</when>
+                 <otherwise>AND ticket_type = #{filter}</otherwise>
+               </choose>
+             </if>
+            </script>
+            """)
+    long countKycTicketsByFilter(@Param("filter") String filter);
+
+    @Select("""
+            <script>
+            SELECT ticket_id AS id,ticket_type AS type,user_no AS user,amount_text AS amt,cumulative_text AS cum,
+                   kyc_text AS kyc,status AS st,sla_pct AS slaPct,sla_text AS slaTxt,info_json AS infoJson,history_json AS histJson
+              FROM nx_admin_risk_kyc_review_ticket
+             WHERE is_deleted = 0
+             <if test='filter != null and filter != ""'>
+               <choose>
+                 <when test='filter == "overdue"'>AND status = 'overdue'</when>
+                 <otherwise>AND ticket_type = #{filter}</otherwise>
+               </choose>
+             </if>
+             ORDER BY FIELD(status,'overdue','in-review','triggered','passed','rejected'), id ASC
+             LIMIT #{offset}, #{pageSize}
+            </script>
+            """)
+    List<KycReviewTicketRecord> pageKycReviewTickets(@Param("filter") String filter, @Param("offset") int offset,
+                                                     @Param("pageSize") int pageSize);
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_kyc_review_ticket (
+                ticket_id,ticket_type,user_no,amount_text,cumulative_text,kyc_text,status,sla_pct,sla_text,info_json,history_json,is_deleted
+            ) VALUES (
+                #{id},#{type},#{user},#{amt},#{cum},#{kyc},#{st},#{slaPct},#{slaTxt},#{infoJson},#{histJson},0
+            )
+            """)
+    int insertKycReviewTicket(@Param("id") String id, @Param("type") String type, @Param("user") String user,
+                              @Param("amt") String amt, @Param("cum") String cum, @Param("kyc") String kyc,
+                              @Param("st") String st, @Param("slaPct") double slaPct, @Param("slaTxt") String slaTxt,
+                              @Param("infoJson") String infoJson, @Param("histJson") String histJson);
+
+    @Update("""
+            UPDATE nx_admin_risk_kyc_review_ticket
+               SET status = #{status}, decision_reason = #{reason}, reviewed_by = #{operator}, reviewed_at = NOW(), updated_at = NOW()
+             WHERE ticket_id = #{ticketId} AND is_deleted = 0
+            """)
+    int updateKycReviewTicketStatus(@Param("ticketId") String ticketId, @Param("status") String status,
+                                    @Param("reason") String reason, @Param("operator") String operator);
+
+    @Select("SELECT COUNT(*) FROM nx_admin_risk_kyc_alert WHERE is_deleted = 0")
+    long countKycAlerts();
+
+    @Select("SELECT tone,title,body,time_text AS timeText FROM nx_admin_risk_kyc_alert WHERE is_deleted = 0 ORDER BY id ASC")
+    List<KycAlertRecord> kycAlerts();
+
+    @Insert("INSERT INTO nx_admin_risk_kyc_alert (tone,title,body,time_text,is_deleted) VALUES (#{tone},#{title},#{body},#{timeText},0)")
+    int insertKycAlert(@Param("tone") String tone, @Param("title") String title, @Param("body") String body,
+                       @Param("timeText") String timeText);
+
     record RiskArbitrageRowRecord(
             String rowId,
             String viewKey,
@@ -676,6 +1132,50 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     record ScoreUserRecord(String userNo, Integer modelScore, String modelVersion, String updatedText) {
     }
 
+    record ScoreUserSearchRecord(String userNo, Integer modelScore, String modelVersion, String updatedText,
+                                 String nickname, String phoneMasked, String referralCode) {
+    }
+
     record ScoreContributionRecord(String name, String evidence, Integer points) {
+    }
+
+    record RiskParamRecord(String key, String name, String value, String unit, String sub, String note) {
+    }
+
+    record MultiAccountClusterRecord(
+            String id,
+            String key,
+            String layer,
+            String layerLabel,
+            Integer n,
+            Double strength,
+            String span,
+            String status,
+            String note,
+            String giftsJson,
+            String nodesJson,
+            String reviewNote
+    ) {
+    }
+
+    record IpWhitelistRecord(String cidr, String note, String operator, String expireText, Boolean active) {
+    }
+
+    record KycReviewTicketRecord(
+            String id,
+            String type,
+            String user,
+            String amt,
+            String cum,
+            String kyc,
+            String st,
+            Double slaPct,
+            String slaTxt,
+            String infoJson,
+            String histJson
+    ) {
+    }
+
+    record KycAlertRecord(String tone, String title, String body, String timeText) {
     }
 }

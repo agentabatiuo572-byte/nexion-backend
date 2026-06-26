@@ -23,6 +23,8 @@ public interface RiskOpsRepository {
 
     List<RiskRuleView> withdrawRules();
 
+    PageResult<RiskRuleView> pageWithdrawRules(int pageNum, int pageSize);
+
     Optional<RiskRuleView> findWithdrawRule(String ruleId);
 
     RiskRuleView createWithdrawRule(String ruleId, String dimension, String conditionText, String action, String state, String operator);
@@ -34,6 +36,8 @@ public interface RiskOpsRepository {
     List<RiskRouteCountView> withdrawRouteCounts();
 
     List<RiskRuleHitView> withdrawRuleHits(String action, int limit);
+
+    PageResult<RiskRuleHitView> pageWithdrawRuleHits(String action, int pageNum, int pageSize);
 
     List<RiskArbitrageStatView> arbitrageStats();
 
@@ -59,9 +63,38 @@ public interface RiskOpsRepository {
 
     List<RiskScoreOverrideView> scoreOverrides();
 
+    PageResult<RiskScoreOverrideView> pageScoreOverrides(int pageNum, int pageSize);
+
+    long countActiveScoreOverrides();
+
     Optional<RiskScoreUserView> findScoreUser(String userNo);
+
+    List<RiskScoreUserSearchView> searchScoreUsers(String keyword, int limit);
 
     Optional<RiskScoreOverrideView> overrideScore(String userNo, int score, String reason, String operator);
 
     Optional<RiskScoreUserView> recomputeScore(String userNo);
+
+    Map<String, Object> multiAccountOverview(Integer clusterPageNum, Integer clusterPageSize, String clusterLayer,
+                                             Integer whitelistPageNum, Integer whitelistPageSize);
+
+    Map<String, Object> updateMultiAccountParam(String key, String value);
+
+    boolean updateMultiAccountClusterStatus(String clusterId, String status, String reason, String operator);
+
+    void upsertIpWhitelist(String cidr, String note, String operator, String expireText);
+
+    boolean disableIpWhitelist(String cidr, String operator);
+
+    default Map<String, Object> kycReviewOverview() {
+        return kycReviewOverview(1, 5, null);
+    }
+
+    Map<String, Object> kycReviewOverview(Integer ticketPageNum, Integer ticketPageSize, String ticketFilter);
+
+    Map<String, Object> updateKycReviewParam(String key, String value);
+
+    boolean updateKycReviewTicketStatus(String ticketId, String status, String reason, String operator);
+
+    void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator);
 }
