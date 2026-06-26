@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -57,7 +58,7 @@ class OpsGrowthServiceTest {
                 .containsEntry("domain", "H2")
                 .containsEntry("autoPushKilled", false);
         assertThat(result.getData().toString()).doesNotContain("4.1");
-        assertThat(result.getData().get("params")).asList().hasSize(10);
+        assertThat(result.getData().get("params")).asList().hasSize(12);
         assertThat(result.getData().get("sessions")).asList().hasSize(4);
         assertThat(result.getData().get("serverOnlyFields")).asList().contains("failRate");
 
@@ -68,6 +69,10 @@ class OpsGrowthServiceTest {
                 .singleElement()
                 .extracting(param -> param.get("cur"))
                 .isEqualTo("•••(server only)");
+        assertThat(params)
+                .extracting(param -> param.get("key"))
+                .contains("trialDays", "graceDays", "extensionDays")
+                .doesNotContain("days");
     }
 
     @Test
@@ -85,6 +90,39 @@ class OpsGrowthServiceTest {
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_PARAM_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("serverOnly", true);
+    }
+
+    @Test
+    void updateTrialDayParamsWritesSeparateNumericConfigItems() {
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-trial-days",
+                "trialDays",
+                new GrowthConfigUpdateRequest("trialDays", "5", "extend trial window", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("growth.trial.param.trialDays", "5")
+                .doesNotContainKey("growth.trial.param.days");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> params = (List<Map<String, Object>>) result.getData().get("params");
+        assertThat(params)
+                .filteredOn(param -> "trialDays".equals(param.get("key")))
+                .singleElement()
+                .extracting(param -> param.get("cur"))
+                .isEqualTo("5");
+    }
+
+    @Test
+    void splitTrialDaySeedCanMigrateLegacyCombinedDaysValue() {
+        configFacade.values.put("growth.trial.param.days", "4 / 8 / 2 天");
+
+        service.trials();
+
+        assertThat(configFacade.values)
+                .containsEntry("growth.trial.param.trialDays", "4")
+                .containsEntry("growth.trial.param.graceDays", "8")
+                .containsEntry("growth.trial.param.extensionDays", "2");
     }
 
     @Test
@@ -366,6 +404,10 @@ class OpsGrowthServiceTest {
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+        assertThat(configFacade.values)
+                .containsKey("platform.phase.config")
+                .containsEntry("growth.phase.month.7.withdrawNexMinBalance", "100")
+                .containsEntry("growth.withdraw_nex_gate.min_balance_nex", "100");
     }
 
     @Test
@@ -429,6 +471,73 @@ class OpsGrowthServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H1_PHASE_OVERRIDE_CHANGED");
+    }
+
+    @Test
+    void h2ToH6ReadModelsSeedConfigItemsBeforeReturningData() {
+        service.trials();
+        service.questEvents();
+        service.checkIn();
+
+        assertThat(configFacade.values)
+                .containsEntry("growth.trial.param.trialDays", "3")
+                .containsEntry("growth.trial.param.graceDays", "7")
+                .containsEntry("growth.trial.param.extensionDays", "3")
+                .containsEntry("growth.trial.param.offsetCap", "$50")
+                .containsEntry("growth.trial.session.usr_9921.state", "active")
+                .containsEntry("growth.quest.day_one.task.0.reward", "50 NEX")
+                .containsEntry("growth.event.pro-7d.status", "ongoing")
+                .containsEntry("growth.checkin.reward_nex", "2")
+                .containsEntry("growth.earn_milestone.earn-500.reward_nex", "250");
+    }
+
+    @Test
+    void vouchersSeedRowsAndPersistCrudToConfigItem() {
+        ApiResult<Map<String, Object>> initial = service.vouchers();
+
+        assertThat(initial.getCode()).isZero();
+        assertThat(initial.getData().get("vouchers")).asList().hasSize(2);
+        assertThat(configFacade.values)
+                .containsKey("growth.voucher.rows")
+                .containsKey("growth.voucher.sku_options");
+
+        GrowthVoucherRequest request = new GrowthVoucherRequest(
+                "vc-test-25",
+                "Test Voucher",
+                "fixed",
+                new BigDecimal("25"),
+                null,
+                new BigDecimal("200"),
+                BigDecimal.ZERO,
+                List.of("stellarbox-s1"),
+                "all",
+                0L,
+                0L,
+                List.of("home", "store"),
+                true,
+                false,
+                false,
+                false,
+                "active",
+                "create voucher",
+                "superadmin");
+        ApiResult<Map<String, Object>> created = service.createVoucher("idem-h7-create", request);
+        assertThat(created.getCode()).isZero();
+        assertThat(configFacade.values.get("growth.voucher.rows")).contains("vc-test-25");
+
+        ApiResult<Map<String, Object>> paused = service.updateVoucherStatus(
+                "idem-h7-status",
+                "vc-test-25",
+                new GrowthConfigUpdateRequest("status", "paused", "pause voucher", "superadmin"));
+        assertThat(paused.getCode()).isZero();
+        assertThat(configFacade.values.get("growth.voucher.rows")).contains("\"status\":\"paused\"");
+
+        ApiResult<Map<String, Object>> deleted = service.deleteVoucher(
+                "idem-h7-delete",
+                "vc-test-25",
+                new GrowthConfigUpdateRequest("delete", "delete", "delete voucher", "superadmin"));
+        assertThat(deleted.getCode()).isZero();
+        assertThat(configFacade.values.get("growth.voucher.rows")).doesNotContain("vc-test-25");
     }
 
     @SuppressWarnings("unchecked")

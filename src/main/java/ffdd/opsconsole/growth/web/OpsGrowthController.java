@@ -7,7 +7,9 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.util.Map;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -213,5 +215,41 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthConfigUpdateRequest request) {
         return growthService.updateWithdrawGate(idempotencyKey, request);
+    }
+
+    @GetMapping("/vouchers")
+    public ApiResult<Map<String, Object>> vouchers() {
+        return growthService.vouchers();
+    }
+
+    @PostMapping("/vouchers")
+    public ApiResult<Map<String, Object>> createVoucher(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthVoucherRequest request) {
+        return growthService.createVoucher(idempotencyKey, request);
+    }
+
+    @PatchMapping("/vouchers/{voucherId}")
+    public ApiResult<Map<String, Object>> updateVoucher(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String voucherId,
+            @RequestBody GrowthVoucherRequest request) {
+        return growthService.updateVoucher(idempotencyKey, voucherId, request);
+    }
+
+    @PatchMapping("/vouchers/{voucherId}/status")
+    public ApiResult<Map<String, Object>> updateVoucherStatus(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String voucherId,
+            @RequestBody GrowthConfigUpdateRequest request) {
+        return growthService.updateVoucherStatus(idempotencyKey, voucherId, request);
+    }
+
+    @DeleteMapping("/vouchers/{voucherId}")
+    public ApiResult<Map<String, Object>> deleteVoucher(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String voucherId,
+            @RequestBody GrowthConfigUpdateRequest request) {
+        return growthService.deleteVoucher(idempotencyKey, voucherId, request);
     }
 }

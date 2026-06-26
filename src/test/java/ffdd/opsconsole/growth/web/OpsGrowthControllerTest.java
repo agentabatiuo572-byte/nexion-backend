@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.math.BigDecimal;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -254,5 +255,54 @@ class OpsGrowthControllerTest {
         assertThat(controller.updatePhaseOverride("idem-override", "2026-W18", request).getCode()).isZero();
 
         verify(growthService).updatePhaseOverride("idem-override", "2026-W18", request);
+    }
+
+    @Test
+    void vouchersOverviewDelegatesToService() {
+        when(growthService.vouchers()).thenReturn(ApiResult.ok(Map.of("domain", "H7")));
+
+        assertThat(controller.vouchers().getData()).containsEntry("domain", "H7");
+
+        verify(growthService).vouchers();
+    }
+
+    @Test
+    void voucherCrudDelegatesWithIdempotencyHeader() {
+        GrowthVoucherRequest voucher = new GrowthVoucherRequest(
+                "vc-test",
+                "Test",
+                "fixed",
+                BigDecimal.TEN,
+                null,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                java.util.List.of(),
+                "all",
+                0L,
+                0L,
+                java.util.List.of("home"),
+                true,
+                false,
+                false,
+                false,
+                "active",
+                "create",
+                "superadmin");
+        GrowthConfigUpdateRequest status = new GrowthConfigUpdateRequest("status", "paused", "pause", "superadmin");
+        GrowthConfigUpdateRequest delete = new GrowthConfigUpdateRequest("delete", "delete", "delete", "superadmin");
+        when(growthService.createVoucher("idem-create", voucher)).thenReturn(ApiResult.ok(Map.of("ok", true)));
+        when(growthService.updateVoucher("idem-update", "vc-test", voucher)).thenReturn(ApiResult.ok(Map.of("ok", true)));
+        when(growthService.updateVoucherStatus("idem-status", "vc-test", status)).thenReturn(ApiResult.ok(Map.of("ok", true)));
+        when(growthService.deleteVoucher("idem-delete", "vc-test", delete)).thenReturn(ApiResult.ok(Map.of("ok", true)));
+
+        assertThat(controller.createVoucher("idem-create", voucher).getCode()).isZero();
+        assertThat(controller.updateVoucher("idem-update", "vc-test", voucher).getCode()).isZero();
+        assertThat(controller.updateVoucherStatus("idem-status", "vc-test", status).getCode()).isZero();
+        assertThat(controller.deleteVoucher("idem-delete", "vc-test", delete).getCode()).isZero();
+
+        verify(growthService).createVoucher("idem-create", voucher);
+        verify(growthService).updateVoucher("idem-update", "vc-test", voucher);
+        verify(growthService).updateVoucherStatus("idem-status", "vc-test", status);
+        verify(growthService).deleteVoucher("idem-delete", "vc-test", delete);
     }
 }

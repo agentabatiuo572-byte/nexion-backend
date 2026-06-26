@@ -12,6 +12,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -62,6 +63,8 @@ public class OpsGrowthService {
     private static final String QUEST_PREFIX = "growth.quest.";
     private static final String EVENT_PREFIX = "growth.event.";
     private static final String WHEEL_PREFIX = "growth.wheel.";
+    private static final String VOUCHER_ROWS_KEY = "growth.voucher.rows";
+    private static final String VOUCHER_SKUS_KEY = "growth.voucher.sku_options";
     private static final Set<String> RETIRED_KEYS = Set.of(
             "withdrawPointsRatio",
             "pointsExchangeRate",
@@ -82,7 +85,9 @@ public class OpsGrowthService {
     private static final List<Integer> RHYTHM_PHASE_WEIGHTS = List.of(2, 2, 3, 1, 2, 2);
     private static final Set<String> PHASE_CONTROL_KEYS = Set.of("schedule", "pin", "override");
     private static final List<String> TRIAL_PARAM_KEYS = List.of(
-            "days",
+            "trialDays",
+            "graceDays",
+            "extensionDays",
             "price",
             "shadow",
             "offsetCap",
@@ -102,7 +107,7 @@ public class OpsGrowthService {
     private final ObjectMapper objectMapper;
 
     public ApiResult<Map<String, Object>> phases() {
-        ensureRhythmSeedData();
+        ensurePhaseSeedData();
         int totalMonths = rhythmTotalMonths();
         int currentMonth = currentMonth();
         Map<String, Object> response = new LinkedHashMap<>();
@@ -126,7 +131,7 @@ public class OpsGrowthService {
     }
 
     public ApiResult<Map<String, Object>> phaseSandboxPreview() {
-        ensureRhythmSeedData();
+        ensurePhaseSeedData();
         int totalMonths = rhythmTotalMonths();
         int currentMonth = currentMonth();
         int nextMonth = Math.min(12, currentMonth + 1);
@@ -309,6 +314,7 @@ public class OpsGrowthService {
     }
 
     public ApiResult<Map<String, Object>> trials() {
+        ensureTrialSeedData();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H2");
         response.put("stats", trialStats());
@@ -344,7 +350,7 @@ public class OpsGrowthService {
         }
         String configKey = trialParamConfigKey(key);
         boolean serverOnly = "failRate".equals(key);
-        configFacade.upsertAdminValue(configKey, value, serverOnly ? "NUMBER" : "STRING", "growth", "H2 trial parameter");
+        configFacade.upsertAdminValue(configKey, value, trialParamValueType(key), "growth", "H2 trial parameter");
         audit("H2_TRIAL_PARAM_CHANGED", "TRIAL_PARAM", configKey, request.operator(), Map.of(
                 "key", key,
                 "newValue", serverOnly ? "MASKED_SERVER_ONLY" : value,
@@ -435,6 +441,7 @@ public class OpsGrowthService {
     }
 
     public ApiResult<Map<String, Object>> questEvents() {
+        ensureQuestEventSeedData();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H3_H4");
         response.put("rewardAsset", "NEX");
@@ -606,6 +613,7 @@ public class OpsGrowthService {
     }
 
     public ApiResult<Map<String, Object>> checkIn() {
+        ensureCheckInSeedData();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H5");
         response.put("rewardAsset", "NEX");
@@ -816,6 +824,7 @@ public class OpsGrowthService {
     }
 
     public ApiResult<Map<String, Object>> withdrawGate() {
+        ensureWithdrawGateSeedData();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "D5_H1");
         response.put("asset", "NEX");
@@ -826,6 +835,131 @@ public class OpsGrowthService {
         response.put("retiredReplacement", "withdrawPointsRatio -> withdrawNexGate");
         response.put("sources", List.of("nx_config_item:" + WITHDRAW_MIN_BALANCE_KEY, "nx_config_item:" + WITHDRAW_HOLD_DAYS_KEY));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> vouchers() {
+        ensureVoucherSeedData();
+        List<Map<String, Object>> rows = voucherRows();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("domain", "H7");
+        response.put("vouchers", rows);
+        response.put("skus", voucherSkuOptions());
+        response.put("stats", row(
+                "total", rows.size(),
+                "active", rows.stream().filter(voucher -> "active".equals(voucher.get("status"))).count(),
+                "paused", rows.stream().filter(voucher -> "paused".equals(voucher.get("status"))).count(),
+                "popup", rows.stream()
+                        .filter(voucher -> "active".equals(voucher.get("status")))
+                        .filter(voucher -> Boolean.TRUE.equals(voucher.get("popupEnabled")))
+                        .count()));
+        response.put("sources", List.of(
+                "nx_config_item:" + VOUCHER_ROWS_KEY,
+                "nx_config_item:" + VOUCHER_SKUS_KEY));
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> createVoucher(String idempotencyKey, GrowthVoucherRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        try {
+            ensureVoucherSeedData();
+            List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
+            Map<String, Object> next = normalizeVoucher(request, null);
+            String id = next.get("id").toString();
+            if (rows.stream().anyMatch(row -> id.equals(row.get("id")))) {
+                return validation("VOUCHER_ID_ALREADY_EXISTS");
+            }
+            rows.add(0, next);
+            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            audit("H7_VOUCHER_CREATED", "VOUCHER", id, request.operator(), Map.of(
+                    "voucherId", id,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = vouchers().getData();
+            response.put("updated", Map.of("voucherId", id, "action", "created"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    public ApiResult<Map<String, Object>> updateVoucher(String idempotencyKey, String voucherId, GrowthVoucherRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        try {
+            ensureVoucherSeedData();
+            String id = normalizeVoucherId(voucherId);
+            List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
+            int index = voucherIndex(rows, id);
+            Map<String, Object> next = normalizeVoucher(request, id);
+            rows.set(index, next);
+            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            audit("H7_VOUCHER_UPDATED", "VOUCHER", id, request.operator(), Map.of(
+                    "voucherId", id,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = vouchers().getData();
+            response.put("updated", Map.of("voucherId", id, "action", "updated"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    public ApiResult<Map<String, Object>> updateVoucherStatus(String idempotencyKey, String voucherId, GrowthConfigUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        try {
+            ensureVoucherSeedData();
+            String id = normalizeVoucherId(voucherId);
+            String status = normalizeVoucherStatus(request.value());
+            List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
+            int index = voucherIndex(rows, id);
+            Map<String, Object> next = new LinkedHashMap<>(rows.get(index));
+            next.put("status", status);
+            rows.set(index, next);
+            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            audit("H7_VOUCHER_STATUS_CHANGED", "VOUCHER", id, request.operator(), Map.of(
+                    "voucherId", id,
+                    "status", status,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = vouchers().getData();
+            response.put("updated", Map.of("voucherId", id, "status", status));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    public ApiResult<Map<String, Object>> deleteVoucher(String idempotencyKey, String voucherId, GrowthConfigUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        try {
+            ensureVoucherSeedData();
+            String id = normalizeVoucherId(voucherId);
+            List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
+            int index = voucherIndex(rows, id);
+            rows.remove(index);
+            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            audit("H7_VOUCHER_DELETED", "VOUCHER", id, request.operator(), Map.of(
+                    "voucherId", id,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = vouchers().getData();
+            response.put("updated", Map.of("voucherId", id, "action", "deleted"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
     }
 
     public ApiResult<Map<String, Object>> updateWithdrawGate(String idempotencyKey, GrowthConfigUpdateRequest request) {
@@ -1103,7 +1237,9 @@ public class OpsGrowthService {
 
     private List<Map<String, Object>> defaultTrialParams() {
         return List.of(
-                trialParam("days", "试用天数 / 宽限期 / 延长天数", "", "3 / 7 / 3 天", false, "newonly", false),
+                trialParam("trialDays", "试用天数", "仅影响新开 trial", "3", false, "newonly", false),
+                trialParam("graceDays", "宽限期", "仅影响新开 trial", "7", false, "newonly", false),
+                trialParam("extensionDays", "延长天数", "仅影响新开 trial", "3", false, "newonly", false),
                 trialParam("price", "试用机价", "对应机型 stellarbox-s1(改机型走治理)", "$1,299", true, "newonly", false),
                 trialParam("shadow", "每日影子收益", "", "$38.52 + 65 NEX", false, "newonly", false),
                 trialParam("offsetCap", "收益抵扣购机款上限", "抵扣是折扣不是负债;超出部分购后才入余额", "$50", false, "live", false),
@@ -1234,10 +1370,26 @@ public class OpsGrowthService {
         if ("failRate".equals(key)) {
             return bounded(parseDecimal(value), BigDecimal.ZERO, new BigDecimal("100")).toPlainString();
         }
+        if (isTrialDayParam(key)) {
+            return normalizeTrialDayParam(key, value).toPlainString();
+        }
         if ("autoCharge".equals(key)) {
             return normalizeTrialAutoCharge(value);
         }
         return value;
+    }
+
+    private boolean isTrialDayParam(String key) {
+        return "trialDays".equals(key) || "graceDays".equals(key) || "extensionDays".equals(key);
+    }
+
+    private BigDecimal normalizeTrialDayParam(String key, String raw) {
+        BigDecimal value = parseDecimal(raw);
+        return switch (key) {
+            case "trialDays" -> wholeDays(value, 1, 90);
+            case "graceDays", "extensionDays" -> wholeDays(value, 0, 30);
+            default -> throw new IllegalArgumentException("Unsupported H2 trial day parameter");
+        };
     }
 
     private String normalizeTrialAutoCharge(String value) {
@@ -1451,11 +1603,7 @@ public class OpsGrowthService {
     private Map<String, Object> phaseConfig() {
         Optional<String> raw = configFacade.activeValue(PHASE_CONFIG_KEY).filter(StringUtils::hasText);
         if (raw.isEmpty()) {
-            Map<String, Object> defaults = new LinkedHashMap<>();
-            defaults.put("calendar", "12_MONTH");
-            defaults.put("activePhase", "P1");
-            defaults.put("activeDialCount", 8);
-            return defaults;
+            return defaultPhaseConfig();
         }
         try {
             return objectMapper.readValue(raw.get(), new TypeReference<Map<String, Object>>() {
@@ -1467,6 +1615,184 @@ public class OpsGrowthService {
             fallback.put("activeDialCount", 8);
             fallback.put("invalidSource", PHASE_CONFIG_KEY);
             return fallback;
+        }
+    }
+
+    private Map<String, Object> defaultPhaseConfig() {
+        Map<String, Object> defaults = new LinkedHashMap<>();
+        defaults.put("calendar", "12_MONTH");
+        defaults.put("activePhase", "P1");
+        defaults.put("activeDialCount", 8);
+        return defaults;
+    }
+
+    private void ensurePhaseSeedData() {
+        ensureRhythmSeedData();
+        seedJsonIfMissing(PHASE_CONFIG_KEY, defaultPhaseConfig(), "platform", "H1 phase config seed");
+        seedIfMissing(CURRENT_PHASE_KEY, phaseForRhythmMonth(rhythmCurrentMonth(rhythmTotalMonths()), rhythmTotalMonths()), "STRING", "growth", "H1 current phase seed");
+        for (String key : PHASE_DIAL_KEYS) {
+            seedIfMissing(phaseDialConfigKey(key), defaultPhaseDialValue(key).toPlainString(), "NUMBER", "growth", "H1 active phase dial seed");
+        }
+        for (int month = 1; month <= 12; month++) {
+            for (String key : PHASE_DIAL_KEYS) {
+                seedIfMissing(monthDialConfigKey(month, key), defaultPhaseMonthDialValue(month, key).toPlainString(), "NUMBER", "growth", "H1 monthly phase dial seed");
+            }
+        }
+        seedIfMissing(CONTROL_PREFIX + "schedule", "按 12 个月增长曲线自动推进", "STRING", "growth", "H1 phase control seed");
+        seedIfMissing(CONTROL_PREFIX + "pin", "P3", "STRING", "growth", "H1 phase control seed");
+        seedIfMissing(CONTROL_PREFIX + "override", "启用 cohort override", "STRING", "growth", "H1 phase control seed");
+        for (Map<String, Object> override : phaseOverrides()) {
+            seedIfMissing(OVERRIDE_PREFIX + override.get("id") + ".disabled", "false", "BOOLEAN", "growth", "H1 phase override seed");
+        }
+        ensureWithdrawGateSeedData();
+    }
+
+    private void ensureTrialSeedData() {
+        for (Map<String, Object> param : defaultTrialParams()) {
+            String key = param.get("key").toString();
+            String value = trialParamSeedValue(key, param.get("cur").toString());
+            seedIfMissing(trialParamConfigKey(key), value, trialParamValueType(key), "growth", "H2 trial parameter seed");
+        }
+        for (Map<String, Object> session : defaultTrialSessions()) {
+            String sid = session.get("sid").toString();
+            seedIfMissing(trialSessionConfigKey(sid, "state"), session.get("state").toString(), "STRING", "growth", "H2 trial session seed");
+        }
+        seedIfMissing(TRIAL_AUTO_PUSH_KILLED_KEY, "false", "BOOLEAN", "growth", "H2 auto-push seed");
+    }
+
+    private String trialParamSeedValue(String key, String fallback) {
+        if ("failRate".equals(key)) {
+            return "4.1";
+        }
+        if (isTrialDayParam(key)) {
+            return legacyTrialDaysValue(key).orElse(fallback);
+        }
+        return fallback;
+    }
+
+    private Optional<String> legacyTrialDaysValue(String key) {
+        Optional<String> legacy = configFacade.activeValue(TRIAL_PARAM_PREFIX + "days").filter(StringUtils::hasText);
+        if (legacy.isEmpty()) {
+            return Optional.empty();
+        }
+        List<String> numbers = new ArrayList<>();
+        Matcher matcher = Pattern.compile("\\d+").matcher(legacy.get());
+        while (matcher.find()) {
+            numbers.add(matcher.group());
+        }
+        int index = switch (key) {
+            case "trialDays" -> 0;
+            case "graceDays" -> 1;
+            case "extensionDays" -> 2;
+            default -> -1;
+        };
+        if (index < 0 || index >= numbers.size()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(normalizeTrialDayParam(key, numbers.get(index)).toPlainString());
+        } catch (IllegalArgumentException ex) {
+            return Optional.empty();
+        }
+    }
+
+    private String trialParamValueType(String key) {
+        return "failRate".equals(key) || isTrialDayParam(key) ? "NUMBER" : "STRING";
+    }
+
+    private void ensureQuestEventSeedData() {
+        seedIfMissing(questConfigStorageKey("dayOne.windowMs"), defaultQuestConfigValue("dayOne.windowMs"), "STRING", "growth", "H3 day-one seed");
+        seedIfMissing(questConfigStorageKey("dayOne.triReward"), defaultQuestConfigValue("dayOne.triReward"), "STRING", "growth", "H3 day-one seed");
+        for (int i = 0; i < defaultDayOneTasks().size(); i++) {
+            String key = "dayOne.tasks." + i + ".reward";
+            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 day-one task seed");
+        }
+        for (int i = 0; i < defaultWeeklyTier1().size(); i++) {
+            String key = "weekly.tier1." + i + ".reward";
+            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly tier1 seed");
+        }
+        for (int i = 0; i < defaultWeeklyTier2().size(); i++) {
+            String key = "weekly.tier2." + i + ".reward";
+            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly tier2 seed");
+        }
+        seedIfMissing(questConfigStorageKey("weekly.champBonus"), defaultQuestConfigValue("weekly.champBonus"), "STRING", "growth", "H3 weekly champion seed");
+        for (String phase : List.of("P1", "P2", "P3", "P4", "P5", "P6")) {
+            String key = "weekly.mult." + phase;
+            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly multiplier seed");
+        }
+        for (Map<String, Object> mission : defaultMonthlyMissions()) {
+            String key = "monthly." + mission.get("id") + ".reward";
+            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 monthly mission seed");
+        }
+        seedIfMissing(questConfigStorageKey("wheel.pool"), defaultQuestConfigValue("wheel.pool"), "STRING", "growth", "H4 wheel seed");
+        for (String guard : WHEEL_GUARD_KEYS) {
+            String key = "wheel.guards." + guard;
+            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H4 wheel guard seed");
+        }
+        for (Map<String, Object> event : defaultQuestEvents()) {
+            String id = event.get("id").toString();
+            seedIfMissing(EVENT_PREFIX + id + ".status", event.get("state").toString(), "STRING", "growth", "H4 event seed");
+            seedIfMissing(EVENT_PREFIX + id + ".reward", event.get("reward").toString(), "STRING", "growth", "H4 event seed");
+            seedIfMissing(EVENT_PREFIX + id + ".featured", event.get("featured").toString(), "BOOLEAN", "growth", "H4 event seed");
+        }
+    }
+
+    private void ensureCheckInSeedData() {
+        seedIfMissing(CHECKIN_REWARD_KEY, "2", "NUMBER", "growth", "H5 check-in seed");
+        seedIfMissing(CHECKIN_STREAK_BONUS_KEY, "5", "NUMBER", "growth", "H5 check-in seed");
+        seedIfMissing(CHECKIN_LUCKY_MULTIPLIER_KEY, "2", "NUMBER", "growth", "H5 check-in seed");
+        seedIfMissing(CHECKIN_LUCKY_15_PCT_KEY, "15", "NUMBER", "growth", "H5 check-in seed");
+        seedIfMissing(CHECKIN_LUCKY_2_PCT_KEY, "5", "NUMBER", "growth", "H5 check-in seed");
+        seedIfMissing(CHECKIN_BROKEN_HOURS_KEY, "48", "NUMBER", "growth", "H5 check-in seed");
+        seedIfMissing(CHECKIN_REVIVE_CARDS_KEY, "1 张 / 30 天", "STRING", "growth", "H5 check-in seed");
+        for (Map<String, Object> milestone : defaultStreakMilestones()) {
+            seedIfMissing(CHECKIN_STREAK_MS_PREFIX + milestone.get("id") + ".reward", milestone.get("reward").toString(), "STRING", "growth", "H5 streak milestone seed");
+        }
+        for (Map<String, Object> powerUp : defaultPowerUps()) {
+            seedIfMissing(CHECKIN_POWER_UP_PREFIX + powerUp.get("id") + ".day", powerUp.get("day").toString(), "NUMBER", "growth", "H5 power-up seed");
+            seedIfMissing(CHECKIN_POWER_UP_PREFIX + powerUp.get("id") + ".note", powerUp.get("sub").toString(), "STRING", "growth", "H5 power-up seed");
+        }
+        for (Map<String, Object> milestone : defaultEarnMilestones()) {
+            String key = milestone.get("key").toString();
+            seedIfMissing(earnThresholdConfigKey(key), milestone.get("threshold").toString(), "NUMBER", "growth", "H6 earn milestone seed");
+            seedIfMissing(earnRewardConfigKey(key), milestone.get("nex").toString(), "NUMBER", "growth", "H6 earn milestone seed");
+        }
+        seedIfMissing(EARN_TICK_INTERVAL_KEY, "4", "NUMBER", "growth", "H6 tick interval seed");
+    }
+
+    private void ensureWithdrawGateSeedData() {
+        seedIfMissing(WITHDRAW_MIN_BALANCE_KEY, "100", "NUMBER", "growth", "H1 withdraw NEX gate seed");
+        seedIfMissing(WITHDRAW_HOLD_DAYS_KEY, "7", "NUMBER", "growth", "H1 withdraw NEX gate seed");
+        seedIfMissing(WITHDRAW_MIN_BALANCE_MIRROR_KEY, "100", "NUMBER", "wallet", "D5 mirror of H1 withdraw NEX gate seed");
+        seedIfMissing(WITHDRAW_HOLD_DAYS_MIRROR_KEY, "7", "NUMBER", "wallet", "D5 mirror of H1 withdraw NEX gate seed");
+    }
+
+    private void ensureVoucherSeedData() {
+        seedJsonIfMissing(VOUCHER_ROWS_KEY, defaultVouchers(), "growth", "H7 voucher seed");
+        seedJsonIfMissing(VOUCHER_SKUS_KEY, defaultVoucherSkuOptions(), "growth", "H7 voucher SKU option seed");
+    }
+
+    private void seedIfMissing(String key, String value, String type, String group, String remark) {
+        if (configFacade.activeValue(key).isEmpty()) {
+            configFacade.upsertAdminValue(key, value, type, group, remark);
+        }
+    }
+
+    private void seedJsonIfMissing(String key, Object value, String group, String remark) {
+        if (configFacade.activeValue(key).isEmpty()) {
+            writeJsonConfig(key, value, remark, group);
+        }
+    }
+
+    private void writeJsonConfig(String key, Object value, String remark) {
+        writeJsonConfig(key, value, remark, "growth");
+    }
+
+    private void writeJsonConfig(String key, Object value, String remark, String group) {
+        try {
+            configFacade.upsertAdminValue(key, objectMapper.writeValueAsString(value), "JSON", group, remark);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("GROWTH_CONFIG_JSON_SERIALIZE_FAILED", ex);
         }
     }
 
@@ -1642,7 +1968,8 @@ public class OpsGrowthService {
 
     private List<Map<String, Object>> monthlyDials(int currentMonth) {
         java.util.ArrayList<Map<String, Object>> rows = new java.util.ArrayList<>();
-        for (int month = 1; month <= 12; month++) {
+        int totalMonths = rhythmTotalMonths();
+        for (int month = 1; month <= totalMonths; month++) {
             Map<String, Object> dials = new LinkedHashMap<>();
             for (String key : PHASE_DIAL_KEYS) {
                 BigDecimal value = configDecimal(monthDialConfigKey(month, key), defaultPhaseMonthDialValue(month, key));
@@ -1650,7 +1977,7 @@ public class OpsGrowthService {
             }
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("month", month);
-            row.put("phase", phaseForMonth(month));
+            row.put("phase", phaseForRhythmMonth(month, totalMonths));
             row.put("current", month == currentMonth);
             row.put("dials", dials);
             rows.add(row);
@@ -1760,6 +2087,222 @@ public class OpsGrowthService {
                     "wallet",
                     "D5 mirror of H1 withdraw NEX gate");
         }
+    }
+
+    private List<Map<String, Object>> voucherRows() {
+        return readJsonRows(VOUCHER_ROWS_KEY, defaultVouchers());
+    }
+
+    private List<Map<String, Object>> voucherSkuOptions() {
+        return readJsonRows(VOUCHER_SKUS_KEY, defaultVoucherSkuOptions());
+    }
+
+    private List<Map<String, Object>> readJsonRows(String key, List<Map<String, Object>> fallback) {
+        Optional<String> raw = configFacade.activeValue(key).filter(StringUtils::hasText);
+        if (raw.isEmpty()) {
+            return new ArrayList<>(fallback);
+        }
+        try {
+            List<Map<String, Object>> rows = objectMapper.readValue(raw.get(), new TypeReference<List<Map<String, Object>>>() {
+            });
+            return rows == null ? new ArrayList<>(fallback) : new ArrayList<>(rows);
+        } catch (JsonProcessingException ex) {
+            return new ArrayList<>(fallback);
+        }
+    }
+
+    private List<Map<String, Object>> defaultVouchers() {
+        return List.of(
+                row(
+                        "id", "vc-newuser-50",
+                        "name", "New User Gift",
+                        "type", "fixed",
+                        "amountUSD", 50,
+                        "minPurchaseUSD", 600,
+                        "maxDiscountUSD", 0,
+                        "applicableSkus", List.of("stellarbox-s1"),
+                        "audience", "new",
+                        "startAt", 0,
+                        "endAt", 0,
+                        "claimSurfaces", List.of("home", "store"),
+                        "popupEnabled", true,
+                        "stackWithTrial", false,
+                        "stackWithOthers", false,
+                        "splittable", false,
+                        "status", "active"),
+                row(
+                        "id", "vc-activity-8pct",
+                        "name", "Summer Activity",
+                        "type", "percent",
+                        "amountUSD", 0,
+                        "percent", 8,
+                        "minPurchaseUSD", 0,
+                        "maxDiscountUSD", 200,
+                        "applicableSkus", List.of(),
+                        "audience", "all",
+                        "startAt", 0,
+                        "endAt", 1798675200000L,
+                        "claimSurfaces", List.of("home", "store", "me", "earn"),
+                        "popupEnabled", true,
+                        "stackWithTrial", true,
+                        "stackWithOthers", false,
+                        "splittable", false,
+                        "status", "active"));
+    }
+
+    private List<Map<String, Object>> defaultVoucherSkuOptions() {
+        return List.of(
+                row("id", "stellarbox-s1", "name", "StellarBox S1", "status", "on"),
+                row("id", "stellarbox-pro", "name", "StellarBox Pro", "status", "on"),
+                row("id", "genesis-g1", "name", "Genesis G1", "status", "on"));
+    }
+
+    private Map<String, Object> normalizeVoucher(GrowthVoucherRequest request, String enforcedId) {
+        if (request == null) {
+            throw new IllegalArgumentException("VOUCHER_BODY_REQUIRED");
+        }
+        String id = StringUtils.hasText(enforcedId)
+                ? enforcedId.trim()
+                : (StringUtils.hasText(request.id()) ? request.id().trim() : "vc-" + Instant.now().toEpochMilli());
+        id = normalizeVoucherId(id);
+        String name = normalizePlainText(request.name(), 80);
+        String type = requireText(request.type(), "VOUCHER_TYPE_REQUIRED").toLowerCase(Locale.ROOT);
+        if (!Set.of("fixed", "percent").contains(type)) {
+            throw new IllegalArgumentException("VOUCHER_TYPE_INVALID");
+        }
+        BigDecimal amount = "fixed".equals(type)
+                ? bounded(voucherNumber(request.amountUSD(), BigDecimal.ZERO), BigDecimal.ONE, new BigDecimal("1000000"))
+                : BigDecimal.ZERO;
+        BigDecimal percent = "percent".equals(type)
+                ? bounded(voucherNumber(request.percent(), BigDecimal.ZERO), BigDecimal.ONE, new BigDecimal("100"))
+                : BigDecimal.ZERO;
+        BigDecimal minPurchase = bounded(voucherNumber(request.minPurchaseUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
+        BigDecimal maxDiscount = bounded(voucherNumber(request.maxDiscountUSD(), BigDecimal.ZERO), BigDecimal.ZERO, new BigDecimal("10000000"));
+        String audience = requireText(request.audience(), "VOUCHER_AUDIENCE_REQUIRED").toLowerCase(Locale.ROOT);
+        if (!Set.of("new", "all").contains(audience)) {
+            throw new IllegalArgumentException("VOUCHER_AUDIENCE_INVALID");
+        }
+        String status = normalizeVoucherStatus(request.status());
+        long startAt = voucherTimestamp(request.startAt());
+        long endAt = voucherTimestamp(request.endAt());
+        if (startAt > 0 && endAt > 0 && endAt < startAt) {
+            throw new IllegalArgumentException("VOUCHER_TIME_RANGE_INVALID");
+        }
+        List<String> skus = normalizeVoucherSkus(request.applicableSkus());
+        List<String> claimSurfaces = normalizeClaimSurfaces(request.claimSurfaces());
+        Map<String, Object> voucher = new LinkedHashMap<>();
+        voucher.put("id", id);
+        voucher.put("name", name);
+        voucher.put("type", type);
+        voucher.put("amountUSD", amount.stripTrailingZeros());
+        voucher.put("percent", percent.stripTrailingZeros());
+        voucher.put("minPurchaseUSD", minPurchase.stripTrailingZeros());
+        voucher.put("maxDiscountUSD", maxDiscount.stripTrailingZeros());
+        voucher.put("applicableSkus", skus);
+        voucher.put("audience", audience);
+        voucher.put("startAt", startAt);
+        voucher.put("endAt", endAt);
+        voucher.put("claimSurfaces", claimSurfaces);
+        voucher.put("popupEnabled", Boolean.TRUE.equals(request.popupEnabled()));
+        voucher.put("stackWithTrial", Boolean.TRUE.equals(request.stackWithTrial()));
+        voucher.put("stackWithOthers", Boolean.TRUE.equals(request.stackWithOthers()));
+        voucher.put("splittable", Boolean.TRUE.equals(request.splittable()));
+        voucher.put("status", status);
+        return voucher;
+    }
+
+    private BigDecimal voucherNumber(BigDecimal value, BigDecimal fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private long voucherTimestamp(Long value) {
+        if (value == null || value < 0) {
+            return 0;
+        }
+        return value;
+    }
+
+    private List<String> normalizeVoucherSkus(List<String> raw) {
+        List<String> skus = normalizeStringList(raw, 16, 40);
+        Set<String> skuIds = voucherSkuIds();
+        for (String sku : skus) {
+            if (!skuIds.contains(sku)) {
+                throw new IllegalArgumentException("VOUCHER_SKU_INVALID");
+            }
+        }
+        return skus;
+    }
+
+    private Set<String> voucherSkuIds() {
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
+        for (Map<String, Object> sku : voucherSkuOptions()) {
+            Object id = sku.get("id");
+            if (id != null && StringUtils.hasText(id.toString())) {
+                ids.add(id.toString());
+            }
+        }
+        return ids;
+    }
+
+    private List<String> normalizeClaimSurfaces(List<String> raw) {
+        List<String> surfaces = normalizeStringList(raw, 8, 20);
+        if (surfaces.isEmpty()) {
+            return List.of("home", "store");
+        }
+        Set<String> allowed = Set.of("home", "store", "me", "earn");
+        for (String surface : surfaces) {
+            if (!allowed.contains(surface)) {
+                throw new IllegalArgumentException("VOUCHER_SURFACE_INVALID");
+            }
+        }
+        return surfaces;
+    }
+
+    private List<String> normalizeStringList(List<String> raw, int maxItems, int maxLength) {
+        if (raw == null) {
+            return List.of();
+        }
+        java.util.LinkedHashSet<String> values = new java.util.LinkedHashSet<>();
+        for (String item : raw) {
+            if (!StringUtils.hasText(item)) {
+                continue;
+            }
+            String value = item.trim();
+            if (value.length() > maxLength) {
+                throw new IllegalArgumentException("VOUCHER_LIST_ITEM_TOO_LONG");
+            }
+            values.add(value);
+        }
+        if (values.size() > maxItems) {
+            throw new IllegalArgumentException("VOUCHER_LIST_TOO_LONG");
+        }
+        return List.copyOf(values);
+    }
+
+    private String normalizeVoucherId(String raw) {
+        String id = requireText(raw, "VOUCHER_ID_REQUIRED");
+        if (!id.matches("[A-Za-z0-9_-]+")) {
+            throw new IllegalArgumentException("VOUCHER_ID_INVALID");
+        }
+        return id;
+    }
+
+    private String normalizeVoucherStatus(String raw) {
+        String status = requireText(raw, "VOUCHER_STATUS_REQUIRED").toLowerCase(Locale.ROOT);
+        return switch (status) {
+            case "active", "on", "enabled", "投放", "投放中" -> "active";
+            case "paused", "pause", "off", "disabled", "暂停", "已暂停" -> "paused";
+            default -> throw new IllegalArgumentException("VOUCHER_STATUS_INVALID");
+        };
+    }
+
+    private int voucherIndex(List<Map<String, Object>> rows, String id) {
+        for (int i = 0; i < rows.size(); i++) {
+            if (id.equals(rows.get(i).get("id"))) {
+                return i;
+            }
+        }
+        throw new IllegalArgumentException("VOUCHER_NOT_FOUND");
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {
