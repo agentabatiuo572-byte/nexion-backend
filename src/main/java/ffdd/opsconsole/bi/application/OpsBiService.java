@@ -6,14 +6,19 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
+import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
+import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
 import ffdd.opsconsole.bi.dto.BiReportActionRequest;
+import ffdd.opsconsole.bi.dto.BiReportCreateRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import java.util.Arrays;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -42,11 +47,48 @@ public class OpsBiService {
         response.put("sources", List.of("nx_admin_fourth_batch_report", "nx_audit_log"));
         response.put("currentPhase", currentPhase());
         response.put("phases", phases());
-        response.put("l1", Map.of("kpis", kpis()));
-        response.put("l2", funnelDashboard());
-        response.put("l3", financeDashboard());
-        response.put("l4", operationsDashboard());
+        response.put("l1", reportRepository.dashboard("L1"));
+        response.put("l2", reportRepository.dashboard("L2"));
+        response.put("l3", reportRepository.dashboard("L3"));
+        response.put("l4", reportRepository.dashboard("L4"));
+        response.put("l5", exportOverview().getData());
+        response.put("l6", behaviorHeatmapOverview("7d").getData());
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> kpiOverview() {
+        return ApiResult.ok(reportRepository.dashboard("L1"));
+    }
+
+    public ApiResult<Map<String, Object>> funnelOverview() {
+        return ApiResult.ok(reportRepository.dashboard("L2"));
+    }
+
+    public ApiResult<Map<String, Object>> financeOverview() {
+        return ApiResult.ok(reportRepository.dashboard("L3"));
+    }
+
+    public ApiResult<Map<String, Object>> operationsOverview() {
+        return ApiResult.ok(reportRepository.dashboard("L4"));
+    }
+
+    public ApiResult<Map<String, Object>> exportOverview() {
+        Map<String, Object> response = new LinkedHashMap<>(reportRepository.dashboard("L5"));
+        response.put("summary", reportRepository.overview());
+        response.put("reports", reportRepository.reports(null, List.of(), 1, 20));
+        response.put("sources", List.of("nx_admin_bi_dashboard_payload", "nx_admin_fourth_batch_report", "nx_audit_log"));
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> behaviorHeatmapOverview(String window) {
+        String normalizedWindow = normalizeHeatmapWindow(window);
+        Map<String, Object> dashboard = new LinkedHashMap<>(reportRepository.dashboard("L6"));
+        Map<String, Object> activityByWindow = mutableObjectMap(dashboard.get("activityByWindow"));
+        Object activity = activityByWindow.getOrDefault(normalizedWindow, List.of());
+        dashboard.put("window", normalizedWindow);
+        dashboard.put("activity", activity);
+        dashboard.put("sources", List.of("nx_admin_bi_dashboard_payload"));
+        return ApiResult.ok(dashboard);
     }
 
     public ApiResult<PageResult<BiReportView>> reports(BiReportQueryRequest request) {
@@ -60,15 +102,130 @@ public class OpsBiService {
     }
 
     public ApiResult<Map<String, Object>> regulatoryTemplates() {
-        Map<String, Object> response = new LinkedHashMap<>();
+        Map<String, Object> response = new LinkedHashMap<>(reportRepository.dashboard("L5"));
         response.put("domain", "L5");
-        response.put("templates", List.of(
-                template("REG-KYC-Q", "KYC AML audit package", "Quarterly", "KYC status, EDD, sanctions, rejection reasons"),
-                template("REG-REDEMPTION-M", "Redemption report", "Monthly", "withdrawal rate, coverage, exposure, maturity"),
-                template("REG-FRAUD-M", "Fraud abuse report", "Monthly", "device fingerprint, account graph, blocked withdrawals"),
-                template("REG-GEO-Q", "Cross border data list", "Quarterly", "jurisdiction, field class, masking, download audit")));
+        response.put("templates", response.get("regulatoryTemplates"));
         response.put("exportPolicy", "masked-by-default");
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> createReport(String idempotencyKey, BiReportCreateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String reportName = trimOrDefault(request.exportType(), "后台导出报表");
+        String maskingPolicy = normalizeMaskingPolicy(request.maskPolicy());
+        if ("DECRYPTED".equals(maskingPolicy)) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "DECRYPTED_PII_EXPORT_BLOCKED");
+        }
+        boolean containsPii = containsSensitiveFields(request);
+        String reportId = "EXP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        BiReportView created = reportRepository.createReport(new BiReportCreateCommand(
+                reportId,
+                reportName,
+                normalizeReportType(reportName),
+                trimOrDefault(request.timeRange(), "ON_DEMAND"),
+                "REGULATORY".equals(normalizeReportType(reportName)) ? "PDF" : "CSV",
+                trimOrDefault(request.timeRange(), "按需导出"),
+                trimOrDefault(request.fields(), "聚合指标"),
+                estimateRowCount(request),
+                containsPii,
+                containsPii ? maskingPolicy : "NONE",
+                containsPii ? "PENDING_CONFIRM" : "GENERATING",
+                StringUtils.hasText(request.ticket()) ? "工单:" + request.ticket().trim() : "后台创建导出任务"));
+        audit("L_BI_REPORT_CREATE", created, request.operator(), linked(
+                "reportId", created.reportId(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim(),
+                "recipient", trimOrDefault(request.recipient(), "未指定"),
+                "containsPii", created.containsPii(),
+                "maskingPolicy", created.maskingPolicy()));
+        Map<String, Object> response = exportOverview().getData();
+        response.put("created", created);
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> updateExportParam(String paramKey, String idempotencyKey, BiDashboardValueRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (!StringUtils.hasText(paramKey) || !StringUtils.hasText(request.value())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BI_EXPORT_PARAM_VALUE_REQUIRED");
+        }
+        Map<String, Object> dashboard = new LinkedHashMap<>(reportRepository.dashboard("L5"));
+        List<Map<String, Object>> params = mutableMapList(dashboard.get("exportParams"));
+        Map<String, Object> target = params.stream()
+                .filter(row -> paramKey.trim().equals(String.valueOf(row.get("k"))))
+                .findFirst()
+                .orElse(null);
+        if (target == null) {
+            return ApiResult.fail(404, "BI_EXPORT_PARAM_NOT_FOUND");
+        }
+        if (Boolean.TRUE.equals(target.get("fixed"))) {
+            return ApiResult.fail(OpsErrorCode.PHASE_PARAM_READONLY.httpStatus(), "BI_EXPORT_PARAM_LOCKED");
+        }
+        target.put("cur", request.value().trim());
+        target.put("v", request.value().trim());
+        dashboard.put("exportParams", params);
+        reportRepository.saveDashboard("L5", dashboard);
+        auditResource("L_BI_EXPORT_PARAM_UPDATE", "BI_DASHBOARD", paramKey.trim(), request.operator(), "MEDIUM", linked(
+                "paramKey", paramKey.trim(),
+                "value", request.value().trim(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return exportOverview();
+    }
+
+    public ApiResult<Map<String, Object>> updateRegulatorySchedule(String idempotencyKey, BiDashboardValueRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (!StringUtils.hasText(request.value())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BI_REGULATORY_SCHEDULE_REQUIRED");
+        }
+        Map<String, Object> dashboard = new LinkedHashMap<>(reportRepository.dashboard("L5"));
+        List<String> options = stringList(dashboard.get("scheduleOptions"));
+        String value = request.value().trim();
+        if (!options.isEmpty() && !options.contains(value)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BI_REGULATORY_SCHEDULE_UNSUPPORTED");
+        }
+        dashboard.put("scheduleDefault", value);
+        reportRepository.saveDashboard("L5", dashboard);
+        auditResource("L_BI_REGULATORY_SCHEDULE_UPDATE", "BI_DASHBOARD", "L5_SCHEDULE", request.operator(), "MEDIUM", linked(
+                "value", value,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return exportOverview();
+    }
+
+    public ApiResult<Map<String, Object>> createRegulatoryTemplate(String idempotencyKey, BiRegulatoryTemplateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (!StringUtils.hasText(request.name())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BI_REGULATORY_TEMPLATE_NAME_REQUIRED");
+        }
+        Map<String, Object> dashboard = new LinkedHashMap<>(reportRepository.dashboard("L5"));
+        List<Map<String, Object>> templates = mutableMapList(dashboard.get("regulatoryTemplates"));
+        String key = "tpl-" + UUID.randomUUID().toString().substring(0, 8).toLowerCase(Locale.ROOT);
+        templates.add(linked(
+                "key", key,
+                "nm", request.name().trim(),
+                "cy", "专项 · 后台新增",
+                "meta", "按当前 BI 数据集生成,提交后进入报表队列",
+                "last", "待生成",
+                "icon", "doc"));
+        dashboard.put("regulatoryTemplates", templates);
+        reportRepository.saveDashboard("L5", dashboard);
+        auditResource("L_BI_REGULATORY_TEMPLATE_CREATE", "BI_REGULATORY_TEMPLATE", key, request.operator(), "MEDIUM", linked(
+                "name", request.name().trim(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return exportOverview();
     }
 
     public ApiResult<Map<String, Object>> reportAction(String reportId, String action, String idempotencyKey, BiReportActionRequest request) {
@@ -471,8 +628,132 @@ public class OpsBiService {
                 .toList();
     }
 
+    private String normalizeReportType(String reportName) {
+        String text = reportName == null ? "" : reportName.trim();
+        String upper = text.toUpperCase(Locale.ROOT);
+        if (text.contains("监管") || upper.contains("REGULATORY")) {
+            return "REGULATORY";
+        }
+        if (text.contains("账单") || upper.contains("BILL")) {
+            return "BILL_CSV";
+        }
+        if (text.contains("团队") || upper.contains("NETWORK")) {
+            return "NETWORK_TREE";
+        }
+        if (text.contains("漏斗") || upper.contains("FUNNEL")) {
+            return "FUNNEL_COHORT";
+        }
+        if (text.contains("财务") || upper.contains("FINANCE")) {
+            return "FINANCE_AGG";
+        }
+        if (upper.contains("KPI")) {
+            return "KPI_SERIES";
+        }
+        return "ON_DEMAND";
+    }
+
+    private String normalizeMaskingPolicy(String value) {
+        String text = value == null ? "" : value.trim();
+        String upper = text.toUpperCase(Locale.ROOT);
+        if ("解密".equals(text) || text.contains("解密导出") || text.contains("明文") || upper.contains("DECRYPTED") || upper.contains("RAW")) {
+            return "DECRYPTED";
+        }
+        if (text.contains("部分") || text.contains("后 4") || text.contains("后4") || upper.contains("PARTIAL")) {
+            return "PARTIAL";
+        }
+        return "MASKED";
+    }
+
+    private boolean containsSensitiveFields(BiReportCreateRequest request) {
+        String text = (trimOrDefault(request.fields(), "") + " " + trimOrDefault(request.piiLevel(), "") + " " + trimOrDefault(request.maskPolicy(), ""))
+                .toLowerCase(Locale.ROOT);
+        return text.contains("pii")
+                || text.contains("phone")
+                || text.contains("card")
+                || text.contains("address")
+                || text.contains("手机号")
+                || text.contains("卡 token")
+                || text.contains("地址")
+                || text.contains("敏感")
+                || text.contains("脱敏");
+    }
+
+    private long estimateRowCount(BiReportCreateRequest request) {
+        String text = trimOrDefault(request.timeRange(), "") + " " + trimOrDefault(request.fields(), "");
+        if (text.contains("全量")) {
+            return 1_000_000L;
+        }
+        if (normalizeReportType(request.exportType()).equals("REGULATORY")) {
+            return 12_000L;
+        }
+        if (text.contains("聚合")) {
+            return 1_000L;
+        }
+        return 0L;
+    }
+
+    private String trimOrDefault(String value, String defaultValue) {
+        return StringUtils.hasText(value) ? value.trim() : defaultValue;
+    }
+
+    private List<Map<String, Object>> mutableMapList(Object value) {
+        if (!(value instanceof List<?> rows)) {
+            return new ArrayList<>();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object row : rows) {
+            if (row instanceof Map<?, ?> map) {
+                Map<String, Object> copy = new LinkedHashMap<>();
+                map.forEach((key, item) -> copy.put(String.valueOf(key), item));
+                result.add(copy);
+            }
+        }
+        return result;
+    }
+
+    private Map<String, Object> mutableObjectMap(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((key, item) -> result.put(String.valueOf(key), item));
+        return result;
+    }
+
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> rows)) {
+            return List.of();
+        }
+        return rows.stream()
+                .map(String::valueOf)
+                .filter(StringUtils::hasText)
+                .toList();
+    }
+
     private String normalizeText(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeHeatmapWindow(String window) {
+        String value = window == null ? "" : window.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "24h", "30d" -> value;
+            default -> "7d";
+        };
+    }
+
+    private void auditResource(String action, String resourceType, String resourceId, String operator, String riskLevel, Map<String, Object> detail) {
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action(action)
+                .resourceType(resourceType)
+                .resourceId(resourceId)
+                .bizNo(resourceId)
+                .actorType("ADMIN")
+                .actorUsername(StringUtils.hasText(operator) ? operator.trim() : "system")
+                .result("SUCCESS")
+                .riskLevel(riskLevel)
+                .detail(detail)
+                .build());
     }
 
     private void audit(String action, BiReportView report, String operator, Map<String, Object> detail) {

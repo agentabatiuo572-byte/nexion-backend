@@ -38,6 +38,82 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             """)
     void createReportTable();
 
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_bi_dashboard_payload (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              module_code VARCHAR(16) NOT NULL,
+              section_key VARCHAR(64) NOT NULL,
+              payload_json LONGTEXT NOT NULL,
+              sort_order INT NOT NULL DEFAULT 0,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_bi_dashboard_payload (module_code, section_key),
+              KEY idx_bi_dashboard_payload_module (module_code, sort_order)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createDashboardPayloadTable();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_bi_dashboard_payload
+             WHERE module_code = #{moduleCode}
+               AND is_deleted = 0
+            """)
+    long countDashboardPayloads(@Param("moduleCode") String moduleCode);
+
+    @Insert("""
+            INSERT INTO nx_admin_bi_dashboard_payload (
+              module_code, section_key, payload_json, sort_order, is_deleted
+            ) VALUES (
+              #{moduleCode}, #{sectionKey}, #{payloadJson}, #{sortOrder}, 0
+            )
+            ON DUPLICATE KEY UPDATE
+              payload_json = VALUES(payload_json),
+              sort_order = VALUES(sort_order),
+              updated_at = NOW(),
+              is_deleted = 0
+            """)
+    int upsertDashboardPayload(@Param("moduleCode") String moduleCode,
+                               @Param("sectionKey") String sectionKey,
+                               @Param("payloadJson") String payloadJson,
+                               @Param("sortOrder") int sortOrder);
+
+    @Select("""
+            SELECT section_key AS sectionKey,
+                   payload_json AS payloadJson
+              FROM nx_admin_bi_dashboard_payload
+             WHERE module_code = #{moduleCode}
+               AND is_deleted = 0
+             ORDER BY sort_order ASC, id ASC
+            """)
+    List<DashboardPayloadRow> dashboardPayloads(@Param("moduleCode") String moduleCode);
+
+    @Insert("""
+            INSERT INTO nx_admin_fourth_batch_report (
+              module_code, report_id, report_name, report_type, cycle, file_format,
+              scope_text, field_text, row_count, contains_pii, masking_policy, status, note, is_deleted
+            ) VALUES (
+              #{moduleCode}, #{reportId}, #{reportName}, #{reportType}, #{cycle}, #{fileFormat},
+              #{scopeText}, #{fieldText}, #{rowCount}, #{containsPii}, #{maskingPolicy}, #{status}, #{note}, 0
+            )
+            ON DUPLICATE KEY UPDATE
+              report_name = VALUES(report_name),
+              report_type = VALUES(report_type),
+              cycle = VALUES(cycle),
+              file_format = VALUES(file_format),
+              scope_text = VALUES(scope_text),
+              field_text = VALUES(field_text),
+              row_count = VALUES(row_count),
+              contains_pii = VALUES(contains_pii),
+              masking_policy = VALUES(masking_policy),
+              status = IF(last_action IS NULL, VALUES(status), status),
+              note = VALUES(note),
+              updated_at = NOW(),
+              is_deleted = 0
+            """)
+    int upsertReportSeed(ReportSeed seed);
+
     @Select("SELECT COUNT(*) FROM nx_admin_fourth_batch_report WHERE module_code = 'L5' AND is_deleted = 0")
     long countTotalReports();
 
@@ -146,5 +222,24 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             """)
     int updateAction(@Param("reportId") String reportId, @Param("action") String action,
                      @Param("nextStatus") String nextStatus, @Param("reason") String reason);
+
+    record DashboardPayloadRow(String sectionKey, String payloadJson) {
+    }
+
+    record ReportSeed(
+            String moduleCode,
+            String reportId,
+            String reportName,
+            String reportType,
+            String cycle,
+            String fileFormat,
+            String scopeText,
+            String fieldText,
+            Long rowCount,
+            Boolean containsPii,
+            String maskingPolicy,
+            String status,
+            String note) {
+    }
 
 }
