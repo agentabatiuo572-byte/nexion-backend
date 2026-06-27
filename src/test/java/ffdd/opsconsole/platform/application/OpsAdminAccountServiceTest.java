@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,6 +24,7 @@ import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -30,9 +32,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
@@ -42,12 +47,14 @@ class OpsAdminAccountServiceTest {
     private final AdminMapper adminMapper = mock(AdminMapper.class);
     private final AdminRoleRelationMapper roleRelationMapper = mock(AdminRoleRelationMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final List<AdminEntity> admins = new ArrayList<>();
     private final OpsAdminAccountService service =
-            new OpsAdminAccountService(repository, auditLogService, adminMapper, roleRelationMapper, passwordEncoder);
+            new OpsAdminAccountService(repository, auditLogService, adminMapper, roleRelationMapper, passwordEncoder, adminSessionRegistry);
 
     @BeforeEach
     void setUp() {
+        SecurityContextHolder.clearContext();
         repository.clear();
         registerTestRoles();
         registerTestRbacActions();
@@ -59,10 +66,10 @@ class OpsAdminAccountServiceTest {
         admins.add(admin(3L, "ops.owner", "运营负责人", "ops-owner@nexion.io", 1, 1));
         admins.add(admin(4L, "risk.lead", "风控主管", "risk@nexion.io", 0, 1));
         repository.put("a1.account.4.role", "risk", "admin_a1_account");
-        repository.put("a1.account.4.tier", "lead", "admin_a1_account");
 
         when(adminMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(admins));
         when(adminMapper.selectOne(any())).thenReturn(null);
+        when(adminSessionRegistry.countActiveSessions(any(Long.class))).thenReturn(0);
         when(adminMapper.insert(any(AdminEntity.class))).thenAnswer(invocation -> {
             AdminEntity entity = invocation.getArgument(0);
             entity.setId(nextAdminId());
@@ -88,6 +95,11 @@ class OpsAdminAccountServiceTest {
         });
     }
 
+    @AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
+
     @Test
     void overviewReturnsAdminTableAndConfigBackedA1Data() {
         ApiResult<AdminAccountOverview> result = service.overview();
@@ -106,9 +118,22 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
+    void overviewCountsActiveAdminSessionsFromRedisRegistry() {
+        when(adminSessionRegistry.countActiveSessions(4L)).thenReturn(2);
+
+        ApiResult<AdminAccountOverview> result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().stats().activeSessions()).isEqualTo(2);
+        assertThat(result.getData().operators()).filteredOn(operator -> "4".equals(operator.id()))
+                .extracting(AdminAccountOverview.OperatorRecord::sessions)
+                .containsExactly(2);
+    }
+
+    @Test
     void changeRoleRequiresIdempotencyKey() {
         AdminAccountRoleUpdateRequest request =
-                new AdminAccountRoleUpdateRequest("risk", "member", "change duty", "superadmin");
+                new AdminAccountRoleUpdateRequest("risk", "change duty", "superadmin");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.changeRole(" ", "1", request);
 
@@ -135,7 +160,6 @@ class OpsAdminAccountServiceTest {
                 "新风控成员",
                 "risk-new@nexion.io",
                 "risk",
-                "member",
                 "mail",
                 "new employee onboarding",
                 "superadmin");
@@ -197,6 +221,75 @@ class OpsAdminAccountServiceTest {
 
         assertThat(superResult.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
         assertThat(superResult.getMessage()).isEqualTo("OPERATOR_GOVERNANCE_SUPER_GRANT_REQUIRED");
+    }
+
+    @Test
+    void revokeSessionsDeletesRedisBackedAdminSessionsAndAudits() {
+        authenticateAs(1L);
+        when(adminSessionRegistry.revokeSessions(4L)).thenReturn(2);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("suspected account takeover", "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-1", "4", request);
+
+        assertThat(result.getCode()).isZero();
+        verify(adminSessionRegistry).revokeSessions(4L);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_SESSION_REVOKED");
+        Map<?, ?> detail = (Map<?, ?>) captor.getValue().getDetail();
+        assertThat(detail.get("revokedSessions")).isEqualTo(2);
+    }
+
+    @Test
+    void revokeSessionsAllowsRiskOperatorForNonSuperTarget() {
+        admins.add(admin(5L, "support.ops", "客服专员", "support@nexion.io", 0, 1));
+        repository.put("a1.account.5.role", "support", "admin_a1_account");
+        authenticateAs(4L);
+        when(adminSessionRegistry.revokeSessions(5L)).thenReturn(1);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("suspected support console misuse", "risk.lead");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-risk", "5", request);
+
+        assertThat(result.getCode()).isZero();
+        verify(adminSessionRegistry).revokeSessions(5L);
+    }
+
+    @Test
+    void revokeSessionsRejectsSelfTarget() {
+        authenticateAs(4L);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("self test should be blocked", "risk.lead");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-self", "4", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("FORCE_LOGOUT_SELF_FORBIDDEN");
+        verify(adminSessionRegistry, never()).revokeSessions(4L);
+    }
+
+    @Test
+    void revokeSessionsRejectsNonSuperAndNonRiskOperator() {
+        admins.add(admin(5L, "finance.ops", "财务专员", "finance-ops@nexion.io", 0, 1));
+        repository.put("a1.account.5.role", "finance", "admin_a1_account");
+        authenticateAs(5L);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("finance should not force logout", "finance.ops");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-role", "4", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("FORCE_LOGOUT_ROLE_FORBIDDEN");
+        verify(adminSessionRegistry, never()).revokeSessions(4L);
+    }
+
+    @Test
+    void revokeSessionsRejectsSuperTarget() {
+        authenticateAs(4L);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("super admin target should be protected", "risk.lead");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-super-target", "1", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
+        verify(adminSessionRegistry, never()).revokeSessions(1L);
     }
 
     @Test
@@ -281,6 +374,11 @@ class OpsAdminAccountServiceTest {
 
     private Long nextAdminId() {
         return admins.stream().mapToLong(AdminEntity::getId).max().orElse(0L) + 1;
+    }
+
+    private void authenticateAs(Long adminId) {
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(String.valueOf(adminId), null, List.of()));
     }
 
     private static final class InMemoryPlatformConfigRepository implements PlatformConfigRepository {

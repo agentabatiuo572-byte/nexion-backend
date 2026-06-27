@@ -12,8 +12,10 @@ import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import ffdd.opsconsole.shared.security.JwtProperties;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
+import io.jsonwebtoken.Claims;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -27,8 +29,9 @@ class OpsAdminAuthServiceTest {
     private final AdminRolePermissionMapper permissionMapper = mock(AdminRolePermissionMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final JwtTokenProvider tokenProvider = new JwtTokenProvider(jwtProperties());
+    private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final OpsAdminAuthService service =
-            new OpsAdminAuthService(adminMapper, permissionMapper, passwordEncoder, tokenProvider);
+            new OpsAdminAuthService(adminMapper, permissionMapper, passwordEncoder, tokenProvider, adminSessionRegistry);
 
     private JwtProperties jwtProperties() {
         JwtProperties properties = new JwtProperties();
@@ -43,6 +46,7 @@ class OpsAdminAuthServiceTest {
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(permissionMapper.selectActivePermissionCodes(1L))
                 .thenReturn(List.of("PERM_SYSTEM_READ", "PERM_USER_READ"));
+        when(adminSessionRegistry.createSession(1L, "superadmin")).thenReturn("admin-session-1");
 
         ApiResult<AdminLoginResponse> result =
                 service.login(new AdminLoginRequest("superadmin", "Admin@123456"));
@@ -56,6 +60,9 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().role()).isEqualTo("superadmin");
         assertThat(result.getData().session().authorities())
                 .contains("PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", "PERM_USER_READ");
+        Claims claims = tokenProvider.parse(result.getData().accessToken());
+        assertThat(claims.get("subjectType")).isEqualTo("ADMIN");
+        assertThat(claims.get("sessionId")).isEqualTo("admin-session-1");
     }
 
     @Test

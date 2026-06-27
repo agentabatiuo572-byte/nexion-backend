@@ -41,12 +41,12 @@ class OpsAdminAccountControllerTest {
     @Test
     void accountMutationsPassIdempotencyHeader() {
         AdminAccountRoleUpdateRequest roleRequest =
-                new AdminAccountRoleUpdateRequest("risk", "member", "transfer", "superadmin");
+                new AdminAccountRoleUpdateRequest("risk", "transfer", "superadmin");
         AdminAccountStatusUpdateRequest statusRequest =
                 new AdminAccountStatusUpdateRequest("disabled", "offboard", "superadmin");
         AdminAccountActionRequest actionRequest = new AdminAccountActionRequest("identity verified", "superadmin");
         AdminAccountCreateRequest createRequest =
-                new AdminAccountCreateRequest("王新", "wangxin@nexion.io", "risk", "member", "mail", "join", "superadmin");
+                new AdminAccountCreateRequest("王新", "wangxin@nexion.io", "risk", "mail", "join", "superadmin");
 
         controller.createAccount("idem-create", createRequest);
         controller.changeRole("idem-role", "op-001", roleRequest);

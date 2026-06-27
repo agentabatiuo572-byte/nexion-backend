@@ -9,6 +9,7 @@ import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -57,6 +58,7 @@ public class OpsAdminAuthService {
     private final AdminRolePermissionMapper permissionMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider tokenProvider;
+    private final AdminSessionRegistry adminSessionRegistry;
 
     public ApiResult<AdminLoginResponse> login(AdminLoginRequest request) {
         if (request == null
@@ -76,7 +78,13 @@ public class OpsAdminAuthService {
         }
 
         List<String> authorities = effectiveAuthorities(admin);
-        String token = tokenProvider.createToken(admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), authorities);
+        String sessionId;
+        try {
+            sessionId = adminSessionRegistry.createSession(admin.getId(), admin.getUsername());
+        } catch (RuntimeException ex) {
+            return ApiResult.fail(503, "ADMIN_SESSION_STORE_UNAVAILABLE");
+        }
+        String token = tokenProvider.createToken(admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), authorities, sessionId);
         return ApiResult.ok(new AdminLoginResponse(
                 token,
                 "Bearer",

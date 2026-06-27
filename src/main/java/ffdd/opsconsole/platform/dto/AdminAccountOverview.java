@@ -31,7 +31,6 @@ public record AdminAccountOverview(
             String name,
             String email,
             String role,
-            String tier,
             boolean tfa,
             String status,
             String lastLogin,

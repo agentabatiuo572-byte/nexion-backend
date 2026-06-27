@@ -25,6 +25,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenProvider tokenProvider;
     private final AuthSessionMapper authSessionMapper;
     private final GatewaySecurityProperties gatewayProperties;
+    private final AdminSessionRegistry adminSessionRegistry;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -85,8 +86,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private boolean isSessionActive(Claims claims) {
         Object subjectTypeClaim = claims.get("subjectType");
         String subjectType = subjectTypeClaim == null ? "USER" : String.valueOf(subjectTypeClaim);
+        if ("ADMIN".equals(subjectType)) {
+            String sessionId = claims.get("sessionId", String.class);
+            if (!StringUtils.hasText(sessionId)) {
+                return false;
+            }
+            try {
+                return adminSessionRegistry.isSessionActive(Long.valueOf(claims.getSubject()), sessionId);
+            } catch (RuntimeException ex) {
+                return false;
+            }
+        }
         if (!"USER".equals(subjectType)) {
-            return true;
+            return false;
         }
         String sessionId = claims.get("sessionId", String.class);
         if (!StringUtils.hasText(sessionId)) {

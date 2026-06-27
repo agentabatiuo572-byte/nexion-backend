@@ -19,6 +19,7 @@ import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -35,6 +36,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -55,11 +58,12 @@ public class OpsAdminAccountService {
     private static final Pattern SECURITY_BASELINE_REGISTRATION_PATTERN =
             Pattern.compile("^a1\\.security\\.baseline\\.([a-z][a-z0-9_-]*)\\.registered$");
     private static final String RBAC_ACTION_PREFIX = "a1.rbac.action.";
+    private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super", "risk");
     private static final List<AdminAccountOverview.RoleDefinition> DEFAULT_ROLE_DEFINITIONS = List.of(
             new AdminAccountOverview.RoleDefinition("super", "超管", "超", "var(--ink-2)",
                     "全域读写 + 全域执行;账号治理与系统参数的唯一操作 / 留痕角色", "全部 12 域"),
             new AdminAccountOverview.RoleDefinition("finance", "财务", "财", "var(--success)",
-                    "储备与应付对账、提现放行、覆盖率监控;资金类动作执行门槛为 lead/超管", "B · D · L,资金类执行"),
+                    "储备与应付对账、提现放行、覆盖率监控;资金类动作按 RBAC 授权执行", "B · D · L,资金类执行"),
             new AdminAccountOverview.RoleDefinition("risk", "风控", "风", "var(--danger)",
                     "反作弊、KYC 复审、风险披露、应急止血;合规审查 V1 由风控代行", "K · J · C4/C6 · I5"),
             new AdminAccountOverview.RoleDefinition("growth", "增长", "增", "var(--warning)",
@@ -67,7 +71,7 @@ public class OpsAdminAccountService {
             new AdminAccountOverview.RoleDefinition("content", "内容", "内", "var(--admin-cat-5, #9B89E0)",
                     "全站文案、推送、通知、信任内容、课程;高敏合规内容只能草拟", "I 域全部"),
             new AdminAccountOverview.RoleDefinition("support", "客服", "客", "var(--a-ac)",
-                    "单用户范围受限操作:小额调整发起、协助 KYC 标记;确认必须主管层", "C 域单用户视图"),
+                    "单用户范围受限操作:小额调整发起、协助 KYC 标记;岗位在客服中心独立配置", "C 域单用户视图"),
             new AdminAccountOverview.RoleDefinition("audit", "只读审计", "审", "var(--ink-3)",
                     "零写权;全量查询与脱敏导出,取证专用", "全域只读"));
     private static final Map<String, AdminAccountOverview.RoleDefinition> DEFAULT_ROLE_DEFINITION_BY_KEY =
@@ -116,6 +120,7 @@ public class OpsAdminAccountService {
     private final AdminMapper adminMapper;
     private final AdminRoleRelationMapper roleRelationMapper;
     private final PasswordEncoder passwordEncoder;
+    private final AdminSessionRegistry adminSessionRegistry;
 
     public ApiResult<AdminAccountOverview> overview() {
         Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
@@ -161,10 +166,6 @@ public class OpsAdminAccountService {
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
-        String tier = normalizeTier(request.tier());
-        if (tier == null) {
-            return ApiResult.fail(422, "TIER_INVALID");
-        }
         String deliver = normalizeDeliver(request.deliver());
         if (deliver == null) {
             return ApiResult.fail(422, "CREDENTIAL_DELIVERY_INVALID");
@@ -192,15 +193,13 @@ public class OpsAdminAccountService {
         String prefix = "a1.account." + accountId;
         String credentialStatus = "mail".equals(deliver) ? "MAIL_DISPATCHED" : "HANDOFF_PENDING";
         save(prefix + ".role", role, GROUP_ACCOUNT, "A1 account role");
-        save(prefix + ".tier", tier, GROUP_ACCOUNT, "A1 account tier");
-        save(prefix + ".sessions", "0", GROUP_ACCOUNT, "A1 account sessions");
         save(prefix + ".tfa", "true", GROUP_ACCOUNT, "A1 account 2FA");
         save(prefix + ".lastLogin", "", GROUP_ACCOUNT, "A1 account last login");
         save(prefix + ".credentialDeliveryStatus", credentialStatus, GROUP_ACCOUNT, "A1 credential delivery");
         save(prefix + ".createdAt", LocalDateTime.now().format(ISO), GROUP_ACCOUNT, "A1 account created at");
 
         audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,
-                Map.of("role", role, "tier", tier, "credentialDeliveryStatus", credentialStatus));
+                Map.of("role", role, "credentialDeliveryStatus", credentialStatus));
         return ApiResult.ok(requireOperator(accountId));
     }
 
@@ -220,12 +219,8 @@ public class OpsAdminAccountService {
         }
         Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
         String nextRole = normalizeRole(request.role(), configs);
-        String nextTier = normalizeTier(request.tier());
         if (nextRole == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
-        }
-        if (nextTier == null) {
-            return ApiResult.fail(422, "TIER_INVALID");
         }
         if ("super".equals(current.role())
                 && "enabled".equals(current.status())
@@ -243,10 +238,9 @@ public class OpsAdminAccountService {
 
         String prefix = "a1.account." + current.id();
         save(prefix + ".role", nextRole, GROUP_ACCOUNT, "A1 account role changed");
-        save(prefix + ".tier", nextTier, GROUP_ACCOUNT, "A1 account tier changed");
 
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
-                Map.of("fromRole", current.role(), "toRole", nextRole, "toTier", nextTier));
+                Map.of("fromRole", current.role(), "toRole", nextRole));
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -288,7 +282,7 @@ public class OpsAdminAccountService {
 
         String prefix = "a1.account." + current.id();
         if ("disabled".equals(nextStatus)) {
-            save(prefix + ".sessions", "0", GROUP_ACCOUNT, "A1 account sessions revoked on disable");
+            adminSessionRegistry.revokeSessions(adminId);
             save(prefix + ".killedAt", LocalDateTime.now().format(ISO), GROUP_ACCOUNT, "A1 account sessions revoked");
         }
         audit("enabled".equals(nextStatus) ? "A1_OPERATOR_ENABLED" : "A1_OPERATOR_DISABLED",
@@ -327,15 +321,26 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
-        AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
+        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
+        List<AdminAccountOverview.OperatorRecord> operators = operators(configs);
+        String normalizedAccountId = StringUtils.hasText(accountId) ? accountId.trim() : accountId;
+        AdminAccountOverview.OperatorRecord current = operators.stream()
+                .filter(operator -> operator.id().equals(normalizedAccountId))
+                .findFirst()
+                .orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
+        ApiResult<Void> authorization = requireSessionRevokeAuthorization(authenticatedOperator(operators).orElse(null), current);
+        if (authorization != null) {
+            return failLike(authorization);
+        }
         String now = LocalDateTime.now().format(ISO);
-        save("a1.account." + current.id() + ".sessions", "0", GROUP_ACCOUNT, "A1 sessions revoked");
+        Long adminId = parseAccountId(current.id()).orElseThrow();
+        int revoked = adminSessionRegistry.revokeSessions(adminId);
         save("a1.account." + current.id() + ".killedAt", now, GROUP_ACCOUNT, "A1 sessions revoked");
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
-                Map.of("killedAt", now));
+                Map.of("killedAt", now, "revokedSessions", revoked));
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -507,14 +512,12 @@ public class OpsAdminAccountService {
         boolean enabled = Integer.valueOf(1).equals(admin.getStatus());
         String configuredRole = normalizeRole(text(configs, prefix + "role", null), configs);
         String role = configuredRole == null ? defaultRole(admin, configs) : configuredRole;
-        String tier = normalizeDisplayTier(text(configs, prefix + "tier", defaultTier(admin)));
-        int sessions = enabled ? number(configs, prefix + "sessions", 0) : 0;
+        int sessions = enabled ? adminSessionRegistry.countActiveSessions(admin.getId()) : 0;
         return new AdminAccountOverview.OperatorRecord(
                 id,
                 firstText(admin.getNickname(), admin.getUsername(), id),
                 StringUtils.hasText(admin.getEmail()) ? admin.getEmail().trim() : "",
                 role,
-                tier,
                 Boolean.parseBoolean(text(configs, prefix + "tfa", "true")),
                 enabled ? "enabled" : "disabled",
                 text(configs, prefix + "lastLogin", admin.getUpdatedAt() == null ? "" : admin.getUpdatedAt().format(ISO)),
@@ -650,6 +653,44 @@ public class OpsAdminAccountService {
                 .findFirst();
     }
 
+    private Optional<AdminAccountOverview.OperatorRecord> authenticatedOperator(
+            List<AdminAccountOverview.OperatorRecord> operators) {
+        return authenticatedAdminId()
+                .flatMap(adminId -> operators.stream()
+                        .filter(operator -> operator.id().equals(String.valueOf(adminId)))
+                        .findFirst());
+    }
+
+    private Optional<Long> authenticatedAdminId() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated() || authentication.getPrincipal() == null) {
+            return Optional.empty();
+        }
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof Long adminId) {
+            return Optional.of(adminId);
+        }
+        return parseAccountId(String.valueOf(principal));
+    }
+
+    private ApiResult<Void> requireSessionRevokeAuthorization(
+            AdminAccountOverview.OperatorRecord actor,
+            AdminAccountOverview.OperatorRecord target) {
+        if (actor == null) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
+        }
+        if (actor.id().equals(target.id())) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SELF_FORBIDDEN");
+        }
+        if (!SESSION_REVOKE_ROLES.contains(actor.role())) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
+        }
+        if ("super".equals(target.role())) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
+        }
+        return null;
+    }
+
     private void save(String key, String value, String group, String remark) {
         PlatformConfigItem existing = configRepository.findActiveByKey(key).orElseGet(() ->
                 new PlatformConfigItem(null, key, value, "STRING", group, "ADMIN", remark, 1, null, null));
@@ -772,10 +813,6 @@ public class OpsAdminAccountService {
                 .orElse(keys.get(0));
     }
 
-    private String defaultTier(AdminEntity admin) {
-        return Integer.valueOf(1).equals(admin.getSuperAdmin()) ? "lead" : "member";
-    }
-
     private String firstText(String... values) {
         for (String value : values) {
             if (StringUtils.hasText(value)) {
@@ -798,15 +835,6 @@ public class OpsAdminAccountService {
         }
         String normalized = role.trim().toLowerCase(Locale.ROOT);
         return roleKeys(configs).contains(normalized) ? normalized : null;
-    }
-
-    private String normalizeTier(String tier) {
-        String normalized = StringUtils.hasText(tier) ? tier.trim().toLowerCase(Locale.ROOT) : "member";
-        return List.of("member", "lead").contains(normalized) ? normalized : null;
-    }
-
-    private String normalizeDisplayTier(String tier) {
-        return "lead".equals(normalizeTier(tier)) ? "lead" : null;
     }
 
     private String normalizeStatus(String status) {

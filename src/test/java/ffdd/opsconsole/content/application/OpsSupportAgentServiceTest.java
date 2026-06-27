@@ -42,10 +42,10 @@ class OpsSupportAgentServiceTest {
     @BeforeEach
     void setUp() {
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
-                operator("1", "Root Admin", "super", "lead", "enabled"),
-                operator("2", "Support Agent", "support", "staff", "enabled"),
-                operator("3", "Disabled Support", "support", "staff", "disabled"),
-                operator("4", "Finance Agent", "finance", "staff", "enabled")))));
+                operator("1", "Root Admin", "super", "enabled"),
+                operator("2", "Support Agent", "support", "enabled"),
+                operator("3", "Disabled Support", "support", "disabled"),
+                operator("4", "Finance Agent", "finance", "enabled")))));
     }
 
     @Test
@@ -66,11 +66,11 @@ class OpsSupportAgentServiceTest {
     @Test
     void agentsReturnPagedBackendRowsAndCurrentPageAssignments() {
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
-                operator("2", "Support Agent A", "support", "staff", "enabled"),
-                operator("5", "Support Agent B", "support", "staff", "enabled"),
-                operator("6", "Support Agent C", "support", "staff", "enabled"),
-                operator("7", "Support Agent D", "support", "lead", "enabled"),
-                operator("8", "Disabled Support", "support", "staff", "disabled")))));
+                operator("2", "Support Agent A", "support", "enabled"),
+                operator("5", "Support Agent B", "support", "enabled"),
+                operator("6", "Support Agent C", "support", "enabled"),
+                operator("7", "Support Agent D", "support", "enabled"),
+                operator("8", "Disabled Support", "support", "disabled")))));
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.assignments.add(new SupportAgentAssignmentView(10L, 2L, 1001L, "U00001001", "用户1001", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
         fake.assignments.add(new SupportAgentAssignmentView(11L, 6L, 1006L, "U00001006", "用户1006", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
@@ -161,13 +161,12 @@ class OpsSupportAgentServiceTest {
                 List.of());
     }
 
-    private static AdminAccountOverview.OperatorRecord operator(String id, String name, String role, String tier, String status) {
+    private static AdminAccountOverview.OperatorRecord operator(String id, String name, String role, String status) {
         return new AdminAccountOverview.OperatorRecord(
                 id,
                 name,
                 name.toLowerCase().replace(' ', '.') + "@nexion.io",
                 role,
-                tier,
                 true,
                 status,
                 "",
