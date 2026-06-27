@@ -452,6 +452,46 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void skusSeedDefaultsWhenCatalogIsEmpty() {
+        ApiResult<PageResult<DeviceSkuView>> result =
+                service.skus(new DeviceSkuQueryRequest(null, null, 1L, 100L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getTotal()).isEqualTo(6);
+        assertThat(result.getData().getRecords())
+                .extracting(DeviceSkuView::skuId)
+                .contains("stellarbox-s1", "stellarbox-pro", "stellarbox-pro-v2", "stellarrack-p1", "stellarrack-p2", "cloud-share");
+        assertThat(catalogRepository.phases.values())
+                .extracting(DevicePhaseView::label)
+                .containsExactly("P1", "P2", "P3");
+        verify(auditLogService, never()).record(any());
+    }
+
+    @Test
+    void skusDoNotSeedForFilteredEmptyQuery() {
+        ApiResult<PageResult<DeviceSkuView>> result =
+                service.skus(new DeviceSkuQueryRequest("on", "missing", 1L, 20L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getTotal()).isZero();
+        assertThat(catalogRepository.skus).isEmpty();
+    }
+
+    @Test
+    void reviewsSeedDefaultsAfterEnsuringCatalogSkus() {
+        ApiResult<PageResult<DeviceReviewView>> result =
+                service.reviews(new DeviceReviewQueryRequest(null, null, null, null, 1L, 100L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getTotal()).isEqualTo(4);
+        assertThat(catalogRepository.skus).containsKeys("stellarbox-s1", "stellarbox-pro", "stellarrack-p1", "cloud-share");
+        assertThat(result.getData().getRecords())
+                .extracting(DeviceReviewView::skuId)
+                .contains("stellarbox-s1", "stellarbox-pro", "stellarrack-p1", "cloud-share");
+        verify(auditLogService, never()).record(any());
+    }
+
+    @Test
     void e1PhaseCrudCreatesConfigAndAllowsSkuUnlockPhase() {
         DevicePhaseUpsertRequest phaseRequest =
                 new DevicePhaseUpsertRequest(null, "代际第一代", "L0+", "Entry", 10, "active", "新增 Phase 配置", "superadmin");
@@ -1191,6 +1231,8 @@ class OpsDeviceServiceTest {
         private DeviceSkuView sku;
         private DeviceReviewView review;
         private DeviceTaskView task;
+        private final Map<String, DeviceSkuView> skus = new LinkedHashMap<>();
+        private final Map<String, DeviceReviewView> reviews = new LinkedHashMap<>();
         private final Map<String, DeviceTaskView> tasks = new LinkedHashMap<>();
         private final Map<Integer, DevicePhoneTierRewardView> phoneTierRewards = new LinkedHashMap<>();
         private DeviceOrderView order;
@@ -1201,16 +1243,43 @@ class OpsDeviceServiceTest {
 
         @Override
         public PageResult<DeviceSkuView> pageSkus(DeviceSkuQueryRequest request) {
-            return new PageResult<>(sku == null ? 0 : 1, 1, 20, sku == null ? List.of() : List.of(sku));
+            List<DeviceSkuView> records = !skus.isEmpty()
+                    ? new ArrayList<>(skus.values())
+                    : (sku == null ? List.of() : List.of(sku));
+            String status = request == null ? null : request.status();
+            String keyword = request == null ? null : request.keyword();
+            if (status != null && !status.isBlank()) {
+                records = records.stream()
+                        .filter(row -> status.trim().equalsIgnoreCase(row.status()))
+                        .toList();
+            }
+            if (keyword != null && !keyword.isBlank()) {
+                String normalized = keyword.trim().toLowerCase();
+                records = records.stream()
+                        .filter(row -> row.skuId().toLowerCase().contains(normalized)
+                                || row.name().toLowerCase().contains(normalized))
+                        .toList();
+            }
+            long pageNum = request == null || request.pageNum() == null ? 1 : request.pageNum();
+            long pageSize = request == null || request.pageSize() == null ? 20 : request.pageSize();
+            return new PageResult<>(records.size(), pageNum, pageSize, records);
         }
 
         @Override
         public Optional<DeviceSkuView> findSku(String skuId) {
+            if (skus.containsKey(skuId)) {
+                return Optional.of(skus.get(skuId));
+            }
             return sku != null && sku.skuId().equals(skuId) ? Optional.of(sku) : Optional.empty();
         }
 
         @Override
         public List<DeviceSkuView> findSkusByAiUnlocks(String taskId) {
+            if (!skus.isEmpty()) {
+                return skus.values().stream()
+                        .filter(row -> taskId.equals(row.aiUnlocks()))
+                        .toList();
+            }
             return sku != null && taskId.equals(sku.aiUnlocks()) ? List.of(sku) : List.of();
         }
 
@@ -1218,30 +1287,47 @@ class OpsDeviceServiceTest {
         public DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
             lastSkuRequest = request;
             sku = sku(skuId, request.name(), request.status(), request.unlockPhase());
+            skus.put(skuId, sku);
             return sku;
         }
 
         @Override
         public Optional<DeviceSkuView> updateSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
-            if (sku == null || !sku.skuId().equals(skuId)) {
+            DeviceSkuView current = skus.get(skuId);
+            if (current == null && sku != null && sku.skuId().equals(skuId)) {
+                current = sku;
+            }
+            if (current == null) {
                 return Optional.empty();
             }
             lastSkuRequest = request;
             sku = sku(skuId, request.name(), request.status(), request.unlockPhase());
+            skus.put(skuId, sku);
             return Optional.of(sku);
         }
 
         @Override
         public Optional<DeviceSkuView> updateSkuStatus(String skuId, String status, LocalDateTime now) {
-            if (sku == null || !sku.skuId().equals(skuId)) {
+            DeviceSkuView current = skus.get(skuId);
+            if (current == null && sku != null && sku.skuId().equals(skuId)) {
+                current = sku;
+            }
+            if (current == null) {
                 return Optional.empty();
             }
-            sku = sku(sku.skuId(), sku.name(), status, sku.unlockPhase());
+            sku = sku(current.skuId(), current.name(), status, current.unlockPhase());
+            skus.put(skuId, sku);
             return Optional.of(sku);
         }
 
         @Override
         public boolean softDeleteSku(String skuId, LocalDateTime now) {
+            if (skus.remove(skuId) != null) {
+                if (sku != null && sku.skuId().equals(skuId)) {
+                    sku = null;
+                }
+                return true;
+            }
             if (sku != null && sku.skuId().equals(skuId)) {
                 sku = null;
                 return true;
@@ -1251,40 +1337,123 @@ class OpsDeviceServiceTest {
 
         @Override
         public PageResult<DeviceReviewView> pageReviews(DeviceReviewQueryRequest request) {
-            return new PageResult<>(review == null ? 0 : 1, 1, 20, review == null ? List.of() : List.of(review));
+            List<DeviceReviewView> records = !reviews.isEmpty()
+                    ? new ArrayList<>(reviews.values())
+                    : (review == null ? List.of() : List.of(review));
+            String skuId = request == null ? null : request.skuId();
+            String status = request == null ? null : request.status();
+            Integer rating = request == null ? null : request.rating();
+            String keyword = request == null ? null : request.keyword();
+            if (skuId != null && !skuId.isBlank()) {
+                records = records.stream()
+                        .filter(row -> skuId.trim().equals(row.skuId()))
+                        .toList();
+            }
+            if (status != null && !status.isBlank()) {
+                records = records.stream()
+                        .filter(row -> status.trim().equalsIgnoreCase(row.status()))
+                        .toList();
+            }
+            if (rating != null) {
+                records = records.stream()
+                        .filter(row -> rating.equals(row.rating()))
+                        .toList();
+            }
+            if (keyword != null && !keyword.isBlank()) {
+                String normalized = keyword.trim().toLowerCase();
+                records = records.stream()
+                        .filter(row -> row.author().toLowerCase().contains(normalized)
+                                || row.content().toLowerCase().contains(normalized))
+                        .toList();
+            }
+            long pageNum = request == null || request.pageNum() == null ? 1 : request.pageNum();
+            long pageSize = request == null || request.pageSize() == null ? 20 : request.pageSize();
+            return new PageResult<>(records.size(), pageNum, pageSize, records);
         }
 
         @Override
         public Optional<DeviceReviewView> findReview(String reviewId) {
+            if (reviews.containsKey(reviewId)) {
+                return Optional.of(reviews.get(reviewId));
+            }
             return review != null && review.reviewId().equals(reviewId) ? Optional.of(review) : Optional.empty();
         }
 
         @Override
         public DeviceReviewView createReview(String reviewId, DeviceReviewUpsertRequest request, LocalDateTime now) {
-            review = review(reviewId, request.status());
+            String skuName = findSku(request.skuId()).map(DeviceSkuView::name).orElse(request.skuId());
+            review = new DeviceReviewView(
+                    reviewId,
+                    request.skuId(),
+                    skuName,
+                    request.author(),
+                    request.rating(),
+                    request.content(),
+                    request.dateText(),
+                    request.status(),
+                    now,
+                    now);
+            reviews.put(reviewId, review);
             return review;
         }
 
         @Override
         public Optional<DeviceReviewView> updateReview(String reviewId, DeviceReviewUpsertRequest request, LocalDateTime now) {
-            if (review == null || !review.reviewId().equals(reviewId)) {
+            DeviceReviewView current = reviews.get(reviewId);
+            if (current == null && review != null && review.reviewId().equals(reviewId)) {
+                current = review;
+            }
+            if (current == null) {
                 return Optional.empty();
             }
-            review = review(reviewId, request.status());
+            String skuName = findSku(request.skuId()).map(DeviceSkuView::name).orElse(request.skuId());
+            review = new DeviceReviewView(
+                    reviewId,
+                    request.skuId(),
+                    skuName,
+                    request.author(),
+                    request.rating(),
+                    request.content(),
+                    request.dateText(),
+                    request.status(),
+                    current.createdAt(),
+                    now);
+            reviews.put(reviewId, review);
             return Optional.of(review);
         }
 
         @Override
         public Optional<DeviceReviewView> updateReviewStatus(String reviewId, String status, LocalDateTime now) {
-            if (review == null || !review.reviewId().equals(reviewId)) {
+            DeviceReviewView current = reviews.get(reviewId);
+            if (current == null && review != null && review.reviewId().equals(reviewId)) {
+                current = review;
+            }
+            if (current == null) {
                 return Optional.empty();
             }
-            review = review(reviewId, status);
+            review = new DeviceReviewView(
+                    current.reviewId(),
+                    current.skuId(),
+                    current.skuName(),
+                    current.author(),
+                    current.rating(),
+                    current.content(),
+                    current.dateText(),
+                    status,
+                    current.createdAt(),
+                    now);
+            reviews.put(reviewId, review);
             return Optional.of(review);
         }
 
         @Override
         public boolean softDeleteReview(String reviewId, LocalDateTime now) {
+            if (reviews.remove(reviewId) != null) {
+                if (review != null && review.reviewId().equals(reviewId)) {
+                    review = null;
+                }
+                return true;
+            }
             if (review != null && review.reviewId().equals(reviewId)) {
                 review = null;
                 return true;

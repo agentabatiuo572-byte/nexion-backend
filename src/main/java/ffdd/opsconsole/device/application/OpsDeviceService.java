@@ -14,6 +14,7 @@ import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
+import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
@@ -101,6 +102,208 @@ public class OpsDeviceService {
             "forceUnlock");
     private static final Set<String> E1_GATE_STATUSES = Set.of("active", "archived");
     private static final Set<String> E1_PHASE_STATUSES = Set.of("active", "archived");
+    private static final List<DefaultPhaseSeed> DEFAULT_E1_PHASES = List.of(
+            new DefaultPhaseSeed("P1", "L0+ / Entry", "Entry · S1", 10),
+            new DefaultPhaseSeed("P2", "L1+ / Pro", "Pro · Rack P1", 20),
+            new DefaultPhaseSeed("P3", "Gen-2", "Pro v2 · Rack P2", 30));
+    private static final List<DefaultSkuSeed> DEFAULT_E1_SKUS = List.of(
+            new DefaultSkuSeed(
+                    "stellarbox-s1",
+                    "NexionBox S1",
+                    "Entry",
+                    "入门算力盒,适合新用户试水",
+                    "Best Seller",
+                    "RTX 4060M",
+                    "8GB",
+                    "HK-1",
+                    "649",
+                    "7",
+                    "40",
+                    "$7/d",
+                    3820L,
+                    "47",
+                    "4.7",
+                    128L,
+                    32L,
+                    280L,
+                    8L,
+                    3L,
+                    "TK-2,TK-3,TK-6",
+                    List.of("即插即用", "低功耗", "支持每日任务"),
+                    1,
+                    "active",
+                    "",
+                    "0",
+                    "P1",
+                    "popular",
+                    "on",
+                    null,
+                    1),
+            new DefaultSkuSeed(
+                    "stellarbox-pro",
+                    "NexionBox Pro",
+                    "Pro",
+                    "主力 AI 算力盒,覆盖 LLM 与图像任务",
+                    "Trending",
+                    "RTX 4090M",
+                    "24GB",
+                    "SG-1",
+                    "1199",
+                    "13",
+                    "80",
+                    "$13/d",
+                    2140L,
+                    "23",
+                    "4.8",
+                    96L,
+                    64L,
+                    720L,
+                    18L,
+                    8L,
+                    "TK-1,TK-2,TK-3,TK-6",
+                    List.of("高收益基准", "LLM 推理", "视频任务预备"),
+                    1,
+                    "active",
+                    "",
+                    "0",
+                    "P2",
+                    "pro",
+                    "on",
+                    new DevicePurchaseGateView(1, 2, null, "all", null, null, null, true),
+                    2),
+            new DefaultSkuSeed(
+                    "stellarbox-pro-v2",
+                    "NexionBox Pro v2",
+                    "Pro",
+                    "Gen-2 预热机型,按阶段开放购买",
+                    "New Gen",
+                    "RTX 5080M",
+                    "32GB",
+                    "SG-2",
+                    "1319",
+                    "14",
+                    "90",
+                    "$14/d",
+                    420L,
+                    "38",
+                    "4.9",
+                    34L,
+                    78L,
+                    920L,
+                    22L,
+                    10L,
+                    "TK-1,TK-3,TK-4",
+                    List.of("Gen-2", "阶段门控", "以旧换新优先"),
+                    2,
+                    "active",
+                    "",
+                    "300",
+                    "P3",
+                    "new",
+                    "pending",
+                    new DevicePurchaseGateView(2, 3, null, "all", 600, 172, "month", true),
+                    5),
+            new DefaultSkuSeed(
+                    "stellarrack-p1",
+                    "NexionRack P1",
+                    "Flagship",
+                    "高客单机架算力,服务重任务收益",
+                    "Flagship",
+                    "4x RTX 4090",
+                    "96GB",
+                    "HK-RACK-1",
+                    "4499",
+                    "45",
+                    "300",
+                    "$45/d",
+                    610L,
+                    "8",
+                    "4.8",
+                    42L,
+                    128L,
+                    1880L,
+                    55L,
+                    24L,
+                    "TK-1,TK-4,TK-5",
+                    List.of("机架算力", "视频渲染", "LoRA 微调"),
+                    1,
+                    "active",
+                    "",
+                    "0",
+                    "P2",
+                    "rack",
+                    "on",
+                    new DevicePurchaseGateView(2, 5, null, "all", null, null, null, true),
+                    3),
+            new DefaultSkuSeed(
+                    "stellarrack-p2",
+                    "NexionRack P2",
+                    "Flagship",
+                    "Gen-2 旗舰机架,面向重度算力用户",
+                    "New Gen",
+                    "4x RTX 5090",
+                    "128GB",
+                    "HK-RACK-2",
+                    "7499",
+                    "75",
+                    "500",
+                    "$75/d",
+                    180L,
+                    "4",
+                    "4.9",
+                    18L,
+                    192L,
+                    2600L,
+                    92L,
+                    40L,
+                    "TK-1,TK-4,TK-5",
+                    List.of("Gen-2", "旗舰机架", "高并发任务"),
+                    2,
+                    "active",
+                    "",
+                    "500",
+                    "P3",
+                    "rack2",
+                    "pending",
+                    new DevicePurchaseGateView(3, 8, null, "all", 120, 26, "month", true),
+                    7),
+            new DefaultSkuSeed(
+                    "cloud-share",
+                    "Cloud Share",
+                    "Share",
+                    "低门槛云算力份额",
+                    "Low Barrier",
+                    "Shared GPU Pool",
+                    "按池分配",
+                    "Global Pool",
+                    "19.9",
+                    "0.19",
+                    "3",
+                    "$0.19/d",
+                    12480L,
+                    "9999",
+                    "4.6",
+                    318L,
+                    4L,
+                    60L,
+                    1L,
+                    0L,
+                    "TK-6",
+                    List.of("低门槛", "云端份额", "适合拉新"),
+                    1,
+                    "active",
+                    "",
+                    "0",
+                    "",
+                    "share",
+                    "on",
+                    null,
+                    1));
+    private static final List<DefaultReviewSeed> DEFAULT_E1_REVIEWS = List.of(
+            new DefaultReviewSeed("rv-e1-seed-1", "stellarbox-s1", "Maya", 5, "S1 上手很快,每日任务收益展示清楚。", "今天", "published"),
+            new DefaultReviewSeed("rv-e1-seed-2", "stellarbox-pro", "Noah", 5, "Pro 跑 LLM 任务稳定,后台收益曲线比较直观。", "昨天", "published"),
+            new DefaultReviewSeed("rv-e1-seed-3", "stellarrack-p1", "Lena", 4, "Rack P1 适合重任务,希望库存补得更快。", "3 天前", "published"),
+            new DefaultReviewSeed("rv-e1-seed-4", "cloud-share", "Kai", 4, "Cloud Share 门槛低,适合先体验算力收益。", "5 天前", "published"));
     private static final Set<String> E3_CONFIG_KEYS = Set.of(
             "degradeEarly",
             "degradeMid",
@@ -166,8 +369,14 @@ public class OpsDeviceService {
         return ApiResult.ok(deviceRepository.listUserDevices(userId, Math.max(1, Math.min(200, limit))));
     }
 
+    @Transactional
     public ApiResult<PageResult<DeviceSkuView>> skus(DeviceSkuQueryRequest request) {
-        return ApiResult.ok(catalogRepository.pageSkus(request));
+        PageResult<DeviceSkuView> page = catalogRepository.pageSkus(request);
+        if (shouldSeedDefaultSkus(request, page)) {
+            seedDefaultE1SkusIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP), LocalDateTime.now(clock));
+            page = catalogRepository.pageSkus(request);
+        }
+        return ApiResult.ok(page);
     }
 
     public ApiResult<DeviceSkuView> sku(String skuId) {
@@ -272,8 +481,14 @@ public class OpsDeviceService {
         return ApiResult.ok(detail("skuId", normalized, "deleted", true));
     }
 
+    @Transactional
     public ApiResult<PageResult<DeviceReviewView>> reviews(DeviceReviewQueryRequest request) {
-        return ApiResult.ok(catalogRepository.pageReviews(request));
+        PageResult<DeviceReviewView> page = catalogRepository.pageReviews(request);
+        if (shouldSeedDefaultReviews(request, page)) {
+            seedDefaultE1ReviewsIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP), LocalDateTime.now(clock));
+            page = catalogRepository.pageReviews(request);
+        }
+        return ApiResult.ok(page);
     }
 
     public ApiResult<DeviceReviewView> createReview(String idempotencyKey, DeviceReviewUpsertRequest request) {
@@ -1328,6 +1543,68 @@ public class OpsDeviceService {
                 || (!StringUtils.hasText(request.status()) && !StringUtils.hasText(request.keyword()));
     }
 
+    private boolean shouldSeedDefaultSkus(DeviceSkuQueryRequest request, PageResult<DeviceSkuView> page) {
+        if (page == null || page.getTotal() > 0) {
+            return false;
+        }
+        return request == null
+                || (!StringUtils.hasText(request.status()) && !StringUtils.hasText(request.keyword()));
+    }
+
+    private boolean shouldSeedDefaultReviews(DeviceReviewQueryRequest request, PageResult<DeviceReviewView> page) {
+        if (page == null || page.getTotal() > 0) {
+            return false;
+        }
+        return request == null
+                || (!StringUtils.hasText(request.skuId())
+                && !StringUtils.hasText(request.status())
+                && request.rating() == null
+                && !StringUtils.hasText(request.keyword()));
+    }
+
+    private void seedDefaultE1SkusIfEmpty(Map<String, String> e1Configs, LocalDateTime now) {
+        PageResult<DeviceSkuView> existing = catalogRepository.pageSkus(new DeviceSkuQueryRequest(null, null, 1L, 1L));
+        if (existing.getTotal() > 0) {
+            return;
+        }
+        seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, now);
+        for (DefaultSkuSeed seed : DEFAULT_E1_SKUS) {
+            if (catalogRepository.findSku(seed.skuId()).isPresent()) {
+                continue;
+            }
+            catalogRepository.createSku(seed.skuId(), seed.toRequest(phaseIdForSeed(seed.unlockPhaseLabel())), now);
+        }
+    }
+
+    private void seedDefaultE1ReviewsIfEmpty(Map<String, String> e1Configs, LocalDateTime now) {
+        PageResult<DeviceReviewView> existing = catalogRepository.pageReviews(new DeviceReviewQueryRequest(null, null, null, null, 1L, 1L));
+        if (existing.getTotal() > 0) {
+            return;
+        }
+        seedDefaultE1SkusIfEmpty(e1Configs, now);
+        for (DefaultReviewSeed seed : DEFAULT_E1_REVIEWS) {
+            if (catalogRepository.findReview(seed.reviewId()).isPresent() || catalogRepository.findSku(seed.skuId()).isEmpty()) {
+                continue;
+            }
+            catalogRepository.createReview(seed.reviewId(), seed.toRequest(), now);
+        }
+    }
+
+    private String phaseIdForSeed(String phaseLabel) {
+        if (!StringUtils.hasText(phaseLabel)) {
+            return "";
+        }
+        String phaseId = matchConfiguredE1PhaseId(phaseLabel, false);
+        if (StringUtils.hasText(phaseId)) {
+            return phaseId;
+        }
+        return catalogRepository.listPhases(E1_PHASE_SCOPE, false).stream()
+                .findFirst()
+                .map(DevicePhaseView::p)
+                .orElse("");
+    }
+
     private void seedDefaultTasks(LocalDateTime now) {
         for (DefaultTaskSeed seed : DEFAULT_E2_TASKS) {
             if (catalogRepository.findTask(seed.taskId()).isPresent()) {
@@ -1447,7 +1724,27 @@ public class OpsDeviceService {
             return;
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        for (String releaseId : csv(e1Configs.get(E1_RELEASE_IDS_KEY))) {
+        List<String> releaseIds = csv(e1Configs.get(E1_RELEASE_IDS_KEY));
+        if (releaseIds.isEmpty()) {
+            for (DefaultSkuSeed seed : DEFAULT_E1_SKUS) {
+                if ("Share".equals(seed.tier())) {
+                    continue;
+                }
+                catalogRepository.saveGenerationGate(
+                        seed.skuId(),
+                        seed.name(),
+                        seed.releaseMonth(),
+                        phaseIdForSeed(seed.unlockPhaseLabel()),
+                        seed.tradeinDiscountValue(),
+                        true,
+                        0,
+                        "pending".equals(seed.status()),
+                        "active",
+                        now);
+            }
+            return;
+        }
+        for (String releaseId : releaseIds) {
             if (!E1_GENERATION_ID.matcher(releaseId).matches()) {
                 continue;
             }
@@ -1477,7 +1774,22 @@ public class OpsDeviceService {
         }
         LocalDateTime now = LocalDateTime.now(clock);
         int order = 10;
-        for (String phaseName : csv(e1Configs.get(E1_PHASE_ORDER_KEY))) {
+        List<String> phaseNames = csv(e1Configs.get(E1_PHASE_ORDER_KEY));
+        if (phaseNames.isEmpty()) {
+            for (DefaultPhaseSeed seed : DEFAULT_E1_PHASES) {
+                catalogRepository.savePhase(
+                        E1_PHASE_SCOPE,
+                        "",
+                        seed.label(),
+                        seed.meta(),
+                        seed.skus(),
+                        seed.sortOrder(),
+                        "active",
+                        now);
+            }
+            return;
+        }
+        for (String phaseName : phaseNames) {
             String label;
             try {
                 label = normalizePhaseLabel(phaseName);
@@ -2092,6 +2404,116 @@ public class OpsDeviceService {
             }
         }
         return detail;
+    }
+
+    private record DefaultPhaseSeed(String label, String meta, String skus, Integer sortOrder) {
+    }
+
+    private record DefaultSkuSeed(
+            String skuId,
+            String name,
+            String tier,
+            String tagline,
+            String badge,
+            String gpu,
+            String vram,
+            String datacenter,
+            String price,
+            String dailyEarn,
+            String dailyEarnNex,
+            String baseRate,
+            Long sold,
+            String stock,
+            String rating,
+            Long reviews,
+            Long aiImageGenPerMin,
+            Long aiLlmTokensPerSec,
+            Long aiVideoMinPerHour,
+            Long aiFineTuneMins,
+            String aiUnlocks,
+            List<String> features,
+            Integer generation,
+            String lifecycle,
+            String supersededBy,
+            String tradeinDiscount,
+            String unlockPhaseLabel,
+            String tag,
+            String status,
+            DevicePurchaseGateView purchaseGate,
+            Integer releaseMonth) {
+
+        private DeviceSkuUpsertRequest toRequest(String unlockPhaseId) {
+            return new DeviceSkuUpsertRequest(
+                    skuId,
+                    name,
+                    tier,
+                    tagline,
+                    badge,
+                    gpu,
+                    vram,
+                    "",
+                    "",
+                    datacenter,
+                    money(price),
+                    money(dailyEarn),
+                    money(dailyEarnNex),
+                    null,
+                    null,
+                    baseRate,
+                    sold,
+                    stock,
+                    money(rating),
+                    reviews,
+                    aiImageGenPerMin,
+                    aiLlmTokensPerSec,
+                    aiVideoMinPerHour,
+                    aiFineTuneMins,
+                    aiUnlocks,
+                    features,
+                    generation,
+                    lifecycle,
+                    supersededBy,
+                    money(tradeinDiscount),
+                    unlockPhaseId,
+                    purchaseGate,
+                    null,
+                    null,
+                    null,
+                    tag,
+                    status,
+                    "E1 default seed",
+                    "system");
+        }
+
+        private BigDecimal tradeinDiscountValue() {
+            return money(tradeinDiscount);
+        }
+
+        private BigDecimal money(String value) {
+            return new BigDecimal(value);
+        }
+    }
+
+    private record DefaultReviewSeed(
+            String reviewId,
+            String skuId,
+            String author,
+            Integer rating,
+            String content,
+            String dateText,
+            String status) {
+
+        private DeviceReviewUpsertRequest toRequest() {
+            return new DeviceReviewUpsertRequest(
+                    skuId,
+                    author,
+                    rating,
+                    content,
+                    dateText,
+                    status,
+                    "E1 default seed",
+                    "system");
+        }
     }
 
     private record DefaultTaskSeed(
