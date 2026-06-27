@@ -152,6 +152,7 @@ class OpsSupportKnowledgeServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
+        assertThat(knowledgeRepository.seedCalls).isGreaterThan(0);
         assertThat(result.getData().sources()).contains("nx_help_article", "nx_support_sla_rule");
         assertThat(result.getData().categories()).contains("withdrawal", "general");
     }
@@ -172,6 +173,7 @@ class OpsSupportKnowledgeServiceTest {
     }
 
     private static final class FakeSupportKnowledgeRepository implements SupportKnowledgeRepository {
+        private int seedCalls;
         private final List<SupportFaqView> faqs = new ArrayList<>(List.of(new SupportFaqView(
                 "FAQ-001",
                 "withdrawal",
@@ -187,6 +189,11 @@ class OpsSupportKnowledgeServiceTest {
                 "支付台",
                 "D2 withdrawal review",
                 now())));
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
+        }
 
         @Override
         public List<SupportFaqView> listFaqs() {

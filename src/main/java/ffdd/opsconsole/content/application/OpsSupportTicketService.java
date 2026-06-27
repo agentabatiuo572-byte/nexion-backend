@@ -49,6 +49,7 @@ public class OpsSupportTicketService {
     private final Clock clock;
 
     public ApiResult<Map<String, Object>> overview() {
+        ensureSeedData();
         Map<String, Object> response = new LinkedHashMap<>(ticketRepository.counters());
         response.put("domain", "M2");
         response.put("statuses", List.copyOf(STATUSES));
@@ -60,10 +61,12 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<Map<String, Object>> loadConfig() {
+        ensureSeedData();
         return ApiResult.ok(loadConfigView());
     }
 
     public ApiResult<Map<String, Object>> updateLoadConfig(String idempotencyKey, SupportLoadConfigUpdateRequest request) {
+        ensureSeedData();
         ApiResult<Map<String, Object>> guard = requireSupportCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -105,6 +108,7 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<Map<String, Object>> rebalanceLoad(String idempotencyKey, SupportLoadRebalanceRequest request) {
+        ensureSeedData();
         ApiResult<Map<String, Object>> guard = requireSupportCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -134,10 +138,12 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<PageResult<SupportTicketView>> tickets(SupportTicketQueryRequest request) {
+        ensureSeedData();
         return ApiResult.ok(ticketRepository.pageTickets(request));
     }
 
     public ApiResult<SupportTicketDetail> detail(String ticketNo) {
+        ensureSeedData();
         if (!StringUtils.hasText(ticketNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TICKET_NO_REQUIRED");
         }
@@ -147,6 +153,7 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<SupportTicketDetail> create(String idempotencyKey, SupportTicketCreateRequest request) {
+        ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireCreateCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -176,6 +183,7 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<SupportTicketDetail> reply(String ticketNo, String idempotencyKey, SupportTicketReplyRequest request) {
+        ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireReplyCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -197,6 +205,7 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<SupportTicketDetail> updateStatus(String ticketNo, String idempotencyKey, SupportTicketStatusRequest request) {
+        ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireStatusCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -219,6 +228,7 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<SupportTicketDetail> updatePriority(String ticketNo, String idempotencyKey, SupportTicketPriorityRequest request) {
+        ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requirePriorityCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -241,6 +251,7 @@ public class OpsSupportTicketService {
     }
 
     public ApiResult<SupportTicketDetail> assign(String ticketNo, String idempotencyKey, SupportTicketAssigneeRequest request) {
+        ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireAssignCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -281,6 +292,29 @@ public class OpsSupportTicketService {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
+    }
+
+    private void ensureSeedData() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        ticketRepository.ensureSeedData(now);
+        ensureLoadConfigSeedData();
+    }
+
+    private void ensureLoadConfigSeedData() {
+        Map<String, String> values = configFacade.activeValuesByGroup(LOAD_GROUP);
+        seedLoadValue(values, "autoBalance", "true", "BOOLEAN");
+        seedLoadValue(values, "defaultCap", "10", "NUMBER");
+        seedLoadValue(values, "burstCap", "14", "NUMBER");
+        seedLoadValue(values, "warnPct", "80", "NUMBER");
+        seedLoadValue(values, "quietHourBalance", "false", "BOOLEAN");
+        seedLoadValue(values, "overflowQueue", "转人工备勤队列", "STRING");
+    }
+
+    private void seedLoadValue(Map<String, String> values, String suffix, String value, String valueType) {
+        String key = LOAD_PREFIX + suffix;
+        if (!values.containsKey(key)) {
+            configFacade.upsertAdminValue(key, value, valueType, LOAD_GROUP, "seed support load config");
+        }
     }
 
     private ApiResult<Map<String, Object>> requireSupportCommand(String idempotencyKey, String reason) {

@@ -5,7 +5,6 @@ import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.infrastructure.ConversationEntity;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -120,17 +119,6 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
             LIMIT 1
             """)
     ContentConversationView findByConversationNo(@Param("conversationNo") String conversationNo);
-
-    @Select("""
-            SELECT CAST(id AS CHAR) AS targetId,
-                   COALESCE(NULLIF(nickname, ''), username) AS targetName,
-                   'agent' AS targetType
-              FROM nx_admin
-             WHERE is_deleted=0 AND status=1
-             ORDER BY super_admin DESC,id
-             LIMIT 100
-            """)
-    List<Map<String, Object>> transferTargets();
 
     @Update("""
             UPDATE nx_conversation

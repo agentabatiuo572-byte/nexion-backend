@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Optional;
 
 public interface SupportKnowledgeRepository {
+    void ensureSeedData(LocalDateTime now);
+
     List<SupportFaqView> listFaqs();
 
     Optional<SupportFaqView> findFaq(String faqId);

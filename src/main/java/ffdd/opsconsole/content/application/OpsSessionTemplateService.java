@@ -13,12 +13,15 @@ import ffdd.opsconsole.content.domain.SessionTemplateRepository;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
 import ffdd.opsconsole.content.dto.SessionCategoryToggleRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
+import ffdd.opsconsole.content.dto.SessionReplyTemplateQueryRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateStatusRequest;
 import ffdd.opsconsole.content.dto.SessionScriptAudienceRequest;
 import ffdd.opsconsole.content.dto.SessionScriptCreateRequest;
+import ffdd.opsconsole.content.dto.SessionScriptQueryRequest;
 import ffdd.opsconsole.content.dto.SessionScriptStatusRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.time.Clock;
@@ -67,6 +70,7 @@ public class OpsSessionTemplateService {
     private final Clock clock;
 
     public ApiResult<SessionTemplateOverview> overview() {
+        ensureSeedData();
         return ApiResult.ok(new SessionTemplateOverview(
                 CATEGORY_SEEDS.stream().map(this::categoryView).toList(),
                 advisorPolicy(),
@@ -81,7 +85,18 @@ public class OpsSessionTemplateService {
                 List.of("nx_config_item:content-session", "nx_help_article:session_script", "nx_help_article:session_reply_template")));
     }
 
+    public ApiResult<PageResult<SessionScriptView>> scripts(SessionScriptQueryRequest request) {
+        ensureSeedData();
+        return ApiResult.ok(templateRepository.pageScripts(request));
+    }
+
+    public ApiResult<PageResult<SessionReplyTemplateView>> replyTemplates(SessionReplyTemplateQueryRequest request) {
+        ensureSeedData();
+        return ApiResult.ok(templateRepository.pageReplyTemplates(request));
+    }
+
     public ApiResult<SessionCategoryView> updateCategory(String type, String idempotencyKey, SessionCategoryToggleRequest request) {
+        ensureSeedData();
         SessionCategorySeed seed = categorySeed(type);
         if (seed == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_CATEGORY_UNSUPPORTED");
@@ -111,6 +126,7 @@ public class OpsSessionTemplateService {
             String field,
             String idempotencyKey,
             SessionAdvisorPolicyUpdateRequest request) {
+        ensureSeedData();
         String normalizedField = normalizeField(field);
         if (!List.of("enabled", "delayMs", "cooldownHours", "maxPerSession", "audience").contains(normalizedField)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_POLICY_FIELD_UNSUPPORTED");
@@ -134,6 +150,7 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionScriptView> createScript(String idempotencyKey, SessionScriptCreateRequest request) {
+        ensureSeedData();
         ApiResult<SessionScriptView> guard = requireScriptCreate(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -151,6 +168,7 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionScriptView> updateScriptStatus(String scriptId, String idempotencyKey, SessionScriptStatusRequest request) {
+        ensureSeedData();
         if (!StringUtils.hasText(scriptId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_SCRIPT_ID_REQUIRED");
         }
@@ -180,6 +198,7 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionScriptView> updateScriptAudience(String scriptId, String idempotencyKey, SessionScriptAudienceRequest request) {
+        ensureSeedData();
         if (!StringUtils.hasText(scriptId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_SCRIPT_ID_REQUIRED");
         }
@@ -202,6 +221,7 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionReplyTemplateView> createReplyTemplate(String idempotencyKey, SessionReplyTemplateCreateRequest request) {
+        ensureSeedData();
         ApiResult<SessionReplyTemplateView> guard = requireReplyTemplateCreate(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -220,6 +240,7 @@ public class OpsSessionTemplateService {
             String templateId,
             String idempotencyKey,
             SessionReplyTemplateStatusRequest request) {
+        ensureSeedData();
         if (!StringUtils.hasText(templateId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_REPLY_TEMPLATE_ID_REQUIRED");
         }
@@ -246,6 +267,24 @@ public class OpsSessionTemplateService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
+    }
+
+    private void ensureSeedData() {
+        templateRepository.ensureSeedData(LocalDateTime.now(clock));
+        for (SessionCategorySeed seed : CATEGORY_SEEDS) {
+            seedConfigValue(categoryKey(seed.type()), seed.enabled() ? "on" : "off", "BOOLEAN");
+        }
+        seedConfigValue(policyKey("enabled"), "on", "BOOLEAN");
+        seedConfigValue(policyKey("delayMs"), "1500", "NUMBER");
+        seedConfigValue(policyKey("cooldownHours"), "24", "NUMBER");
+        seedConfigValue(policyKey("maxPerSession"), "1", "NUMBER");
+        seedConfigValue(policyKey("audience"), AUDIENCE_OPTIONS.get(0), "STRING");
+    }
+
+    private void seedConfigValue(String key, String value, String valueType) {
+        if (configFacade.activeValue(key).isEmpty()) {
+            configFacade.upsertAdminValue(key, value, valueType, CONFIG_GROUP, "seed session template config");
+        }
     }
 
     private SessionAdvisorPolicyView advisorPolicy() {

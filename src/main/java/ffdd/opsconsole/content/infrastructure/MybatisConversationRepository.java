@@ -8,7 +8,6 @@ import ffdd.opsconsole.content.mapper.ConversationMessageMapper;
 import ffdd.opsconsole.content.mapper.ConversationMapper;
 import ffdd.opsconsole.shared.api.PageResult;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +20,78 @@ import org.springframework.stereotype.Repository;
 public class MybatisConversationRepository implements ConversationRepository {
     private final ConversationMapper mapper;
     private final ConversationMessageMapper messageMapper;
+
+    @Override
+    public void ensureSeedData(LocalDateTime now) {
+        if (mapper.countConversations(null, null, null, null, null, null) > 0) {
+            return;
+        }
+        seedConversation(
+                "CV-M-SEED-001",
+                88421L,
+                "advisor",
+                "mia",
+                "Mia",
+                "OPEN",
+                0,
+                now.minusHours(3),
+                List.of(
+                        seedMessage("agent", "Mia", "你好,我是你的专属顾问 Mia, 有明显的机会第一时间提醒你。", now.minusHours(3)),
+                        seedMessage("agent", "Mia", "你的设备近期有不少时段闲置,升级到 NexionBox Pro 可以减少空窗。", now.minusMinutes(40)),
+                        seedMessage("agent", "Mia", "180 天锁仓有更优档位,要不要我帮你看下额度?", now.minusMinutes(12))),
+                null);
+        seedConversation(
+                "CV-M-SEED-002",
+                39922L,
+                "support",
+                "support",
+                "Support queue",
+                "OPEN",
+                1,
+                now.minusHours(2),
+                List.of(seedMessage("user", "用户", "你好,我的提现显示待处理超过一天了,能帮我查下状态吗?", now.minusHours(2))),
+                null);
+        seedConversation(
+                "CV-M-SEED-003",
+                77810L,
+                "support",
+                "tomas",
+                "Tomas R.",
+                "RESOLVED",
+                0,
+                now.minusHours(6),
+                List.of(
+                        seedMessage("user", "用户", "KYC 一直没过,能看下原因吗?", now.minusHours(6)),
+                        seedMessage("agent", "Tomas R.", "已核对,证件照模糊导致;重新上传清晰照即可。", now.minusHours(5))),
+                null);
+        seedConversation(
+                "CV-M-SEED-004",
+                43391L,
+                "support",
+                "aisha",
+                "Aisha O.",
+                "OPEN",
+                0,
+                now.minusMinutes(50),
+                List.of(
+                        seedMessage("system", "系统", "由普通客服 Aisha O. 主动发起 · 目标:提现频繁用户主动关怀", now.minusMinutes(50)),
+                        seedMessage("agent", "Aisha O.", "您好,注意到您近期提现较频繁;如果有任何疑问,我可以帮您逐笔核对。", now.minusMinutes(45))),
+                null);
+        seedConversation(
+                "CV-M-SEED-005",
+                66120L,
+                "support",
+                "tomas",
+                "Tomas R.",
+                "TRANSFERRED",
+                1,
+                now.minusMinutes(70),
+                List.of(
+                        seedMessage("user", "用户", "我刚充值了一笔大额,想提一部分出来,但提现一直没动静。", now.minusMinutes(70)),
+                        seedMessage("agent", "Sarah K.", "你的实名资料还差一项待补充,我转给合规同事跟进。", now.minusMinutes(52)),
+                        seedMessage("system", "系统", "Sarah K. 转交给 Tomas R. · 原因:新户首充大额加 KYC 待补。", now.minusMinutes(38))),
+                new SeedTransfer("sarah", "Sarah K.", "agent", "tomas", "Tomas R.", "新户首充大额加 KYC 待补,转给合规客服跟进。", now.minusMinutes(38)));
+    }
 
     @Override
     public Map<String, Object> counters() {
@@ -58,16 +129,6 @@ public class MybatisConversationRepository implements ConversationRepository {
     @Override
     public List<ContentConversationMessageView> messages(String conversationNo) {
         return messageMapper.listByConversationNo(conversationNo);
-    }
-
-    @Override
-    public List<Map<String, Object>> transferTargets() {
-        List<Map<String, Object>> targets = new ArrayList<>();
-        targets.add(target("queue", "support", "Support queue"));
-        targets.add(target("queue", "advisor", "Advisor queue"));
-        targets.add(target("standby", "standby-pool", "Standby pool"));
-        targets.addAll(mapper.transferTargets());
-        return targets;
     }
 
     @Override
@@ -217,12 +278,58 @@ public class MybatisConversationRepository implements ConversationRepository {
         messageMapper.insert(message);
     }
 
-    private Map<String, Object> target(String type, String id, String name) {
-        Map<String, Object> target = new LinkedHashMap<>();
-        target.put("targetType", type);
-        target.put("targetId", id);
-        target.put("targetName", name);
-        return target;
+    private void seedConversation(
+            String conversationNo,
+            Long userId,
+            String conversationType,
+            String ownerAgentId,
+            String ownerAgentName,
+            String status,
+            int unreadCount,
+            LocalDateTime createdAt,
+            List<SeedMessage> messages,
+            SeedTransfer transfer) {
+        SeedMessage last = messages.get(messages.size() - 1);
+        ConversationEntity entity = new ConversationEntity();
+        entity.setConversationNo(conversationNo);
+        entity.setUserId(userId);
+        entity.setConversationType(conversationType);
+        entity.setStatus(status);
+        entity.setOwnerAgentId(ownerAgentId);
+        entity.setOwnerAgentName(ownerAgentName);
+        entity.setUnreadCount(unreadCount);
+        entity.setLastMessage(last.content());
+        entity.setLastMessageAt(last.createdAt());
+        entity.setCreatedAt(createdAt);
+        entity.setUpdatedAt(last.createdAt());
+        entity.setIsDeleted(0);
+        mapper.insert(entity);
+        for (SeedMessage message : messages) {
+            insertMessage(
+                    entity.getId(),
+                    conversationNo,
+                    "user".equals(message.senderType()) ? userId : null,
+                    message.senderType(),
+                    message.senderName(),
+                    message.content(),
+                    message.createdAt());
+        }
+        if (transfer != null) {
+            mapper.insertTransfer(
+                    conversationNo,
+                    transfer.fromAgentId(),
+                    transfer.fromAgentName(),
+                    transfer.targetType(),
+                    transfer.targetId(),
+                    transfer.targetName(),
+                    transfer.reason(),
+                    "system",
+                    transfer.transferredAt());
+        }
+    }
+
+    private SeedMessage seedMessage(String senderType, String senderName, String content, LocalDateTime createdAt) {
+        return new SeedMessage(senderType, senderName, content, createdAt);
     }
 
     private long normalizePage(Long pageNum) {
@@ -238,5 +345,18 @@ public class MybatisConversationRepository implements ConversationRepository {
 
     private String trim(String value) {
         return value == null ? null : value.trim();
+    }
+
+    private record SeedMessage(String senderType, String senderName, String content, LocalDateTime createdAt) {
+    }
+
+    private record SeedTransfer(
+            String fromAgentId,
+            String fromAgentName,
+            String targetType,
+            String targetId,
+            String targetName,
+            String reason,
+            LocalDateTime transferredAt) {
     }
 }

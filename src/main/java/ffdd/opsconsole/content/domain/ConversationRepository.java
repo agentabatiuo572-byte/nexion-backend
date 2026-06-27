@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Optional;
 
 public interface ConversationRepository {
+    void ensureSeedData(LocalDateTime now);
+
     Map<String, Object> counters();
 
     PageResult<ContentConversationView> pageConversations(ConversationQueryRequest request);
@@ -15,8 +17,6 @@ public interface ConversationRepository {
     Optional<ContentConversationView> findByConversationNo(String conversationNo);
 
     List<ContentConversationMessageView> messages(String conversationNo);
-
-    List<Map<String, Object>> transferTargets();
 
     void transferToPending(
             ContentConversationView conversation,

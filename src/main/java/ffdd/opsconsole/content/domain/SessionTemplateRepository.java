@@ -1,13 +1,20 @@
 package ffdd.opsconsole.content.domain;
 
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
+import ffdd.opsconsole.content.dto.SessionReplyTemplateQueryRequest;
 import ffdd.opsconsole.content.dto.SessionScriptCreateRequest;
+import ffdd.opsconsole.content.dto.SessionScriptQueryRequest;
+import ffdd.opsconsole.shared.api.PageResult;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
 public interface SessionTemplateRepository {
+    void ensureSeedData(LocalDateTime now);
+
     List<SessionScriptView> listScripts();
+
+    PageResult<SessionScriptView> pageScripts(SessionScriptQueryRequest request);
 
     Optional<SessionScriptView> findScript(String scriptId);
 
@@ -18,6 +25,8 @@ public interface SessionTemplateRepository {
     void updateScriptAudience(String scriptId, String audience, LocalDateTime now);
 
     List<SessionReplyTemplateView> listReplyTemplates();
+
+    PageResult<SessionReplyTemplateView> pageReplyTemplates(SessionReplyTemplateQueryRequest request);
 
     Optional<SessionReplyTemplateView> findReplyTemplate(String templateId);
 

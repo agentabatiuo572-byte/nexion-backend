@@ -10,11 +10,14 @@ import ffdd.opsconsole.content.domain.SessionTemplateOverview;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
 import ffdd.opsconsole.content.dto.SessionCategoryToggleRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
+import ffdd.opsconsole.content.dto.SessionReplyTemplateQueryRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateStatusRequest;
 import ffdd.opsconsole.content.dto.SessionScriptAudienceRequest;
 import ffdd.opsconsole.content.dto.SessionScriptCreateRequest;
+import ffdd.opsconsole.content.dto.SessionScriptQueryRequest;
 import ffdd.opsconsole.content.dto.SessionScriptStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -34,6 +37,16 @@ public class OpsSessionTemplateController {
     @GetMapping("/overview")
     public ApiResult<SessionTemplateOverview> overview() {
         return templateService.overview();
+    }
+
+    @GetMapping("/scripts")
+    public ApiResult<PageResult<SessionScriptView>> scripts(SessionScriptQueryRequest request) {
+        return templateService.scripts(request);
+    }
+
+    @GetMapping("/reply-templates")
+    public ApiResult<PageResult<SessionReplyTemplateView>> replyTemplates(SessionReplyTemplateQueryRequest request) {
+        return templateService.replyTemplates(request);
     }
 
     @PatchMapping("/categories/{type}")

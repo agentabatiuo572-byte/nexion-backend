@@ -11,11 +11,14 @@ import ffdd.opsconsole.content.domain.SessionTemplateRepository;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
 import ffdd.opsconsole.content.dto.SessionCategoryToggleRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
+import ffdd.opsconsole.content.dto.SessionReplyTemplateQueryRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateStatusRequest;
 import ffdd.opsconsole.content.dto.SessionScriptAudienceRequest;
 import ffdd.opsconsole.content.dto.SessionScriptCreateRequest;
+import ffdd.opsconsole.content.dto.SessionScriptQueryRequest;
 import ffdd.opsconsole.content.dto.SessionScriptStatusRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.time.Clock;
@@ -48,6 +51,7 @@ class OpsSessionTemplateServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
+        assertThat(templateRepository.seedCalls).isGreaterThan(0);
         assertThat(result.getData().categories()).anySatisfy(category -> {
             assertThat(category.type()).isEqualTo("support");
             assertThat(category.enabled()).isFalse();
@@ -56,6 +60,34 @@ class OpsSessionTemplateServiceTest {
         assertThat(result.getData().statusOptions()).containsExactly("published", "draft");
         assertThat(result.getData().scripts()).extracting(SessionScriptView::id).contains("AS-001");
         assertThat(result.getData().sources()).contains("nx_config_item:content-session", "nx_help_article:session_script");
+    }
+
+    @Test
+    void scriptsReturnPagedBackendRows() {
+        templateRepository.scripts.add(new SessionScriptView("AS-002", "升级", "升级设备收益更稳。", "/store", "draft", "全量", now()));
+        templateRepository.scripts.add(new SessionScriptView("AS-003", "复投", "需要我帮你看复投方案吗?", "/staking", "published", "P3 阶段活跃", now()));
+
+        var result = service.scripts(new SessionScriptQueryRequest(null, null, 2L, 2L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getTotal()).isEqualTo(3);
+        assertThat(result.getData().getPageNum()).isEqualTo(2);
+        assertThat(result.getData().getPageSize()).isEqualTo(2);
+        assertThat(result.getData().getRecords()).extracting(SessionScriptView::id).containsExactly("AS-003");
+    }
+
+    @Test
+    void replyTemplatesReturnPagedBackendRows() {
+        templateRepository.templates.add(new SessionReplyTemplateView("RT-A1", "advisor", "我给你看几个方案。", "published", now()));
+        templateRepository.templates.add(new SessionReplyTemplateView("RT-S2", "support", "请提供订单号。", "draft", now()));
+
+        var result = service.replyTemplates(new SessionReplyTemplateQueryRequest(null, null, null, 1L, 2L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getTotal()).isEqualTo(3);
+        assertThat(result.getData().getPageNum()).isEqualTo(1);
+        assertThat(result.getData().getPageSize()).isEqualTo(2);
+        assertThat(result.getData().getRecords()).extracting(SessionReplyTemplateView::id).containsExactly("RT-S1", "RT-A1");
     }
 
     @Test
@@ -209,6 +241,7 @@ class OpsSessionTemplateServiceTest {
     }
 
     private static final class FakeSessionTemplateRepository implements SessionTemplateRepository {
+        private int seedCalls;
         private final List<SessionScriptView> scripts = new ArrayList<>(List.of(new SessionScriptView(
                 "AS-001",
                 "开场",
@@ -225,8 +258,22 @@ class OpsSessionTemplateServiceTest {
                 now())));
 
         @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
+        }
+
+        @Override
         public List<SessionScriptView> listScripts() {
             return List.copyOf(scripts);
+        }
+
+        @Override
+        public PageResult<SessionScriptView> pageScripts(SessionScriptQueryRequest request) {
+            long pageNum = request == null || request.pageNum() == null ? 1 : request.pageNum();
+            long pageSize = request == null || request.pageSize() == null ? 10 : request.pageSize();
+            int from = (int) Math.min(scripts.size(), Math.max(0, (pageNum - 1) * pageSize));
+            int to = (int) Math.min(scripts.size(), from + pageSize);
+            return new PageResult<>(scripts.size(), pageNum, pageSize, List.copyOf(scripts.subList(from, to)));
         }
 
         @Override
@@ -263,6 +310,15 @@ class OpsSessionTemplateServiceTest {
         @Override
         public List<SessionReplyTemplateView> listReplyTemplates() {
             return List.copyOf(templates);
+        }
+
+        @Override
+        public PageResult<SessionReplyTemplateView> pageReplyTemplates(SessionReplyTemplateQueryRequest request) {
+            long pageNum = request == null || request.pageNum() == null ? 1 : request.pageNum();
+            long pageSize = request == null || request.pageSize() == null ? 10 : request.pageSize();
+            int from = (int) Math.min(templates.size(), Math.max(0, (pageNum - 1) * pageSize));
+            int to = (int) Math.min(templates.size(), from + pageSize);
+            return new PageResult<>(templates.size(), pageNum, pageSize, List.copyOf(templates.subList(from, to)));
         }
 
         @Override

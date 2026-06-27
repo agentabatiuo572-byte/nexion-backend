@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Optional;
 
 public interface SupportTicketRepository {
+    void ensureSeedData(LocalDateTime now);
+
     Map<String, Object> counters();
 
     PageResult<SupportTicketView> pageTickets(SupportTicketQueryRequest request);

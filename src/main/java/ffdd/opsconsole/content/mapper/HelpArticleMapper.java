@@ -94,6 +94,59 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
     List<SessionScriptView> listSessionScripts();
 
     @Select("""
+            <script>
+            SELECT COUNT(1)
+              FROM nx_help_article
+             WHERE is_deleted=0 AND format='session_script'
+             <if test='status != null'>
+               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+             </if>
+             <if test='keyword != null'>
+               AND (
+                 article_code LIKE #{keyword}
+                 OR title LIKE #{keyword}
+                 OR content LIKE #{keyword}
+                 OR COALESCE(level, '') LIKE #{keyword}
+               )
+             </if>
+            </script>
+            """)
+    long countSessionScripts(@Param("status") String status, @Param("keyword") String keyword);
+
+    @Select("""
+            <script>
+            SELECT
+              article_code AS id,
+              title AS scriptGroup,
+              content AS text,
+              COALESCE(surface, '—') AS ctaPath,
+              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              COALESCE(level, '全量') AS audience,
+              updated_at AS updatedAt
+            FROM nx_help_article
+            WHERE is_deleted=0 AND format='session_script'
+             <if test='status != null'>
+               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+             </if>
+             <if test='keyword != null'>
+               AND (
+                 article_code LIKE #{keyword}
+                 OR title LIKE #{keyword}
+                 OR content LIKE #{keyword}
+                 OR COALESCE(level, '') LIKE #{keyword}
+               )
+             </if>
+            ORDER BY sort_order ASC, updated_at DESC, id DESC
+            LIMIT #{pageSize} OFFSET #{offset}
+            </script>
+            """)
+    List<SessionScriptView> pageSessionScripts(
+            @Param("status") String status,
+            @Param("keyword") String keyword,
+            @Param("pageSize") long pageSize,
+            @Param("offset") long offset);
+
+    @Select("""
             SELECT
               article_code AS id,
               title AS scriptGroup,
@@ -137,6 +190,65 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
             ORDER BY sort_order ASC, updated_at DESC, id DESC
             """)
     List<SessionReplyTemplateView> listSessionReplyTemplates();
+
+    @Select("""
+            <script>
+            SELECT COUNT(1)
+              FROM nx_help_article
+             WHERE is_deleted=0 AND format='session_reply_template'
+             <if test='type != null'>
+               AND COALESCE(level, title, 'support') = #{type}
+             </if>
+             <if test='status != null'>
+               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+             </if>
+             <if test='keyword != null'>
+               AND (
+                 article_code LIKE #{keyword}
+                 OR content LIKE #{keyword}
+                 OR COALESCE(level, title, '') LIKE #{keyword}
+               )
+             </if>
+            </script>
+            """)
+    long countSessionReplyTemplates(
+            @Param("type") String type,
+            @Param("status") String status,
+            @Param("keyword") String keyword);
+
+    @Select("""
+            <script>
+            SELECT
+              article_code AS id,
+              COALESCE(level, title, 'support') AS type,
+              content AS text,
+              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              updated_at AS updatedAt
+            FROM nx_help_article
+            WHERE is_deleted=0 AND format='session_reply_template'
+             <if test='type != null'>
+               AND COALESCE(level, title, 'support') = #{type}
+             </if>
+             <if test='status != null'>
+               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+             </if>
+             <if test='keyword != null'>
+               AND (
+                 article_code LIKE #{keyword}
+                 OR content LIKE #{keyword}
+                 OR COALESCE(level, title, '') LIKE #{keyword}
+               )
+             </if>
+            ORDER BY sort_order ASC, updated_at DESC, id DESC
+            LIMIT #{pageSize} OFFSET #{offset}
+            </script>
+            """)
+    List<SessionReplyTemplateView> pageSessionReplyTemplates(
+            @Param("type") String type,
+            @Param("status") String status,
+            @Param("keyword") String keyword,
+            @Param("pageSize") long pageSize,
+            @Param("offset") long offset);
 
     @Select("""
             SELECT

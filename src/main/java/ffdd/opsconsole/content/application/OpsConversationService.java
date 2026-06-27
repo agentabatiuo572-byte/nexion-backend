@@ -47,10 +47,12 @@ public class OpsConversationService {
 
     private final ConversationRepository conversationRepository;
     private final SupportTicketRepository ticketRepository;
+    private final OpsSupportAgentService supportAgentService;
     private final AuditLogService auditLogService;
     private final Clock clock;
 
     public ApiResult<Map<String, Object>> overview() {
+        ensureSeedData();
         Map<String, Object> response = new LinkedHashMap<>(conversationRepository.counters());
         response.put("domain", "I9");
         response.put("statuses", List.of("OPEN", "TRANSFERRED", "RESOLVED", "CLOSED"));
@@ -62,10 +64,12 @@ public class OpsConversationService {
     }
 
     public ApiResult<PageResult<ContentConversationView>> conversations(ConversationQueryRequest request) {
+        ensureSeedData();
         return ApiResult.ok(conversationRepository.pageConversations(request));
     }
 
     public ApiResult<ContentConversationDetail> detail(String conversationNo) {
+        ensureSeedData();
         if (!StringUtils.hasText(conversationNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_NO_REQUIRED");
         }
@@ -77,13 +81,15 @@ public class OpsConversationService {
     }
 
     public ApiResult<List<Map<String, Object>>> transferTargets() {
-        return ApiResult.ok(conversationRepository.transferTargets());
+        ensureSeedData();
+        return ApiResult.ok(supportAgentService.transferTargets());
     }
 
     public ApiResult<ContentConversationView> transfer(
             String conversationNo,
             String idempotencyKey,
             ConversationTransferRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireTransferCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -123,6 +129,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTransferDecisionRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireDecisionCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -148,6 +155,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTransferDecisionRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireDecisionCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -173,6 +181,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTransferDecisionRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireDecisionCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -199,6 +208,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationReplyRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireReplyCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -226,6 +236,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationStatusRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireStatusCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -253,6 +264,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationArchiveRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -284,6 +296,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationFallbackRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -311,6 +324,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTicketRequest request) {
+        ensureSeedData();
         ApiResult<ConversationTicketResult> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -360,6 +374,7 @@ public class OpsConversationService {
     public ApiResult<ContentConversationView> initiate(
             String idempotencyKey,
             ConversationInitiateRequest request) {
+        ensureSeedData();
         ApiResult<ContentConversationView> guard = requireInitiateCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -386,6 +401,12 @@ public class OpsConversationService {
                 "reason", reasonOrDefault(request.reason(), "single-user routine"),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(created);
+    }
+
+    private void ensureSeedData() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        conversationRepository.ensureSeedData(now);
+        ticketRepository.ensureSeedData(now);
     }
 
     private ApiResult<ContentConversationView> requireTransferCommand(

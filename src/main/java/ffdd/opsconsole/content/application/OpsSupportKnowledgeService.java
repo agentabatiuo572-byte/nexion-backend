@@ -37,6 +37,7 @@ public class OpsSupportKnowledgeService {
     private final Clock clock;
 
     public ApiResult<SupportKnowledgeOverview> overview() {
+        ensureSeedData();
         return ApiResult.ok(new SupportKnowledgeOverview(
                 knowledgeRepository.listFaqs(),
                 knowledgeRepository.listSla(),
@@ -49,6 +50,7 @@ public class OpsSupportKnowledgeService {
     }
 
     public ApiResult<SupportFaqView> createFaq(String idempotencyKey, SupportFaqUpsertRequest request) {
+        ensureSeedData();
         ApiResult<SupportFaqView> guard = requireFaqCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -65,6 +67,7 @@ public class OpsSupportKnowledgeService {
     }
 
     public ApiResult<SupportFaqView> updateFaq(String faqId, String idempotencyKey, SupportFaqUpsertRequest request) {
+        ensureSeedData();
         if (!StringUtils.hasText(faqId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "FAQ_ID_REQUIRED");
         }
@@ -87,6 +90,7 @@ public class OpsSupportKnowledgeService {
     }
 
     public ApiResult<SupportFaqView> updateFaqStatus(String faqId, String idempotencyKey, SupportFaqStatusRequest request) {
+        ensureSeedData();
         if (!StringUtils.hasText(faqId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "FAQ_ID_REQUIRED");
         }
@@ -118,6 +122,7 @@ public class OpsSupportKnowledgeService {
     }
 
     public ApiResult<Void> deleteFaq(String faqId, String idempotencyKey, SupportKnowledgeDeleteRequest request) {
+        ensureSeedData();
         if (!StringUtils.hasText(faqId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "FAQ_ID_REQUIRED");
         }
@@ -140,6 +145,7 @@ public class OpsSupportKnowledgeService {
     }
 
     public ApiResult<SupportSlaView> updateSla(String category, String idempotencyKey, SupportSlaUpdateRequest request) {
+        ensureSeedData();
         String normalizedCategory = normalizeCategory(category);
         if (!SLA_CATEGORIES.contains(normalizedCategory)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_SLA_CATEGORY_UNSUPPORTED");
@@ -176,6 +182,10 @@ public class OpsSupportKnowledgeService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
+    }
+
+    private void ensureSeedData() {
+        knowledgeRepository.ensureSeedData(LocalDateTime.now(clock));
     }
 
     private ApiResult<SupportFaqView> requireFaqCommand(String idempotencyKey, SupportFaqUpsertRequest request) {

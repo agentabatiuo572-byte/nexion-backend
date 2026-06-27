@@ -141,6 +141,7 @@ class OpsSupportTicketServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
+        assertThat(ticketRepository.seedCalls).isGreaterThan(0);
         assertThat(result.getData().get("sources")).asList().contains("nx_support_ticket", "nx_support_ticket_message");
     }
 
@@ -258,8 +259,14 @@ class OpsSupportTicketServiceTest {
 
     private static final class FakeSupportTicketRepository implements SupportTicketRepository {
         private SupportTicketView ticket = ticket("TK-1", "OPEN", "NORMAL");
+        private int seedCalls;
         private final List<SupportTicketMessageView> messages = new ArrayList<>(List.of(
                 new SupportTicketMessageView(1L, 1L, "TK-1", 1001L, "user", "用户", "initial body", LocalDateTime.now())));
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
+        }
 
         @Override
         public Map<String, Object> counters() {

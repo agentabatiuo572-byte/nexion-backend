@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -38,12 +39,15 @@ import org.mockito.ArgumentCaptor;
 class OpsConversationServiceTest {
     private final FakeConversationRepository conversationRepository = new FakeConversationRepository();
     private final FakeSupportTicketRepository ticketRepository = new FakeSupportTicketRepository();
+    private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsConversationService service = service();
 
     private OpsConversationService service() {
-        return new OpsConversationService(conversationRepository, ticketRepository, auditLogService, clock);
+        when(supportAgentService.transferTargets())
+                .thenReturn(List.of(Map.of("targetType", "agent", "targetId", "agent-2", "targetName", "Agent Two")));
+        return new OpsConversationService(conversationRepository, ticketRepository, supportAgentService, auditLogService, clock);
     }
 
     @Test
@@ -257,6 +261,7 @@ class OpsConversationServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
+        assertThat(conversationRepository.seedCalls).isGreaterThan(0);
         assertThat(result.getData().get("transferStateMachine"))
                 .asList()
                 .contains("OPEN->TRANSFERRED", "TRANSFERRED->OPEN");
@@ -325,6 +330,12 @@ class OpsConversationServiceTest {
     private static final class FakeConversationRepository implements ConversationRepository {
         private ContentConversationView conversation;
         private ConversationQueryRequest lastQuery;
+        private int seedCalls;
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+            seedCalls += 1;
+        }
 
         @Override
         public Map<String, Object> counters() {
@@ -355,11 +366,6 @@ class OpsConversationServiceTest {
                     "User",
                     "please help",
                     LocalDateTime.now()));
-        }
-
-        @Override
-        public List<Map<String, Object>> transferTargets() {
-            return List.of(Map.of("targetType", "agent", "targetId", "agent-2", "targetName", "Agent Two"));
         }
 
         @Override
@@ -552,6 +558,10 @@ class OpsConversationServiceTest {
     private static final class FakeSupportTicketRepository implements SupportTicketRepository {
         private SupportTicketView ticket;
         private List<SupportTicketMessageView> messages = List.of();
+
+        @Override
+        public void ensureSeedData(LocalDateTime now) {
+        }
 
         @Override
         public Map<String, Object> counters() {
