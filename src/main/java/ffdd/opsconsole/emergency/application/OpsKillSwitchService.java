@@ -104,7 +104,8 @@ public class OpsKillSwitchService {
         }
         boolean enable = parseEnabled(request.enabled());
         boolean before = gateEnabled(normalizedKey);
-        if (enable && !before && coverageBelowRedline()) {
+        GateSeed seed = gateSeed(normalizedKey);
+        if (enable && !before && seed.coveragePrecheckRequired() && coverageBelowRedline()) {
             return coverageRedline();
         }
         writeGate(normalizedKey, enable);

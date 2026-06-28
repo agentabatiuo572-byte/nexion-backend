@@ -53,6 +53,20 @@ class OpsKillSwitchServiceTest {
     }
 
     @Test
+    void restoreTrialDoesNotRequireB1Redline() {
+        configFacade.values.put("killswitch.trial", "disabled");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+
+        var result = service.toggle(
+                "trial",
+                "idem-j1-trial-restore",
+                new KillSwitchToggleRequest("enabled", "restore trial benefit gate", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("killswitch.trial", "enabled");
+    }
+
+    @Test
     void disableActiveGateWritesConfigAndAudit() {
         var result = service.toggle(
                 "exchange",
