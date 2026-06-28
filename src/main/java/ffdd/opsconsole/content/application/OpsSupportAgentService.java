@@ -103,7 +103,7 @@ public class OpsSupportAgentService {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        repository.ensureDefaultProfile(adminId, defaultPosition(operator), List.of("support"), DEFAULT_TAGS, 10, now);
+        repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now);
         List<String> serviceTypes = normalizeServiceTypes(request.serviceTypes());
         List<String> tags = normalizeTags(request.tags());
         int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, 10);
@@ -141,7 +141,7 @@ public class OpsSupportAgentService {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        repository.ensureDefaultProfile(adminId, defaultPosition(operator), List.of("support"), DEFAULT_TAGS, 10, now);
+        repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now);
         SupportAgentProfileRecord profile = repository.findProfile(adminId).orElseThrow();
         if (!profile.serviceTypes().contains("advisor")) {
             return ApiResult.fail(422, "SUPPORT_AGENT_NOT_ADVISOR");
@@ -224,7 +224,7 @@ public class OpsSupportAgentService {
         LocalDateTime now = LocalDateTime.now(clock);
         for (AdminAccountOverview.OperatorRecord operator : operators) {
             parseAdminId(operator.id()).ifPresent(adminId ->
-                    repository.ensureDefaultProfile(adminId, defaultPosition(operator), List.of("support"), DEFAULT_TAGS, 10, now));
+                    repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now));
         }
     }
 
@@ -238,7 +238,6 @@ public class OpsSupportAgentService {
                 operator.name(),
                 operator.email(),
                 operator.role(),
-                operator.tier(),
                 operator.status(),
                 profile.position(),
                 profile.serviceTypes(),
@@ -299,8 +298,8 @@ public class OpsSupportAgentService {
                 .findFirst();
     }
 
-    private String defaultPosition(AdminAccountOverview.OperatorRecord operator) {
-        return "lead".equalsIgnoreCase(operator.tier()) ? "客服主管" : "一线客服";
+    private String defaultPosition() {
+        return "一线客服";
     }
 
     private Optional<Long> parseAdminId(String value) {

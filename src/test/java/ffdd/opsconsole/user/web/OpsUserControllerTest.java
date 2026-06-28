@@ -13,6 +13,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.user.application.OpsUser360Service;
 import ffdd.opsconsole.user.application.OpsUserService;
 import ffdd.opsconsole.user.domain.UserAccountView;
+import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.dto.UserAccountListRemoveRequest;
 import ffdd.opsconsole.user.dto.UserAccountListUpsertRequest;
@@ -22,6 +23,7 @@ import ffdd.opsconsole.user.dto.UserImpersonationTerminateRequest;
 import ffdd.opsconsole.user.dto.UserKycExportRequest;
 import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
 import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
+import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.dto.UserRegistrationRiskParamUpdateRequest;
 import ffdd.opsconsole.user.dto.UserSessionRevokeAllRequest;
@@ -29,6 +31,8 @@ import ffdd.opsconsole.user.dto.UserStatusUpdateRequest;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 
 class OpsUserControllerTest {
     private final OpsUserService userService = mock(OpsUserService.class);
@@ -55,6 +59,44 @@ class OpsUserControllerTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().getPageSize()).isEqualTo(20);
         verify(userService).profilePage(eq(request));
+    }
+
+    @Test
+    void profileExportRequiresIdempotencyKeyAndReason() {
+        UserProfileExportRequest request = new UserProfileExportRequest(
+                null,
+                null,
+                null,
+                null,
+                "C1 masked user export",
+                "superadmin");
+
+        ResponseEntity<?> missingKey = controller.exportProfiles(" ", request);
+        ResponseEntity<?> missingReason = controller.exportProfiles(
+                "idem-c1-export",
+                new UserProfileExportRequest(null, null, null, null, " ", "superadmin"));
+
+        assertThat(missingKey.getStatusCode().value()).isEqualTo(422);
+        assertThat(missingReason.getStatusCode().value()).isEqualTo(422);
+    }
+
+    @Test
+    void profileExportReturnsExcelDownload() {
+        UserProfileExportRequest request = new UserProfileExportRequest(
+                "Alice",
+                "ACTIVE",
+                null,
+                null,
+                "C1 masked user export",
+                "superadmin");
+        when(userService.exportProfileExcel("idem-c1-export", request))
+                .thenReturn(new UserProfileExportFile("C1-USER-EXP-test.xls", "excel".getBytes(), 1));
+
+        ResponseEntity<?> result = controller.exportProfiles("idem-c1-export", request);
+
+        assertThat(result.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(result.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION)).contains("C1-USER-EXP-test.xls");
+        verify(userService).exportProfileExcel(eq("idem-c1-export"), eq(request));
     }
 
     @Test

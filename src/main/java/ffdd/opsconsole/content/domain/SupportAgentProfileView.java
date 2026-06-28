@@ -8,7 +8,6 @@ public record SupportAgentProfileView(
         String name,
         String email,
         String adminRole,
-        String adminTier,
         String status,
         String position,
         List<String> serviceTypes,

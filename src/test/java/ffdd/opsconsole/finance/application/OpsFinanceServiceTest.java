@@ -257,6 +257,34 @@ class OpsFinanceServiceTest {
         assertThat(result.getData().getRecords()).extracting(WithdrawalOrderView::withdrawalNo).containsExactly("D2-SEED-WD-1");
     }
 
+    @Test
+    void withdrawalsReseedsD2FallbackWhenSeedRowsHaveNoActionableState() {
+        withdrawalRepository.order = withdrawal("D2-SEED-WD-1", "SUCCESS");
+
+        ApiResult<PageResult<WithdrawalOrderView>> result = service.withdrawals(
+                new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(withdrawalRepository.seedCalls).isEqualTo(1);
+        assertThat(result.getData().getRecords())
+                .extracting(WithdrawalOrderView::status)
+                .containsExactly("REVIEWING");
+    }
+
+    @Test
+    void withdrawalsDoesNotSeedWhenOnlyRealFinalRowsExist() {
+        withdrawalRepository.order = withdrawal("WD-REAL-1", "SUCCESS");
+
+        ApiResult<PageResult<WithdrawalOrderView>> result = service.withdrawals(
+                new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(withdrawalRepository.seedCalls).isZero();
+        assertThat(result.getData().getRecords())
+                .extracting(WithdrawalOrderView::withdrawalNo)
+                .containsExactly("WD-REAL-1");
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
@@ -374,7 +402,10 @@ class OpsFinanceServiceTest {
             lastMinAmountFilter = minAmount;
             lastMaxAmountFilter = maxAmount;
             lastMinRiskScoreFilter = minRiskScore;
-            return new PageResult<>(order == null ? 0 : 1, pageNum, pageSize, order == null ? List.of() : List.of(order));
+            if (order == null || (status != null && !status.equals(order.status()))) {
+                return new PageResult<>(0, pageNum, pageSize, List.of());
+            }
+            return new PageResult<>(1, pageNum, pageSize, List.of(order));
         }
 
         @Override
@@ -395,9 +426,24 @@ class OpsFinanceServiceTest {
         }
 
         @Override
+        public long countD2SeedWithdrawals() {
+            return order != null && order.withdrawalNo().startsWith("D2-SEED-") ? 1 : 0;
+        }
+
+        @Override
+        public long countD2ActionableWithdrawals() {
+            return order != null && isActionableStatus(order.status()) ? 1 : 0;
+        }
+
+        @Override
         public void seedD2FallbackData(Map<String, Long> userIds) {
             seedCalls++;
             order = withdrawal("D2-SEED-WD-1", "REVIEWING");
+        }
+
+        private boolean isActionableStatus(String status) {
+            return List.of("REVIEWING", "DELAYED", "FROZEN", "PENDING_CHAIN", "CHAIN_SUBMITTED", "DEAD")
+                    .contains(status);
         }
     }
 

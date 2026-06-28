@@ -533,10 +533,13 @@ public class OpsFinanceService {
 
     private void ensureD2FallbackSeedData() {
         PageResult<WithdrawalOrderView> firstPage = withdrawalRepository.page(null, null, null, null, null, null, 1, 1);
-        if (firstPage.getTotal() > 0) {
+        if (firstPage.getTotal() == 0) {
+            withdrawalRepository.seedD2FallbackData(seedUserIds());
             return;
         }
-        withdrawalRepository.seedD2FallbackData(seedUserIds());
+        if (withdrawalRepository.countD2ActionableWithdrawals() == 0 && withdrawalRepository.countD2SeedWithdrawals() > 0) {
+            withdrawalRepository.seedD2FallbackData(seedUserIds());
+        }
     }
 
     private Map<String, Long> seedUserIds() {

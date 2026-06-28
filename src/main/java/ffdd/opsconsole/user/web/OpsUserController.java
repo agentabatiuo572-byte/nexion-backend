@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.user.application.OpsUser360Service;
 import ffdd.opsconsole.user.application.OpsUserService;
 import ffdd.opsconsole.user.domain.UserAccountActionOverview;
@@ -16,6 +17,7 @@ import ffdd.opsconsole.user.domain.UserCredentialParamView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
 import ffdd.opsconsole.user.domain.UserKycLedgerRow;
 import ffdd.opsconsole.user.domain.UserKycOverview;
+import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskParamView;
 import ffdd.opsconsole.user.domain.UserSecurityOverview;
@@ -32,14 +34,21 @@ import ffdd.opsconsole.user.dto.UserImpersonationTerminateRequest;
 import ffdd.opsconsole.user.dto.UserKycExportRequest;
 import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
 import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
+import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.dto.UserRegistrationRiskParamUpdateRequest;
 import ffdd.opsconsole.user.dto.UserSecurityActionRequest;
 import ffdd.opsconsole.user.dto.UserSessionRevokeAllRequest;
 import ffdd.opsconsole.user.dto.UserSessionRevokeRequest;
 import ffdd.opsconsole.user.dto.UserStatusUpdateRequest;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -102,6 +111,31 @@ public class OpsUserController {
     @GetMapping("/profiles/{userId}")
     public ApiResult<UserAccountView> profile(@PathVariable Long userId) {
         return userService.profile(userId);
+    }
+
+    @PostMapping("/profiles/export")
+    public ResponseEntity<?> exportProfiles(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) UserProfileExportRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return jsonFailure(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED);
+        }
+        if (request == null || !StringUtils.hasText(request.reason())) {
+            return jsonFailure(OpsErrorCode.REASON_REQUIRED);
+        }
+        try {
+            UserProfileExportFile file = userService.exportProfileExcel(idempotencyKey, request);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("application/vnd.ms-excel;charset=UTF-8"))
+                    .contentLength(file.body().length)
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            ContentDisposition.attachment().filename(file.fileName(), StandardCharsets.UTF_8).build().toString())
+                    .body(file.body());
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.status(OpsErrorCode.VALIDATION_FAILED.httpStatus())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage()));
+        }
     }
 
     @GetMapping("/account-actions/overview")
@@ -280,5 +314,11 @@ public class OpsUserController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody UserSessionRevokeRequest request) {
         return userService.revokeSession(refreshTokenId, idempotencyKey, request);
+    }
+
+    private ResponseEntity<ApiResult<Map<String, Object>>> jsonFailure(OpsErrorCode errorCode) {
+        return ResponseEntity.status(errorCode.httpStatus())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResult.fail(errorCode.httpStatus(), errorCode.name()));
     }
 }

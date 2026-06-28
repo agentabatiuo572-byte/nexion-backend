@@ -20,8 +20,11 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -71,32 +74,44 @@ class OpsAuditControllerTest {
     void exportRequiresReason() {
         AuditExportRequest request = new AuditExportRequest(null, Map.of("action", "LOGIN"));
 
-        ApiResult<Map<String, Object>> result = controller.export("idem-1", request);
+        ResponseEntity<?> result = controller.export("idem-1", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+        assertThat(result.getStatusCode().value()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        ApiResult<?> body = (ApiResult<?>) result.getBody();
+        assertThat(body.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(body.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
     }
 
     @Test
     void exportRequiresIdempotencyKey() {
         AuditExportRequest request = new AuditExportRequest("incident review", Map.of("action", "LOGIN"));
 
-        ApiResult<Map<String, Object>> result = controller.export(" ", request);
+        ResponseEntity<?> result = controller.export(" ", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        assertThat(result.getStatusCode().value()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
+        ApiResult<?> body = (ApiResult<?>) result.getBody();
+        assertThat(body.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
+        assertThat(body.getMessage()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
     }
 
     @Test
     void exportWritesA2AuditRecordWithReasonAndIdempotencyKey() {
         AuditExportRequest request = new AuditExportRequest("incident review", Map.of("action", "LOGIN"));
+        AuditLogRecord record = new AuditLogRecord();
+        record.setAction("LOGIN");
+        record.setResourceType("ADMIN_SESSION");
+        record.setResourceId("login-1");
+        record.setActorUsername("superadmin");
+        record.setResult("SUCCESS");
+        record.setRiskLevel("LOW");
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(record));
 
-        ApiResult<Map<String, Object>> result = controller.export("idem-1", request);
+        ResponseEntity<?> result = controller.export("idem-1", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData())
-                .containsEntry("status", "CREATED")
-                .containsEntry("idempotencyKey", "idem-1");
+        assertThat(result.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(result.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION)).contains(".xls");
+        String workbook = new String((byte[]) result.getBody(), StandardCharsets.UTF_8);
+        assertThat(workbook).contains("A2 审计日志导出", "incident review", "LOGIN", "superadmin");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());

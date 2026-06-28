@@ -56,34 +56,34 @@ public class OpsAuditCenterService {
     private static final List<OperationSeed> OPERATION_SEEDS = List.of(
             op("WO-8852", "提现放行(大额操作确认)", "usr-7F21 · $8,200", "review", "approved",
                     "郑爽(财务)", "finance", "fund", true, false, "2m", false,
-                    "财务 lead / 超管", "用户工单 #4471 核实补偿;依据已附"),
+                    "财务 / 超管", "用户工单 #4471 核实补偿;依据已附"),
             op("WO-8851", "账单手工调整", "bill-2K8842 · 误扣冲正", "-", "+$214.00",
-                    "吴桐(财务 lead)", "finance", "fund", true, false, "18m", false,
-                    "财务 lead / 超管", "客服工单 #4488 误扣证据齐全"),
+                    "吴桐(财务)", "finance", "fund", true, false, "18m", false,
+                    "财务 / 超管", "客服工单 #4488 误扣证据齐全"),
             op("WO-8850", "J1 熔断恢复 · exchange 闸", "J 域 · 兑换能力", "disabled", "enabled",
-                    "王磊(风控 lead)", "risk", "sos", false, true, "42m", false,
+                    "王磊(风控)", "risk", "sos", false, true, "42m", false,
                     "超管(应急轨)", "风险事件已闭环,SLA 内恢复"),
             op("WO-8849", "课程奖励上调(I7)", "genesis-nodes · +40→+45 NEX", "+40", "+45",
-                    "李文(内容 lead)", "content", "fund", true, false, "36m", false,
-                    "内容 lead / 超管", "P3 阶段教育引流提升,B1 覆盖率核验通过"),
+                    "李文(内容)", "content", "fund", true, false, "36m", false,
+                    "内容 / 超管", "P3 阶段教育引流提升,B1 覆盖率核验通过"),
             op("WO-8848", "余额调整(客服小额)", "usr-9C03 · 补偿", "$0", "+$36.00",
                     "刘佳(客服)", "support", "fund", true, false, "34m", false,
-                    "财务 lead / 超管", "客诉 ticket #5512 已核实"),
+                    "财务 / 超管", "客诉 ticket #5512 已核实"),
             op("WO-8847", "Phase dial · 周任务倍率", "H1 · P3 月档", "1.25x", "1.30x",
                     "高翔(增长)", "growth", "param", true, false, "1h", false,
-                    "对应域 lead / 超管(dial 放大方向加风控 lead)", "本周 KPI 节奏校准,7 日窗口实验"),
+                    "对应域角色 / 超管(dial 放大方向需风控或超管)", "本周 KPI 节奏校准,7 日窗口实验"),
             op("WO-8846", "OTP 发送频次(C6)", "注册风控", "3 次/小时", "5 次/小时",
                     "许晴(风控)", "risk", "param", false, false, "2h", false,
-                    "风控 lead / 超管", "正常用户重发投诉激增,放宽频控"),
+                    "风控 / 超管", "正常用户重发投诉激增,放宽频控"),
             op("WO-8845", "风险模型权重(K4)", "多账户信号权重", "0.32", "0.40",
-                    "王磊(风控 lead)", "risk", "param", false, false, "3h", false,
-                    "超管 / 风控 lead", "K1 簇击中样本回归,权重需上调"),
+                    "王磊(风控)", "risk", "param", false, false, "3h", false,
+                    "超管 / 风控", "K1 簇击中样本回归,权重需上调"),
             op("WO-8844", "账户冻结(C2)", "usr-1A77 · 套利簇关联", "active", "frozen",
                     "许晴(风控)", "risk", "acct", false, false, "4h", false,
-                    "风控 lead / 超管", "K1 多账户簇命中,套利路径已闭合证据"),
+                    "风控 / 超管", "K1 多账户簇命中,套利路径已闭合证据"),
             op("WO-8843", "披露新版发布(I5)", "SFC · v12→v13", "v12", "v13",
-                    "王磊(风控 lead)", "risk", "acct", false, false, "5h", false,
-                    "风控 lead / 超管", "监管发函要求条款更新,7 日内全量重确认"),
+                    "王磊(风控)", "risk", "acct", false, false, "5h", false,
+                    "风控 / 超管", "监管发函要求条款更新,7 日内全量重确认"),
             op("WO-8842", "运营账号创建(A1)", "新风控成员", "-", "op-072",
                     "赵敏(超管)", "super", "acct", false, false, "6h", false,
                     "超管", "新员工入职,风控成员岗 op-072"),
@@ -91,18 +91,18 @@ public class OpsAuditCenterService {
                     "高翔(增长)", "growth", "param", false, false, "8h", false,
                     "超管", "新提现 UX A/B,灰度 20% 7 日观察"),
             op("WO-8839", "储备注入登记(B1/D3)", "+$500K 入储备池", "-", "+$500K",
-                    "吴桐(财务 lead)", "finance", "fund", false, false, "12h", false,
-                    "财务 lead / 超管", "财务季度调拨,提升 B1 覆盖率 +5pp"),
+                    "吴桐(财务)", "finance", "fund", false, false, "12h", false,
+                    "财务 / 超管", "财务季度调拨,提升 B1 覆盖率 +5pp"),
             op("WO-8838", "提现参数 · 冷却时长(D5)", "非 Phase 参数", "48h", "36h",
-                    "吴桐(财务 lead)", "finance", "param", true, false, "14h", true,
-                    "财务 lead / 超管", "缩短冷却提升用户体验,逐步降低摩擦"));
+                    "吴桐(财务)", "finance", "param", true, false, "14h", true,
+                    "财务 / 超管", "缩短冷却提升用户体验,逐步降低摩擦"));
 
     private static final List<AuditOperationHistory> DEFAULT_HISTORY = List.of(
             new AuditOperationHistory("WO-8841", "提现放行 $12,400", STATUS_APPROVED,
-                    "吴桐(财务 lead) · reason + admin.operation_confirmed", "今天 09:21",
+                    "吴桐(财务) · reason + admin.operation_confirmed", "今天 09:21",
                     "原因:大额操作确认线上人工核验,KYC 与风险分均过"),
             new AuditOperationHistory("WO-8836", "幸运 2x 概率 5%→8%", STATUS_REJECTED,
-                    "吴桐(财务 lead) · reason + admin.operation_rejected", "今天 08:40",
+                    "吴桐(财务) · reason + admin.operation_rejected", "今天 08:40",
                     "取消原因:本周代币流出已超预算 12%,下周再议"),
             new AuditOperationHistory("WO-8830", "余额调整 +$50", "withdrawn",
                     "刘佳(客服) · reason + admin.operation_cancelled", "昨天 18:02",
@@ -112,15 +112,15 @@ public class OpsAuditCenterService {
                     "作废事件落审计(admin.operation_expired)"));
 
     private static final List<AuditLogSeed> AUDIT_LOG_SEEDS = List.of(
-            audit("今天 10:12", "王磊", "风控 lead", "killswitch_toggled", "J1 · exchange 闸",
+            audit("今天 10:12", "王磊", "风控", "killswitch_toggled", "J1 · exchange 闸",
                     "enabled -> disabled", "A", "10.2.3.21", "A2_AUDIT_ADMIN"),
-            audit("今天 09:21", "吴桐", "财务 lead", "withdraw_approved", "D2 · usr-7F21 $12,400",
+            audit("今天 09:21", "吴桐", "财务", "withdraw_approved", "D2 · usr-7F21 $12,400",
                     "review -> sent", "D", "10.2.3.31", "A2_AUDIT_WITHDRAW"),
-            audit("今天 09:02", "李文", "内容 lead", "content_published", "I1 · home.conversionBanner",
+            audit("今天 09:02", "李文", "内容", "content_published", "I1 · home.conversionBanner",
                     "v7 -> v8", "I", "10.2.3.41", "A2_AUDIT_CONTENT"),
             audit("今天 08:55", "陈锐", "超管", "operator_role_changed", "A1 · op-041",
-                    "增长 -> 增长(lead)", "A", "10.2.3.11", "A2_AUDIT_ADMIN"),
-            audit("今天 08:40", "吴桐", "财务 lead", "operation_rejected", "H5 · 幸运 2x 概率",
+                    "内容 -> 增长", "A", "10.2.3.11", "A2_AUDIT_ADMIN"),
+            audit("今天 08:40", "吴桐", "财务", "operation_rejected", "H5 · 幸运 2x 概率",
                     "5% -> 8%(驳回)", "H", "10.2.3.31", "A2_AUDIT_OPERATION"),
             audit("昨天 21:18", "许晴", "风控", "user_frozen", "C2 · usr-1A77",
                     "active -> frozen", "C", "10.2.3.22", "A2_AUDIT_USER"),
@@ -130,15 +130,15 @@ public class OpsAuditCenterService {
                     "1.20x -> 1.25x", "H", "10.2.3.41", "A2_AUDIT_PHASE"));
 
     private static final List<AuditConfirmCategory> CONFIRM_CATEGORY_SEEDS = List.of(
-            new AuditConfirmCategory("资金/资产调整", "余额增减(C3)· 手工账单(D4)· 储备注入(B1/D3)· 对账核销(D1)", "财务 lead / 超管"),
-            new AuditConfirmCategory("大额资金放行", "提现放行/冻结/退款(D2)· 渠道退款(D1)", "财务 lead / 超管"),
-            new AuditConfirmCategory("参数批改", "红黄线(B1)· 提现参数(D5)· OTP/锁定(C6)· Phase dial(H1)· 试用敏感参数(H2)", "对应域 lead / 超管(dial 放大方向加风控 lead)"),
-            new AuditConfirmCategory("风险模型/KYC 裁决", "K4 权重分档(执行门槛升超管)· K5 大额复审", "超管 / 风控 lead"),
+            new AuditConfirmCategory("资金/资产调整", "余额增减(C3)· 手工账单(D4)· 储备注入(B1/D3)· 对账核销(D1)", "财务 / 超管"),
+            new AuditConfirmCategory("大额资金放行", "提现放行/冻结/退款(D2)· 渠道退款(D1)", "财务 / 超管"),
+            new AuditConfirmCategory("参数批改", "红黄线(B1)· 提现参数(D5)· OTP/锁定(C6)· Phase dial(H1)· 试用敏感参数(H2)", "对应域角色 / 超管(dial 放大方向需风控或超管)"),
+            new AuditConfirmCategory("风险模型/KYC 裁决", "K4 权重分档(执行门槛升超管)· K5 大额复审", "超管 / 风控"),
             new AuditConfirmCategory("熔断闸", "6 功能闸 + 地区屏蔽(J1/J2 管理面)", "超管"),
-            new AuditConfirmCategory("账户高敏处置", "冻结/解冻 · impersonate(C2)· KYC 人工标记(C4)· 2FA/密码(C5)", "风控 lead / 超管"),
-            new AuditConfirmCategory("批量簇冻结", "关联账户簇批量冻结(K1)", "风控 lead / 超管"),
+            new AuditConfirmCategory("账户高敏处置", "冻结/解冻 · impersonate(C2)· KYC 人工标记(C4)· 2FA/密码(C5)", "风控 / 超管"),
+            new AuditConfirmCategory("批量簇冻结", "关联账户簇批量冻结(K1)", "风控 / 超管"),
             new AuditConfirmCategory("后台账号治理", "建/停/启/改角色/重置双因子(A1)", "超管"),
-            new AuditConfirmCategory("平台配置", "feature flag · 系统参数(A3)· 内容发布(I 域)", "超管 / 内容 lead"));
+            new AuditConfirmCategory("平台配置", "feature flag · 系统参数(A3)· 内容发布(I 域)", "超管 / 内容"));
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
@@ -161,6 +161,20 @@ public class OpsAuditCenterService {
                 recentLogs(),
                 todaySummary,
                 topActions()));
+    }
+
+    public int pendingOperationCountByActionMarker(String marker) {
+        if (!StringUtils.hasText(marker)) {
+            return 0;
+        }
+        ensureSeedData();
+        String normalizedMarker = marker.trim();
+        return (int) ticketMapper.selectList(new LambdaQueryWrapper<AuditOperationTicketEntity>()
+                        .eq(AuditOperationTicketEntity::getIsDeleted, 0)
+                        .eq(AuditOperationTicketEntity::getStatus, STATUS_PENDING))
+                .stream()
+                .filter(ticket -> ticket.getAction() != null && ticket.getAction().contains(normalizedMarker))
+                .count();
     }
 
     @Transactional
@@ -236,7 +250,7 @@ public class OpsAuditCenterService {
                 .actorType("ADMIN")
                 .actorUsername(ticket.getOperatorName())
                 .result("SUCCESS")
-                .riskLevel(isTrue(ticket.getAmplifies()) || isTrue(ticket.getSos()) ? "HIGH" : "MEDIUM")
+                .riskLevel(operationRiskLevel(ticket))
                 .detail(Map.of(
                         "operationId", ticket.getOperationId(),
                         "action", ticket.getAction(),
@@ -319,10 +333,19 @@ public class OpsAuditCenterService {
                 .actorType("ADMIN")
                 .actorUsername(request.operator().trim())
                 .result("SUCCESS")
-                .riskLevel(isTrue(ticket.getAmplifies()) || isTrue(ticket.getSos()) ? "HIGH" : "MEDIUM")
+                .riskLevel(operationRiskLevel(ticket))
                 .detail(decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()))
                 .build());
         return ApiResult.ok(toTicket(ticket));
+    }
+
+    private String operationRiskLevel(AuditOperationTicketEntity ticket) {
+        if (ticket == null) {
+            return "MEDIUM";
+        }
+        return isTrue(ticket.getAmplifies()) || isTrue(ticket.getSos()) || "acct".equals(ticket.getOperationType())
+                ? "HIGH"
+                : "MEDIUM";
     }
 
     private Map<String, Object> decisionDetail(
@@ -369,7 +392,8 @@ public class OpsAuditCenterService {
     private List<AuditOperationTicket> tickets() {
         return ticketMapper.selectList(new LambdaQueryWrapper<AuditOperationTicketEntity>()
                         .eq(AuditOperationTicketEntity::getIsDeleted, 0)
-                        .orderByDesc(AuditOperationTicketEntity::getOperationId))
+                        .orderByDesc(AuditOperationTicketEntity::getCreatedAt)
+                        .orderByDesc(AuditOperationTicketEntity::getId))
                 .stream()
                 .map(this::toTicket)
                 .toList();

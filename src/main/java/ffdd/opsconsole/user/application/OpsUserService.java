@@ -23,6 +23,7 @@ import ffdd.opsconsole.user.domain.UserKycLedgerRow;
 import ffdd.opsconsole.user.domain.UserKycOverview;
 import ffdd.opsconsole.user.domain.UserKycStats;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
+import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskK1GuardView;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskParamView;
@@ -43,6 +44,7 @@ import ffdd.opsconsole.user.dto.UserKycExportRequest;
 import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
 import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationRequest;
+import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.dto.UserRegistrationRiskParamUpdateRequest;
 import ffdd.opsconsole.user.dto.UserSecurityActionRequest;
@@ -50,10 +52,12 @@ import ffdd.opsconsole.user.dto.UserSessionRevokeAllRequest;
 import ffdd.opsconsole.user.dto.UserSessionRevokeRequest;
 import ffdd.opsconsole.user.dto.UserStatusUpdateRequest;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -251,12 +255,144 @@ public class OpsUserService {
         return ApiResult.ok(userRepository.pageProfiles(request));
     }
 
+    public UserProfileExportFile exportProfileExcel(String idempotencyKey, UserProfileExportRequest request) {
+        ensureC1ProfileSeeds();
+        String normalizedKey = requireText(idempotencyKey, "IDEMPOTENCY_KEY_REQUIRED");
+        String reason = requireText(request == null ? null : request.reason(), "REASON_REQUIRED");
+        String operator = operator(request == null ? null : request.operator());
+        int pageSize = 100;
+        UserQueryRequest firstQuery = new UserQueryRequest(
+                request == null ? null : request.keyword(),
+                request == null ? null : request.status(),
+                request == null ? null : request.kycStatus(),
+                request == null ? null : request.riskMin(),
+                1,
+                pageSize,
+                null);
+        PageResult<UserAccountView> first = userRepository.pageProfiles(firstQuery);
+        List<UserAccountView> rows = new ArrayList<>();
+        if (first.getRecords() != null) {
+            rows.addAll(first.getRecords());
+        }
+        long total = Math.max(first.getTotal(), rows.size());
+        int totalPages = (int) Math.min(50, Math.max(1, (total + pageSize - 1) / pageSize));
+        for (int pageNum = 2; pageNum <= totalPages; pageNum += 1) {
+            PageResult<UserAccountView> page = userRepository.pageProfiles(new UserQueryRequest(
+                    request == null ? null : request.keyword(),
+                    request == null ? null : request.status(),
+                    request == null ? null : request.kycStatus(),
+                    request == null ? null : request.riskMin(),
+                    pageNum,
+                    pageSize,
+                    null));
+            if (page.getRecords() != null) {
+                rows.addAll(page.getRecords());
+            }
+        }
+        LocalDateTime createdAt = LocalDateTime.now();
+        String jobNo = "C1-USER-EXP-" + DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(createdAt);
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("jobNo", jobNo);
+        detail.put("rowCount", rows.size());
+        detail.put("keyword", text(request == null ? null : request.keyword()));
+        detail.put("status", text(request == null ? null : request.status()));
+        detail.put("kycStatus", text(request == null ? null : request.kycStatus()));
+        detail.put("riskMin", text(request == null ? null : request.riskMin()));
+        detail.put("reason", reason);
+        detail.put("idempotencyKey", normalizedKey);
+        audit("C1_USER_PROFILE_MASKED_EXPORTED", "USER_PROFILE_EXPORT", jobNo, null, operator, detail);
+        return new UserProfileExportFile(
+                jobNo + ".xls",
+                profileExportWorkbook(jobNo, normalizedKey, createdAt, reason, rows),
+                rows.size());
+    }
+
     private void ensureC1ProfileSeeds() {
         boolean seedUsersMissing = ACCOUNT_ACTION_SEED_LOOKUP_KEYS.stream()
                 .anyMatch(key -> userRepository.findUserIdByLookupKey(key).isEmpty());
         if (seedUsersMissing) {
             userRepository.upsertAccountActionSeeds();
         }
+    }
+
+    private byte[] profileExportWorkbook(
+            String jobNo,
+            String idempotencyKey,
+            LocalDateTime createdAt,
+            String reason,
+            List<UserAccountView> rows) {
+        StringBuilder html = new StringBuilder(8192 + rows.size() * 640);
+        html.append('\ufeff')
+                .append("<html><head><meta charset=\"UTF-8\"></head><body>")
+                .append("<table border=\"1\">")
+                .append("<tr><th colspan=\"16\">C1 脱敏用户名单导出</th></tr>")
+                .append("<tr><td>导出单号</td><td colspan=\"15\">").append(excelText(jobNo)).append("</td></tr>")
+                .append("<tr><td>导出时间</td><td colspan=\"15\">").append(excelText(dateText(createdAt))).append("</td></tr>")
+                .append("<tr><td>幂等键</td><td colspan=\"15\">").append(excelText(idempotencyKey)).append("</td></tr>")
+                .append("<tr><td>导出原因</td><td colspan=\"15\">").append(excelText(reason)).append("</td></tr>")
+                .append("<tr>")
+                .append(th("用户编码"))
+                .append(th("昵称"))
+                .append(th("手机号(脱敏)"))
+                .append(th("国家/地区"))
+                .append(th("生命周期"))
+                .append(th("V-Rank"))
+                .append(th("KYC"))
+                .append(th("状态"))
+                .append(th("风险分"))
+                .append(th("风险等级"))
+                .append(th("设备数"))
+                .append(th("活跃设备数"))
+                .append(th("USDT余额"))
+                .append(th("NEX余额"))
+                .append(th("注册时间"))
+                .append(th("最近登录"))
+                .append("</tr>");
+        for (UserAccountView row : rows) {
+            html.append("<tr>")
+                    .append(td(row.userNo()))
+                    .append(td(row.nickname()))
+                    .append(td(row.phoneMasked()))
+                    .append(td(row.countryCode()))
+                    .append(td(row.userLevel()))
+                    .append(td(row.vRank()))
+                    .append(td(row.kycStatus()))
+                    .append(td(row.status()))
+                    .append(td(row.riskScore()))
+                    .append(td(row.riskBand()))
+                    .append(td(row.deviceCount()))
+                    .append(td(row.activeDeviceCount()))
+                    .append(td(row.walletUsdt()))
+                    .append(td(row.walletNex()))
+                    .append(td(dateText(row.registeredAt())))
+                    .append(td(dateText(row.lastLoginAt())))
+                    .append("</tr>");
+        }
+        html.append("</table></body></html>");
+        return html.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private String th(String value) {
+        return "<th>" + excelText(value) + "</th>";
+    }
+
+    private String td(Object value) {
+        return "<td style=\"mso-number-format:'\\@';\">" + excelText(value) + "</td>";
+    }
+
+    private String excelText(Object value) {
+        String raw = value instanceof BigDecimal decimal ? decimal.toPlainString() : text(value);
+        if (raw.startsWith("=") || raw.startsWith("+") || raw.startsWith("-") || raw.startsWith("@")) {
+            raw = "'" + raw;
+        }
+        return raw.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;");
+    }
+
+    private String dateText(LocalDateTime value) {
+        return value == null ? "—" : value.toString().replace('T', ' ');
     }
 
     public ApiResult<UserKycOverview> kycOverview(String status, Integer limit) {
@@ -1045,7 +1181,7 @@ public class OpsUserService {
         detail.put("sessionsRevoked", sessionsRevoked);
         detail.put("reason", request.reason().trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
-        audit("C1_USER_STATUS_CHANGED", "USER", String.valueOf(userId), userId, request.operator(), detail);
+        audit("C2_USER_STATUS_CHANGED", "USER", String.valueOf(userId), userId, request.operator(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1103,7 +1239,7 @@ public class OpsUserService {
         response.put("ttlMinutes", ttlMinutes);
         response.put("expiresAt", expiresAt);
         response.put("boundary", "admin impersonation is audited and does not expose credentials");
-        audit("C3_USER_IMPERSONATION_STARTED", "USER_IMPERSONATION", sessionNo, userId, operator, Map.of(
+        audit("C2_USER_IMPERSONATION_STARTED", "USER_IMPERSONATION", sessionNo, userId, operator, Map.of(
                 "ttlMinutes", ttlMinutes,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));

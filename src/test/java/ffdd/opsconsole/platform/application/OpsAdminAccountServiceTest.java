@@ -21,6 +21,8 @@ import ffdd.opsconsole.platform.dto.AdminAccountSecurityBaselineUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -48,9 +50,11 @@ class OpsAdminAccountServiceTest {
     private final AdminRoleRelationMapper roleRelationMapper = mock(AdminRoleRelationMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
+    private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
     private final List<AdminEntity> admins = new ArrayList<>();
     private final OpsAdminAccountService service =
-            new OpsAdminAccountService(repository, auditLogService, adminMapper, roleRelationMapper, passwordEncoder, adminSessionRegistry);
+            new OpsAdminAccountService(repository, auditLogService, adminMapper, roleRelationMapper, passwordEncoder,
+                    adminSessionRegistry, auditCenterService);
 
     @BeforeEach
     void setUp() {
@@ -70,6 +74,27 @@ class OpsAdminAccountServiceTest {
         when(adminMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(admins));
         when(adminMapper.selectOne(any())).thenReturn(null);
         when(adminSessionRegistry.countActiveSessions(any(Long.class))).thenReturn(0);
+        when(auditCenterService.pendingOperationCountByActionMarker("(A1)")).thenReturn(0);
+        when(auditCenterService.createProposal(any(String.class), any(AuditOperationProposalRequest.class)))
+                .thenAnswer(invocation -> {
+                    AuditOperationProposalRequest proposal = invocation.getArgument(1);
+                    return ApiResult.ok(new AuditCenterOverview.AuditOperationTicket(
+                            "WO-A1-TEST",
+                            proposal.action(),
+                            proposal.obj(),
+                            proposal.beforeValue(),
+                            proposal.afterValue(),
+                            proposal.operator(),
+                            proposal.operatorRole(),
+                            proposal.type(),
+                            Boolean.TRUE.equals(proposal.amplifies()),
+                            Boolean.TRUE.equals(proposal.sos()),
+                            "刚刚",
+                            false,
+                            proposal.roleGate(),
+                            proposal.reason(),
+                            "pending"));
+                });
         when(adminMapper.insert(any(AdminEntity.class))).thenAnswer(invocation -> {
             AdminEntity entity = invocation.getArgument(0);
             entity.setId(nextAdminId());
@@ -181,6 +206,16 @@ class OpsAdminAccountServiceTest {
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_CREATED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("A1_ADMIN_ACCOUNT");
+
+        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<AuditOperationProposalRequest> proposalCaptor =
+                ArgumentCaptor.forClass(AuditOperationProposalRequest.class);
+        verify(auditCenterService).createProposal(keyCaptor.capture(), proposalCaptor.capture());
+        assertThat(keyCaptor.getValue()).isEqualTo("idem-create-1-a2");
+        assertThat(proposalCaptor.getValue().action()).isEqualTo("运营账号创建(A1)");
+        assertThat(proposalCaptor.getValue().obj()).contains("新风控成员", "risk-new@nexion.io");
+        assertThat(proposalCaptor.getValue().obj()).doesNotContain("5");
+        assertThat(proposalCaptor.getValue().sourceDomain()).isEqualTo("A1");
     }
 
     @Test

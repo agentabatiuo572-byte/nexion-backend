@@ -35,7 +35,7 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsTrustDisclosureService {
-    private static final List<String> ROLE_GATES = List.of("内容主管", "合规 / 超管", "风控 lead / 超管");
+    private static final List<String> ROLE_GATES = List.of("内容", "合规 / 超管", "风控 / 超管");
     private static final List<String> LANGUAGE_SCOPES = List.of("en+zh", "en", "zh");
     private static final List<String> SOURCES = List.of(
             "nx_trust_section",

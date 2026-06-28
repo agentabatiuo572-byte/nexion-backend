@@ -20,5 +20,9 @@ public interface WithdrawalOrderRepository {
 
     void updateStatus(String withdrawalNo, String status, String failureReason);
 
+    long countD2SeedWithdrawals();
+
+    long countD2ActionableWithdrawals();
+
     void seedD2FallbackData(Map<String, Long> userIds);
 }

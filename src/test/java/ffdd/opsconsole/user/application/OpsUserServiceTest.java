@@ -23,6 +23,7 @@ import ffdd.opsconsole.user.domain.UserKycLedgerRow;
 import ffdd.opsconsole.user.domain.UserKycOverview;
 import ffdd.opsconsole.user.domain.UserNotificationView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
+import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskParamView;
 import ffdd.opsconsole.user.domain.UserSecurityOverview;
@@ -37,10 +38,12 @@ import ffdd.opsconsole.user.dto.UserAssetAdjustmentRequest;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentQueryRequest;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentReviewRequest;
 import ffdd.opsconsole.user.dto.UserCredentialParamUpdateRequest;
+import ffdd.opsconsole.user.dto.UserImpersonationRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationTerminateRequest;
 import ffdd.opsconsole.user.dto.UserKycExportRequest;
 import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
 import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
+import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.dto.UserRegistrationRiskParamUpdateRequest;
 import ffdd.opsconsole.user.dto.UserSecurityActionRequest;
@@ -48,6 +51,7 @@ import ffdd.opsconsole.user.dto.UserSessionRevokeAllRequest;
 import ffdd.opsconsole.user.dto.UserSessionRevokeRequest;
 import ffdd.opsconsole.user.dto.UserStatusUpdateRequest;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -91,14 +95,14 @@ class OpsUserServiceTest {
     void statusChangeWritesAudit() {
         ApiResult<UserAccountView> result = service.updateStatus(
                 1L,
-                "idem-c1",
+                "idem-c2",
                 new UserStatusUpdateRequest("FROZEN", "risk hold", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("FROZEN");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C1_USER_STATUS_CHANGED");
+        assertThat(captor.getValue().getAction()).isEqualTo("C2_USER_STATUS_CHANGED");
     }
 
     @Test
@@ -127,6 +131,26 @@ class OpsUserServiceTest {
                 .extracting(UserAccountView::userNo)
                 .contains("U00008807");
         assertThat(userRepository.lastProfileRequest.keyword()).isEqualTo("Marcus");
+    }
+
+    @Test
+    void profileExportUsesServerPaginationAndWritesAudit() {
+        UserProfileExportFile file = service.exportProfileExcel(
+                "idem-c1-export",
+                new UserProfileExportRequest("Alice", "ACTIVE", null, 30, "C1 masked user export", "superadmin"));
+
+        String workbook = new String(file.body(), StandardCharsets.UTF_8);
+        assertThat(file.fileName()).startsWith("C1-USER-EXP-").endsWith(".xls");
+        assertThat(workbook)
+                .contains("用户编码")
+                .contains("U00000001")
+                .doesNotContain("userId")
+                .doesNotContain("<th>ID</th>");
+        assertThat(userRepository.lastProfileRequest.status()).isEqualTo("ACTIVE");
+        assertThat(userRepository.lastProfileRequest.riskMin()).isEqualTo(30);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("C1_USER_PROFILE_MASKED_EXPORTED");
     }
 
     @Test
@@ -245,6 +269,20 @@ class OpsUserServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("C2_USER_IMPERSONATION_TERMINATED");
+    }
+
+    @Test
+    void startingImpersonationWritesC2Audit() {
+        ApiResult<Map<String, Object>> result = service.startImpersonation(
+                1L,
+                "idem-c2-imp-start",
+                new UserImpersonationRequest(30, "support troubleshooting", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("status", "ACTIVE").containsEntry("ttlMinutes", 30);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("C2_USER_IMPERSONATION_STARTED");
     }
 
     @Test

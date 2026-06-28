@@ -16,6 +16,8 @@ import ffdd.opsconsole.platform.dto.AdminAccountSecurityBaselineUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -121,6 +123,7 @@ public class OpsAdminAccountService {
     private final AdminRoleRelationMapper roleRelationMapper;
     private final PasswordEncoder passwordEncoder;
     private final AdminSessionRegistry adminSessionRegistry;
+    private final OpsAuditCenterService auditCenterService;
 
     public ApiResult<AdminAccountOverview> overview() {
         Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
@@ -133,7 +136,7 @@ public class OpsAdminAccountService {
                 operators.size() - active,
                 activeSessions,
                 effectiveSupers(operators),
-                number(configs, "a1.account.pendingTickets", 0));
+                pendingA1OperationTickets());
 
         return ApiResult.ok(new AdminAccountOverview(
                 stats,
@@ -200,7 +203,11 @@ public class OpsAdminAccountService {
 
         audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,
                 Map.of("role", role, "credentialDeliveryStatus", credentialStatus));
-        return ApiResult.ok(requireOperator(accountId));
+        AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
+        linkA2Proposal(idempotencyKey, "运营账号创建(A1)", operatorLabel(created), "—",
+                role + " / " + credentialStatus, request.operator(), currentOperatorRole(configs), "acct",
+                false, false, "超管", request.reason());
+        return ApiResult.ok(created);
     }
 
     @Transactional
@@ -241,6 +248,8 @@ public class OpsAdminAccountService {
 
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromRole", current.role(), "toRole", nextRole));
+        linkA2Proposal(idempotencyKey, "运营账号改角色(A1)", operatorLabel(current), current.role(), nextRole,
+                request.operator(), currentOperatorRole(configs), "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -288,6 +297,9 @@ public class OpsAdminAccountService {
         audit("enabled".equals(nextStatus) ? "A1_OPERATOR_ENABLED" : "A1_OPERATOR_DISABLED",
                 "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromStatus", current.status(), "toStatus", nextStatus));
+        linkA2Proposal(idempotencyKey, "enabled".equals(nextStatus) ? "运营账号启用(A1)" : "运营账号禁用(A1)",
+                operatorLabel(current), current.status(), nextStatus, request.operator(), currentOperatorRole(configs),
+                "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -308,6 +320,9 @@ public class OpsAdminAccountService {
         save("a1.account." + current.id() + ".tfaResetAt", LocalDateTime.now().format(ISO), GROUP_ACCOUNT, "A1 2FA reset");
         audit("A1_OPERATOR_2FA_RESET", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("tfaRequired", true));
+        linkA2Proposal(idempotencyKey, "运营账号重置双因子(A1)", operatorLabel(current), "已绑定", "待重新绑定",
+                request.operator(), currentOperatorRole(loadConfigMap(ACTIVE_GROUPS)), "acct", false, false, "超管",
+                request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -331,7 +346,8 @@ public class OpsAdminAccountService {
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
-        ApiResult<Void> authorization = requireSessionRevokeAuthorization(authenticatedOperator(operators).orElse(null), current);
+        AdminAccountOverview.OperatorRecord actor = authenticatedOperator(operators).orElse(null);
+        ApiResult<Void> authorization = requireSessionRevokeAuthorization(actor, current);
         if (authorization != null) {
             return failLike(authorization);
         }
@@ -341,6 +357,9 @@ public class OpsAdminAccountService {
         save("a1.account." + current.id() + ".killedAt", now, GROUP_ACCOUNT, "A1 sessions revoked");
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("killedAt", now, "revokedSessions", revoked));
+        linkA2Proposal(idempotencyKey, "运营账号强制登出(A1)", operatorLabel(current),
+                current.sessions() + " active sessions", "0 active sessions", request.operator(),
+                actor == null ? "super" : actor.role(), "acct", false, false, "超管 / 风控", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -394,6 +413,8 @@ public class OpsAdminAccountService {
         save("a1.security.baseline." + key + ".value", value, GROUP_SECURITY, "A1 security baseline value");
         audit("A1_SECURITY_BASELINE_CHANGED", "A1_SECURITY_BASELINE", key, request.operator(), request.reason(), idempotencyKey,
                 Map.of("value", value));
+        linkA2Proposal(idempotencyKey, "安全基线调整(A1)", baseline.name(), baseline.value(), value,
+                request.operator(), currentOperatorRole(configs), "param", false, false, "超管", request.reason());
         return ApiResult.ok(securityBaseline(key, loadConfigMap(ACTIVE_GROUPS)).orElseThrow());
     }
 
@@ -442,6 +463,9 @@ public class OpsAdminAccountService {
         }
         audit("A1_RBAC_GRANT_CHANGED", "A1_RBAC_ACTION", action.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("grants", grants));
+        linkA2Proposal(idempotencyKey, "RBAC 授权调整(A1)", action.action(), String.join("/", action.grants()),
+                String.join("/", grants), request.operator(), currentOperatorRole(configs), "param", false, false,
+                "超管", request.reason());
         return ApiResult.ok(rbacAction(action.id(), loadConfigMap(ACTIVE_GROUPS)).orElseThrow());
     }
 
@@ -468,7 +492,62 @@ public class OpsAdminAccountService {
         }
         audit("A1_RBAC_ACTION_REGISTERED", "A1_RBAC_ACTION", actionId, request.operator(), request.reason(), idempotencyKey,
                 Map.of("action", action, "domainGroup", domainGroup));
-        return ApiResult.ok(rbacAction(actionId, loadConfigMap(ACTIVE_GROUPS)).orElseThrow());
+        AdminAccountOverview.RbacAction created = rbacAction(actionId, loadConfigMap(ACTIVE_GROUPS)).orElseThrow();
+        linkA2Proposal(idempotencyKey, "RBAC 动作登记(A1)", created.action(), "—", domainGroup,
+                request.operator(), currentOperatorRole(configs), "param", false, false, "超管", request.reason());
+        return ApiResult.ok(created);
+    }
+
+    private int pendingA1OperationTickets() {
+        return auditCenterService.pendingOperationCountByActionMarker("(A1)");
+    }
+
+    private void linkA2Proposal(
+            String idempotencyKey,
+            String action,
+            String objectText,
+            String beforeValue,
+            String afterValue,
+            String operator,
+            String operatorRole,
+            String type,
+            boolean amplifies,
+            boolean sos,
+            String roleGate,
+            String reason) {
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = auditCenterService.createProposal(
+                idempotencyKey.trim() + "-a2",
+                new AuditOperationProposalRequest(
+                        action,
+                        objectText,
+                        beforeValue,
+                        afterValue,
+                        operator,
+                        operatorRole,
+                        type,
+                        amplifies,
+                        sos,
+                        roleGate,
+                        reason,
+                        "A1"));
+        if (result == null || result.getCode() != 0) {
+            String message = result == null ? "A2_OPERATION_PROPOSAL_FAILED" : result.getMessage();
+            throw new IllegalStateException("A2_OPERATION_PROPOSAL_FAILED:" + message);
+        }
+    }
+
+    private String currentOperatorRole(Map<String, PlatformConfigItem> configs) {
+        return authenticatedOperator(operators(configs))
+                .map(AdminAccountOverview.OperatorRecord::role)
+                .orElse("super");
+    }
+
+    private String operatorLabel(AdminAccountOverview.OperatorRecord operator) {
+        String name = firstText(operator.name(), operator.email(), "管理员");
+        if (StringUtils.hasText(operator.email()) && !operator.email().equals(name)) {
+            return name + " · " + operator.email();
+        }
+        return name;
     }
 
     private List<AdminAccountOverview.RoleDefinition> roleDefinitions(Map<String, PlatformConfigItem> configs) {

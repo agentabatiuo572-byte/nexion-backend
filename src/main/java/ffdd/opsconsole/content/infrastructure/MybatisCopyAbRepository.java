@@ -54,11 +54,11 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version("home.conversionBanner", "v8", "DRAFT", "li.wen / -", "06-10 18:22",
                     "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
                     "Reinvest {amount} USDT and earn {nex} NEX", "Home", "全量", "50", "复投文案草稿"),
-            version("home.conversionBanner", "v7", "PUBLISHED", "li.wen / chen.r(lead)", "05-28 11:04",
+            version("home.conversionBanner", "v7", "PUBLISHED", "li.wen / chen.r", "05-28 11:04",
                     "激活 {targetName},每天赚 ${targetDaily},约 {paybackDays} 天回本,收益是 {lowestName} 的 {multiplier} 倍",
                     "Activate {targetName} · earn ${targetDaily}/day · payback ~{paybackDays} days · {multiplier}x {lowestName}",
                     "Home", "P3 · 全语言", "50", "当前线上版本"),
-            version("home.conversionBanner", "v6", "ARCHIVED", "zhao.m / chen.r(lead)", "04-12 09:40",
+            version("home.conversionBanner", "v6", "ARCHIVED", "zhao.m / chen.r", "04-12 09:40",
                     "激活 {targetName},开启每日收益", "Activate {targetName} and start daily earnings",
                     "Home", "P2-P3", "50", "上一轮版本"),
             version("home.conversionBanner", "v5", "ARCHIVED", "zhao.m / 超管", "03-02 15:17",
@@ -354,7 +354,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     }
 
     private void ensureCurrentVersion(CopySeed seed, LocalDateTime now) {
-        ensureVersion(version(seed.key(), seed.version(), "PUBLISHED", "seed / content lead", seed.lastChange() + " 09:00",
+        ensureVersion(version(seed.key(), seed.version(), "PUBLISHED", "seed / content", seed.lastChange() + " 09:00",
                 seed.description() + " 中文文案", seed.key() + " English copy", seed.surface(), "全量", "50", "seed current version"), now);
     }
 
@@ -538,7 +538,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             String operator,
             LocalDateTime now) {
         entity.setStatus(status);
-        entity.setChain(operator + " / content lead");
+        entity.setChain(operator + " / content");
         entity.setZhText(zh.trim());
         entity.setEnText(en.trim());
         entity.setSurface(surface.trim());

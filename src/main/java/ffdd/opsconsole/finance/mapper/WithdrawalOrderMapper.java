@@ -21,6 +21,14 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             """)
     long countD2SeedWithdrawals();
 
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_withdrawal_order
+             WHERE is_deleted = 0
+               AND status IN ('REVIEWING', 'DELAYED', 'FROZEN', 'PENDING_CHAIN', 'CHAIN_SUBMITTED', 'DEAD')
+            """)
+    long countD2ActionableWithdrawals();
+
     @Insert("""
             INSERT INTO nx_withdrawal_order (
                 withdrawal_no, user_id, asset, chain, amount, fee, target_address, risk_decision_id,

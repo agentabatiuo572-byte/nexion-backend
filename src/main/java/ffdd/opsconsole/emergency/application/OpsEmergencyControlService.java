@@ -661,7 +661,7 @@ public class OpsEmergencyControlService {
                 "emergency", request.emergencyTrack() != null && request.emergencyTrack(),
                 "sla", stringValue(request.sla(), "15 分钟"),
                 "state", request.drillRequired() == null || request.drillRequired() ? "todo" : "active",
-                "owner", stringValue(request.owner(), "风控 lead"),
+                "owner", stringValue(request.owner(), "风控"),
                 "lastDrill", "未演练",
                 "sequence", parseActionSequence(request.actionSeq()),
                 "notifyCampaignNo", stringValue(request.notifyCampaignNo(), ""),

@@ -365,7 +365,7 @@ class OpsUser360ServiceTest {
                 null,
                 now.minusMinutes(10));
         AuditLogRecord audit = new AuditLogRecord();
-        audit.setAction("C1_USER_STATUS_CHANGED");
+        audit.setAction("C2_USER_STATUS_CHANGED");
         audit.setUserId(2231L);
         audit.setCreatedAt(now);
 

@@ -203,7 +203,7 @@ class OpsAuditCenterServiceTest {
                 "param",
                 true,
                 false,
-                "增长 lead / 超管",
+                "增长 / 超管",
                 "本周 KPI 节奏校准",
                 "H1");
 
@@ -221,6 +221,39 @@ class OpsAuditCenterServiceTest {
                 .containsEntry("operationId", result.getData().id())
                 .containsEntry("sourceDomain", "H1")
                 .containsEntry("idempotencyKey", "idem-proposal-1");
+    }
+
+    @Test
+    void accountProposalWritesHighRiskAudit() {
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "运营账号创建(A1)",
+                "A1联动测试 · support@nexion.io",
+                "—",
+                "support / MAIL_DISPATCHED",
+                "Super Admin",
+                "超管",
+                "acct",
+                false,
+                false,
+                "超管",
+                "新增客服账号入职",
+                "A1");
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.createProposal("idem-a1-acct", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().type()).isEqualTo("acct");
+        assertThat(result.getData().amplifies()).isFalse();
+        assertThat(result.getData().sos()).isFalse();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("A2_OPERATION_PROPOSED");
+        assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("operationId", result.getData().id())
+                .containsEntry("sourceDomain", "A1")
+                .containsEntry("type", "acct");
     }
 
     @Test

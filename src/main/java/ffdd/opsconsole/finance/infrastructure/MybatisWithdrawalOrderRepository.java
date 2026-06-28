@@ -44,6 +44,16 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public long countD2SeedWithdrawals() {
+        return mapper.countD2SeedWithdrawals();
+    }
+
+    @Override
+    public long countD2ActionableWithdrawals() {
+        return mapper.countD2ActionableWithdrawals();
+    }
+
+    @Override
     public void seedD2FallbackData(Map<String, Long> userIds) {
         seedWithdrawal("D2-SEED-WD-90408", userIds.get("usr_8807"), "USDT", "USDT-TRC20",
                 "8200.00", "8.00", "TD2SeedTarget90408", null, "REVIEWING",

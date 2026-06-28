@@ -34,7 +34,7 @@ final class BiDashboardSeeds {
                 new BiReportMapper.ReportSeed("L5", "EXP-2209", "KPI 序列", "KPI_SERIES", "W16-W22", "CSV",
                         "8 KPI × 12 周", "值/目标/环比", 96L, false, "NONE", "EXPIRED", "仍需操作确认(聚合)"),
                 new BiReportMapper.ReportSeed("L5", "EXP-2208", "监管报告 · BR 专项", "REGULATORY", "BR", "PDF",
-                        "BR 辖区 · 披露 v3.2-BR", "合规台账(脱敏)", 12407L, true, "MASKED", "FAILED", "风控 rkim → 风控 lead 已批"));
+                        "BR 辖区 · 披露 v3.2-BR", "合规台账(脱敏)", 12407L, true, "MASKED", "FAILED", "风控 rkim → 超管已批"));
     }
 
     private static Map<String, Object> l1() {
