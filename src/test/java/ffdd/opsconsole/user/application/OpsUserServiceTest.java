@@ -532,9 +532,22 @@ class OpsUserServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().adjustment().status()).isEqualTo("APPROVED");
+        assertThat(result.getData().adjustment().ledgerId()).isEqualTo(9001L);
+        assertThat(result.getData().adjustment().sink()).isEqualTo("账本 #9001");
+        assertThat(userRepository.postedLedgerBills).hasSize(1);
+        assertThat(userRepository.postedLedgerBills.get(0))
+                .containsEntry("bizNo", adjustmentNo)
+                .containsEntry("bizType", "ADJUSTMENT")
+                .containsEntry("userId", 1L)
+                .containsEntry("asset", "NEX")
+                .containsEntry("direction", "OUT")
+                .containsEntry("status", "SUCCESS");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService, org.mockito.Mockito.atLeastOnce()).record(captor.capture());
         assertThat(captor.getAllValues().get(captor.getAllValues().size() - 1).getAction()).isEqualTo("C3_ASSET_ADJUSTMENT_APPROVED");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> auditDetail = (Map<String, Object>) captor.getAllValues().get(captor.getAllValues().size() - 1).getDetail();
+        assertThat(auditDetail).containsEntry("ledgerId", 9001L);
     }
 
     @Test
@@ -820,6 +833,7 @@ class OpsUserServiceTest {
                 LocalDateTime.now());
         private final Map<String, UserSessionView> sessions = new LinkedHashMap<>();
         private final Map<String, UserAssetAdjustmentView> adjustments = new LinkedHashMap<>();
+        private final List<Map<String, Object>> postedLedgerBills = new ArrayList<>();
         private final List<UserAccountListEntryView> accountLists = new ArrayList<>();
         private final List<UserImpersonationSessionView> impersonations = new ArrayList<>();
         private final Map<Long, UserAccountView> kycSeedUsers = new LinkedHashMap<>();
@@ -842,6 +856,7 @@ class OpsUserServiceTest {
         private UserQueryRequest lastProfileRequest;
         private UserAssetAdjustmentQueryRequest lastAssetAdjustmentRequest;
         private Long lastSessionPageUserId;
+        private long nextLedgerId = 9001L;
 
         @Override
         public Map<String, Object> overview() {
@@ -1304,6 +1319,33 @@ class OpsUserServiceTest {
         }
 
         @Override
+        public Long approveAssetAdjustmentAndPostLedger(UserAssetAdjustmentView adjustment, String checker, String reason) {
+            long ledgerId = nextLedgerId++;
+            postedLedgerBills.add(new LinkedHashMap<>(Map.of(
+                    "ledgerId", ledgerId,
+                    "bizNo", adjustment.adjustmentNo(),
+                    "bizType", "ADJUSTMENT",
+                    "userId", adjustment.userId(),
+                    "asset", adjustment.asset(),
+                    "direction", "CREDIT".equals(adjustment.direction()) ? "IN" : "OUT",
+                    "amount", adjustment.amount(),
+                    "status", "SUCCESS")));
+            adjustments.put(adjustment.adjustmentNo(), adjustment(
+                    adjustment.adjustmentNo(),
+                    adjustment.userId(),
+                    adjustment.asset(),
+                    adjustment.direction(),
+                    adjustment.amount(),
+                    adjustment.reason(),
+                    adjustment.maker(),
+                    "APPROVED",
+                    checker,
+                    reason,
+                    ledgerId));
+            return ledgerId;
+        }
+
+        @Override
         public void reviewAssetAdjustment(String adjustmentNo, String status, String checker, String reason) {
             UserAssetAdjustmentView before = adjustments.get(adjustmentNo);
             adjustments.put(adjustmentNo, adjustment(
@@ -1316,7 +1358,8 @@ class OpsUserServiceTest {
                     before.maker(),
                     status,
                     checker,
-                    reason));
+                    reason,
+                    before.ledgerId()));
         }
 
         @Override
@@ -1431,6 +1474,21 @@ class OpsUserServiceTest {
                 String status,
                 String checker,
                 String reviewReason) {
+            return adjustment(adjustmentNo, userId, asset, direction, amount, reason, maker, status, checker, reviewReason, null);
+        }
+
+        private UserAssetAdjustmentView adjustment(
+                String adjustmentNo,
+                Long userId,
+                String asset,
+                String direction,
+                BigDecimal amount,
+                String reason,
+                String maker,
+                String status,
+                String checker,
+                String reviewReason,
+                Long ledgerId) {
             return new UserAssetAdjustmentView(
                     adjustmentNo,
                     userId,
@@ -1449,8 +1507,8 @@ class OpsUserServiceTest {
                     "APPROVED".equals(status) ? "ok" : "REJECTED".equals(status) || "SUSPENDED".equals(status) ? "bad" : "warn",
                     "CREDIT".equals(direction),
                     false,
-                    null,
-                    "D4 待过账",
+                    ledgerId,
+                    ledgerId == null ? "D4 待过账" : "账本 #" + ledgerId,
                     reviewReason,
                     checker == null ? null : LocalDateTime.now(),
                     LocalDateTime.now().minusMinutes(5),

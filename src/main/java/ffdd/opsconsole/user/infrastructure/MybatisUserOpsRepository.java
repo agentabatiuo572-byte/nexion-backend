@@ -503,6 +503,49 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
+    public Long approveAssetAdjustmentAndPostLedger(UserAssetAdjustmentView adjustment, String checker, String reason) {
+        if (adjustment == null) {
+            throw new IllegalArgumentException("ASSET_ADJUSTMENT_REQUIRED");
+        }
+        String lockedStatus = normalize(mapper.lockAssetAdjustmentStatus(adjustment.adjustmentNo()));
+        if (!List.of("PENDING", "PENDING_REVIEW", "SUSPENDED").contains(lockedStatus)) {
+            throw new IllegalStateException("ASSET_ADJUSTMENT_NOT_REVIEWABLE");
+        }
+        String asset = normalize(adjustment.asset());
+        String direction = normalize(adjustment.direction());
+        mapper.ensureUserWallet(adjustment.userId());
+        int walletRows = mapper.applyAssetAdjustmentToWallet(
+                adjustment.userId(),
+                asset,
+                direction,
+                adjustment.amount());
+        if (walletRows == 0) {
+            throw new IllegalStateException("ASSET_ADJUSTMENT_WALLET_POSTING_FAILED");
+        }
+        BigDecimal balanceAfter = mapper.findWalletAvailable(adjustment.userId(), asset);
+        if (balanceAfter == null) {
+            throw new IllegalStateException("ASSET_ADJUSTMENT_BALANCE_NOT_FOUND");
+        }
+        mapper.upsertApprovedAssetAdjustmentLedger(
+                adjustment.adjustmentNo(),
+                adjustment.userId(),
+                asset,
+                direction,
+                adjustment.amount(),
+                balanceAfter,
+                ledgerRemark(reason));
+        Long ledgerId = mapper.findAssetAdjustmentLedgerId(adjustment.adjustmentNo(), asset, direction);
+        if (ledgerId == null) {
+            throw new IllegalStateException("ASSET_ADJUSTMENT_LEDGER_NOT_FOUND");
+        }
+        int adjustmentRows = mapper.approveAssetAdjustmentWithLedger(adjustment.adjustmentNo(), checker, reason, ledgerId);
+        if (adjustmentRows == 0) {
+            throw new IllegalStateException("ASSET_ADJUSTMENT_REVIEW_UPDATE_FAILED");
+        }
+        return ledgerId;
+    }
+
+    @Override
     public void reviewAssetAdjustment(String adjustmentNo, String status, String checker, String reason) {
         mapper.reviewAssetAdjustment(adjustmentNo, status, checker, reason);
     }
@@ -518,6 +561,14 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
 
     private BigDecimal money(BigDecimal value) {
         return (value == null ? BigDecimal.ZERO : value).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private String ledgerRemark(String reason) {
+        String remark = trim(reason);
+        if (remark == null || remark.isBlank()) {
+            return "C3 approved asset adjustment";
+        }
+        return remark.length() <= 255 ? remark : remark.substring(0, 255);
     }
 
     private String userNo(Long userId) {

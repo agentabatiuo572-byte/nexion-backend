@@ -66,6 +66,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -1331,6 +1332,7 @@ public class OpsUserService {
                 .orElseGet(() -> ApiResult.fail(404, "ASSET_ADJUSTMENT_NOT_FOUND"));
     }
 
+    @Transactional
     public ApiResult<UserAssetAdjustmentDetail> approveAssetAdjustment(
             String adjustmentNo,
             String idempotencyKey,
@@ -1380,21 +1382,30 @@ public class OpsUserService {
                     "redline", "B1_COVERAGE_BELOW_REDLINE"));
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
-        userRepository.reviewAssetAdjustment(normalizedNo, nextStatus, operator, reason);
+        Long ledgerId = null;
+        if ("APPROVED".equals(nextStatus)) {
+            ledgerId = userRepository.approveAssetAdjustmentAndPostLedger(before, operator, reason);
+        } else {
+            userRepository.reviewAssetAdjustment(normalizedNo, nextStatus, operator, reason);
+        }
         UserAssetAdjustmentView updated = userRepository.findAssetAdjustment(normalizedNo).orElse(before);
+        Map<String, Object> auditDetail = new LinkedHashMap<>();
+        auditDetail.put("fromStatus", currentStatus);
+        auditDetail.put("toStatus", nextStatus);
+        auditDetail.put("asset", before.asset());
+        auditDetail.put("direction", before.direction());
+        auditDetail.put("amount", before.amount());
+        auditDetail.put("reason", reason);
+        auditDetail.put("idempotencyKey", idempotencyKey.trim());
+        if (ledgerId != null) {
+            auditDetail.put("ledgerId", ledgerId);
+        }
         audit("APPROVED".equals(nextStatus) ? "C3_ASSET_ADJUSTMENT_APPROVED" : "C3_ASSET_ADJUSTMENT_REJECTED",
                 "WALLET_ASSET_ADJUSTMENT",
                 normalizedNo,
                 before.userId(),
                 operator,
-                Map.of(
-                        "fromStatus", currentStatus,
-                        "toStatus", nextStatus,
-                        "asset", before.asset(),
-                        "direction", before.direction(),
-                        "amount", before.amount(),
-                        "reason", reason,
-                        "idempotencyKey", idempotencyKey.trim()));
+                auditDetail);
         return ApiResult.ok(assetAdjustmentDetail(updated));
     }
 

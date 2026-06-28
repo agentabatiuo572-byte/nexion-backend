@@ -108,5 +108,7 @@ public interface UserOpsRepository extends UserSeedRepository {
 
     Optional<UserAssetAdjustmentView> findAssetAdjustment(String adjustmentNo);
 
+    Long approveAssetAdjustmentAndPostLedger(UserAssetAdjustmentView adjustment, String checker, String reason);
+
     void reviewAssetAdjustment(String adjustmentNo, String status, String checker, String reason);
 }

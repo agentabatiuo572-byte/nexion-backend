@@ -1184,6 +1184,15 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     UserAssetAdjustmentView findAssetAdjustment(@Param("adjustmentNo") String adjustmentNo);
 
+    @Select("""
+            SELECT status
+              FROM nx_wallet_asset_adjustment
+             WHERE adjustment_no = #{adjustmentNo}
+               AND is_deleted = 0
+             FOR UPDATE
+            """)
+    String lockAssetAdjustmentStatus(@Param("adjustmentNo") String adjustmentNo);
+
     @Update("""
             UPDATE nx_wallet_asset_adjustment
                SET status = #{status},
@@ -1199,4 +1208,159 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             @Param("status") String status,
             @Param("checker") String checker,
             @Param("reason") String reason);
+
+    @Insert("""
+            INSERT INTO nx_user_wallet (
+                user_id,
+                usdt_available,
+                nex_available,
+                pending_withdraw,
+                lifetime_earned,
+                version,
+                created_at,
+                updated_at,
+                is_deleted
+            )
+            VALUES (
+                #{userId},
+                0,
+                0,
+                0,
+                0,
+                0,
+                NOW(),
+                NOW(),
+                0
+            )
+            ON DUPLICATE KEY UPDATE
+                is_deleted = 0,
+                updated_at = NOW()
+            """)
+    int ensureUserWallet(@Param("userId") Long userId);
+
+    @Update("""
+            <script>
+            UPDATE nx_user_wallet
+               SET
+                   <choose>
+                       <when test="asset == 'USDT'">
+                           usdt_available = CASE
+                               WHEN #{direction} = 'CREDIT' THEN usdt_available + #{amount}
+                               ELSE usdt_available - #{amount}
+                           END,
+                       </when>
+                       <otherwise>
+                           nex_available = CASE
+                               WHEN #{direction} = 'CREDIT' THEN nex_available + #{amount}
+                               ELSE nex_available - #{amount}
+                           END,
+                       </otherwise>
+                   </choose>
+                   version = version + 1,
+                   updated_at = NOW()
+             WHERE user_id = #{userId}
+               AND is_deleted = 0
+               <if test="direction == 'DEBIT' and asset == 'USDT'">
+                   AND usdt_available &gt;= #{amount}
+               </if>
+               <if test="direction == 'DEBIT' and asset != 'USDT'">
+                   AND nex_available &gt;= #{amount}
+               </if>
+            </script>
+            """)
+    int applyAssetAdjustmentToWallet(
+            @Param("userId") Long userId,
+            @Param("asset") String asset,
+            @Param("direction") String direction,
+            @Param("amount") BigDecimal amount);
+
+    @Select("""
+            SELECT CASE WHEN #{asset} = 'USDT' THEN usdt_available ELSE nex_available END
+              FROM nx_user_wallet
+             WHERE user_id = #{userId}
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    BigDecimal findWalletAvailable(
+            @Param("userId") Long userId,
+            @Param("asset") String asset);
+
+    @Insert("""
+            INSERT INTO nx_wallet_ledger (
+                user_id,
+                biz_no,
+                biz_type,
+                asset,
+                direction,
+                amount,
+                balance_after,
+                status,
+                remark,
+                created_at,
+                updated_at,
+                is_deleted
+            )
+            VALUES (
+                #{userId},
+                #{adjustmentNo},
+                'ADJUSTMENT',
+                #{asset},
+                CASE WHEN #{adjustmentDirection} = 'CREDIT' THEN 'IN' ELSE 'OUT' END,
+                #{amount},
+                #{balanceAfter},
+                'SUCCESS',
+                #{remark},
+                NOW(),
+                NOW(),
+                0
+            )
+            ON DUPLICATE KEY UPDATE
+                user_id = VALUES(user_id),
+                biz_type = VALUES(biz_type),
+                amount = VALUES(amount),
+                balance_after = VALUES(balance_after),
+                status = VALUES(status),
+                remark = VALUES(remark),
+                updated_at = NOW(),
+                is_deleted = 0
+            """)
+    int upsertApprovedAssetAdjustmentLedger(
+            @Param("adjustmentNo") String adjustmentNo,
+            @Param("userId") Long userId,
+            @Param("asset") String asset,
+            @Param("adjustmentDirection") String adjustmentDirection,
+            @Param("amount") BigDecimal amount,
+            @Param("balanceAfter") BigDecimal balanceAfter,
+            @Param("remark") String remark);
+
+    @Select("""
+            SELECT id
+              FROM nx_wallet_ledger
+             WHERE biz_no = #{adjustmentNo}
+               AND asset = #{asset}
+               AND direction = CASE WHEN #{adjustmentDirection} = 'CREDIT' THEN 'IN' ELSE 'OUT' END
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    Long findAssetAdjustmentLedgerId(
+            @Param("adjustmentNo") String adjustmentNo,
+            @Param("asset") String asset,
+            @Param("adjustmentDirection") String adjustmentDirection);
+
+    @Update("""
+            UPDATE nx_wallet_asset_adjustment
+               SET status = 'APPROVED',
+                   checker = #{checker},
+                   review_reason = #{reason},
+                   reviewed_at = NOW(),
+                   ledger_id = #{ledgerId},
+                   updated_at = NOW()
+             WHERE adjustment_no = #{adjustmentNo}
+               AND is_deleted = 0
+            """)
+    int approveAssetAdjustmentWithLedger(
+            @Param("adjustmentNo") String adjustmentNo,
+            @Param("checker") String checker,
+            @Param("reason") String reason,
+            @Param("ledgerId") Long ledgerId);
 }
