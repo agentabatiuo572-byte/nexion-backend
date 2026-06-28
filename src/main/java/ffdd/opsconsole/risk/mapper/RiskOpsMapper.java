@@ -794,13 +794,14 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     ScoreUserRecord findScoreUser(@Param("userNo") String userNo);
 
     @Select("""
+            <script>
             SELECT s.user_no AS userNo,
                    s.model_score AS modelScore,
                    s.model_version AS modelVersion,
                    s.updated_text AS updatedText,
                    u.nickname AS nickname,
                    CASE
-                       WHEN u.phone IS NULL OR LENGTH(u.phone) < 7 THEN u.phone
+                       WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
                    u.referral_code AS referralCode
@@ -829,6 +830,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    s.updated_at DESC,
                    s.id DESC
              LIMIT #{limit}
+            </script>
             """)
     List<ScoreUserSearchRecord> searchScoreUsers(@Param("keyword") String keyword, @Param("limit") int limit);
 

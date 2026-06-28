@@ -1,8 +1,10 @@
 package ffdd.opsconsole.market.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.market.domain.GenesisNodeView;
 import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
 import ffdd.opsconsole.market.domain.GenesisSeriesView;
+import ffdd.opsconsole.market.infrastructure.GenesisSeriesEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -10,7 +12,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
-public interface GenesisMapper {
+public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
     @Select("""
             SELECT COUNT(1)
               FROM nx_genesis_series

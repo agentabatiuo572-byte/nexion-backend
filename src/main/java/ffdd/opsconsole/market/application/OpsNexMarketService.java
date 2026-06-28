@@ -965,7 +965,20 @@ public class OpsNexMarketService {
         int royaltyBps = series.royaltyBps() == null || series.royaltyBps() < 0 ? 250 : series.royaltyBps();
         BigDecimal royaltyPct = BigDecimal.valueOf(royaltyBps).divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
 
-        upsertMissingConfig(GENESIS_PREFIX + "supply", String.valueOf(totalSupply), "NUMBER", "market", "G4 Genesis total supply seed");
+        String supplyKey = GENESIS_PREFIX + "supply";
+        upsertMissingConfig(supplyKey, String.valueOf(totalSupply), "NUMBER", "market", "G4 Genesis total supply seed");
+        int supplyFloor = Math.max(
+                Math.max(0, series.soldSupply() == null ? 0 : series.soldSupply()),
+                Math.toIntExact(Math.min(Integer.MAX_VALUE, marketRepository.genesisHoldingCount())));
+        BigDecimal configuredSupply = parseRepurchaseNumber(readText(supplyKey, String.valueOf(totalSupply)), BigDecimal.ZERO);
+        if (configuredSupply.compareTo(BigDecimal.valueOf(supplyFloor)) < 0) {
+            configFacade.upsertAdminValue(
+                    supplyKey,
+                    String.valueOf(supplyFloor),
+                    "NUMBER",
+                    "market",
+                    "G4 Genesis total supply repaired to sold/holding floor");
+        }
         upsertMissingConfig(GENESIS_PREFIX + "price", price.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(), "NUMBER", "market", "G4 Genesis primary price seed");
         upsertMissingConfig(GENESIS_PREFIX + "dividend", "0.1", "NUMBER", "market", "G4 Genesis daily dividend rate seed");
         upsertMissingConfig(GENESIS_PREFIX + "royalty", royaltyPct.stripTrailingZeros().toPlainString(), "NUMBER", "market", "G4 Genesis secondary royalty seed");

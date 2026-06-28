@@ -5,11 +5,9 @@ import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import ffdd.opsconsole.shared.outbox.infrastructure.EventOutboxEntity;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Lang;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
-import org.apache.ibatis.scripting.defaults.RawLanguageDriver;
 
 public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     String MESSAGE_COLUMNS = """
@@ -42,6 +40,7 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                     @Param("payload") String payload);
 
     @Select("""
+            <script>
             SELECT
             """ + MESSAGE_COLUMNS + """
               FROM nx_event_outbox
@@ -50,11 +49,12 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
               AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
              ORDER BY id ASC
              LIMIT #{limit}
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     List<EventOutboxMessage> listPending(@Param("limit") int limit);
 
     @Select("""
+            <script>
             SELECT
             """ + MESSAGE_COLUMNS + """
               FROM nx_event_outbox
@@ -64,8 +64,8 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
               AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
              ORDER BY id ASC
              LIMIT #{limit}
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     List<EventOutboxMessage> listPendingByEventType(@Param("eventType") String eventType, @Param("limit") int limit);
 
     @Select("""
@@ -103,7 +103,6 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
               AND is_deleted = 0
               AND status != #{publishedStatus}
             """)
-    @Lang(RawLanguageDriver.class)
     int markPublished(@Param("eventId") String eventId, @Param("publishedStatus") String publishedStatus);
 
     @Update("""

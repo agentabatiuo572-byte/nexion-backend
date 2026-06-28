@@ -61,6 +61,7 @@ public class OpsFinanceService {
     private static final Set<String> REVIEWABLE = Set.of("REVIEWING", "DELAYED");
     private static final Set<String> REJECTABLE = Set.of("REVIEWING", "DELAYED", "FROZEN", "PENDING_CHAIN", "CHAIN_SUBMITTED", "DEAD");
     private static final Set<String> FINAL_STATUSES = Set.of("SUCCESS", "FAILED", "REJECTED");
+    private static final int HIGH_RISK_SCORE = 70;
     private static final List<String> D_SEED_USER_KEYS = List.of(
             "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
 
@@ -372,8 +373,11 @@ public class OpsFinanceService {
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         int dailyLimitCount = withdrawalDailyLimitCount();
-        if ("APPROVE".equals(action) && exceedsDailyLimit(order, dailyLimitCount)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
+        if ("APPROVE".equals(action)) {
+            String blockedReason = approvalBlockReason(order, dailyLimitCount);
+            if (blockedReason != null) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), blockedReason);
+            }
         }
         String failureReason = "REJECTED".equals(newStatus) ? request.reason().trim() : null;
         withdrawalRepository.updateStatus(order.withdrawalNo(), newStatus, failureReason);
@@ -382,15 +386,24 @@ public class OpsFinanceService {
                         order.id(), order.userId(), order.withdrawalNo(), order.asset(), order.chain(), order.amount(), order.fee(),
                         order.targetAddress(), order.riskDecisionId(), order.chainTxHash(), newStatus, order.chainSubmittedAt(),
                         order.completedAt(), order.failedAt(), failureReason, order.chainBroadcastAttempts(), order.nextBroadcastAt(),
-                        order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt()));
-        audit("D5_WITHDRAWAL_REVIEW_" + action, "WITHDRAWAL", order.withdrawalNo(), request.operator(), Map.of(
-                "fromStatus", order.status(),
-                "toStatus", newStatus,
-                "asset", order.asset(),
-                "amount", order.amount(),
-                "fee", order.fee(),
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+                        order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(),
+                        order.userNo(), order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(),
+                        order.riskScore(), order.hitRules(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail()));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("fromStatus", order.status());
+        detail.put("toStatus", newStatus);
+        detail.put("asset", order.asset());
+        detail.put("amount", order.amount());
+        detail.put("fee", order.fee());
+        detail.put("kycStatus", order.kycStatus());
+        detail.put("userStatus", order.userStatus());
+        detail.put("riskScore", order.riskScore());
+        detail.put("hitRules", order.hitRules());
+        detail.put("withdrawalCount24h", order.withdrawalCount24h());
+        detail.put("dailyLimitCount", dailyLimitCount);
+        detail.put("reason", request.reason().trim());
+        detail.put("idempotencyKey", idempotencyKey.trim());
+        audit("D2_WITHDRAWAL_REVIEW_" + action, "WITHDRAWAL", order.withdrawalNo(), request.operator(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -735,6 +748,41 @@ public class OpsFinanceService {
     private boolean exceedsDailyLimit(WithdrawalOrderView order, int dailyLimitCount) {
         Integer count24h = order.withdrawalCount24h();
         return count24h != null && count24h > dailyLimitCount;
+    }
+
+    private String approvalBlockReason(WithdrawalOrderView order, int dailyLimitCount) {
+        if (exceedsDailyLimit(order, dailyLimitCount)) {
+            return "WITHDRAWAL_DAILY_LIMIT_EXCEEDED";
+        }
+        if (!isApprovedKyc(order.kycStatus())) {
+            return "WITHDRAWAL_KYC_NOT_APPROVED";
+        }
+        if (!"ACTIVE".equalsIgnoreCase(trimToEmpty(order.userStatus()))) {
+            return "WITHDRAWAL_USER_STATUS_BLOCKED";
+        }
+        if (hasBlockingRisk(order)) {
+            return "WITHDRAWAL_RISK_HIT_BLOCKED";
+        }
+        return null;
+    }
+
+    private boolean isApprovedKyc(String status) {
+        String normalized = trimToEmpty(status).toUpperCase(Locale.ROOT);
+        return "VERIFIED".equals(normalized) || "APPROVED".equals(normalized);
+    }
+
+    private boolean hasBlockingRisk(WithdrawalOrderView order) {
+        Integer riskScore = order.riskScore();
+        if (riskScore != null && riskScore >= HIGH_RISK_SCORE) {
+            return true;
+        }
+        String hitRules = trimToEmpty(order.hitRules());
+        return StringUtils.hasText(hitRules)
+                && !Set.of("[]", "{}", "NULL", "NONE", "-", "—").contains(hitRules.toUpperCase(Locale.ROOT));
+    }
+
+    private String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private String normalizeParamKey(String key) {

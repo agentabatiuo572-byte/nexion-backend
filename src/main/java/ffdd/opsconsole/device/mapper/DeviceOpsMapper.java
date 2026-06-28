@@ -7,11 +7,9 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Lang;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
-import org.apache.ibatis.scripting.defaults.RawLanguageDriver;
 
 public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     String DEVICE_COLUMNS = """
@@ -71,7 +69,6 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                 OR DATE_SUB(NOW(), INTERVAL 10 MINUTE) > r.heartbeat_at
                )
             """)
-    @Lang(RawLanguageDriver.class)
     long countAbnormalDevices();
 
     @Select("""
@@ -192,14 +189,15 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     BigDecimal sumTradeinDiscountSince(@Param("monthStart") LocalDateTime monthStart);
 
     @Select("""
+            <script>
             SELECT COUNT(*)
               FROM nx_tradein_application
              WHERE is_deleted = 0
                AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-              AND months_owned < #{cliffMonth}
+              AND months_owned &lt; #{cliffMonth}
                AND status IN ('REJECTED','RISK_REJECTED','BLOCKED')
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     long countK2ArbitrageHits(@Param("cliffMonth") int cliffMonth);
 
     @Select("""

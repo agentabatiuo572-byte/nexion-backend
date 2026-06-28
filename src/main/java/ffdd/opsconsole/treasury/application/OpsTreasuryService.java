@@ -273,13 +273,25 @@ public class OpsTreasuryService {
         }
         ensureD4FallbackSeedData();
         List<TreasuryLedgerBillView> rows = ledgerRepository.userLedgerRows(userId, 50);
+        String userNo = rows.stream()
+                .map(TreasuryLedgerBillView::userNo)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(formatUserNo(userId));
+        String nickname = rows.stream()
+                .map(TreasuryLedgerBillView::nickname)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(null);
         Map<String, BigDecimal> sums = new LinkedHashMap<>();
         for (TreasuryLedgerBillView row : rows) {
-            BigDecimal signed = "IN".equalsIgnoreCase(row.direction()) ? safe(row.amount()) : safe(row.amount()).negate();
+            BigDecimal signed = isCreditDirection(row.direction()) ? safe(row.amount()) : safe(row.amount()).negate();
             sums.merge(row.asset(), signed, BigDecimal::add);
         }
         Map<String, Object> response = section(
                 "userId", userId,
+                "userNo", userNo,
+                "nickname", nickname,
                 "rows", rows,
                 "sums", sums,
                 "currentUsdtBalance", ledgerRepository.currentUserBalance(userId, "USDT").orElse(BigDecimal.ZERO),
@@ -441,6 +453,14 @@ public class OpsTreasuryService {
             return null;
         }
         return normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private boolean isCreditDirection(String direction) {
+        return "IN".equalsIgnoreCase(direction) || "CREDIT".equalsIgnoreCase(direction);
+    }
+
+    private String formatUserNo(Long userId) {
+        return "U%08d".formatted(userId == null ? 0 : userId);
     }
 
     private String normalizeAsset(String value) {

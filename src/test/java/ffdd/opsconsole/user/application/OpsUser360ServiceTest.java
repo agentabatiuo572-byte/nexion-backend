@@ -248,6 +248,8 @@ class OpsUser360ServiceTest {
         TreasuryLedgerBillView ledger = new TreasuryLedgerBillView(
                 100L,
                 2231L,
+                "U00002231",
+                "Stella Miner",
                 "DEP-1",
                 "DEPOSIT",
                 "USDT",

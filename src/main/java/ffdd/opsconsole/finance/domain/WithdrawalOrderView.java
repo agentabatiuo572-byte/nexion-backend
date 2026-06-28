@@ -29,6 +29,7 @@ public record WithdrawalOrderView(
         String nickname,
         String phoneMasked,
         String kycStatus,
+        String userStatus,
         Integer riskScore,
         String hitRules,
         Integer withdrawalCount24h,
@@ -60,6 +61,6 @@ public record WithdrawalOrderView(
         this(id, userId, withdrawalNo, asset, chain, amount, fee, targetAddress, riskDecisionId, chainTxHash,
                 status, chainSubmittedAt, completedAt, failedAt, failureReason, chainBroadcastAttempts,
                 nextBroadcastAt, lastBroadcastError, broadcastDeadAt, createdAt, updatedAt,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null);
     }
 }

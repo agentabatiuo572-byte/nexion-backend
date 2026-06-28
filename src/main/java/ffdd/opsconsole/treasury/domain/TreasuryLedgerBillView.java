@@ -6,6 +6,8 @@ import java.time.LocalDateTime;
 public record TreasuryLedgerBillView(
         Long id,
         Long userId,
+        String userNo,
+        String nickname,
         String bizNo,
         String bizType,
         String asset,

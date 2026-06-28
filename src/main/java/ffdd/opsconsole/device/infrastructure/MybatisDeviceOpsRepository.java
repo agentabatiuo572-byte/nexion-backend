@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
@@ -47,7 +48,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             "promoRoutes",
             "inventorySoftMax");
     private final DeviceOpsMapper mapper;
-    private volatile boolean datacenterCatalogReady;
+    private final AtomicBoolean datacenterCatalogReady = new AtomicBoolean(false);
 
     @Override
     public Map<String, Object> overviewCounters() {
@@ -224,14 +225,14 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     private void ensureDatacenterCatalogReady() {
-        if (datacenterCatalogReady) {
+        if (datacenterCatalogReady.get()) {
             return;
         }
         mapper.ensureDatacenterCatalogTable();
         if (mapper.countDatacenterCatalogRows() == 0) {
             mapper.seedDefaultDatacenters();
         }
-        datacenterCatalogReady = true;
+        datacenterCatalogReady.set(true);
     }
 
     private DeviceDatacenterView toDatacenterView(DeviceOpsMapper.DatacenterSummaryRow row) {

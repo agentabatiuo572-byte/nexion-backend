@@ -9,16 +9,21 @@ import org.junit.jupiter.api.Test;
 
 class WithdrawalOrderMapperSqlTest {
     @Test
-    void findByWithdrawalNoRawSqlUsesMysqlComparisonOperators() throws Exception {
+    void findByWithdrawalNoAnnotationEscapesXmlUnsafeComparisonOperators() throws Exception {
         String sql = String.join("\n", WithdrawalOrderMapper.class
                 .getMethod("findByWithdrawalNo", String.class)
                 .getAnnotation(Select.class)
                 .value());
+        String runtimeSql = sql.replace("&lt;", "<");
 
         assertThat(sql)
+                .contains("LENGTH(u.phone) &lt; 7")
+                .contains("w2.created_at &lt;= w.created_at")
+                .doesNotContain("LENGTH(u.phone) < 7")
+                .doesNotContain("w2.created_at <= w.created_at");
+        assertThat(runtimeSql)
                 .contains("LENGTH(u.phone) < 7")
-                .contains("w2.created_at <= w.created_at")
-                .doesNotContain("&lt;");
+                .contains("w2.created_at <= w.created_at");
     }
 
     @Test

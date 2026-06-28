@@ -7,11 +7,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Lang;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
-import org.apache.ibatis.scripting.defaults.RawLanguageDriver;
 
 public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDeliveryEntity> {
     String DELIVERY_COLUMNS = """
@@ -54,6 +52,7 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
                     @Param("rocketmqReconsumeTimes") int rocketmqReconsumeTimes);
 
     @Update("""
+            <script>
             UPDATE nx_event_consumer_delivery
                SET status = #{processingStatus},
                    topic = #{topic},
@@ -74,8 +73,8 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
                     status = #{failedStatus}
                    OR (status = #{processingStatus} AND updated_at &lt; #{staleBefore})
                )
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     int reclaim(@Param("eventId") String eventId, @Param("consumerGroup") String consumerGroup,
                 @Param("topic") String topic, @Param("msgId") String msgId,
                 @Param("eventType") String eventType, @Param("aggregateType") String aggregateType,

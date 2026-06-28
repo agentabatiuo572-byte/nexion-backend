@@ -7,10 +7,8 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Lang;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
-import org.apache.ibatis.scripting.defaults.RawLanguageDriver;
 
 public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     @Select("""
@@ -26,7 +24,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                 user_id, biz_no, biz_type, asset, direction, amount, balance_after, status, remark,
                 created_at, updated_at, is_deleted
             )
-            ) VALUES (
+            VALUES (
                 #{userId}, #{bizNo}, #{bizType}, #{asset}, #{direction}, #{amount}, #{balanceAfter}, #{status}, #{remark},
                 DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE), DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE), 0
             )
@@ -167,27 +165,31 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     BigDecimal sumPendingCommissionUsdt();
 
     @Select("""
+            <script>
             SELECT COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END), 0)
               FROM nx_wallet_ledger
              WHERE is_deleted = 0
                AND asset = 'USDT'
                AND status IN ('SUCCESS', 'PENDING')
                AND created_at >= #{startAt}
-               AND created_at < #{endAt}
+               AND created_at &lt; #{endAt}
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     BigDecimal sumNetUsdtFlowBetween(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);
 
     @Select("""
             <script>
             SELECT COUNT(1)
-              FROM nx_wallet_ledger
-             WHERE is_deleted = 0
-             <if test='type != null and type != ""'>AND biz_type = #{type}</if>
-             <if test='userId != null'>AND user_id = #{userId}</if>
+              FROM nx_wallet_ledger l
+              LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0
+             WHERE l.is_deleted = 0
+             <if test='type != null and type != ""'>AND l.biz_type = #{type}</if>
+             <if test='userId != null'>AND l.user_id = #{userId}</if>
              <if test='keyword != null and keyword != ""'>
-               AND (biz_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR remark LIKE CONCAT('%', #{keyword}, '%'))
+               AND (l.biz_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR l.remark LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(l.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
             </script>
             """)
@@ -195,27 +197,32 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
 
     @Select("""
             <script>
-            SELECT id,
-                   user_id AS userId,
-                   biz_no AS bizNo,
-                   biz_type AS bizType,
-                   asset,
-                   direction,
-                   amount,
-                   balance_after AS balanceAfter,
-                   status,
-                   remark,
-                   created_at AS createdAt,
-                   updated_at AS updatedAt
-              FROM nx_wallet_ledger
-             WHERE is_deleted = 0
-             <if test='type != null and type != ""'>AND biz_type = #{type}</if>
-             <if test='userId != null'>AND user_id = #{userId}</if>
+            SELECT l.id,
+                   l.user_id AS userId,
+                   CONCAT('U', LPAD(l.user_id, 8, '0')) AS userNo,
+                   u.nickname AS nickname,
+                   l.biz_no AS bizNo,
+                   l.biz_type AS bizType,
+                   l.asset,
+                   l.direction,
+                   l.amount,
+                   l.balance_after AS balanceAfter,
+                   l.status,
+                   l.remark,
+                   l.created_at AS createdAt,
+                   l.updated_at AS updatedAt
+              FROM nx_wallet_ledger l
+              LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0
+             WHERE l.is_deleted = 0
+             <if test='type != null and type != ""'>AND l.biz_type = #{type}</if>
+             <if test='userId != null'>AND l.user_id = #{userId}</if>
              <if test='keyword != null and keyword != ""'>
-               AND (biz_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR remark LIKE CONCAT('%', #{keyword}, '%'))
+               AND (l.biz_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR l.remark LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(l.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
-             ORDER BY created_at DESC, id DESC
+             ORDER BY l.created_at DESC, l.id DESC
              LIMIT #{pageSize} OFFSET #{offset}
             </script>
             """)
@@ -224,21 +231,24 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                                                  @Param("offset") int offset);
 
     @Select("""
-            SELECT id,
-                   user_id AS userId,
-                   biz_no AS bizNo,
-                   biz_type AS bizType,
-                   asset,
-                   direction,
-                   amount,
-                   balance_after AS balanceAfter,
-                   status,
-                   remark,
-                   created_at AS createdAt,
-                   updated_at AS updatedAt
-              FROM nx_wallet_ledger
-             WHERE is_deleted = 0 AND user_id = #{userId}
-             ORDER BY created_at DESC, id DESC
+            SELECT l.id,
+                   l.user_id AS userId,
+                   CONCAT('U', LPAD(l.user_id, 8, '0')) AS userNo,
+                   u.nickname AS nickname,
+                   l.biz_no AS bizNo,
+                   l.biz_type AS bizType,
+                   l.asset,
+                   l.direction,
+                   l.amount,
+                   l.balance_after AS balanceAfter,
+                   l.status,
+                   l.remark,
+                   l.created_at AS createdAt,
+                   l.updated_at AS updatedAt
+              FROM nx_wallet_ledger l
+              LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0
+             WHERE l.is_deleted = 0 AND l.user_id = #{userId}
+             ORDER BY l.created_at DESC, l.id DESC
              LIMIT #{limit}
             """)
     List<TreasuryLedgerBillView> userLedgerRows(@Param("userId") Long userId, @Param("limit") int limit);

@@ -6,11 +6,9 @@ import ffdd.opsconsole.finance.infrastructure.WithdrawalOrderEntity;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Lang;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
-import org.apache.ibatis.scripting.defaults.RawLanguageDriver;
 
 public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity> {
     @Select("""
@@ -149,6 +147,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
                    COALESCE(u.kyc_status, 'PENDING') AS kycStatus,
+                   COALESCE(u.status, 'UNKNOWN') AS userStatus,
                    rd.risk_score AS riskScore,
                    COALESCE(hit.hit_rules, rd.rule_codes) AS hitRules,
                    (
@@ -210,6 +209,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                                    @Param("offset") int offset);
 
     @Select("""
+            <script>
             SELECT w.id,
                    w.user_id AS userId,
                    w.withdrawal_no AS withdrawalNo,
@@ -234,10 +234,11 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    CONCAT('U', LPAD(w.user_id, 8, '0')) AS userNo,
                    u.nickname AS nickname,
                    CASE
-                      WHEN u.phone IS NULL OR LENGTH(u.phone) < 7 THEN u.phone
+                     WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
                    COALESCE(u.kyc_status, 'PENDING') AS kycStatus,
+                   COALESCE(u.status, 'UNKNOWN') AS userStatus,
                    rd.risk_score AS riskScore,
                    COALESCE(hit.hit_rules, rd.rule_codes) AS hitRules,
                    (
@@ -246,7 +247,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                         WHERE w2.user_id = w.user_id
                           AND w2.is_deleted = 0
                           AND w2.created_at >= DATE_SUB(w.created_at, INTERVAL 24 HOUR)
-                         AND w2.created_at <= w.created_at
+                         AND w2.created_at &lt;= w.created_at
                    ) AS withdrawalCount24h,
                    CONCAT(
                        'created:', DATE_FORMAT(w.created_at, '%Y-%m-%d %H:%i'),
@@ -276,8 +277,8 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               ) aud ON aud.resource_id = w.withdrawal_no
              WHERE w.withdrawal_no = #{withdrawalNo} AND w.is_deleted = 0
             LIMIT 1
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     WithdrawalOrderView findByWithdrawalNo(@Param("withdrawalNo") String withdrawalNo);
 
     @Update("""

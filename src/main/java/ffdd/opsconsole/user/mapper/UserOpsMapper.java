@@ -17,11 +17,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
-import org.apache.ibatis.annotations.Lang;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
-import org.apache.ibatis.scripting.defaults.RawLanguageDriver;
 
 public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0")
@@ -132,11 +130,12 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     long countByKycStatus(@Param("kycStatus") String kycStatus);
 
     @Select("""
+            <script>
             SELECT u.id,
                    CONCAT('U', LPAD(u.id, 8, '0')) AS userNo,
                    u.nickname,
                    CASE
-                    WHEN u.phone IS NULL OR LENGTH(u.phone) < 7 THEN u.phone
+                    WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
                      ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
                    u.country_code AS countryCode,
@@ -164,8 +163,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               LEFT JOIN nx_admin_risk_score_user rs ON rs.user_no = CONCAT('U', LPAD(u.id, 8, '0')) AND rs.is_deleted = 0
              WHERE u.id = #{userId} AND u.is_deleted = 0
             LIMIT 1
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     UserAccountView findById(@Param("userId") Long userId);
 
     @Select("""
@@ -809,12 +808,13 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     int removeAccountList(@Param("userId") Long userId, @Param("reason") String reason, @Param("operator") String operator);
 
     @Select("""
+            <script>
             SELECT s.session_no AS sessionNo,
                    s.user_id AS userId,
                    CONCAT('U', LPAD(s.user_id, 8, '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    CASE
-                    WHEN s.status = 'ACTIVE' AND s.expires_at <= NOW() THEN 'EXPIRED'
+                    WHEN s.status = 'ACTIVE' AND s.expires_at &lt;= NOW() THEN 'EXPIRED'
                      ELSE UPPER(s.status)
                    END AS status,
                    s.ttl_minutes AS ttlMinutes,
@@ -831,17 +831,18 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              WHERE s.is_deleted = 0
              ORDER BY s.created_at DESC, s.id DESC
             LIMIT #{limit}
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     List<UserImpersonationSessionView> impersonations(@Param("limit") int limit);
 
     @Select("""
+            <script>
             SELECT s.session_no AS sessionNo,
                    s.user_id AS userId,
                    CONCAT('U', LPAD(s.user_id, 8, '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    CASE
-                    WHEN s.status = 'ACTIVE' AND s.expires_at <= NOW() THEN 'EXPIRED'
+                    WHEN s.status = 'ACTIVE' AND s.expires_at &lt;= NOW() THEN 'EXPIRED'
                      ELSE UPPER(s.status)
                    END AS status,
                    s.ttl_minutes AS ttlMinutes,
@@ -857,8 +858,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               LEFT JOIN nx_user u ON u.id = s.user_id AND u.is_deleted = 0
              WHERE s.session_no = #{sessionNo} AND s.is_deleted = 0
             LIMIT 1
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     UserImpersonationSessionView findImpersonation(@Param("sessionNo") String sessionNo);
 
     @Update("""
@@ -888,6 +889,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     int updateKycStatus(@Param("userId") Long userId, @Param("kycStatus") String kycStatus);
 
     @Select("""
+            <script>
             SELECT user_id AS userId,
                    refresh_token_id AS refreshTokenId,
                    device_name AS deviceName,
@@ -898,17 +900,17 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    END AS clientIpMasked,
                    CASE
                      WHEN revoked_at IS NOT NULL THEN 'REVOKED'
-                    WHEN expires_at <= NOW() THEN 'EXPIRED'
+                    WHEN expires_at &lt;= NOW() THEN 'EXPIRED'
                      ELSE 'ACTIVE'
                    END AS status,
                    created_at AS issuedAt,
                    expires_at AS expiresAt,
                    revoked_at AS revokedAt
-              FROM nx_user_session
+             FROM nx_user_session
              WHERE refresh_token_id = #{refreshTokenId} AND is_deleted = 0
             LIMIT 1
+            </script>
             """)
-    @Lang(RawLanguageDriver.class)
     UserSessionView findSession(@Param("refreshTokenId") String refreshTokenId);
 
     @Update("""

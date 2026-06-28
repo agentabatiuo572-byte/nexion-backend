@@ -1,10 +1,12 @@
 package ffdd.opsconsole.market.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
 import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
+import ffdd.opsconsole.market.infrastructure.StakingProductEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -12,7 +14,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
-public interface StakingMapper {
+public interface StakingMapper extends BaseMapper<StakingProductEntity> {
     @Select("""
             <script>
             SELECT COUNT(1)

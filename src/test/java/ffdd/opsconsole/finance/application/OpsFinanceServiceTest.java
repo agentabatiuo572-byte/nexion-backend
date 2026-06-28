@@ -126,7 +126,7 @@ class OpsFinanceServiceTest {
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("D5_WITHDRAWAL_REVIEW_APPROVE");
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_APPROVE");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("fromStatus", "REVIEWING")
                 .containsEntry("toStatus", "PENDING_CHAIN")
@@ -143,6 +143,42 @@ class OpsFinanceServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenKycIsNotApproved() {
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "PENDING", "ACTIVE", 42, "", 1);
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_KYC_NOT_APPROVED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenUserStatusIsNotActive() {
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "VERIFIED", "FROZEN", 42, "", 1);
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_USER_STATUS_BLOCKED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenRiskHitIsPresent() {
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "VERIFIED", "ACTIVE", 69, "velocity:FREEZE", 1);
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_RISK_HIT_BLOCKED");
         assertThat(withdrawalRepository.lastStatus).isNull();
     }
 
@@ -295,6 +331,17 @@ class OpsFinanceServiceTest {
     }
 
     private static WithdrawalOrderView withdrawal(String withdrawalNo, String status, Integer withdrawalCount24h) {
+        return withdrawal(withdrawalNo, status, "VERIFIED", "ACTIVE", 42, "", withdrawalCount24h);
+    }
+
+    private static WithdrawalOrderView withdrawal(
+            String withdrawalNo,
+            String status,
+            String kycStatus,
+            String userStatus,
+            Integer riskScore,
+            String hitRules,
+            Integer withdrawalCount24h) {
         return new WithdrawalOrderView(
                 1L,
                 1001L,
@@ -320,9 +367,10 @@ class OpsFinanceServiceTest {
                 "U00001001",
                 "测试用户",
                 "138****0001",
-                "VERIFIED",
-                42,
-                "",
+                kycStatus,
+                userStatus,
+                riskScore,
+                hitRules,
                 withdrawalCount24h,
                 "",
                 "");
@@ -421,7 +469,7 @@ class OpsFinanceServiceTest {
                     order.targetAddress(), order.riskDecisionId(), order.chainTxHash(), status, order.chainSubmittedAt(),
                     order.completedAt(), order.failedAt(), failureReason, order.chainBroadcastAttempts(), order.nextBroadcastAt(),
                     order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
-                    order.nickname(), order.phoneMasked(), order.kycStatus(), order.riskScore(), order.hitRules(),
+                    order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(), order.riskScore(), order.hitRules(),
                     order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
         }
 

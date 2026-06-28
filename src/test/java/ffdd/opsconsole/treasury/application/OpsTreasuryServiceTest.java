@@ -189,6 +189,8 @@ class OpsTreasuryServiceTest {
         ledgerRepository.bills.add(new TreasuryLedgerBillView(
                 1L,
                 10001L,
+                "U00010001",
+                "测试用户",
                 "WD-1",
                 "WITHDRAWAL",
                 "USDT",
@@ -205,6 +207,7 @@ class OpsTreasuryServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().getTotal()).isEqualTo(1);
         assertThat(result.getData().getRecords()).extracting(TreasuryLedgerBillView::bizNo).containsExactly("WD-1");
+        assertThat(result.getData().getRecords()).extracting(TreasuryLedgerBillView::userNo).containsExactly("U00010001");
         assertThat(ledgerRepository.lastBillType).isEqualTo("WITHDRAWAL");
         assertThat(ledgerRepository.lastBillUserId).isEqualTo(10001L);
         assertThat(ledgerRepository.lastBillKeyword).isEqualTo("WD");
@@ -468,6 +471,8 @@ class OpsTreasuryServiceTest {
             bills.add(new TreasuryLedgerBillView(
                     1L,
                     1001L,
+                    "U00001001",
+                    "种子用户",
                     "D4-SEED-BILL-1",
                     "DEPOSIT",
                     "USDT",
