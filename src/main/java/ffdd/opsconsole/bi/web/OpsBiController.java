@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.bi.application.OpsBiService;
+import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
 import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
@@ -12,7 +13,12 @@ import ffdd.opsconsole.bi.dto.BiReportActionRequest;
 import ffdd.opsconsole.bi.dto.BiReportCreateRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsAdminApi;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -108,6 +114,23 @@ public class OpsBiController {
     @GetMapping("/exports/{reportId}/download-token")
     public ApiResult<Map<String, Object>> downloadToken(@PathVariable String reportId) {
         return biService.downloadToken(reportId);
+    }
+
+    @GetMapping("/exports/{reportId}/download")
+    public ResponseEntity<?> downloadFile(@PathVariable String reportId) {
+        ApiResult<BiReportDownloadFile> result = biService.downloadFile(reportId);
+        if (result.getCode() != 0) {
+            return ResponseEntity.status(result.getCode())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(result);
+        }
+        BiReportDownloadFile file = result.getData();
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(file.contentType()))
+                .contentLength(file.body().length)
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(file.fileName(), StandardCharsets.UTF_8).build().toString())
+                .body(file.body());
     }
 
     @PostMapping("/reports/{reportId}/{action}")

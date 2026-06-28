@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
+import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
@@ -16,6 +17,7 @@ import ffdd.opsconsole.bi.dto.BiReportCreateRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -293,6 +295,35 @@ public class OpsBiService {
         response.put("decryptedPiiBlocked", true);
         response.put("sources", List.of("nx_admin_fourth_batch_report", "nx_audit_log"));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<BiReportDownloadFile> downloadFile(String reportId) {
+        if (!StringUtils.hasText(reportId)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REPORT_ID_REQUIRED");
+        }
+        BiReportView report = reportRepository.findReport(reportId.trim()).orElse(null);
+        if (report == null) {
+            return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
+        }
+        if (!"READY".equals(normalizeText(report.status()))) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        String body = "\ufeff"
+                + csvRow(List.of("report_id", "name", "type", "cycle", "format", "scope", "fields", "row_count", "contains_pii", "masking_policy", "status"))
+                + csvRow(List.of(
+                        report.reportId(),
+                        report.name(),
+                        report.type(),
+                        report.cycle(),
+                        report.format(),
+                        report.scope(),
+                        report.fields(),
+                        String.valueOf(report.rowCount()),
+                        String.valueOf(Boolean.TRUE.equals(report.containsPii())),
+                        report.maskingPolicy(),
+                        report.status()));
+        String fileName = report.reportId().toLowerCase(Locale.ROOT) + ".csv";
+        return ApiResult.ok(new BiReportDownloadFile(fileName, "text/csv;charset=UTF-8", body.getBytes(StandardCharsets.UTF_8)));
     }
 
     private String nextStatus(BiReportView report, String action) {
@@ -577,6 +608,19 @@ public class OpsBiService {
             response.put((String) pairs[i], pairs[i + 1]);
         }
         return response;
+    }
+
+    private String csvRow(List<String> values) {
+        return values.stream()
+                .map(this::csvCell)
+                .reduce((left, right) -> left + "," + right)
+                .orElse("")
+                + "\n";
+    }
+
+    private String csvCell(String value) {
+        String text = value == null ? "" : value;
+        return "\"" + text.replace("\"", "\"\"") + "\"";
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {
