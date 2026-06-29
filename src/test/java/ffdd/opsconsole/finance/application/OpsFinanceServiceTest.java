@@ -21,6 +21,8 @@ import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
+import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserSeedRepository;
@@ -40,14 +42,19 @@ class OpsFinanceServiceTest {
     private final FakeWithdrawalOrderRepository withdrawalRepository = new FakeWithdrawalOrderRepository();
     private final FakeDepositOpsRepository depositOpsRepository = new FakeDepositOpsRepository();
     private final FakeUserSeedRepository userSeedRepository = new FakeUserSeedRepository();
+    private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsFinanceService service =
-            new OpsFinanceService(configFacade, coverageFacade, withdrawalRepository, depositOpsRepository, userSeedRepository, auditLogService);
+            new OpsFinanceService(configFacade, coverageFacade, withdrawalRepository, depositOpsRepository, userSeedRepository, riskKycReviewFacade, auditLogService);
 
     @Test
     void withdrawalParamsIncludeCoverageAndConfigValues() {
         configFacade.values.put("withdrawal.daily_count_limit", "2");
         configFacade.values.put("withdrawal.max_balance_pct", "0.75");
+        configFacade.values.put("H1.rhythm.currentMonth", "11");
+        configFacade.values.put("growth.phase.current", "P6");
+        configFacade.values.put("growth.withdraw_nex_gate.min_balance_nex", "250");
+        configFacade.values.put("growth.withdraw_nex_gate.hold_days", "14");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("110.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> result = service.withdrawalParams();
@@ -58,6 +65,14 @@ class OpsFinanceServiceTest {
                 .containsEntry("maxBalanceRatio", new BigDecimal("0.75"))
                 .containsEntry("coverageRatio", new BigDecimal("110.00"))
                 .containsEntry("redlinePct", new BigDecimal("85.00"));
+        assertThat(result.getData().get("h1Rhythm"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("currentMonth", 11)
+                .containsEntry("currentPhase", "P6");
+        assertThat(result.getData().get("withdrawNexGate"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("minBalanceNex", new BigDecimal("250"))
+                .containsEntry("holdDays", 14);
     }
 
     @Test
@@ -131,6 +146,31 @@ class OpsFinanceServiceTest {
                 .containsEntry("fromStatus", "REVIEWING")
                 .containsEntry("toStatus", "PENDING_CHAIN")
                 .containsEntry("idempotencyKey", "idem-review");
+    }
+
+    @Test
+    void reviewWithdrawalTriggersK5AndFreezesLargeWithdrawalBeforeApprove() {
+        withdrawalRepository.order = withdrawal("WD-LARGE-1", "REVIEWING", new BigDecimal("8200.00"));
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "large withdrawal review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-LARGE-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_K5_REVIEW_REQUIRED");
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("FROZEN");
+        assertThat(withdrawalRepository.lastFailureReason).isEqualTo("K5_REVIEW:KR-D2-TEST");
+        assertThat(riskKycReviewFacade.lastWithdrawalNo).isEqualTo("WD-LARGE-1");
+        assertThat(riskKycReviewFacade.lastAmountUsdt).isEqualByComparingTo("8200.00");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_K5_REVIEW_REQUIRED");
+        assertThat(captor.getValue().getResult()).isEqualTo("BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("toStatus", "FROZEN")
+                .containsEntry("blockedReason", "WITHDRAWAL_K5_REVIEW_REQUIRED")
+                .containsEntry("k5TicketId", "KR-D2-TEST")
+                .containsEntry("k5Created", true);
     }
 
     @Test
@@ -412,6 +452,10 @@ class OpsFinanceServiceTest {
         return withdrawal(withdrawalNo, status, "VERIFIED", "ACTIVE", 42, "", withdrawalCount24h);
     }
 
+    private static WithdrawalOrderView withdrawal(String withdrawalNo, String status, BigDecimal amount) {
+        return withdrawal(withdrawalNo, status, "VERIFIED", "ACTIVE", 42, "", "", 1, amount);
+    }
+
     private static WithdrawalOrderView withdrawal(
             String withdrawalNo,
             String status,
@@ -432,13 +476,26 @@ class OpsFinanceServiceTest {
             String hitRules,
             String riskReason,
             Integer withdrawalCount24h) {
+        return withdrawal(withdrawalNo, status, kycStatus, userStatus, riskScore, hitRules, riskReason, withdrawalCount24h, new BigDecimal("100.00"));
+    }
+
+    private static WithdrawalOrderView withdrawal(
+            String withdrawalNo,
+            String status,
+            String kycStatus,
+            String userStatus,
+            Integer riskScore,
+            String hitRules,
+            String riskReason,
+            Integer withdrawalCount24h,
+            BigDecimal amount) {
         return new WithdrawalOrderView(
                 1L,
                 1001L,
                 withdrawalNo,
                 "USDT",
                 "USDT-TRC20",
-                new BigDecimal("100.00"),
+                amount,
                 new BigDecimal("1.00"),
                 "Txxx",
                 null,
@@ -530,6 +587,7 @@ class OpsFinanceServiceTest {
         private BigDecimal lastMinAmountFilter;
         private BigDecimal lastMaxAmountFilter;
         private Integer lastMinRiskScoreFilter;
+        private String lastFailureReason;
         private int seedCalls;
 
         @Override
@@ -555,6 +613,7 @@ class OpsFinanceServiceTest {
         @Override
         public void updateStatus(String withdrawalNo, String status, String failureReason) {
             lastStatus = status;
+            lastFailureReason = failureReason;
             order = new WithdrawalOrderView(
                     order.id(), order.userId(), order.withdrawalNo(), order.asset(), order.chain(), order.amount(), order.fee(),
                     order.targetAddress(), order.riskDecisionId(), order.chainTxHash(), status, order.chainSubmittedAt(),
@@ -562,6 +621,15 @@ class OpsFinanceServiceTest {
                     order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
                     order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(), order.riskScore(), order.hitRules(),
                     order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
+        }
+
+        @Override
+        public int freezePendingByUserId(Long userId, String reason) {
+            if (order == null || !userId.equals(order.userId())) {
+                return 0;
+            }
+            updateStatus(order.withdrawalNo(), "FROZEN", reason);
+            return 1;
         }
 
         @Override
@@ -583,6 +651,38 @@ class OpsFinanceServiceTest {
         private boolean isActionableStatus(String status) {
             return List.of("REVIEWING", "DELAYED", "FROZEN", "PENDING_CHAIN", "CHAIN_SUBMITTED", "DEAD")
                     .contains(status);
+        }
+    }
+
+    private static final class FakeRiskKycReviewFacade implements RiskKycReviewFacade {
+        private String lastWithdrawalNo;
+        private BigDecimal lastAmountUsdt;
+
+        @Override
+        public KycReviewTriggerResult triggerLargeWithdrawalReview(
+                String userNo,
+                BigDecimal amountUsdt,
+                String kycStatus,
+                String withdrawalNo,
+                String operator,
+                String reason) {
+            lastWithdrawalNo = withdrawalNo;
+            lastAmountUsdt = amountUsdt;
+            if (amountUsdt != null && amountUsdt.compareTo(new BigDecimal("1000")) >= 0) {
+                return new KycReviewTriggerResult(true, true, "KR-D2-TEST", "K5_LARGE_WITHDRAWAL_REVIEW_REQUIRED");
+            }
+            return KycReviewTriggerResult.notRequired();
+        }
+
+        @Override
+        public KycReviewTriggerResult triggerLargeExchangeReview(
+                String userNo,
+                BigDecimal amountUsdt,
+                String kycStatus,
+                String exchangeNo,
+                String operator,
+                String reason) {
+            return KycReviewTriggerResult.notRequired();
         }
     }
 

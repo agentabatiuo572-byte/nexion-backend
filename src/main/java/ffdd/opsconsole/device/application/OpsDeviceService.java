@@ -45,6 +45,7 @@ import ffdd.opsconsole.device.dto.DeviceTaskStatusRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -863,6 +864,7 @@ public class OpsDeviceService {
         List<DeviceGenerationGateView> gates = catalogRepository.listGenerationGates(false);
         Map<String, String> configValues = e1GateConfigValues(gates);
         List<DevicePhaseView> phases = e1PhaseDefs();
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade);
         List<String> phaseOrder = phases.stream().map(DevicePhaseView::p).toList();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "E1");
@@ -870,6 +872,8 @@ public class OpsDeviceService {
         response.put("phases", phases);
         response.put("platformMonth", platformMonth);
         response.put("phaseCurrent", currentE1PhaseId(platformMonth, phases));
+        response.put("h1Rhythm", rhythm.summary());
+        response.put("h1DeviceReleasePacingPct", rhythm.deviceReleasePacingPct());
         response.put("releases", e1GenerationReleases(gates));
         response.put("configValues", configValues);
         response.put("allowedFields", List.of("releaseMonth", "phase", "discount", "eligibility", "phaseOffset", "forceUnlock"));
@@ -879,6 +883,7 @@ public class OpsDeviceService {
                 "nx_config_item:" + E1_GATE_GROUP + ":legacy_phase_seed",
                 "nx_config_item:" + CURRENT_PHASE_KEY,
                 "nx_config_item:" + CURRENT_MONTH_KEY,
+                "H1 growth rhythm facade",
                 "E5 eligibility"));
         return ApiResult.ok(response);
     }
@@ -1848,8 +1853,8 @@ public class OpsDeviceService {
     }
 
     private int currentPlatformMonth() {
-        int month = readInt(CURRENT_MONTH_KEY, 0);
-        return month >= 1 && month <= 12 ? month : 0;
+        int month = GrowthRhythmSnapshot.from(configFacade).currentMonth();
+        return month >= 1 ? Math.min(month, 12) : 0;
     }
 
     private String phaseForMonth(int month, List<DevicePhaseView> phases) {

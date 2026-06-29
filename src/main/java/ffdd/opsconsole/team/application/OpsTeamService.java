@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
@@ -160,7 +161,8 @@ public class OpsTeamService {
                 "nx_team_rank_snapshot",
                 "nx_team_binary_settlement_view",
                 "nx_team_leadership_pool_view",
-                "B1 treasury coverage facade"));
+                "B1 treasury coverage facade",
+                "H1 growth rhythm facade"));
         return ApiResult.ok(response);
     }
 
@@ -282,7 +284,8 @@ public class OpsTeamService {
                 "nx_config_item:team.ui.F3.binary.rows",
                 "nx_config_item:team.ui.F3.metric.*",
                 "nx_config_item:team.ui.F.binary.*",
-                "B1 treasury coverage facade"));
+                "B1 treasury coverage facade",
+                "H1 growth rhythm facade"));
         return ApiResult.ok(response);
     }
 
@@ -644,13 +647,16 @@ public class OpsTeamService {
     }
 
     private Map<String, Object> f3DailyCap() {
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade);
         Map<String, Object> cap = new LinkedHashMap<>();
         cap.put("currentLabel", configText("F3.dailyCap.currentLabel", "$5,000"));
         cap.put("windowLabel", configText("F3.dailyCap.windowLabel", "月 1-6 现值 · 全局统一"));
         cap.put("nextTrigger", configText("F3.dailyCap.nextTrigger", "月 7"));
         cap.put("nextLabel", configText("F3.dailyCap.nextLabel", "$2,000"));
-        cap.put("currentMonth", intConfig(uiConfigKey("F3.dailyCap.currentMonth"), 6));
-        cap.put("currentPhase", configText("F3.dailyCap.currentPhase", "收缩期"));
+        cap.put("currentMonth", rhythm.currentMonth());
+        cap.put("currentPhase", rhythm.currentPhase());
+        cap.put("h1CommissionTighteningPct", rhythm.commissionTighteningPct());
+        cap.put("h1Rhythm", rhythm.summary());
         return cap;
     }
 

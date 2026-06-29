@@ -8,6 +8,9 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
+import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
+import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
@@ -49,6 +52,7 @@ import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
+import ffdd.opsconsole.user.facade.UserKycStatusFacade;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -119,6 +123,9 @@ public class OpsRiskService {
                     "freeze", "可选内部 / 第三方 / 组合", "shield"));
 
     private final RiskOpsRepository riskRepository;
+    private final UserKycStatusFacade userKycStatusFacade;
+    private final FinanceWithdrawalKycReviewFacade financeWithdrawalKycReviewFacade;
+    private final MarketExchangeKycReviewFacade marketExchangeKycReviewFacade;
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -767,14 +774,23 @@ public class OpsRiskService {
         if (!StringUtils.hasText(normalizedTicket) || !KYC_REVIEW_DECISIONS.contains(decision)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_DECISION_INVALID");
         }
+        KycReviewTicketContext ticket = riskRepository.findKycReviewTicket(normalizedTicket).orElse(null);
+        if (ticket == null) {
+            return ApiResult.fail(404, "K5_REVIEW_TICKET_NOT_FOUND");
+        }
         if (!riskRepository.updateKycReviewTicketStatus(normalizedTicket, decision, request.reason().trim(), operator(request.operator()))) {
             return ApiResult.fail(404, "K5_REVIEW_TICKET_NOT_FOUND");
         }
-        audit("K5_KYC_REVIEW_DECIDED", "RISK_KYC_REVIEW_TICKET", normalizedTicket, null, operator(request.operator()), Map.of(
-                "ticketId", normalizedTicket,
-                "decision", decision,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> downstream = applyKycReviewDecision(ticket, decision, request.reason().trim(), operator(request.operator()));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("ticketId", normalizedTicket);
+        detail.put("userNo", ticket.userNo());
+        detail.put("decision", decision);
+        detail.put("kycStatus", "passed".equals(decision) ? "APPROVED" : "REJECTED");
+        detail.put("reason", request.reason().trim());
+        detail.put("idempotencyKey", idempotencyKey.trim());
+        detail.put("downstream", downstream);
+        audit("K5_KYC_REVIEW_DECIDED", "RISK_KYC_REVIEW_TICKET", normalizedTicket, null, operator(request.operator()), detail);
         return kycReviewOverview();
     }
 
@@ -818,6 +834,41 @@ public class OpsRiskService {
                 "source", "K4_SCORE_OVERRIDE",
                 "reason", reason,
                 "idempotencyKey", idempotencyKey));
+    }
+
+    private Map<String, Object> applyKycReviewDecision(KycReviewTicketContext ticket, String decision, String reason, String operator) {
+        Map<String, Object> downstream = new LinkedHashMap<>();
+        String kycStatus = "passed".equals(decision) ? "APPROVED" : "REJECTED";
+        downstream.put("c4KycUpdated", userKycStatusFacade.updateKycStatusByUserNo(ticket.userNo(), kycStatus, reason, operator));
+        String sourceDomain = ticketInfoValue(ticket.infoJson(), "sourceDomain");
+        String sourceNo = ticketInfoValue(ticket.infoJson(), "sourceNo");
+        downstream.put("sourceDomain", sourceDomain);
+        downstream.put("sourceNo", sourceNo);
+        if (!StringUtils.hasText(sourceDomain) || !StringUtils.hasText(sourceNo)) {
+            downstream.put("sourceUpdated", false);
+            return downstream;
+        }
+        boolean sourceUpdated = false;
+        if ("D2".equalsIgnoreCase(sourceDomain)) {
+            sourceUpdated = "passed".equals(decision)
+                    ? financeWithdrawalKycReviewFacade.releaseWithdrawalReview(sourceNo, reason, operator)
+                    : financeWithdrawalKycReviewFacade.rejectWithdrawalReview(sourceNo, reason, operator);
+        } else if ("G2".equalsIgnoreCase(sourceDomain)) {
+            sourceUpdated = "passed".equals(decision)
+                    ? marketExchangeKycReviewFacade.releaseExchangeReview(sourceNo, reason, operator)
+                    : marketExchangeKycReviewFacade.rejectExchangeReview(sourceNo, reason, operator);
+        }
+        downstream.put("sourceUpdated", sourceUpdated);
+        return downstream;
+    }
+
+    private String ticketInfoValue(String infoJson, String key) {
+        if (!StringUtils.hasText(infoJson) || !StringUtils.hasText(key)) {
+            return null;
+        }
+        Pattern pattern = Pattern.compile("\\[\\s*\"" + Pattern.quote(key) + "\"\\s*,\\s*\"([^\"]*)\"");
+        Matcher matcher = pattern.matcher(infoJson);
+        return matcher.find() ? matcher.group(1) : null;
     }
 
     private <T> ApiResult<T> requireCommand(String idempotencyKey, String reason) {

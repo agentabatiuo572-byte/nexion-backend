@@ -22,7 +22,10 @@ import ffdd.opsconsole.finance.dto.TopupCommandRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
+import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserSeedRepository;
@@ -71,6 +74,7 @@ public class OpsFinanceService {
     private final WithdrawalOrderRepository withdrawalRepository;
     private final DepositOpsRepository depositOpsRepository;
     private final UserSeedRepository userSeedRepository;
+    private final RiskKycReviewFacade riskKycReviewFacade;
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> topupOverview() {
@@ -272,6 +276,7 @@ public class OpsFinanceService {
     public ApiResult<Map<String, Object>> withdrawalParams() {
         ensureD5ConfigDefaults();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade);
         BigDecimal maxBalanceRatio = configDecimal("withdrawal.max_balance_pct", new BigDecimal("0.80"));
         BigDecimal feeRate = configDecimal("withdrawal.fee_rate", new BigDecimal("0.02"));
         Map<String, Object> response = new LinkedHashMap<>();
@@ -283,9 +288,14 @@ public class OpsFinanceService {
         response.put("minUsdt", configDecimal("withdrawal.min_usdt", new BigDecimal("20")));
         response.put("trc20Enabled", configBoolean("withdrawal.trc20.enabled", true));
         response.put("erc20Enabled", configBoolean("withdrawal.erc20.enabled", true));
+        response.put("h1Rhythm", rhythm.summary());
+        response.put("withdrawNexGate", Map.of(
+                "sourceDomain", "H1",
+                "minBalanceNex", rhythm.withdrawNexMinBalance(),
+                "holdDays", rhythm.withdrawNexHoldDays()));
         response.put("coverageRatio", coverage.coverageRatio());
         response.put("redlinePct", coverage.redlinePct());
-        response.put("sources", List.of("nx_config_item: withdrawal.*", "B1 treasury coverage facade"));
+        response.put("sources", List.of("nx_config_item: withdrawal.*", "B1 treasury coverage facade", "H1 growth rhythm facade"));
         return ApiResult.ok(response);
     }
 
@@ -376,6 +386,21 @@ public class OpsFinanceService {
         }
         int dailyLimitCount = withdrawalDailyLimitCount();
         if ("APPROVE".equals(action)) {
+            KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeWithdrawalReview(
+                    order.userNo(),
+                    order.amount(),
+                    order.kycStatus(),
+                    order.withdrawalNo(),
+                    request.operator(),
+                    request.reason().trim());
+            if (k5Review.requiresReview()) {
+                String holdReason = StringUtils.hasText(k5Review.ticketId())
+                        ? "K5_REVIEW:" + k5Review.ticketId()
+                        : k5Review.reason();
+                withdrawalRepository.updateStatus(order.withdrawalNo(), "FROZEN", holdReason);
+                auditWithdrawalReviewBlockedByK5(order, dailyLimitCount, idempotencyKey, request, k5Review);
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_K5_REVIEW_REQUIRED");
+            }
             String blockedReason = approvalBlockReason(order, dailyLimitCount);
             if (blockedReason != null) {
                 auditWithdrawalReviewBlocked(order, action, blockedReason, dailyLimitCount, idempotencyKey, request);
@@ -770,6 +795,22 @@ public class OpsFinanceService {
         detail.put("blockedReason", blockedReason);
         detail.put("statusUnchanged", true);
         audit("D2_WITHDRAWAL_REVIEW_BLOCKED", "WITHDRAWAL", order.withdrawalNo(), request.operator(), "BLOCKED", detail);
+    }
+
+    private void auditWithdrawalReviewBlockedByK5(
+            WithdrawalOrderView order,
+            int dailyLimitCount,
+            String idempotencyKey,
+            WithdrawalReviewRequest request,
+            KycReviewTriggerResult review) {
+        Map<String, Object> detail = withdrawalReviewAuditDetail(
+                order, "FROZEN", dailyLimitCount, request.reason().trim(), idempotencyKey.trim());
+        detail.put("requestedAction", "APPROVE");
+        detail.put("blockedReason", "WITHDRAWAL_K5_REVIEW_REQUIRED");
+        detail.put("k5TicketId", review.ticketId());
+        detail.put("k5Created", review.created());
+        detail.put("k5Reason", review.reason());
+        audit("D2_WITHDRAWAL_K5_REVIEW_REQUIRED", "WITHDRAWAL", order.withdrawalNo(), request.operator(), "BLOCKED", detail);
     }
 
     private Map<String, Object> withdrawalReviewAuditDetail(

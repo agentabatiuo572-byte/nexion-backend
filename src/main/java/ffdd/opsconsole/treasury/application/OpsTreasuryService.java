@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
@@ -128,7 +129,8 @@ public class OpsTreasuryService {
                 "service", "nexion-backend",
                 "domain", "B",
                 "generatedAt", now,
-                "sources", List.of("nx_user_wallet", "nx_wallet_ledger", "nx_withdrawal_order", "nx_staking_position", "nx_nex_lock_order", "nx_config_item"));
+                "sources", List.of("nx_user_wallet", "nx_wallet_ledger", "nx_withdrawal_order", "nx_staking_position", "nx_nex_lock_order", "nx_config_item", "H1 growth rhythm facade"));
+        response.put("h1Rhythm", GrowthRhythmSnapshot.from(configFacade).summary());
         response.put("snapshot", section(
                 "reserveUsd", money(reserveUsd),
                 "liabilitiesUsd", money(liabilitiesUsd),

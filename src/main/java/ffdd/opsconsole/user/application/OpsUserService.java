@@ -8,7 +8,9 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.RiskUserStateFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserAccountActionOverview;
@@ -230,6 +232,8 @@ public class OpsUserService {
     private final UserOpsRepository userRepository;
     private final TreasuryCoverageFacade coverageFacade;
     private final PlatformConfigFacade configFacade;
+    private final FinanceWithdrawalControlFacade financeWithdrawalControlFacade;
+    private final RiskUserStateFacade riskUserStateFacade;
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -1167,8 +1171,16 @@ public class OpsUserService {
         }
         userRepository.updateUserStatus(userId, nextStatus, request.reason().trim());
         boolean sessionsRevoked = "FROZEN".equals(nextStatus);
+        int withdrawalsFrozen = 0;
+        boolean riskSignalRecorded = false;
         if (sessionsRevoked) {
             userRepository.revokeUserSessions(userId, request.reason().trim());
+            withdrawalsFrozen = financeWithdrawalControlFacade.freezePendingWithdrawalsForUser(
+                    userId,
+                    request.reason().trim(),
+                    request.operator());
+            riskUserStateFacade.recordUserFrozen(userId, before.userNo(), request.reason().trim(), request.operator());
+            riskSignalRecorded = true;
         }
         UserAccountView updated = userRepository.findById(userId)
                 .orElse(new UserAccountView(
@@ -1180,6 +1192,8 @@ public class OpsUserService {
         detail.put("fromStatus", before.status());
         detail.put("toStatus", nextStatus);
         detail.put("sessionsRevoked", sessionsRevoked);
+        detail.put("withdrawalsFrozen", withdrawalsFrozen);
+        detail.put("riskSignalRecorded", riskSignalRecorded);
         detail.put("reason", request.reason().trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         audit("C2_USER_STATUS_CHANGED", "USER", String.valueOf(userId), userId, request.operator(), detail);

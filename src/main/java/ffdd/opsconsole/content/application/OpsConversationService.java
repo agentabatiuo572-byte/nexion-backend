@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.domain.AdvisorRoutingDecision;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
@@ -30,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
@@ -381,8 +383,9 @@ public class OpsConversationService {
         }
         String type = normalizeConversationType(request.conversationType());
         String actor = operator(request.operator());
-        String ownerName = StringUtils.hasText(request.ownerAgentName()) ? request.ownerAgentName().trim() : actor;
-        String ownerId = StringUtils.hasText(request.ownerAgentId()) ? request.ownerAgentId().trim() : ownerName;
+        AdvisorRoutingDecision routing = routingDecision(type, request, actor);
+        String ownerName = routing.targetName();
+        String ownerId = routing.targetId();
         String text = request.openingText().trim();
         LocalDateTime now = LocalDateTime.now(clock);
         String conversationNo = "CV-OUT-" + now.format(CONVERSATION_NO_TIME);
@@ -394,13 +397,65 @@ public class OpsConversationService {
                 ownerName,
                 text,
                 now);
-        audit("I9_CONVERSATION_INITIATED", created.conversationNo(), actor, Map.of(
+        SupportTicketView fallbackTicket = routing.fallbackTicket()
+                ? createAdvisorFallbackTicket(created, text, routing, actor, now)
+                : null;
+        Map<String, Object> detail = auditDetail(
                 "conversationType", type,
                 "userId", request.userId() == null ? "audience" : request.userId(),
                 "openingLength", text.length(),
+                "ownerAgentId", ownerId,
+                "ownerAgentName", ownerName,
+                "routingTargetType", routing.targetType(),
+                "routingReason", routing.reason(),
+                "dedicatedAdvisor", routing.dedicated(),
+                "fallbackTicket", routing.fallbackTicket(),
                 "reason", reasonOrDefault(request.reason(), "single-user routine"),
-                "idempotencyKey", idempotencyKey.trim()));
+                "idempotencyKey", idempotencyKey.trim());
+        if (fallbackTicket != null) {
+            detail.put("fallbackTicketNo", fallbackTicket.ticketNo());
+        }
+        audit("I9_CONVERSATION_INITIATED", created.conversationNo(), actor, detail);
         return ApiResult.ok(created);
+    }
+
+    private AdvisorRoutingDecision routingDecision(String type, ConversationInitiateRequest request, String actor) {
+        if ("advisor".equals(type) && request.userId() != null) {
+            AdvisorRoutingDecision decision = supportAgentService.routeAdvisorForUser(request.userId());
+            if (decision != null && StringUtils.hasText(decision.targetId())) {
+                return decision;
+            }
+        }
+        String ownerName = StringUtils.hasText(request.ownerAgentName()) ? request.ownerAgentName().trim() : actor;
+        String ownerId = StringUtils.hasText(request.ownerAgentId()) ? request.ownerAgentId().trim() : ownerName;
+        return new AdvisorRoutingDecision(
+                "agent",
+                ownerId,
+                ownerName,
+                parseLong(ownerId).orElse(null),
+                false,
+                false,
+                "REQUEST_OWNER");
+    }
+
+    private SupportTicketView createAdvisorFallbackTicket(
+            ContentConversationView conversation,
+            String openingText,
+            AdvisorRoutingDecision routing,
+            String actor,
+            LocalDateTime now) {
+        String ticketNo = "TK-" + now.format(TICKET_NO_TIME);
+        return ticketRepository.createTicket(
+                ticketNo,
+                conversation.userId(),
+                "account",
+                "NORMAL",
+                "Advisor standby fallback for " + conversation.conversationNo(),
+                "Advisor conversation routed to " + routing.targetName() + ".\n" + openingText,
+                routing.agentAdminId(),
+                routing.targetName(),
+                actor,
+                now);
     }
 
     private void ensureSeedData() {
@@ -578,6 +633,17 @@ public class OpsConversationService {
 
     private String assignedName(String assignedAdminName, String fallback) {
         return StringUtils.hasText(assignedAdminName) ? assignedAdminName.trim() : fallback;
+    }
+
+    private Optional<Long> parseLong(String value) {
+        if (!StringUtils.hasText(value)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Long.parseLong(value.trim()));
+        } catch (NumberFormatException ex) {
+            return Optional.empty();
+        }
     }
 
     private String titleOrDefault(String title, ContentConversationView conversation) {

@@ -2,6 +2,7 @@ package ffdd.opsconsole.risk.infrastructure;
 
 
 import lombok.RequiredArgsConstructor;
+import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.risk.mapper.RiskOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
 import jakarta.annotation.PostConstruct;
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.List;
@@ -448,6 +450,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public Optional<KycReviewTicketContext> findKycReviewTicket(String ticketId) {
+        return Optional.ofNullable(mapper.findKycReviewTicket(ticketId))
+                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson()));
+    }
+
+    @Override
     public void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator) {
         mapper.insertKycReviewTicket(
                 ticketId,
@@ -465,11 +473,17 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public int kycReviewTriggerScore() {
-        return mapper.riskParams("k5").stream()
-                .filter(param -> "reviewTriggerScore".equals(param.key()))
-                .findFirst()
-                .map(param -> scoreLineValue(param.value(), 85))
-                .orElse(85);
+        return kycParamInt("reviewTriggerScore", 85);
+    }
+
+    @Override
+    public int kycLargeWithdrawReviewUsdt() {
+        return kycParamInt("largeWithdrawReviewUsdt", 1_000);
+    }
+
+    @Override
+    public int kycLargeExchangeReviewUsdt() {
+        return kycParamInt("largeExchangeReviewUsdt", kycLargeWithdrawReviewUsdt());
     }
 
     @Override
@@ -491,6 +505,50 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 "剩 7 天",
                 "[[\"触发原因\",\"K4有效风险分 " + score + " >= " + threshold + "\"],[\"触发方式\",\"K4风险分人工覆盖\"],[\"覆盖理由\",\"" + escapeJson(reason) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"]]",
                 "[[\"刚刚\",\"K4风险分过线 · 自动进入复审队列\",\"\"]]");
+    }
+
+    @Override
+    public void createLargeWithdrawalKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String withdrawalNo,
+                                                     String kycStatus, String reason, String operator) {
+        int threshold = kycLargeWithdrawReviewUsdt();
+        mapper.insertKycReviewTicket(
+                ticketId,
+                "大额提现",
+                userNo,
+                money(amountUsdt),
+                "—",
+                kycText(kycStatus),
+                "triggered",
+                0.02,
+                "剩 7 天",
+                "[[\"触发原因\",\"单笔提现 " + money(amountUsdt) + " >= $" + threshold + "\"],"
+                        + "[\"提现单\",\"" + escapeJson(withdrawalNo) + " · K5 复审 hold\"],"
+                        + "[\"sourceDomain\",\"D2\"],[\"sourceNo\",\"" + escapeJson(withdrawalNo) + "\"],"
+                        + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
+                        + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
+                "[[\"刚刚\",\"D2 大额提现触发 K5 复审\",\"warn\"]]");
+    }
+
+    @Override
+    public void createLargeExchangeKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String exchangeNo,
+                                                   String kycStatus, String reason, String operator) {
+        int threshold = kycLargeExchangeReviewUsdt();
+        mapper.insertKycReviewTicket(
+                ticketId,
+                "大额兑换",
+                userNo,
+                money(amountUsdt),
+                "—",
+                kycText(kycStatus),
+                "triggered",
+                0.02,
+                "剩 7 天",
+                "[[\"触发原因\",\"单笔兑换 " + money(amountUsdt) + " >= $" + threshold + "\"],"
+                        + "[\"兑换单\",\"" + escapeJson(exchangeNo) + " · K5 复审 hold\"],"
+                        + "[\"sourceDomain\",\"G2\"],[\"sourceNo\",\"" + escapeJson(exchangeNo) + "\"],"
+                        + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
+                        + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
+                "[[\"刚刚\",\"G2 大额兑换触发 K5 复审\",\"warn\"]]");
     }
 
     private int normalizePageNum(Integer pageNum) {
@@ -561,6 +619,27 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         }
         String digits = value.replaceAll("[^0-9]", "");
         return intValue(digits, fallback);
+    }
+
+    private int kycParamInt(String key, int fallback) {
+        return mapper.riskParams("k5").stream()
+                .filter(param -> key.equals(param.key()))
+                .findFirst()
+                .map(param -> scoreLineValue(param.value(), fallback))
+                .orElse(fallback);
+    }
+
+    private String money(BigDecimal amount) {
+        if (amount == null) {
+            return "$0";
+        }
+        return "$" + amount.stripTrailingZeros().toPlainString();
+    }
+
+    private String kycText(String kycStatus) {
+        return StringUtils.hasText(kycStatus)
+                ? escapeJson(kycStatus.trim() + "(待复审)")
+                : "待确认(待复审)";
     }
 
     private void seedRiskDataIfEmpty() {

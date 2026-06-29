@@ -17,6 +17,8 @@ import ffdd.opsconsole.bi.dto.BiReportCreateRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.time.LocalDateTime;
@@ -35,6 +37,7 @@ public class OpsBiService {
     private static final Set<String> ACTIONS = Set.of("GENERATE", "RERUN", "APPROVE", "DOWNLOAD");
 
     private final BiReportRepository reportRepository;
+    private final GrowthRhythmFacade growthRhythmFacade;
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -46,7 +49,7 @@ public class OpsBiService {
                 "sensitive exports require confirm-with-reason and A2 audit",
                 "download token TTL is 24 hours",
                 "decrypted PII export is blocked in active admin API"));
-        response.put("sources", List.of("nx_admin_fourth_batch_report", "nx_audit_log"));
+        response.put("sources", List.of("nx_admin_fourth_batch_report", "nx_audit_log", "H1 growth rhythm facade"));
         response.put("currentPhase", currentPhase());
         response.put("phases", phases());
         response.put("l1", reportRepository.dashboard("L1"));
@@ -353,14 +356,16 @@ public class OpsBiService {
     }
 
     private Map<String, Object> currentPhase() {
+        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
         return linked(
-                "code", "P3",
-                "name", "扩张期",
-                "index", 2,
-                "month", 7,
-                "total", 12,
-                "etaDays", 14,
-                "focus", "重心:拉新 + 首购转化,放宽试用,谨慎放大资金流出");
+                "code", rhythm.currentPhase(),
+                "name", phaseName(rhythm.currentPhase()),
+                "index", phaseIndex(rhythm.currentPhase()),
+                "month", rhythm.currentMonth(),
+                "total", rhythm.totalMonths(),
+                "phaseProgressPct", rhythm.phaseProgressPct(),
+                "sourceDomain", "H1",
+                "focus", phaseFocus(rhythm.currentPhase()));
     }
 
     private List<Map<String, Object>> phases() {
@@ -375,6 +380,42 @@ public class OpsBiService {
 
     private Map<String, Object> phase(String code, String name) {
         return Map.of("code", code, "name", name);
+    }
+
+    private int phaseIndex(String code) {
+        return switch (normalizeText(code)) {
+            case "P1" -> 0;
+            case "P2" -> 1;
+            case "P3" -> 2;
+            case "P4" -> 3;
+            case "P5" -> 4;
+            case "P6" -> 5;
+            default -> 0;
+        };
+    }
+
+    private String phaseName(String code) {
+        return switch (normalizeText(code)) {
+            case "P1" -> "拉新期";
+            case "P2" -> "激活期";
+            case "P3" -> "扩张期";
+            case "P4" -> "深化期";
+            case "P5" -> "收紧期";
+            case "P6" -> "软退场期";
+            default -> "未定义阶段";
+        };
+    }
+
+    private String phaseFocus(String code) {
+        return switch (normalizeText(code)) {
+            case "P1" -> "重心:获客、注册和首笔收益体验";
+            case "P2" -> "重心:激活、KYC 和首购转化";
+            case "P3" -> "重心:拉新 + 首购转化,放宽试用,谨慎放大资金流出";
+            case "P4" -> "重心:复投、留存和任务节奏稳定";
+            case "P5" -> "重心:收紧奖励、控制提现和佣金流出";
+            case "P6" -> "重心:软退场、报表归档和风险敞口收口";
+            default -> "重心:等待 H1 节奏配置";
+        };
     }
 
     private List<Map<String, Object>> kpis() {

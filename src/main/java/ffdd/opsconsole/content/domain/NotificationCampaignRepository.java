@@ -19,6 +19,8 @@ public interface NotificationCampaignRepository {
 
     void updateStatus(String campaignNo, String status, String schedule, String operator, LocalDateTime now);
 
+    int dispatchCampaignNotification(String campaignNo, String bizNo, String trigger, String operator, LocalDateTime now);
+
     List<NotificationCapRuleView> listCapRules();
 
     Optional<NotificationCapRuleView> findCapRule(String tier);

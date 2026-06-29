@@ -44,6 +44,11 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public int freezePendingByUserId(Long userId, String reason) {
+        return mapper.freezePendingByUserId(userId, reason);
+    }
+
+    @Override
     public long countD2SeedWithdrawals() {
         return mapper.countD2SeedWithdrawals();
     }

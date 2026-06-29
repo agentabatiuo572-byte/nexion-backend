@@ -73,6 +73,8 @@ class OpsTreasuryServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void dualLedgerAggregatesLiabilitiesWithoutSunsetProducts() {
+        configFacade.values.put("H1.rhythm.currentMonth", "8");
+        configFacade.values.put("growth.phase.current", "P4");
         ledgerRepository.usdtAvailable = new BigDecimal("1000");
         ledgerRepository.pendingWithdraw = new BigDecimal("150");
         ledgerRepository.nexAvailable = new BigDecimal("2000");
@@ -98,6 +100,10 @@ class OpsTreasuryServiceTest {
                 .extracting(account -> account.get("key"))
                 .contains("nex_payable")
                 .doesNotContain("nexv2", "premium", "points");
+        assertThat(dualLedger.get("h1Rhythm"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("currentMonth", 8)
+                .containsEntry("currentPhase", "P4");
     }
 
     @Test

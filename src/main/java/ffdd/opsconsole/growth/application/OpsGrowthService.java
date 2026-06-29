@@ -194,10 +194,26 @@ public class OpsGrowthService {
             configFacade.upsertAdminValue(configKey, normalizedValue, "NUMBER", "growth", "H1 rhythm state");
             if ("currentMonth".equals(normalizedKey)) {
                 configFacade.upsertAdminValue(CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month mirror");
+                configFacade.upsertAdminValue(
+                        CURRENT_PHASE_KEY,
+                        phaseForRhythmMonth(Integer.parseInt(normalizedValue), totalMonths),
+                        "STRING",
+                        "growth",
+                        "H1 rhythm current phase mirror");
             }
-            if ("totalMonths".equals(normalizedKey) && storedCurrentMonth > Integer.parseInt(normalizedValue)) {
-                configFacade.upsertAdminValue(RHYTHM_CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month clamp");
-                configFacade.upsertAdminValue(CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month mirror");
+            if ("totalMonths".equals(normalizedKey)) {
+                int nextTotalMonths = Integer.parseInt(normalizedValue);
+                int mirroredMonth = Math.min(storedCurrentMonth, nextTotalMonths);
+                if (storedCurrentMonth > nextTotalMonths) {
+                    configFacade.upsertAdminValue(RHYTHM_CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month clamp");
+                    configFacade.upsertAdminValue(CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month mirror");
+                }
+                configFacade.upsertAdminValue(
+                        CURRENT_PHASE_KEY,
+                        phaseForRhythmMonth(mirroredMonth, nextTotalMonths),
+                        "STRING",
+                        "growth",
+                        "H1 rhythm current phase mirror");
             }
             audit("H1_RHYTHM_CHANGED", "GROWTH_RHYTHM", configKey, request.operator(), Map.of(
                     "key", normalizedKey,

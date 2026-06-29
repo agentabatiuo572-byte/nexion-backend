@@ -6,6 +6,8 @@ import static org.mockito.Mockito.verify;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.facade.ContentNotificationDispatchFacade;
+import ffdd.opsconsole.content.facade.NotificationEmergencyDispatchResult;
 import ffdd.opsconsole.emergency.dto.GeoCountryStatusRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookCreateRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookRunRequest;
@@ -13,6 +15,7 @@ import ffdd.opsconsole.emergency.dto.TamperAlertConfigRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,8 +25,13 @@ import org.mockito.ArgumentCaptor;
 
 class OpsEmergencyControlServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeNotificationDispatchFacade notificationDispatchFacade = new FakeNotificationDispatchFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsEmergencyControlService service = new OpsEmergencyControlService(configFacade, auditLogService, new ObjectMapper());
+    private final OpsEmergencyControlService service = new OpsEmergencyControlService(
+            configFacade,
+            notificationDispatchFacade,
+            auditLogService,
+            new ObjectMapper());
 
     @Test
     void geoCountryChangePersistsConfigAndAudits() {
@@ -59,6 +67,20 @@ class OpsEmergencyControlServiceTest {
                 new SopPlaybookRunRequest(true, "incident", "tech-on-call"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void sopOverviewReadsH1RhythmSnapshot() {
+        configFacade.values.put("H1.rhythm.currentMonth", "9");
+        configFacade.values.put("growth.phase.current", "P5");
+
+        var result = service.sopOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("h1Rhythm"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("currentMonth", 9)
+                .containsEntry("currentPhase", "P5");
     }
 
     @Test
@@ -111,6 +133,48 @@ class OpsEmergencyControlServiceTest {
                 .containsEntry("notifyCampaignNo", "NC-CRITICAL-001")
                 .containsEntry("notifyTemplate", "监管点名通知 · critical · 全体超管")
                 .containsEntry("draft", true);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void executePlaybookDispatchesRealI3CampaignAndRecordsRollbackHistory() {
+        service.createPlaybook(
+                "idem-j4-create",
+                new SopPlaybookCreateRequest(
+                        "监管点名快速止血",
+                        "监管点名",
+                        "合规审计",
+                        "15 分钟",
+                        true,
+                        "J1·熔断提现\nI3·通知法务",
+                        "CMP-2617",
+                        "SFC 风险披露重新确认",
+                        "根因消除后常规轨恢复",
+                        false,
+                        "wire I3 campaign",
+                        "superadmin"));
+
+        var result = service.executePlaybook(
+                "SOP-DRAFT-1",
+                "idem-j4-execute",
+                new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(notificationDispatchFacade.calls).containsExactly("CMP-2617:SOP-DRAFT-1");
+        Map<String, Object> updated = (Map<String, Object>) result.getData().get("updated");
+        Map<String, Object> dispatch = (Map<String, Object>) updated.get("notificationDispatch");
+        assertThat(dispatch)
+                .containsEntry("status", "DISPATCHED")
+                .containsEntry("campaignNo", "CMP-2617")
+                .containsEntry("notificationCount", 1);
+        assertThat(updated).containsEntry("rollback", "根因消除后常规轨恢复");
+        assertThat(configFacade.values.get("emergency.sop.executions"))
+                .contains("CMP-2617")
+                .contains("notificationDispatch")
+                .contains("根因消除后常规轨恢复");
+        verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
+                "J4_SOP_PLAYBOOK_EXECUTED".equals(request.getAction())
+                        && String.valueOf(request.getDetail()).contains("CMP-2617")));
     }
 
     @Test
@@ -172,6 +236,30 @@ class OpsEmergencyControlServiceTest {
         @Override
         public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
             values.put(configKey, configValue);
+        }
+    }
+
+    private static final class FakeNotificationDispatchFacade implements ContentNotificationDispatchFacade {
+        private final List<String> calls = new ArrayList<>();
+
+        @Override
+        public Optional<NotificationEmergencyDispatchResult> dispatchEmergencyCampaign(
+                String campaignNo,
+                String playbookCode,
+                String executionId,
+                String operator,
+                String reason) {
+            if (!"CMP-2617".equals(campaignNo)) {
+                return Optional.empty();
+            }
+            calls.add(campaignNo + ":" + playbookCode);
+            return Optional.of(new NotificationEmergencyDispatchResult(
+                    campaignNo,
+                    "SFC 风险披露重新确认",
+                    "critical",
+                    "全量",
+                    "sending",
+                    1));
         }
     }
 }

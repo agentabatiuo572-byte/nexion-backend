@@ -138,6 +138,24 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
+    public int dispatchCampaignNotification(String campaignNo, String bizNo, String trigger, String operator, LocalDateTime now) {
+        NotificationCampaignEntity entity = findEntity(campaignNo);
+        if (entity == null || "CANCELLED".equalsIgnoreCase(entity.getStatus())) {
+            return 0;
+        }
+        String title = "[" + entity.getTier().toUpperCase(Locale.ROOT) + "] " + entity.getName();
+        String body = notificationBody(entity, trigger);
+        int inserted = campaignMapper.insertCampaignNotification(bizNo, title, body, now);
+        entity.setStatus("SENDING");
+        entity.setScheduleText(StringUtils.hasText(trigger) ? trigger.trim() : "立即下发中");
+        entity.setSentLabel("1");
+        entity.setLastOperator(operator(operator));
+        entity.setUpdatedAt(now);
+        campaignMapper.updateById(entity);
+        return inserted;
+    }
+
+    @Override
     public List<NotificationCapRuleView> listCapRules() {
         return capRuleMapper.selectList(new LambdaQueryWrapper<NotificationCapRuleEntity>()
                         .eq(NotificationCapRuleEntity::getIsDeleted, 0)
@@ -257,6 +275,12 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
 
     private String notificationBody(String title, String content) {
         return title.trim() + "\n" + content.trim();
+    }
+
+    private String notificationBody(NotificationCampaignEntity entity, String trigger) {
+        String body = StringUtils.hasText(entity.getBodyZh()) ? entity.getBodyZh() : entity.getBodyEn();
+        String prefix = StringUtils.hasText(trigger) ? trigger.trim() + "\n" : "";
+        return prefix + body;
     }
 
     private String operator(String operator) {

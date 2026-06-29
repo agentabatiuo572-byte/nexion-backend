@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.facade.ContentNotificationDispatchFacade;
+import ffdd.opsconsole.content.facade.NotificationEmergencyDispatchResult;
 import ffdd.opsconsole.emergency.dto.GeoCountryStatusRequest;
 import ffdd.opsconsole.emergency.dto.GeoEdgeJudgeRequest;
 import ffdd.opsconsole.emergency.dto.GeoEmergencyBlockRequest;
@@ -15,6 +17,7 @@ import ffdd.opsconsole.emergency.dto.SopPlaybookRunRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookUpdateRequest;
 import ffdd.opsconsole.emergency.dto.TamperAlertConfigRequest;
 import ffdd.opsconsole.emergency.dto.TamperReportRequest;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -64,6 +67,7 @@ public class OpsEmergencyControlService {
     private static final String SOP_ROLLBACK_OPTIONS = "emergency.sop.rollbackOptions";
 
     private final PlatformConfigFacade configFacade;
+    private final ContentNotificationDispatchFacade notificationDispatchFacade;
     private final AuditLogService auditLogService;
     private final ObjectMapper objectMapper;
 
@@ -273,9 +277,10 @@ public class OpsEmergencyControlService {
                 "scenes", List.of("全部", "监管点名", "资金异常", "数据泄露", "舆情挤兑", "技术故障"),
                 "actionOptions", jsonList(SOP_ACTION_OPTIONS, defaultActionOptions()),
                 "rollbackOptions", jsonList(SOP_ROLLBACK_OPTIONS, defaultRollbackOptions()),
+                "h1Rhythm", GrowthRhythmSnapshot.from(configFacade).summary(),
                 "playbooks", playbooks,
                 "executions", executions,
-                "sources", List.of("nx_config_item:emergency.sop.*", "A2 emergency playbook audit"));
+                "sources", List.of("nx_config_item:emergency.sop.*", "nx_notification_campaign", "nx_notification", "A2 emergency playbook audit", "H1 growth rhythm facade"));
         return ApiResult.ok(response);
     }
 
@@ -352,16 +357,76 @@ public class OpsEmergencyControlService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PLAYBOOK_NOT_EMERGENCY_TRACK");
         }
         String execId = seed.code() + "-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        Map<String, Object> notificationDispatch = notificationDispatch(seed, execId, request);
+        if (notificationDispatch == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_NOTIFY_CAMPAIGN_NOT_FOUND");
+        }
         configFacade.upsertAdminValue(playbookConfigKey(seed.code(), "lastExecution"), execId, "STRING", GROUP_SOP, request.reason().trim());
+        appendExecution(seed, execId, emergency, request, notificationDispatch);
         audit("J4_SOP_PLAYBOOK_EXECUTED", "SOP_PLAYBOOK_EXECUTION", execId, request.operator(), emergency ? "CRITICAL" : "HIGH", map(
                 "code", seed.code(),
                 "emergency", emergency,
                 "steps", seed.seq(),
+                "notificationDispatch", notificationDispatch,
+                "rollback", seed.rollback(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = sopOverview().getData();
-        response.put("updated", map("executionId", execId, "code", seed.code(), "emergency", emergency));
+        response.put("updated", map(
+                "executionId", execId,
+                "code", seed.code(),
+                "emergency", emergency,
+                "notificationDispatch", notificationDispatch,
+                "rollback", seed.rollback()));
         return ApiResult.ok(response);
+    }
+
+    private Map<String, Object> notificationDispatch(PlaybookSeed seed, String execId, SopPlaybookRunRequest request) {
+        if (!StringUtils.hasText(seed.notifyCampaignNo())) {
+            return map("required", false, "status", "SKIPPED");
+        }
+        Optional<NotificationEmergencyDispatchResult> result = notificationDispatchFacade.dispatchEmergencyCampaign(
+                seed.notifyCampaignNo(),
+                seed.code(),
+                execId,
+                request.operator(),
+                request.reason());
+        return result.map(value -> map(
+                "required", true,
+                "status", "DISPATCHED",
+                "campaignNo", value.campaignNo(),
+                "name", value.name(),
+                "tier", value.tier(),
+                "audience", value.audience(),
+                "campaignStatus", value.status(),
+                "notificationCount", value.notificationCount()))
+                .orElse(null);
+    }
+
+    private void appendExecution(
+            PlaybookSeed seed,
+            String execId,
+            boolean emergency,
+            SopPlaybookRunRequest request,
+            Map<String, Object> notificationDispatch) {
+        List<Map<String, Object>> rows = new ArrayList<>(executionSeeds());
+        Map<String, Object> row = execution(
+                LocalDateTime.now().format(TS),
+                seed.code(),
+                seed.name(),
+                request.reason().trim(),
+                emergency ? "emergency" : "regular",
+                seed.seq().stream().map(ignored -> "done").toList(),
+                stringValue(request.operator(), "system"),
+                seed.owner());
+        row.put("executionId", execId);
+        row.put("notificationDispatch", notificationDispatch);
+        row.put("rollback", seed.rollback());
+        rows.add(0, row);
+        if (rows.size() > 50) {
+            rows = new ArrayList<>(rows.subList(0, 50));
+        }
+        configFacade.upsertAdminValue(SOP_EXECUTIONS, toJson(rows), "JSON", GROUP_SOP, request.reason().trim());
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {

@@ -61,7 +61,7 @@ public class OpsNotificationCampaignService {
                 AUDIENCES,
                 List.copyOf(ACTIVE_STATUSES),
                 SWIPE_ROUTES,
-                List.of("nx_notification_campaign", "nx_notification_cap_rule")));
+                List.of("nx_notification_campaign", "nx_notification_cap_rule", "nx_notification")));
     }
 
     public ApiResult<NotificationCampaignRow> createCampaign(String idempotencyKey, NotificationCampaignCreateRequest request) {
@@ -130,9 +130,18 @@ public class OpsNotificationCampaignService {
         if (!Set.of("draft", "scheduled").contains(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        campaignRepository.updateStatus(current.id(), "SENDING", "立即下发中", request.operator(), now());
+        LocalDateTime now = now();
+        campaignRepository.updateStatus(current.id(), "SENDING", "立即下发中", request.operator(), now);
+        int notificationCount = campaignRepository.dispatchCampaignNotification(
+                current.id(),
+                "i3:send:" + idempotencyKey.trim(),
+                "立即下发中",
+                request.operator(),
+                now);
         NotificationCampaignRow updated = findCampaign(current.id());
-        audit("I3_NOTIFICATION_CAMPAIGN_SEND_NOW", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of("fromStatus", current.status()));
+        audit("I3_NOTIFICATION_CAMPAIGN_SEND_NOW", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
+                "fromStatus", current.status(),
+                "notificationCount", notificationCount));
         return ApiResult.ok(updated);
     }
 

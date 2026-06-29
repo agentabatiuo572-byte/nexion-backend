@@ -20,6 +20,8 @@ public interface WithdrawalOrderRepository {
 
     void updateStatus(String withdrawalNo, String status, String failureReason);
 
+    int freezePendingByUserId(Long userId, String reason);
+
     long countD2SeedWithdrawals();
 
     long countD2ActionableWithdrawals();

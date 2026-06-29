@@ -9,6 +9,9 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
+import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
+import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
@@ -42,6 +45,8 @@ import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleStatusRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringOverviewQueryRequest;
+import ffdd.opsconsole.user.facade.UserKycStatusFacade;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -54,8 +59,16 @@ import org.mockito.ArgumentCaptor;
 
 class OpsRiskServiceTest {
     private final FakeRiskOpsRepository riskRepository = new FakeRiskOpsRepository();
+    private final FakeUserKycStatusFacade userKycStatusFacade = new FakeUserKycStatusFacade();
+    private final FakeFinanceWithdrawalKycReviewFacade financeWithdrawalKycReviewFacade = new FakeFinanceWithdrawalKycReviewFacade();
+    private final FakeMarketExchangeKycReviewFacade marketExchangeKycReviewFacade = new FakeMarketExchangeKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsRiskService service = new OpsRiskService(riskRepository, auditLogService);
+    private final OpsRiskService service = new OpsRiskService(
+            riskRepository,
+            userKycStatusFacade,
+            financeWithdrawalKycReviewFacade,
+            marketExchangeKycReviewFacade,
+            auditLogService);
 
     @Test
     void overviewDeclaresDecisionStates() {
@@ -486,6 +499,31 @@ class OpsRiskServiceTest {
         assertThat(captor.getValue().getAction()).isEqualTo("K5_KYC_REVIEW_DECIDED");
     }
 
+    @Test
+    void kycReviewDecisionUpdatesC4AndReleasesD2Source() {
+        riskRepository.createLargeWithdrawalKycReviewTicket(
+                "KR-D2-1",
+                "usr_55B1",
+                new BigDecimal("8200.00"),
+                "WD-90412",
+                "APPROVED",
+                "large withdrawal source",
+                "system");
+
+        ApiResult<Map<String, Object>> result = service.decideKycReviewTicket(
+                "KR-D2-1",
+                "idem-k5",
+                new RiskKycReviewDecisionRequest("passed", "passed enhanced kyc review", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.kycTicketStatus("KR-D2-1")).isEqualTo("passed");
+        assertThat(userKycStatusFacade.lastUserNo).isEqualTo("usr_55B1");
+        assertThat(userKycStatusFacade.lastKycStatus).isEqualTo("APPROVED");
+        assertThat(financeWithdrawalKycReviewFacade.releasedWithdrawalNo).isEqualTo("WD-90412");
+        assertThat(financeWithdrawalKycReviewFacade.rejectedWithdrawalNo).isNull();
+        assertThat(marketExchangeKycReviewFacade.releasedExchangeNo).isNull();
+    }
+
     private static final class FakeRiskOpsRepository implements RiskOpsRepository {
         private RiskCaseView caseView = new RiskCaseView(
                 "RD-1", 1L, "WITHDRAWAL", "W-1", "US", "L1", "REVIEW", "manual review", 88, "K4", "REVIEWING", null,
@@ -525,6 +563,7 @@ class OpsRiskServiceTest {
         private final Map<String, String> kycTickets = new LinkedHashMap<>();
         private final Map<String, String> kycTicketTypes = new LinkedHashMap<>();
         private final Map<String, String> kycTicketUsers = new LinkedHashMap<>();
+        private final Map<String, String> kycTicketInfoJson = new LinkedHashMap<>();
         private final Map<String, String> kycReviewParams = new LinkedHashMap<>(Map.of(
                 "largeWithdrawReviewUsdt", ">= $1,000",
                 "cumulativeKycThresholdUsdt", "$100",
@@ -878,15 +917,39 @@ class OpsRiskServiceTest {
         }
 
         @Override
+        public Optional<KycReviewTicketContext> findKycReviewTicket(String ticketId) {
+            if (!kycTickets.containsKey(ticketId)) {
+                return Optional.empty();
+            }
+            return Optional.of(new KycReviewTicketContext(
+                    ticketId,
+                    kycTicketTypes.get(ticketId),
+                    kycTicketUsers.get(ticketId),
+                    kycTickets.get(ticketId),
+                    kycTicketInfoJson.get(ticketId)));
+        }
+
+        @Override
         public void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator) {
             kycTickets.put(ticketId, "triggered");
             kycTicketTypes.put(ticketId, "手动触发");
             kycTicketUsers.put(ticketId, userNo);
+            kycTicketInfoJson.put(ticketId, "[[\"触发原因\",\"手动补触发\"]]");
         }
 
         @Override
         public int kycReviewTriggerScore() {
             return scoreLineValue(kycReviewParams.get("reviewTriggerScore"), 85);
+        }
+
+        @Override
+        public int kycLargeWithdrawReviewUsdt() {
+            return scoreLineValue(kycReviewParams.get("largeWithdrawReviewUsdt"), 1000);
+        }
+
+        @Override
+        public int kycLargeExchangeReviewUsdt() {
+            return scoreLineValue(kycReviewParams.getOrDefault("largeExchangeReviewUsdt", kycReviewParams.get("largeWithdrawReviewUsdt")), 1000);
         }
 
         @Override
@@ -902,6 +965,25 @@ class OpsRiskServiceTest {
             kycTickets.put(ticketId, "triggered");
             kycTicketTypes.put(ticketId, "风险分触发");
             kycTicketUsers.put(ticketId, userNo);
+            kycTicketInfoJson.put(ticketId, "[[\"触发原因\",\"K4有效风险分 " + score + "\"]]");
+        }
+
+        @Override
+        public void createLargeWithdrawalKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String withdrawalNo,
+                                                         String kycStatus, String reason, String operator) {
+            kycTickets.put(ticketId, "triggered");
+            kycTicketTypes.put(ticketId, "大额提现");
+            kycTicketUsers.put(ticketId, userNo);
+            kycTicketInfoJson.put(ticketId, "[[\"sourceDomain\",\"D2\"],[\"sourceNo\",\"" + withdrawalNo + "\"]]");
+        }
+
+        @Override
+        public void createLargeExchangeKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String exchangeNo,
+                                                       String kycStatus, String reason, String operator) {
+            kycTickets.put(ticketId, "triggered");
+            kycTicketTypes.put(ticketId, "大额兑换");
+            kycTicketUsers.put(ticketId, userNo);
+            kycTicketInfoJson.put(ticketId, "[[\"sourceDomain\",\"G2\"],[\"sourceNo\",\"" + exchangeNo + "\"]]");
         }
 
         int kycTicketCount() {
@@ -943,6 +1025,52 @@ class OpsRiskServiceTest {
             int from = Math.min(rows.size(), (pageNum - 1) * pageSize);
             int to = Math.min(rows.size(), from + pageSize);
             return rows.subList(from, to);
+        }
+    }
+
+    private static final class FakeUserKycStatusFacade implements UserKycStatusFacade {
+        private String lastUserNo;
+        private String lastKycStatus;
+
+        @Override
+        public boolean updateKycStatusByUserNo(String userNo, String kycStatus, String reason, String operator) {
+            lastUserNo = userNo;
+            lastKycStatus = kycStatus;
+            return true;
+        }
+    }
+
+    private static final class FakeFinanceWithdrawalKycReviewFacade implements FinanceWithdrawalKycReviewFacade {
+        private String releasedWithdrawalNo;
+        private String rejectedWithdrawalNo;
+
+        @Override
+        public boolean releaseWithdrawalReview(String withdrawalNo, String reason, String operator) {
+            releasedWithdrawalNo = withdrawalNo;
+            return true;
+        }
+
+        @Override
+        public boolean rejectWithdrawalReview(String withdrawalNo, String reason, String operator) {
+            rejectedWithdrawalNo = withdrawalNo;
+            return true;
+        }
+    }
+
+    private static final class FakeMarketExchangeKycReviewFacade implements MarketExchangeKycReviewFacade {
+        private String releasedExchangeNo;
+        private String rejectedExchangeNo;
+
+        @Override
+        public boolean releaseExchangeReview(String exchangeNo, String reason, String operator) {
+            releasedExchangeNo = exchangeNo;
+            return true;
+        }
+
+        @Override
+        public boolean rejectExchangeReview(String exchangeNo, String reason, String operator) {
+            rejectedExchangeNo = exchangeNo;
+            return true;
         }
     }
 }

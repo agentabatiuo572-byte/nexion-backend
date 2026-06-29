@@ -16,6 +16,9 @@ import ffdd.opsconsole.bi.dto.BiReportActionRequest;
 import ffdd.opsconsole.bi.dto.BiReportCreateRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,8 +29,10 @@ import org.mockito.ArgumentCaptor;
 
 class OpsBiServiceTest {
     private final FakeBiReportRepository reportRepository = new FakeBiReportRepository();
+    private GrowthRhythmSnapshot h1Snapshot = h1Snapshot(12, 7, "P3");
+    private final GrowthRhythmFacade growthRhythmFacade = () -> h1Snapshot;
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsBiService service = new OpsBiService(reportRepository, auditLogService);
+    private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, auditLogService);
 
     @Test
     void overviewDeclaresSensitiveExportRules() {
@@ -40,10 +45,28 @@ class OpsBiServiceTest {
                 .contains("decrypted PII export is blocked");
         assertThat(result.getData())
                 .containsKeys("currentPhase", "phases", "l1", "l2", "l3", "l4", "l5", "l6");
+        assertThat(result.getData().get("currentPhase"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("sourceDomain", "H1")
+                .containsEntry("month", 7);
         assertThat(result.getData().get("l1").toString()).contains("数据库 KPI");
         assertThat(result.getData().get("l3").toString()).contains("reserveCoverDays");
         assertThat(result.getData().get("l5").toString()).contains("数据库导出安全参数");
         assertThat(result.getData().get("l6").toString()).contains("数据库行为热力");
+    }
+
+    @Test
+    void overviewReadsCurrentPhaseFromH1RhythmFacade() {
+        h1Snapshot = h1Snapshot(12, 11, "P6");
+
+        ApiResult<Map<String, Object>> result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("currentPhase"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("code", "P6")
+                .containsEntry("month", 11)
+                .containsEntry("sourceDomain", "H1");
     }
 
     @Test
@@ -150,6 +173,23 @@ class OpsBiServiceTest {
                 new BiReportActionRequest("download export", "superadmin", true, false));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    private GrowthRhythmSnapshot h1Snapshot(int totalMonths, int currentMonth, String currentPhase) {
+        return new GrowthRhythmSnapshot(
+                totalMonths,
+                currentMonth,
+                currentPhase,
+                58,
+                BigDecimal.ONE,
+                BigDecimal.ONE,
+                new BigDecimal("50"),
+                new BigDecimal("60"),
+                new BigDecimal("10"),
+                new BigDecimal("10"),
+                new BigDecimal("100"),
+                7,
+                List.of("H1.rhythm.currentMonth"));
     }
 
     private static final class FakeBiReportRepository implements BiReportRepository {

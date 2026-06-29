@@ -8,8 +8,10 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.RiskUserStateFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -66,8 +68,16 @@ class OpsUserServiceTest {
     private final FakeUserOpsRepository userRepository = new FakeUserOpsRepository();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeFinanceWithdrawalControlFacade financeWithdrawalControlFacade = new FakeFinanceWithdrawalControlFacade();
+    private final FakeRiskUserStateFacade riskUserStateFacade = new FakeRiskUserStateFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsUserService service = new OpsUserService(userRepository, coverageFacade, configFacade, auditLogService);
+    private final OpsUserService service = new OpsUserService(
+            userRepository,
+            coverageFacade,
+            configFacade,
+            financeWithdrawalControlFacade,
+            riskUserStateFacade,
+            auditLogService);
 
     @Test
     void overviewKeepsSunsetCapabilitiesHistoricalOnly() {
@@ -103,6 +113,33 @@ class OpsUserServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("C2_USER_STATUS_CHANGED");
+    }
+
+    @Test
+    void freezingUserRevokesSessionsFreezesD2AndRecordsK4Signal() {
+        userRepository.sessions.put("rt-c2-live", new UserSessionView(
+                1L, "rt-c2-live", "web", "10.0.0.*", "ACTIVE",
+                LocalDateTime.now().minusMinutes(5), LocalDateTime.now().plusDays(1), null));
+        financeWithdrawalControlFacade.updatedCount = 2;
+
+        ApiResult<UserAccountView> result = service.updateStatus(
+                1L,
+                "idem-c2-freeze-cascade",
+                new UserStatusUpdateRequest("FROZEN", "risk hold", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(userRepository.sessions.get("rt-c2-live").status()).isEqualTo("REVOKED");
+        assertThat(financeWithdrawalControlFacade.lastUserId).isEqualTo(1L);
+        assertThat(financeWithdrawalControlFacade.lastReason).isEqualTo("risk hold");
+        assertThat(riskUserStateFacade.lastUserNo).isEqualTo("U00000001");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getDetail()).isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> detail = (Map<String, Object>) captor.getValue().getDetail();
+        assertThat(detail)
+                .containsEntry("withdrawalsFrozen", 2)
+                .containsEntry("riskSignalRecorded", true);
     }
 
     @Test
@@ -809,6 +846,36 @@ class OpsUserServiceTest {
         assertThat(userRepository.lockedSecurityUsersCalls).isGreaterThan(0);
         assertThat(result.getData().lockedUsers()).extracting(UserSecurityUserRow::userNo)
                 .containsExactly("U00003315", "U00008807");
+    }
+
+    private static final class FakeFinanceWithdrawalControlFacade implements FinanceWithdrawalControlFacade {
+        private Long lastUserId;
+        private String lastReason;
+        private String lastOperator;
+        private int updatedCount;
+
+        @Override
+        public int freezePendingWithdrawalsForUser(Long userId, String reason, String operator) {
+            lastUserId = userId;
+            lastReason = reason;
+            lastOperator = operator;
+            return updatedCount;
+        }
+    }
+
+    private static final class FakeRiskUserStateFacade implements RiskUserStateFacade {
+        private Long lastUserId;
+        private String lastUserNo;
+        private String lastReason;
+        private String lastOperator;
+
+        @Override
+        public void recordUserFrozen(Long userId, String userNo, String reason, String operator) {
+            lastUserId = userId;
+            lastUserNo = userNo;
+            lastReason = reason;
+            lastOperator = operator;
+        }
     }
 
     private static final class FakeUserOpsRepository implements UserOpsRepository {

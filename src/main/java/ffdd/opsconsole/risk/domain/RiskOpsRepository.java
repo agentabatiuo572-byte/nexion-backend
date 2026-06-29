@@ -2,6 +2,7 @@ package ffdd.opsconsole.risk.domain;
 
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.shared.api.PageResult;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -96,11 +97,23 @@ public interface RiskOpsRepository {
 
     boolean updateKycReviewTicketStatus(String ticketId, String status, String reason, String operator);
 
+    Optional<KycReviewTicketContext> findKycReviewTicket(String ticketId);
+
     void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator);
 
     int kycReviewTriggerScore();
 
+    int kycLargeWithdrawReviewUsdt();
+
+    int kycLargeExchangeReviewUsdt();
+
     boolean hasOpenKycReviewTicket(String userNo);
 
     void createScoreTriggeredKycReviewTicket(String ticketId, String userNo, int score, int threshold, String reason, String operator);
+
+    void createLargeWithdrawalKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String withdrawalNo,
+                                              String kycStatus, String reason, String operator);
+
+    void createLargeExchangeKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String exchangeNo,
+                                            String kycStatus, String reason, String operator);
 }

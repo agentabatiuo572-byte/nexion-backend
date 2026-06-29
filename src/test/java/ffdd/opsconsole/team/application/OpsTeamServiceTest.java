@@ -69,6 +69,22 @@ class OpsTeamServiceTest {
     }
 
     @Test
+    void binaryReadsCurrentRhythmFromH1() {
+        configFacade.values.put("H1.rhythm.currentMonth", "10");
+        configFacade.values.put("growth.phase.current", "P5");
+        configFacade.values.put("growth.phase.commission_tightening_pct", "0.25");
+
+        ApiResult<Map<String, Object>> result = service.binary();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("dailyCap"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("currentMonth", 10)
+                .containsEntry("currentPhase", "P5")
+                .containsEntry("h1CommissionTighteningPct", new BigDecimal("25"));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void ranksSeedsF1ReadModelIntoConfigWhenDatabaseIsEmpty() {
         ApiResult<Map<String, Object>> result = service.ranks();

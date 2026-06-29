@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.domain.AdvisorRoutingDecision;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
 import ffdd.opsconsole.content.domain.SupportAgentOverview;
 import ffdd.opsconsole.content.domain.SupportAgentPageView;
@@ -87,6 +88,69 @@ public class OpsSupportAgentService {
         List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
         ensureDefaultProfiles(operators);
         return transferTargets(profileViews(operators));
+    }
+
+    public AdvisorRoutingDecision routeAdvisorForUser(Long userId) {
+        repository.ensureSchema();
+        List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
+        ensureDefaultProfiles(operators);
+        List<SupportAgentProfileView> agents = profileViews(operators).stream()
+                .filter(agent -> agent.serviceTypes().contains("advisor"))
+                .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
+                .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
+                .filter(agent -> !Boolean.TRUE.equals(agent.busy()))
+                .toList();
+        if (userId != null) {
+            List<Long> agentIds = agents.stream().map(SupportAgentProfileView::adminId).toList();
+            Map<Long, SupportAgentProfileView> agentById = agents.stream()
+                    .collect(Collectors.toMap(
+                            SupportAgentProfileView::adminId,
+                            Function.identity(),
+                            (left, right) -> left,
+                            LinkedHashMap::new));
+            Optional<SupportAgentAssignmentView> primary = repository.listActiveAssignments(agentIds).stream()
+                    .filter(assignment -> userId.equals(assignment.userId()))
+                    .filter(assignment -> "PRIMARY".equalsIgnoreCase(assignment.assignmentType()))
+                    .findFirst();
+            Optional<SupportAgentAssignmentView> backup = repository.listActiveAssignments(agentIds).stream()
+                    .filter(assignment -> userId.equals(assignment.userId()))
+                    .filter(assignment -> "BACKUP".equalsIgnoreCase(assignment.assignmentType()))
+                    .findFirst();
+            Optional<SupportAgentAssignmentView> assignment = primary.or(() -> backup);
+            if (assignment.isPresent() && agentById.containsKey(assignment.get().agentAdminId())) {
+                SupportAgentProfileView agent = agentById.get(assignment.get().agentAdminId());
+                return new AdvisorRoutingDecision(
+                        "agent",
+                        String.valueOf(agent.adminId()),
+                        agent.name(),
+                        agent.adminId(),
+                        true,
+                        false,
+                        "M5_ASSIGNED_ADVISOR");
+            }
+        }
+        Optional<SupportAgentProfileView> available = agents.stream()
+                .filter(agent -> agent.maxConcurrent() == null || agent.assignedUserCount() < agent.maxConcurrent())
+                .findFirst();
+        if (available.isPresent()) {
+            SupportAgentProfileView agent = available.get();
+            return new AdvisorRoutingDecision(
+                    "agent",
+                    String.valueOf(agent.adminId()),
+                    agent.name(),
+                    agent.adminId(),
+                    false,
+                    false,
+                    "ADVISOR_POOL");
+        }
+        return new AdvisorRoutingDecision(
+                "standby",
+                "standby-pool",
+                "备勤池",
+                null,
+                false,
+                true,
+                "NO_ADVISOR_AVAILABLE");
     }
 
     public ApiResult<SupportAgentProfileView> updateProfile(

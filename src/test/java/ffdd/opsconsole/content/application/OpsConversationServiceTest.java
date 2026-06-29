@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.domain.AdvisorRoutingDecision;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationRepository;
@@ -190,6 +191,59 @@ class OpsConversationServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().conversationNo()).startsWith("CV-OUT-");
         assertThat(result.getData().lastMessage()).isEqualTo("Hello, I can help check your withdrawal.");
+    }
+
+    @Test
+    void initiateAdvisorConversationRoutesToM5DedicatedAdvisorInsteadOfRequestOwner() {
+        when(supportAgentService.routeAdvisorForUser(1001L))
+                .thenReturn(new AdvisorRoutingDecision(
+                        "agent",
+                        "88",
+                        "Dedicated Advisor",
+                        88L,
+                        true,
+                        false,
+                        "M5_ASSIGNED_ADVISOR"));
+
+        var result = service.initiate(
+                "idem-m3-advisor",
+                new ConversationInitiateRequest("advisor", 1001L, "spoofed-agent", "Spoofed Agent",
+                        "Please check my advisor session.", "enter advisor session", "user"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().ownerAgentId()).isEqualTo("88");
+        assertThat(result.getData().ownerAgentName()).isEqualTo("Dedicated Advisor");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("routingReason", "M5_ASSIGNED_ADVISOR")
+                .containsEntry("dedicatedAdvisor", true);
+    }
+
+    @Test
+    void initiateAdvisorConversationCreatesM2TicketWhenRoutedToStandbyPool() {
+        when(supportAgentService.routeAdvisorForUser(1001L))
+                .thenReturn(new AdvisorRoutingDecision(
+                        "standby",
+                        "standby-pool",
+                        "备勤池",
+                        null,
+                        false,
+                        true,
+                        "NO_ADVISOR_AVAILABLE"));
+
+        var result = service.initiate(
+                "idem-m3-standby",
+                new ConversationInitiateRequest("advisor", 1001L, "agent-1", "Agent One",
+                        "No advisor is online.", "route to standby", "user"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().ownerAgentId()).isEqualTo("standby-pool");
+        assertThat(ticketRepository.ticket).isNotNull();
+        assertThat(ticketRepository.ticket.ticketNo()).startsWith("TK-");
+        assertThat(ticketRepository.ticket.assignedAdminName()).isEqualTo("备勤池");
+        assertThat(ticketRepository.ticket.lastMessage()).contains("Advisor conversation routed to 备勤池");
     }
 
     @Test

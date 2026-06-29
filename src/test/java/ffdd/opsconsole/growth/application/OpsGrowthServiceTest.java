@@ -12,6 +12,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -490,6 +491,23 @@ class OpsGrowthServiceTest {
                 .containsKey("platform.phase.config")
                 .containsEntry("growth.phase.month.7.withdrawNexMinBalance", "100")
                 .containsEntry("growth.withdraw_nex_gate.min_balance_nex", "100");
+    }
+
+    @Test
+    void updateRhythmCurrentMonthMirrorsH1PhaseForDownstreamReaders() {
+        ApiResult<Map<String, Object>> result = service.updateRhythmParam(
+                "idem-h1-rhythm",
+                "currentMonth",
+                new GrowthConfigUpdateRequest("currentMonth", "11", "advance rhythm", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("H1.rhythm.currentMonth", "11")
+                .containsEntry("growth.phase.current_month", "11")
+                .containsEntry("growth.phase.current", "P6");
+        GrowthRhythmSnapshot snapshot = GrowthRhythmSnapshot.from(configFacade);
+        assertThat(snapshot.currentMonth()).isEqualTo(11);
+        assertThat(snapshot.currentPhase()).isEqualTo("P6");
     }
 
     @Test

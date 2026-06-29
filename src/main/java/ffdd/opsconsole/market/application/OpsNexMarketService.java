@@ -68,6 +68,7 @@ public class OpsNexMarketService {
     private static final String SCHEDULE_CONTROL_KEY = CONTROL_PREFIX + "schedule";
     private static final String PIN_CONTROL_KEY = CONTROL_PREFIX + "pin";
     private static final String LOOP_CONTROL_KEY = CONTROL_PREFIX + "loop";
+    private static final String ACTIVE_DAY_INDEX_KEY = CONTROL_PREFIX + "active_day_index";
     private static final String GENESIS_PREFIX = "G.genesis.";
     private static final String GENESIS_KILLSWITCH_KEY = "J.killswitch.genesis";
     private static final String GENESIS_DAILY_VOLUME_BASE_KEY = "wallet.genesis.daily_volume_base_usdt";
@@ -287,6 +288,7 @@ public class OpsNexMarketService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G1");
         response.put("product", "staking");
+        response.put("currentNexPrice", currentPrice());
         response.put("stats", map(
                 "lockedTotalUsd", usdtPoolUsd.add(nexPoolUsd),
                 "usdtPoolUsd", usdtPoolUsd,
@@ -572,6 +574,7 @@ public class OpsNexMarketService {
         response.put("domain", "G4");
         response.put("product", "genesis");
         response.put("asset", "GENESIS_NODE");
+        response.put("currentNexPrice", currentPrice());
         response.put("stats", map(
                 "totalSlots", supply.setScale(0, RoundingMode.HALF_UP),
                 "sold", sold,
@@ -802,11 +805,12 @@ public class OpsNexMarketService {
         }
         String curveJson = writeCurve(frames);
         configFacade.upsertAdminValue(WEEKLY_CURVE_KEY, curveJson, "JSON", "wallet", "G3 weekly NEX market curve");
-        applyFrame(frameFor(frames, effectiveActiveDayIndex()), frames);
+        int activeDayIndex = effectiveActiveDayIndex();
+        applyFrame(frameFor(frames, activeDayIndex), frames);
         audit("G3_WEEKLY_CURVE_CHANGED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
                 "oldPeakPrice", weekPeak(before),
                 "newPeakPrice", weekPeak(frames),
-                "activeDayIndex", effectiveActiveDayIndex(),
+                "activeDayIndex", activeDayIndex,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return overview();
@@ -881,7 +885,8 @@ public class OpsNexMarketService {
             return guard;
         }
         List<NexMarketCurveFrame> frames = loadCurve();
-        NexMarketCurveFrame activeFrame = frameFor(frames, effectiveActiveDayIndex());
+        int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
+        NexMarketCurveFrame activeFrame = frameFor(frames, nextDayIndex);
         applyFrame(activeFrame, frames);
         audit("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
                 "activeDayIndex", activeFrame.dayIndex(),
@@ -899,7 +904,7 @@ public class OpsNexMarketService {
             return;
         }
         List<NexMarketCurveFrame> frames = loadCurve();
-        NexMarketCurveFrame activeFrame = frameFor(frames, activeDayIndex());
+        NexMarketCurveFrame activeFrame = frameFor(frames, nextAdvanceDayIndex());
         applyFrame(activeFrame, frames);
         audit("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, "system", Map.of(
                 "activeDayIndex", activeFrame.dayIndex(),
@@ -937,6 +942,7 @@ public class OpsNexMarketService {
         upsertMissingConfig(SCHEDULE_CONTROL_KEY, NexMarketSchedule.DEFAULT_DISPLAY, "STRING", "wallet", "G3 NEX market curve schedule seed");
         upsertMissingConfig(PIN_CONTROL_KEY, "未钉住", "STRING", "wallet", "G3 NEX market curve pin seed");
         upsertMissingConfig(LOOP_CONTROL_KEY, "循环", "STRING", "wallet", "G3 NEX market curve loop seed");
+        upsertMissingConfig(ACTIVE_DAY_INDEX_KEY, String.valueOf(activeFrame.dayIndex()), "NUMBER", "wallet", "G3 persisted active curve day seed");
 
         marketRepository.ensureNexMarketSeedData(
                 seedPrice,
@@ -1077,6 +1083,7 @@ public class OpsNexMarketService {
     private void applyFrame(NexMarketCurveFrame frame, List<NexMarketCurveFrame> frames) {
         BigDecimal oldPrice = currentPrice();
         BigDecimal newPrice = frame.targetPrice().setScale(8, RoundingMode.HALF_UP);
+        configFacade.upsertAdminValue(ACTIVE_DAY_INDEX_KEY, String.valueOf(frame.dayIndex()), "NUMBER", "wallet", "G3 persisted active curve day");
         configFacade.upsertAdminValue(CURRENT_PRICE_KEY, newPrice.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active NEX price");
         configFacade.upsertAdminValue(PUMP_PROBABILITY_KEY, frame.pumpProbability().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active pump probability");
         configFacade.upsertAdminValue(VOLATILITY_KEY, frame.volatilityPct().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active volatility");
@@ -1215,7 +1222,33 @@ public class OpsNexMarketService {
     }
 
     private int effectiveActiveDayIndex() {
-        return pinnedDayIndex().orElseGet(this::activeDayIndex);
+        return pinnedDayIndex().orElseGet(this::storedActiveDayIndex);
+    }
+
+    private int storedActiveDayIndex() {
+        String raw = readText(ACTIVE_DAY_INDEX_KEY, "");
+        try {
+            int dayIndex = Integer.parseInt(raw.trim());
+            if (dayIndex >= 0 && dayIndex <= 6) {
+                return dayIndex;
+            }
+        } catch (RuntimeException ignored) {
+            // Fall back to UTC weekday for first boot or corrupt config.
+        }
+        return activeDayIndex();
+    }
+
+    private int nextAdvanceDayIndex() {
+        int current = storedActiveDayIndex();
+        if (current >= 6 && !loopAtEnd()) {
+            return 6;
+        }
+        return (current + 1) % 7;
+    }
+
+    private boolean loopAtEnd() {
+        String value = readText(LOOP_CONTROL_KEY, "循环").toLowerCase(Locale.ROOT);
+        return !value.contains("停") && !value.contains("stop") && !value.contains("末值");
     }
 
     private Optional<Integer> pinnedDayIndex() {

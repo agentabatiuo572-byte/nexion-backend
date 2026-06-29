@@ -42,7 +42,7 @@ class OpsNotificationCampaignServiceTest {
         assertThat(result.getData().campaigns()).hasSize(3);
         assertThat(result.getData().capRules()).hasSize(4);
         assertThat(result.getData().stats().monthScheduled()).isEqualTo(1);
-        assertThat(result.getData().sources()).contains("nx_notification_campaign", "nx_notification_cap_rule");
+        assertThat(result.getData().sources()).contains("nx_notification_campaign", "nx_notification_cap_rule", "nx_notification");
         assertThat(repository.seedCalls).isEqualTo(1);
     }
 
@@ -100,6 +100,7 @@ class OpsNotificationCampaignServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("sending");
         assertThat(result.getData().schedule()).isEqualTo("立即下发中");
+        assertThat(repository.dispatchBizNos).containsExactly("i3:send:idem-i3-send");
     }
 
     @Test
@@ -182,6 +183,7 @@ class OpsNotificationCampaignServiceTest {
     private static final class FakeNotificationCampaignRepository implements NotificationCampaignRepository {
         private final Map<String, NotificationCampaignRow> campaigns = new LinkedHashMap<>();
         private final Map<String, NotificationCapRuleView> caps = new LinkedHashMap<>();
+        private final List<String> dispatchBizNos = new ArrayList<>();
         private int seedCalls;
 
         private FakeNotificationCampaignRepository() {
@@ -268,6 +270,13 @@ class OpsNotificationCampaignServiceTest {
                     current.bodyZh(),
                     current.swipeTo(),
                     current.budget()));
+        }
+
+        @Override
+        public int dispatchCampaignNotification(String campaignNo, String bizNo, String trigger, String operator, LocalDateTime now) {
+            dispatchBizNos.add(bizNo);
+            updateStatus(campaignNo, "SENDING", trigger, operator, now);
+            return 1;
         }
 
         @Override

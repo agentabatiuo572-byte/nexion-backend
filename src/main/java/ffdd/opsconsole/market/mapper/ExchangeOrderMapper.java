@@ -225,6 +225,15 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
 
     @Update("""
             UPDATE nx_exchange_order
+               SET status = #{status},
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE exchange_no = #{exchangeNo}
+               AND is_deleted = 0
+            """)
+    int updateStatus(@Param("exchangeNo") String exchangeNo, @Param("status") String status);
+
+    @Update("""
+            UPDATE nx_exchange_order
                SET status = 'CANCELLED',
                    updated_at = CURRENT_TIMESTAMP
              WHERE exchange_no = #{exchangeNo}

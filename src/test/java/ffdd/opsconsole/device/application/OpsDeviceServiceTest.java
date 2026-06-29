@@ -557,10 +557,36 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e1GenerationGatesReadH1RhythmForCurrentPhaseAndPacing() {
+        catalogRepository.phases.put("P1", phase("P1", "拉新", 10));
+        catalogRepository.phases.put("P2", phase("P2", "激活", 20));
+        catalogRepository.phases.put("P3", phase("P3", "扩张", 30));
+        catalogRepository.phases.put("P4", phase("P4", "深化", 40));
+        catalogRepository.phases.put("P5", phase("P5", "收紧", 50));
+        catalogRepository.phases.put("P6", phase("P6", "软退场", 60));
+        configFacade.values.put("H1.rhythm.currentMonth", "10");
+        configFacade.values.put("growth.phase.current", "P5");
+        configFacade.values.put("growth.phase.device_release_pacing_pct", "0.35");
+
+        ApiResult<Map<String, Object>> result = service.e1GenerationGates();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("platformMonth", 10)
+                .containsEntry("phaseCurrent", "P5")
+                .containsEntry("h1DeviceReleasePacingPct", new BigDecimal("35"));
+        assertThat(result.getData().get("h1Rhythm"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("currentPhase", "P5")
+                .containsEntry("currentMonth", 10);
+    }
+
+    @Test
     void e1PhaseArchiveRejectsReferencedPhase() {
         catalogRepository.phases.put("1", phase("1", "P1", 10));
         catalogRepository.phases.put("2", phase("2", "代际第一代", 20));
         catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "2");
+        configFacade.values.put("growth.phase.current", "1");
 
         ApiResult<Map<String, Object>> result = service.archiveE1Phase(
                 "2",

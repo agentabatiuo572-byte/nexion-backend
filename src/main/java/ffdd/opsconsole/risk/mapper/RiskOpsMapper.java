@@ -1124,6 +1124,15 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     List<KycReviewTicketRecord> pageKycReviewTickets(@Param("filter") String filter, @Param("offset") int offset,
                                                      @Param("pageSize") int pageSize);
 
+    @Select("""
+            SELECT ticket_id AS id,ticket_type AS type,user_no AS user,amount_text AS amt,cumulative_text AS cum,
+                   kyc_text AS kyc,status AS st,sla_pct AS slaPct,sla_text AS slaTxt,info_json AS infoJson,history_json AS histJson
+              FROM nx_admin_risk_kyc_review_ticket
+             WHERE ticket_id = #{ticketId} AND is_deleted = 0
+             LIMIT 1
+            """)
+    KycReviewTicketRecord findKycReviewTicket(@Param("ticketId") String ticketId);
+
     @Insert("""
             INSERT INTO nx_admin_risk_kyc_review_ticket (
                 ticket_id,ticket_type,user_no,amount_text,cumulative_text,kyc_text,status,sla_pct,sla_text,info_json,history_json,is_deleted

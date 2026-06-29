@@ -268,6 +268,30 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void advancePersistsActiveDayAndFeedsDownstreamMarketSurfaces() {
+        configFacade.values.put("wallet.nex_market.control.active_day_index", "2");
+        service.updateWeeklyCurve(
+                "idem-g3-seed",
+                new NexMarketCurveUpdateRequest(steppedFrames(), "seed stepped curve", "superadmin"));
+
+        ApiResult<Map<String, Object>> result = service.advanceCurrentFrame(
+                "idem-g3-advance",
+                new NexMarketAdvanceRequest("manual next frame", "system"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("activeDayIndex", 3);
+        assertThat(configFacade.values)
+                .containsEntry("wallet.nex_market.control.active_day_index", "3")
+                .containsEntry("wallet.exchange.nex_usdt_price", "0.13");
+        NexMarketCurveFrame activeFrame = (NexMarketCurveFrame) result.getData().get("activeFrame");
+        assertThat(activeFrame.targetPrice()).isEqualByComparingTo("0.13");
+        assertThat((BigDecimal) service.exchangeOverview().getData().get("currentPrice")).isEqualByComparingTo("0.13");
+        assertThat((BigDecimal) service.stakingOverview().getData().get("currentNexPrice")).isEqualByComparingTo("0.13");
+        assertThat((BigDecimal) service.genesisOverview().getData().get("currentNexPrice")).isEqualByComparingTo("0.13");
+        assertThat((BigDecimal) service.repurchaseOverview().getData().get("currentNexPrice")).isEqualByComparingTo("0.13");
+    }
+
+    @Test
     void updateControlWritesConfigAndAudits() {
         ApiResult<Map<String, Object>> result = service.updateControl(
                 "idem-control",
@@ -668,6 +692,16 @@ class OpsNexMarketServiceTest {
                 .toList();
     }
 
+    private static List<NexMarketCurveFrame> steppedFrames() {
+        return java.util.stream.IntStream.range(0, 7)
+                .mapToObj(index -> new NexMarketCurveFrame(
+                        index,
+                        new BigDecimal("0.10").add(new BigDecimal("0.01").multiply(BigDecimal.valueOf(index))),
+                        new BigDecimal("0.08"),
+                        new BigDecimal("3")))
+                .toList();
+    }
+
     private static ExchangeOrderView exchange(String exchangeNo, String status) {
         return new ExchangeOrderView(
                 1L,
@@ -690,6 +724,31 @@ class OpsNexMarketServiceTest {
                 null,
                 "明天 00:00",
                 LocalDateTime.now(),
+                LocalDateTime.now());
+    }
+
+    private static ExchangeOrderView exchangeOrderWithStatus(ExchangeOrderView order, String status) {
+        return new ExchangeOrderView(
+                order.id(),
+                order.userId(),
+                order.userNo(),
+                order.nickname(),
+                order.countryCode(),
+                order.exchangeNo(),
+                order.fromAsset(),
+                order.toAsset(),
+                order.fromAmount(),
+                order.toAmount(),
+                order.rate(),
+                status,
+                status,
+                "QUEUED".equals(status) ? "warn" : "CANCELLED".equals(status) ? "dim" : order.statusTone(),
+                order.directionLabel(),
+                order.amountUsdt(),
+                order.gateType(),
+                order.gateReason(),
+                order.etaLabel(),
+                order.createdAt(),
                 LocalDateTime.now());
     }
 
@@ -807,6 +866,14 @@ class OpsNexMarketServiceTest {
         @Override
         public Optional<ExchangeOrderView> findExchangeOrder(String exchangeNo) {
             return orders.stream().filter(order -> order.exchangeNo().equals(exchangeNo)).findFirst();
+        }
+
+        @Override
+        public boolean updateExchangeStatus(String exchangeNo, String status) {
+            orders = orders.stream()
+                    .map(order -> order.exchangeNo().equals(exchangeNo) ? exchangeOrderWithStatus(order, status) : order)
+                    .toList();
+            return true;
         }
 
         @Override

@@ -36,6 +36,8 @@ public interface NexMarketRepository {
 
     Optional<ExchangeOrderView> findExchangeOrder(String exchangeNo);
 
+    boolean updateExchangeStatus(String exchangeNo, String status);
+
     boolean cancelQueuedExchange(String exchangeNo);
 
     void ensureStakingSeedData();

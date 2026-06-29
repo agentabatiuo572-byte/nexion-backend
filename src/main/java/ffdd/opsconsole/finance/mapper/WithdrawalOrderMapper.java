@@ -451,4 +451,15 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             """)
     int updateStatus(@Param("withdrawalNo") String withdrawalNo, @Param("status") String status,
                      @Param("failureReason") String failureReason);
+
+    @Update("""
+            UPDATE nx_withdrawal_order
+               SET status = 'FROZEN',
+                   failure_reason = #{reason},
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE user_id = #{userId}
+               AND is_deleted = 0
+               AND status IN ('SUBMITTED','REVIEWING','DELAYED','PENDING_CHAIN','CHAIN_SUBMITTED','DEAD')
+            """)
+    int freezePendingByUserId(@Param("userId") Long userId, @Param("reason") String reason);
 }

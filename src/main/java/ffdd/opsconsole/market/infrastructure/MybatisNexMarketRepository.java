@@ -138,6 +138,11 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public boolean updateExchangeStatus(String exchangeNo, String status) {
+        return exchangeOrderMapper.updateStatus(exchangeNo, status) > 0;
+    }
+
+    @Override
     public boolean cancelQueuedExchange(String exchangeNo) {
         return exchangeOrderMapper.cancelQueued(exchangeNo) > 0;
     }
