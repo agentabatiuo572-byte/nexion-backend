@@ -84,4 +84,38 @@ class WithdrawalOrderMapperSqlTest {
         assertThat(countSql).contains("w.amount &lt;= #{maxAmount}");
         assertThat(pageSql).contains("w.amount &lt;= #{maxAmount}");
     }
+
+    @Test
+    void withdrawalQueriesExposeK3RiskReasonForD2() throws Exception {
+        String pageSql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod(
+                        "page",
+                        String.class,
+                        Long.class,
+                        String.class,
+                        BigDecimal.class,
+                        BigDecimal.class,
+                        Integer.class,
+                        int.class,
+                        int.class)
+                .getAnnotation(Select.class)
+                .value());
+        String detailSql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod("findByWithdrawalNo", String.class)
+                .getAnnotation(Select.class)
+                .value());
+
+        assertThat(pageSql)
+                .contains("AS riskReason")
+                .contains("rd2.reason")
+                .contains("hit.hit_reasons")
+                .contains("REPLACE(w.withdrawal_no, 'D2-SEED-', '')")
+                .contains("hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', '')");
+        assertThat(detailSql)
+                .contains("AS riskReason")
+                .contains("rd2.reason")
+                .contains("hit.hit_reasons")
+                .contains("REPLACE(w.withdrawal_no, 'D2-SEED-', '')")
+                .contains("hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', '')");
+    }
 }

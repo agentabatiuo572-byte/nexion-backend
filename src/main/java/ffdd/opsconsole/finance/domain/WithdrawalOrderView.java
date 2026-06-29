@@ -32,6 +32,7 @@ public record WithdrawalOrderView(
         String userStatus,
         Integer riskScore,
         String hitRules,
+        String riskReason,
         Integer withdrawalCount24h,
         String statusHistory,
         String auditTrail) {
@@ -61,6 +62,6 @@ public record WithdrawalOrderView(
         this(id, userId, withdrawalNo, asset, chain, amount, fee, targetAddress, riskDecisionId, chainTxHash,
                 status, chainSubmittedAt, completedAt, failedAt, failureReason, chainBroadcastAttempts,
                 nextBroadcastAt, lastBroadcastError, broadcastDeadAt, createdAt, updatedAt,
-                null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
     }
 }

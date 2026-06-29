@@ -462,9 +462,9 @@ class OpsRiskServiceTest {
                 new RiskRuleView("WR-04", "地址信誉", "黑名单 / 低信誉地址", "freeze", "active", true, LocalDateTime.now().minusDays(7), LocalDateTime.now().minusDays(1)),
                 new RiskRuleView("WR-06", "金额", "单笔 >= $500(P1 期旧线)", "manual", "archived", true, LocalDateTime.now().minusDays(30), LocalDateTime.now().minusDays(20))));
         private final List<RiskRuleHitView> withdrawHits = new ArrayList<>(List.of(
-                new RiskRuleHitView("WD-1", "usr_1", "$1,200", "WR-01", "金额", "manual", "今天 10:00"),
-                new RiskRuleHitView("WD-2", "usr_2", "$400", "WR-02", "速度", "delay", "今天 10:05"),
-                new RiskRuleHitView("WD-3", "usr_3", "$500", "WR-02", "速度", "delay", "今天 10:10")));
+                new RiskRuleHitView("WD-1", "usr_1", "$1,200", "WR-01", "金额", "manual", "单笔大额提现转人工", "今天 10:00"),
+                new RiskRuleHitView("WD-2", "usr_2", "$400", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:05"),
+                new RiskRuleHitView("WD-3", "usr_3", "$500", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:10")));
         private final List<RiskArbitrageParamView> arbitrageParams = new ArrayList<>(List.of(
                 new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "sub", "note"),
                 new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "sub", "note"),

@@ -91,24 +91,41 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN (
                     SELECT withdrawal_no,
-                           GROUP_CONCAT(CONCAT(rule_id, ':', action) ORDER BY id DESC SEPARATOR ', ') AS hit_rules
+                           GROUP_CONCAT(CONCAT(rule_id, ':', action) ORDER BY id DESC SEPARATOR ', ') AS hit_rules,
+                           GROUP_CONCAT(CONCAT(dimension, '规则命中:', rule_id, ' -> ', action) ORDER BY id DESC SEPARATOR ' | ') AS hit_reasons
                       FROM nx_admin_risk_withdraw_hit
                      WHERE is_deleted = 0
                      GROUP BY withdrawal_no
-              ) hit ON hit.withdrawal_no = w.withdrawal_no
+              ) hit ON (hit.withdrawal_no = w.withdrawal_no OR hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
              WHERE w.is_deleted = 0
              <if test='status != null and status != ""'>AND w.status = #{status}</if>
              <if test='userId != null'>AND w.user_id = #{userId}</if>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
              <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
-             <if test='minRiskScore != null'>AND COALESCE(rd.risk_score, 0) &gt;= #{minRiskScore}</if>
+             <if test='minRiskScore != null'>
+               AND COALESCE(
+                   rd.risk_score,
+                   (
+                       SELECT rd2.risk_score
+                         FROM nx_risk_decision rd2
+                        WHERE rd2.is_deleted = 0
+                          AND rd2.biz_type = 'WITHDRAW_RULE'
+                          AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                        ORDER BY rd2.id DESC
+                        LIMIT 1
+                   ),
+                   0
+               ) &gt;= #{minRiskScore}
+             </if>
              <if test='keyword != null and keyword != ""'>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
                     OR w.target_address LIKE CONCAT('%', #{keyword}, '%')
                     OR w.chain_tx_hash LIKE CONCAT('%', #{keyword}, '%')
                     OR CONCAT('U', LPAD(w.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
-                    OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%'))
+                    OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%')
+                    OR hit.hit_reasons LIKE CONCAT('%', #{keyword}, '%')
+                    OR rd.reason LIKE CONCAT('%', #{keyword}, '%'))
              </if>
             </script>
             """)
@@ -127,7 +144,18 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.amount,
                    w.fee,
                    w.target_address AS targetAddress,
-                   w.risk_decision_id AS riskDecisionId,
+                   COALESCE(
+                       w.risk_decision_id,
+                       (
+                           SELECT rd2.id
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       )
+                   ) AS riskDecisionId,
                    w.chain_tx_hash AS chainTxHash,
                    w.status,
                    w.chain_submitted_at AS chainSubmittedAt,
@@ -148,8 +176,45 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    END AS phoneMasked,
                    COALESCE(u.kyc_status, 'PENDING') AS kycStatus,
                    COALESCE(u.status, 'UNKNOWN') AS userStatus,
-                   rd.risk_score AS riskScore,
-                   COALESCE(hit.hit_rules, rd.rule_codes) AS hitRules,
+                   COALESCE(
+                       rd.risk_score,
+                       (
+                           SELECT rd2.risk_score
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       ),
+                       0
+                   ) AS riskScore,
+                   COALESCE(
+                       hit.hit_rules,
+                       rd.rule_codes,
+                       (
+                           SELECT rd2.rule_codes
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       )
+                   ) AS hitRules,
+                   COALESCE(
+                       rd.reason,
+                       (
+                           SELECT rd2.reason
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       ),
+                       hit.hit_reasons
+                   ) AS riskReason,
                    (
                        SELECT COUNT(1)
                          FROM nx_withdrawal_order w2
@@ -172,11 +237,20 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN (
                     SELECT withdrawal_no,
-                           GROUP_CONCAT(CONCAT(rule_id, ':', action, '@', time_text) ORDER BY id DESC SEPARATOR ', ') AS hit_rules
-                      FROM nx_admin_risk_withdraw_hit
-                     WHERE is_deleted = 0
-                     GROUP BY withdrawal_no
-              ) hit ON hit.withdrawal_no = w.withdrawal_no
+                           GROUP_CONCAT(CONCAT(h.rule_id, ':', h.action, '@', h.time_text) ORDER BY h.id DESC SEPARATOR ', ') AS hit_rules,
+                           GROUP_CONCAT(
+                               COALESCE(
+                                   CONCAT(h.dimension, '规则命中:', r.condition_text, ' -> ', h.action),
+                                   CONCAT(h.dimension, '规则命中:', h.rule_id, ' -> ', h.action)
+                               )
+                               ORDER BY h.id DESC SEPARATOR ' | '
+                           ) AS hit_reasons
+                      FROM nx_admin_risk_withdraw_hit h
+                      LEFT JOIN nx_admin_risk_withdraw_rule r
+                        ON r.rule_id = h.rule_id AND r.is_deleted = 0
+                     WHERE h.is_deleted = 0
+                     GROUP BY h.withdrawal_no
+              ) hit ON (hit.withdrawal_no = w.withdrawal_no OR hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
               LEFT JOIN (
                     SELECT resource_id,
                            GROUP_CONCAT(CONCAT(action, '@', DATE_FORMAT(created_at, '%m-%d %H:%i')) ORDER BY created_at DESC SEPARATOR ' | ') AS audit_trail
@@ -189,14 +263,30 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              <if test='userId != null'>AND w.user_id = #{userId}</if>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
              <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
-             <if test='minRiskScore != null'>AND COALESCE(rd.risk_score, 0) &gt;= #{minRiskScore}</if>
+             <if test='minRiskScore != null'>
+               AND COALESCE(
+                   rd.risk_score,
+                   (
+                       SELECT rd2.risk_score
+                         FROM nx_risk_decision rd2
+                        WHERE rd2.is_deleted = 0
+                          AND rd2.biz_type = 'WITHDRAW_RULE'
+                          AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                        ORDER BY rd2.id DESC
+                        LIMIT 1
+                   ),
+                   0
+               ) &gt;= #{minRiskScore}
+             </if>
              <if test='keyword != null and keyword != ""'>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
                     OR w.target_address LIKE CONCAT('%', #{keyword}, '%')
                     OR w.chain_tx_hash LIKE CONCAT('%', #{keyword}, '%')
                     OR CONCAT('U', LPAD(w.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
-                    OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%'))
+                    OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%')
+                    OR hit.hit_reasons LIKE CONCAT('%', #{keyword}, '%')
+                    OR rd.reason LIKE CONCAT('%', #{keyword}, '%'))
              </if>
              ORDER BY w.created_at DESC, w.id DESC
              LIMIT #{pageSize} OFFSET #{offset}
@@ -218,7 +308,18 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.amount,
                    w.fee,
                    w.target_address AS targetAddress,
-                   w.risk_decision_id AS riskDecisionId,
+                   COALESCE(
+                       w.risk_decision_id,
+                       (
+                           SELECT rd2.id
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       )
+                   ) AS riskDecisionId,
                    w.chain_tx_hash AS chainTxHash,
                    w.status,
                    w.chain_submitted_at AS chainSubmittedAt,
@@ -239,8 +340,45 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    END AS phoneMasked,
                    COALESCE(u.kyc_status, 'PENDING') AS kycStatus,
                    COALESCE(u.status, 'UNKNOWN') AS userStatus,
-                   rd.risk_score AS riskScore,
-                   COALESCE(hit.hit_rules, rd.rule_codes) AS hitRules,
+                   COALESCE(
+                       rd.risk_score,
+                       (
+                           SELECT rd2.risk_score
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       ),
+                       0
+                   ) AS riskScore,
+                   COALESCE(
+                       hit.hit_rules,
+                       rd.rule_codes,
+                       (
+                           SELECT rd2.rule_codes
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       )
+                   ) AS hitRules,
+                   COALESCE(
+                       rd.reason,
+                       (
+                           SELECT rd2.reason
+                             FROM nx_risk_decision rd2
+                            WHERE rd2.is_deleted = 0
+                              AND rd2.biz_type = 'WITHDRAW_RULE'
+                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                            ORDER BY rd2.id DESC
+                            LIMIT 1
+                       ),
+                       hit.hit_reasons
+                   ) AS riskReason,
                    (
                        SELECT COUNT(1)
                          FROM nx_withdrawal_order w2
@@ -263,11 +401,20 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN (
                     SELECT withdrawal_no,
-                           GROUP_CONCAT(CONCAT(rule_id, ':', action, '@', time_text) ORDER BY id DESC SEPARATOR ', ') AS hit_rules
-                      FROM nx_admin_risk_withdraw_hit
-                     WHERE is_deleted = 0
-                     GROUP BY withdrawal_no
-              ) hit ON hit.withdrawal_no = w.withdrawal_no
+                           GROUP_CONCAT(CONCAT(h.rule_id, ':', h.action, '@', h.time_text) ORDER BY h.id DESC SEPARATOR ', ') AS hit_rules,
+                           GROUP_CONCAT(
+                               COALESCE(
+                                   CONCAT(h.dimension, '规则命中:', r.condition_text, ' -> ', h.action),
+                                   CONCAT(h.dimension, '规则命中:', h.rule_id, ' -> ', h.action)
+                               )
+                               ORDER BY h.id DESC SEPARATOR ' | '
+                           ) AS hit_reasons
+                      FROM nx_admin_risk_withdraw_hit h
+                      LEFT JOIN nx_admin_risk_withdraw_rule r
+                        ON r.rule_id = h.rule_id AND r.is_deleted = 0
+                     WHERE h.is_deleted = 0
+                     GROUP BY h.withdrawal_no
+              ) hit ON (hit.withdrawal_no = w.withdrawal_no OR hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
               LEFT JOIN (
                     SELECT resource_id,
                            GROUP_CONCAT(CONCAT(action, '@', DATE_FORMAT(created_at, '%m-%d %H:%i')) ORDER BY created_at DESC SEPARATOR ' | ') AS audit_trail

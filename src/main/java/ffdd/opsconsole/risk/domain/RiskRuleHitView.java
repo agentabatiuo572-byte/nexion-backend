@@ -7,6 +7,7 @@ public record RiskRuleHitView(
         String ruleId,
         String dimension,
         String action,
+        String reason,
         String timeText
 ) {
 }

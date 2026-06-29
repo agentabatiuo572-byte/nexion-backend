@@ -619,22 +619,58 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     @Select("""
             <script>
-            SELECT withdrawal_no AS withdrawalNo,user_no AS userNo,amount_text AS amountText,rule_id AS ruleId,dimension,action,time_text AS timeText
-              FROM nx_admin_risk_withdraw_hit
-             WHERE is_deleted = 0
-             <if test='action != null and action != "" and action != "all"'>AND action = #{action}</if>
-             ORDER BY id DESC LIMIT #{limit}
+            SELECT h.withdrawal_no AS withdrawalNo,
+                   h.user_no AS userNo,
+                   h.amount_text AS amountText,
+                   h.rule_id AS ruleId,
+                   h.dimension,
+                   h.action,
+                   COALESCE(
+                       rd.reason,
+                       CONCAT(h.dimension, '规则命中:', COALESCE(r.condition_text, h.rule_id), ' -> ', h.action)
+                   ) AS reason,
+                   h.time_text AS timeText
+              FROM nx_admin_risk_withdraw_hit h
+              LEFT JOIN nx_admin_risk_withdraw_rule r
+                ON r.rule_id = h.rule_id AND r.is_deleted = 0
+              LEFT JOIN nx_risk_decision rd
+                ON rd.id = (
+                    SELECT MAX(rd2.id)
+                      FROM nx_risk_decision rd2
+                     WHERE rd2.is_deleted = 0 AND rd2.biz_type = 'WITHDRAW_RULE' AND rd2.biz_no = h.withdrawal_no
+                )
+             WHERE h.is_deleted = 0
+             <if test='action != null and action != "" and action != "all"'>AND h.action = #{action}</if>
+             ORDER BY h.id DESC LIMIT #{limit}
             </script>
             """)
     List<RiskRuleHitView> withdrawHits(@Param("action") String action, @Param("limit") int limit);
 
     @Select("""
             <script>
-            SELECT withdrawal_no AS withdrawalNo,user_no AS userNo,amount_text AS amountText,rule_id AS ruleId,dimension,action,time_text AS timeText
-              FROM nx_admin_risk_withdraw_hit
-             WHERE is_deleted = 0
-             <if test='action != null and action != "" and action != "all"'>AND action = #{action}</if>
-             ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}
+            SELECT h.withdrawal_no AS withdrawalNo,
+                   h.user_no AS userNo,
+                   h.amount_text AS amountText,
+                   h.rule_id AS ruleId,
+                   h.dimension,
+                   h.action,
+                   COALESCE(
+                       rd.reason,
+                       CONCAT(h.dimension, '规则命中:', COALESCE(r.condition_text, h.rule_id), ' -> ', h.action)
+                   ) AS reason,
+                   h.time_text AS timeText
+              FROM nx_admin_risk_withdraw_hit h
+              LEFT JOIN nx_admin_risk_withdraw_rule r
+                ON r.rule_id = h.rule_id AND r.is_deleted = 0
+              LEFT JOIN nx_risk_decision rd
+                ON rd.id = (
+                    SELECT MAX(rd2.id)
+                      FROM nx_risk_decision rd2
+                     WHERE rd2.is_deleted = 0 AND rd2.biz_type = 'WITHDRAW_RULE' AND rd2.biz_no = h.withdrawal_no
+                )
+             WHERE h.is_deleted = 0
+             <if test='action != null and action != "" and action != "all"'>AND h.action = #{action}</if>
+             ORDER BY h.id DESC LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
     List<RiskRuleHitView> withdrawHitsPage(@Param("action") String action, @Param("offset") int offset, @Param("limit") int limit);

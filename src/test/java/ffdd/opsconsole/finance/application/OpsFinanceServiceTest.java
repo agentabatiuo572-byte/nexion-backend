@@ -144,6 +144,35 @@ class OpsFinanceServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
         assertThat(withdrawalRepository.lastStatus).isNull();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_BLOCKED");
+        assertThat(captor.getValue().getResult()).isEqualTo("BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("fromStatus", "REVIEWING")
+                .containsEntry("toStatus", "REVIEWING")
+                .containsEntry("requestedAction", "APPROVE")
+                .containsEntry("blockedReason", "WITHDRAWAL_DAILY_LIMIT_EXCEEDED")
+                .containsEntry("statusUnchanged", true)
+                .containsEntry("withdrawalCount24h", 2)
+                .containsEntry("dailyLimitCount", 1)
+                .containsEntry("idempotencyKey", "idem-review");
+    }
+
+    @Test
+    void reviewWithdrawalAllowsDelayWhenD5DailyLimitExceededAndAudits() {
+        assertOverLimitReviewActionAudits("DELAY", "DELAYED");
+    }
+
+    @Test
+    void reviewWithdrawalAllowsFreezeWhenD5DailyLimitExceededAndAudits() {
+        assertOverLimitReviewActionAudits("FREEZE", "FROZEN");
+    }
+
+    @Test
+    void reviewWithdrawalAllowsRejectWhenD5DailyLimitExceededAndAudits() {
+        assertOverLimitReviewActionAudits("REJECT", "REJECTED");
     }
 
     @Test
@@ -180,6 +209,32 @@ class OpsFinanceServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_RISK_HIT_BLOCKED");
         assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenK3RiskReasonIsPresent() {
+        withdrawalRepository.order = withdrawal(
+                "WD-1",
+                "REVIEWING",
+                "VERIFIED",
+                "ACTIVE",
+                42,
+                "",
+                "单笔大额提现转人工",
+                1);
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_RISK_HIT_BLOCKED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("riskReason", "单笔大额提现转人工")
+                .containsEntry("blockedReason", "WITHDRAWAL_RISK_HIT_BLOCKED");
     }
 
     @Test
@@ -326,6 +381,29 @@ class OpsFinanceServiceTest {
         return (Map<String, Object>) detail;
     }
 
+    private void assertOverLimitReviewActionAudits(String action, String expectedStatus) {
+        configFacade.values.put("withdrawal.daily_count_limit", "1");
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", 2);
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest(action, "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo(expectedStatus);
+        assertThat(withdrawalRepository.lastStatus).isEqualTo(expectedStatus);
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_" + action);
+        assertThat(captor.getValue().getResult()).isEqualTo("SUCCESS");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("fromStatus", "REVIEWING")
+                .containsEntry("toStatus", expectedStatus)
+                .containsEntry("withdrawalCount24h", 2)
+                .containsEntry("dailyLimitCount", 1)
+                .containsEntry("idempotencyKey", "idem-review");
+    }
+
     private static WithdrawalOrderView withdrawal(String withdrawalNo, String status) {
         return withdrawal(withdrawalNo, status, 1);
     }
@@ -341,6 +419,18 @@ class OpsFinanceServiceTest {
             String userStatus,
             Integer riskScore,
             String hitRules,
+            Integer withdrawalCount24h) {
+        return withdrawal(withdrawalNo, status, kycStatus, userStatus, riskScore, hitRules, "", withdrawalCount24h);
+    }
+
+    private static WithdrawalOrderView withdrawal(
+            String withdrawalNo,
+            String status,
+            String kycStatus,
+            String userStatus,
+            Integer riskScore,
+            String hitRules,
+            String riskReason,
             Integer withdrawalCount24h) {
         return new WithdrawalOrderView(
                 1L,
@@ -371,6 +461,7 @@ class OpsFinanceServiceTest {
                 userStatus,
                 riskScore,
                 hitRules,
+                riskReason,
                 withdrawalCount24h,
                 "",
                 "");
@@ -470,7 +561,7 @@ class OpsFinanceServiceTest {
                     order.completedAt(), order.failedAt(), failureReason, order.chainBroadcastAttempts(), order.nextBroadcastAt(),
                     order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
                     order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(), order.riskScore(), order.hitRules(),
-                    order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
+                    order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
         }
 
         @Override

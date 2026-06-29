@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -352,6 +353,7 @@ public class OpsFinanceService {
                 .orElseGet(() -> ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND"));
     }
 
+    @Transactional
     public ApiResult<WithdrawalOrderView> reviewWithdrawal(
             String withdrawalNo,
             String idempotencyKey,
@@ -376,6 +378,7 @@ public class OpsFinanceService {
         if ("APPROVE".equals(action)) {
             String blockedReason = approvalBlockReason(order, dailyLimitCount);
             if (blockedReason != null) {
+                auditWithdrawalReviewBlocked(order, action, blockedReason, dailyLimitCount, idempotencyKey, request);
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), blockedReason);
             }
         }
@@ -388,21 +391,9 @@ public class OpsFinanceService {
                         order.completedAt(), order.failedAt(), failureReason, order.chainBroadcastAttempts(), order.nextBroadcastAt(),
                         order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(),
                         order.userNo(), order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(),
-                        order.riskScore(), order.hitRules(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail()));
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("fromStatus", order.status());
-        detail.put("toStatus", newStatus);
-        detail.put("asset", order.asset());
-        detail.put("amount", order.amount());
-        detail.put("fee", order.fee());
-        detail.put("kycStatus", order.kycStatus());
-        detail.put("userStatus", order.userStatus());
-        detail.put("riskScore", order.riskScore());
-        detail.put("hitRules", order.hitRules());
-        detail.put("withdrawalCount24h", order.withdrawalCount24h());
-        detail.put("dailyLimitCount", dailyLimitCount);
-        detail.put("reason", request.reason().trim());
-        detail.put("idempotencyKey", idempotencyKey.trim());
+                        order.riskScore(), order.hitRules(), order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail()));
+        Map<String, Object> detail = withdrawalReviewAuditDetail(
+                order, newStatus, dailyLimitCount, request.reason().trim(), idempotencyKey.trim());
         audit("D2_WITHDRAWAL_REVIEW_" + action, "WITHDRAWAL", order.withdrawalNo(), request.operator(), detail);
         return ApiResult.ok(updated);
     }
@@ -766,6 +757,45 @@ public class OpsFinanceService {
         return null;
     }
 
+    private void auditWithdrawalReviewBlocked(
+            WithdrawalOrderView order,
+            String action,
+            String blockedReason,
+            int dailyLimitCount,
+            String idempotencyKey,
+            WithdrawalReviewRequest request) {
+        Map<String, Object> detail = withdrawalReviewAuditDetail(
+                order, order.status(), dailyLimitCount, request.reason().trim(), idempotencyKey.trim());
+        detail.put("requestedAction", action);
+        detail.put("blockedReason", blockedReason);
+        detail.put("statusUnchanged", true);
+        audit("D2_WITHDRAWAL_REVIEW_BLOCKED", "WITHDRAWAL", order.withdrawalNo(), request.operator(), "BLOCKED", detail);
+    }
+
+    private Map<String, Object> withdrawalReviewAuditDetail(
+            WithdrawalOrderView order,
+            String toStatus,
+            int dailyLimitCount,
+            String reason,
+            String idempotencyKey) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("fromStatus", order.status());
+        detail.put("toStatus", toStatus);
+        detail.put("asset", order.asset());
+        detail.put("amount", order.amount());
+        detail.put("fee", order.fee());
+        detail.put("kycStatus", order.kycStatus());
+        detail.put("userStatus", order.userStatus());
+        detail.put("riskScore", order.riskScore());
+        detail.put("hitRules", order.hitRules());
+        detail.put("riskReason", order.riskReason());
+        detail.put("withdrawalCount24h", order.withdrawalCount24h());
+        detail.put("dailyLimitCount", dailyLimitCount);
+        detail.put("reason", reason);
+        detail.put("idempotencyKey", idempotencyKey);
+        return detail;
+    }
+
     private boolean isApprovedKyc(String status) {
         String normalized = trimToEmpty(status).toUpperCase(Locale.ROOT);
         return "VERIFIED".equals(normalized) || "APPROVED".equals(normalized);
@@ -777,8 +807,10 @@ public class OpsFinanceService {
             return true;
         }
         String hitRules = trimToEmpty(order.hitRules());
-        return StringUtils.hasText(hitRules)
-                && !Set.of("[]", "{}", "NULL", "NONE", "-", "—").contains(hitRules.toUpperCase(Locale.ROOT));
+        String riskReason = trimToEmpty(order.riskReason());
+        Set<String> placeholders = Set.of("[]", "{}", "NULL", "NONE", "-", "—");
+        return (StringUtils.hasText(hitRules) && !placeholders.contains(hitRules.toUpperCase(Locale.ROOT)))
+                || (StringUtils.hasText(riskReason) && !placeholders.contains(riskReason.toUpperCase(Locale.ROOT)));
     }
 
     private String trimToEmpty(String value) {
@@ -891,6 +923,16 @@ public class OpsFinanceService {
     }
 
     private void audit(String action, String resourceType, String resourceId, String operator, Map<String, Object> detail) {
+        audit(action, resourceType, resourceId, operator, "SUCCESS", detail);
+    }
+
+    private void audit(
+            String action,
+            String resourceType,
+            String resourceId,
+            String operator,
+            String result,
+            Map<String, Object> detail) {
         auditLogService.record(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
@@ -898,7 +940,7 @@ public class OpsFinanceService {
                 .bizNo(resourceId)
                 .actorType("ADMIN")
                 .actorUsername(StringUtils.hasText(operator) ? operator.trim() : null)
-                .result("SUCCESS")
+                .result(result)
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
