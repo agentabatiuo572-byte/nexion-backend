@@ -463,6 +463,36 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 "[[\"刚刚\",\"手动补触发 · 进入队列\",\"\"]]");
     }
 
+    @Override
+    public int kycReviewTriggerScore() {
+        return mapper.riskParams("k5").stream()
+                .filter(param -> "reviewTriggerScore".equals(param.key()))
+                .findFirst()
+                .map(param -> scoreLineValue(param.value(), 85))
+                .orElse(85);
+    }
+
+    @Override
+    public boolean hasOpenKycReviewTicket(String userNo) {
+        return mapper.countOpenKycTicketsByUser(userNo) > 0;
+    }
+
+    @Override
+    public void createScoreTriggeredKycReviewTicket(String ticketId, String userNo, int score, int threshold, String reason, String operator) {
+        mapper.insertKycReviewTicket(
+                ticketId,
+                "风险分触发",
+                userNo,
+                "—",
+                "—",
+                "待确认(风险分过线)",
+                "triggered",
+                0.02,
+                "剩 7 天",
+                "[[\"触发原因\",\"K4有效风险分 " + score + " >= " + threshold + "\"],[\"触发方式\",\"K4风险分人工覆盖\"],[\"覆盖理由\",\"" + escapeJson(reason) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"]]",
+                "[[\"刚刚\",\"K4风险分过线 · 自动进入复审队列\",\"\"]]");
+    }
+
     private int normalizePageNum(Integer pageNum) {
         return pageNum == null || pageNum < 1 ? 1 : pageNum;
     }
@@ -523,6 +553,14 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         } catch (NumberFormatException ex) {
             return fallback;
         }
+    }
+
+    private int scoreLineValue(String value, int fallback) {
+        if (!StringUtils.hasText(value)) {
+            return fallback;
+        }
+        String digits = value.replaceAll("[^0-9]", "");
+        return intValue(digits, fallback);
     }
 
     private void seedRiskDataIfEmpty() {

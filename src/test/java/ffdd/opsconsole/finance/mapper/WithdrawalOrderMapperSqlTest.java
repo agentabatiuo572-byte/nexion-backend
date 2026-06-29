@@ -118,4 +118,55 @@ class WithdrawalOrderMapperSqlTest {
                 .contains("REPLACE(w.withdrawal_no, 'D2-SEED-', '')")
                 .contains("hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', '')");
     }
+
+    @Test
+    void withdrawalQueriesReadK4EffectiveRiskScoreBeforeLegacyDecisionScore() throws Exception {
+        String countSql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod(
+                        "countPage",
+                        String.class,
+                        Long.class,
+                        String.class,
+                        BigDecimal.class,
+                        BigDecimal.class,
+                        Integer.class)
+                .getAnnotation(Select.class)
+                .value());
+        String pageSql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod(
+                        "page",
+                        String.class,
+                        Long.class,
+                        String.class,
+                        BigDecimal.class,
+                        BigDecimal.class,
+                        Integer.class,
+                        int.class,
+                        int.class)
+                .getAnnotation(Select.class)
+                .value());
+        String detailSql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod("findByWithdrawalNo", String.class)
+                .getAnnotation(Select.class)
+                .value());
+        String normalizedCountSql = countSql.replaceAll("\\s+", " ");
+        String normalizedPageSql = pageSql.replaceAll("\\s+", " ");
+        String normalizedDetailSql = detailSql.replaceAll("\\s+", " ");
+
+        assertThat(countSql)
+                .contains("LEFT JOIN nx_admin_risk_score_user k4")
+                .contains("LEFT JOIN nx_admin_risk_score_override k4o");
+        assertThat(normalizedCountSql)
+                .contains("COALESCE( k4o.override_score, k4.model_score, rd.risk_score,");
+        assertThat(pageSql)
+                .contains("LEFT JOIN nx_admin_risk_score_user k4")
+                .contains("LEFT JOIN nx_admin_risk_score_override k4o");
+        assertThat(normalizedPageSql)
+                .contains("COALESCE( k4o.override_score, k4.model_score, rd.risk_score,");
+        assertThat(detailSql)
+                .contains("LEFT JOIN nx_admin_risk_score_user k4")
+                .contains("LEFT JOIN nx_admin_risk_score_override k4o");
+        assertThat(normalizedDetailSql)
+                .contains("COALESCE( k4o.override_score, k4.model_score, rd.risk_score,");
+    }
 }

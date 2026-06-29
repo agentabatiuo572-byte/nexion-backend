@@ -698,7 +698,9 @@ public class OpsRiskService {
                 "overrideScore", score,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
-        return scoreUser(normalized);
+        RiskScoreUserView scoreUser = riskRepository.findScoreUser(normalized).orElse(null);
+        triggerKycReviewIfScoreCrossed(scoreUser, request.reason().trim(), operator(request.operator()), idempotencyKey.trim());
+        return scoreUser == null ? scoreUser(normalized) : ApiResult.ok(scoreUser);
     }
 
     public ApiResult<RiskScoreUserView> recomputeScore(String userNo, String idempotencyKey, RiskScoreCommandRequest request) {
@@ -793,6 +795,29 @@ public class OpsRiskService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return kycReviewOverview();
+    }
+
+    private void triggerKycReviewIfScoreCrossed(RiskScoreUserView user, String reason, String operator, String idempotencyKey) {
+        if (user == null || user.effectiveScore() == null) {
+            return;
+        }
+        int threshold = riskRepository.kycReviewTriggerScore();
+        if (threshold < 70 || threshold > 100 || user.effectiveScore() < threshold) {
+            return;
+        }
+        if (riskRepository.hasOpenKycReviewTicket(user.userNo())) {
+            return;
+        }
+        String ticketId = "KR-K4-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
+        riskRepository.createScoreTriggeredKycReviewTicket(ticketId, user.userNo(), user.effectiveScore(), threshold, reason, operator);
+        audit("K5_KYC_REVIEW_TRIGGERED_BY_SCORE", "RISK_KYC_REVIEW_TICKET", ticketId, null, operator, Map.of(
+                "ticketId", ticketId,
+                "userNo", user.userNo(),
+                "effectiveScore", user.effectiveScore(),
+                "threshold", threshold,
+                "source", "K4_SCORE_OVERRIDE",
+                "reason", reason,
+                "idempotencyKey", idempotencyKey));
     }
 
     private <T> ApiResult<T> requireCommand(String idempotencyKey, String reason) {

@@ -1076,6 +1076,15 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("""
             SELECT COUNT(*)
               FROM nx_admin_risk_kyc_review_ticket
+             WHERE user_no = #{userNo}
+               AND is_deleted = 0
+               AND status NOT IN ('passed','rejected')
+            """)
+    long countOpenKycTicketsByUser(@Param("userNo") String userNo);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_risk_kyc_review_ticket
              WHERE is_deleted = 0
                AND status = #{status}
             """)

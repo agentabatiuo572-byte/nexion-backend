@@ -152,6 +152,7 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     public void upsertUser360Seed(User360Seed seed) {
         mapper.createSeedRiskScoreUserTable();
         mapper.createSeedRiskScoreContributionTable();
+        mapper.createSeedRiskScoreOverrideTable();
         mapper.upsertSeedUser(seed);
         Long userId = mapper.findUserIdByLookupKey(seed.referralCode());
         if (userId == null) {

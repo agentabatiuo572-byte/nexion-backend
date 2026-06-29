@@ -2,6 +2,7 @@ package ffdd.opsconsole.risk.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -329,6 +330,40 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void highScoreOverrideCreatesK5ReviewTicket() {
+        ApiResult<RiskScoreUserView> result = service.overrideScore(
+                "usr_55B1",
+                "idem-k-high",
+                new RiskScoreOverrideRequest(90, "manual escalation into kyc review", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().effectiveScore()).isEqualTo(90);
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
+        assertThat(riskRepository.kycTicketTypeByUser("usr_55B1")).isEqualTo("风险分触发");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService, times(2)).record(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(AuditLogWriteRequest::getAction)
+                .contains("K4_SCORE_OVERRIDDEN", "K5_KYC_REVIEW_TRIGGERED_BY_SCORE");
+    }
+
+    @Test
+    void highScoreOverrideDoesNotDuplicateOpenK5ReviewTicket() {
+        riskRepository.createManualKycReviewTicket("KR-OPEN", "usr_55B1", "already open review ticket", "system");
+
+        ApiResult<RiskScoreUserView> result = service.overrideScore(
+                "usr_55B1",
+                "idem-k-high-duplicate",
+                new RiskScoreOverrideRequest(90, "manual escalation into kyc review", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("K4_SCORE_OVERRIDDEN");
+    }
+
+    @Test
     void multiAccountParamUpdatesBackendStateAndAudits() {
         ApiResult<Map<String, Object>> result = service.updateMultiAccountParam(
                 "sameDeviceThreshold",
@@ -489,6 +524,7 @@ class OpsRiskServiceTest {
         private final List<String> ipWhitelistRows = new ArrayList<>(List.of("103.86.44.0/24", "202.120.0.0/16"));
         private final Map<String, String> kycTickets = new LinkedHashMap<>();
         private final Map<String, String> kycTicketTypes = new LinkedHashMap<>();
+        private final Map<String, String> kycTicketUsers = new LinkedHashMap<>();
         private final Map<String, String> kycReviewParams = new LinkedHashMap<>(Map.of(
                 "largeWithdrawReviewUsdt", ">= $1,000",
                 "cumulativeKycThresholdUsdt", "$100",
@@ -845,6 +881,27 @@ class OpsRiskServiceTest {
         public void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator) {
             kycTickets.put(ticketId, "triggered");
             kycTicketTypes.put(ticketId, "手动触发");
+            kycTicketUsers.put(ticketId, userNo);
+        }
+
+        @Override
+        public int kycReviewTriggerScore() {
+            return scoreLineValue(kycReviewParams.get("reviewTriggerScore"), 85);
+        }
+
+        @Override
+        public boolean hasOpenKycReviewTicket(String userNo) {
+            return kycTickets.entrySet().stream()
+                    .anyMatch(entry -> userNo.equals(kycTicketUsers.get(entry.getKey()))
+                            && !"passed".equals(entry.getValue())
+                            && !"rejected".equals(entry.getValue()));
+        }
+
+        @Override
+        public void createScoreTriggeredKycReviewTicket(String ticketId, String userNo, int score, int threshold, String reason, String operator) {
+            kycTickets.put(ticketId, "triggered");
+            kycTicketTypes.put(ticketId, "风险分触发");
+            kycTicketUsers.put(ticketId, userNo);
         }
 
         int kycTicketCount() {
@@ -853,6 +910,25 @@ class OpsRiskServiceTest {
 
         String kycTicketStatus(String ticketId) {
             return kycTickets.get(ticketId);
+        }
+
+        String kycTicketTypeByUser(String userNo) {
+            return kycTicketUsers.entrySet().stream()
+                    .filter(entry -> userNo.equals(entry.getValue()))
+                    .map(entry -> kycTicketTypes.get(entry.getKey()))
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        private int scoreLineValue(String value, int fallback) {
+            if (value == null || value.isBlank()) {
+                return fallback;
+            }
+            try {
+                return Integer.parseInt(value.replaceAll("[^0-9]", ""));
+            } catch (NumberFormatException ex) {
+                return fallback;
+            }
         }
 
         private int pageNum(Integer value) {

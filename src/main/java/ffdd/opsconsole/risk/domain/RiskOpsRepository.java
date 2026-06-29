@@ -97,4 +97,10 @@ public interface RiskOpsRepository {
     boolean updateKycReviewTicketStatus(String ticketId, String status, String reason, String operator);
 
     void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator);
+
+    int kycReviewTriggerScore();
+
+    boolean hasOpenKycReviewTicket(String userNo);
+
+    void createScoreTriggeredKycReviewTicket(String ticketId, String userNo, int score, int threshold, String reason, String operator);
 }

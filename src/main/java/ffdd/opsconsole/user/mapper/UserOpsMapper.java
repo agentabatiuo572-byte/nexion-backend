@@ -49,6 +49,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user rs ON rs.user_no = CONCAT('U', LPAD(u.id, 8, '0')) AND rs.is_deleted = 0
+              LEFT JOIN nx_admin_risk_score_override rso ON rso.user_no = rs.user_no AND rso.active = 1 AND rso.is_deleted = 0
              WHERE u.is_deleted = 0
              <if test='keyword != null and keyword != ""'>
                AND (u.nickname LIKE CONCAT('%', #{keyword}, '%')
@@ -62,7 +63,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>#{status}</foreach>
              </if>
              <if test='kycStatus != null and kycStatus != ""'>AND UPPER(COALESCE(u.kyc_status, 'PENDING')) = UPPER(#{kycStatus})</if>
-             <if test='riskMin != null'>AND COALESCE(rs.model_score, 0) &gt;= #{riskMin}</if>
+             <if test='riskMin != null'>AND COALESCE(rso.override_score, rs.model_score, 0) &gt;= #{riskMin}</if>
             </script>
             """)
     long countUsersByQuery(@Param("keyword") String keyword, @Param("statuses") List<String> statuses,
@@ -85,11 +86,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
                    COALESCE(w.usdt_available, 0) AS walletUsdt,
                    COALESCE(w.nex_available, 0) AS walletNex,
-                   rs.model_score AS riskScore,
+                   COALESCE(rso.override_score, rs.model_score) AS riskScore,
                    CASE
-                     WHEN rs.model_score >= 70 THEN '高风险'
-                     WHEN rs.model_score >= 40 THEN '中风险'
-                     WHEN rs.model_score IS NULL THEN NULL
+                     WHEN COALESCE(rso.override_score, rs.model_score) >= 70 THEN '高风险'
+                     WHEN COALESCE(rso.override_score, rs.model_score) >= 40 THEN '中风险'
+                     WHEN COALESCE(rso.override_score, rs.model_score) IS NULL THEN NULL
                      ELSE '低风险'
                    END AS riskBand,
                    (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0) AS deviceCount,
@@ -100,6 +101,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user rs ON rs.user_no = CONCAT('U', LPAD(u.id, 8, '0')) AND rs.is_deleted = 0
+              LEFT JOIN nx_admin_risk_score_override rso ON rso.user_no = rs.user_no AND rso.active = 1 AND rso.is_deleted = 0
              WHERE u.is_deleted = 0
              <if test='keyword != null and keyword != ""'>
                AND (u.nickname LIKE CONCAT('%', #{keyword}, '%')
@@ -113,7 +115,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>#{status}</foreach>
              </if>
              <if test='kycStatus != null and kycStatus != ""'>AND UPPER(COALESCE(u.kyc_status, 'PENDING')) = UPPER(#{kycStatus})</if>
-             <if test='riskMin != null'>AND COALESCE(rs.model_score, 0) &gt;= #{riskMin}</if>
+             <if test='riskMin != null'>AND COALESCE(rso.override_score, rs.model_score, 0) &gt;= #{riskMin}</if>
              ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}
             </script>
             """)
@@ -146,11 +148,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
                    COALESCE(w.usdt_available, 0) AS walletUsdt,
                    COALESCE(w.nex_available, 0) AS walletNex,
-                   rs.model_score AS riskScore,
+                   COALESCE(rso.override_score, rs.model_score) AS riskScore,
                    CASE
-                     WHEN rs.model_score >= 70 THEN '高风险'
-                     WHEN rs.model_score >= 40 THEN '中风险'
-                     WHEN rs.model_score IS NULL THEN NULL
+                     WHEN COALESCE(rso.override_score, rs.model_score) >= 70 THEN '高风险'
+                     WHEN COALESCE(rso.override_score, rs.model_score) >= 40 THEN '中风险'
+                     WHEN COALESCE(rso.override_score, rs.model_score) IS NULL THEN NULL
                      ELSE '低风险'
                    END AS riskBand,
                    (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0) AS deviceCount,
@@ -161,6 +163,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user rs ON rs.user_no = CONCAT('U', LPAD(u.id, 8, '0')) AND rs.is_deleted = 0
+              LEFT JOIN nx_admin_risk_score_override rso ON rso.user_no = rs.user_no AND rso.active = 1 AND rso.is_deleted = 0
              WHERE u.id = #{userId} AND u.is_deleted = 0
             LIMIT 1
             </script>
@@ -221,6 +224,24 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createSeedRiskScoreContributionTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_risk_score_override (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              user_no VARCHAR(64) NOT NULL,
+              model_score INT NOT NULL,
+              override_score INT NOT NULL,
+              reason VARCHAR(255) NOT NULL,
+              operator VARCHAR(64) NOT NULL,
+              time_text VARCHAR(64) NOT NULL,
+              active TINYINT NOT NULL DEFAULT 1,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              KEY idx_admin_risk_score_override_user (user_no,active,is_deleted)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createSeedRiskScoreOverrideTable();
 
     @Insert("""
             INSERT INTO nx_user (
