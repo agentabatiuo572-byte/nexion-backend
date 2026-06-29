@@ -356,17 +356,30 @@ public class OpsEmergencyControlService {
         if (emergency && !seed.emergency()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PLAYBOOK_NOT_EMERGENCY_TRACK");
         }
+        String idemConfigKey = playbookConfigKey(seed.code(), "idem." + sanitizeConfigPart(idempotencyKey));
+        Optional<String> existingExecId = activeValue(idemConfigKey).filter(StringUtils::hasText);
+        if (existingExecId.isPresent()) {
+            Map<String, Object> response = sopOverview().getData();
+            response.put("updated", map(
+                    "executionId", existingExecId.get(),
+                    "code", seed.code(),
+                    "idempotentReplay", true));
+            return ApiResult.ok(response);
+        }
         String execId = seed.code() + "-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         Map<String, Object> notificationDispatch = notificationDispatch(seed, execId, request);
         if (notificationDispatch == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_NOTIFY_CAMPAIGN_NOT_FOUND");
         }
+        List<Map<String, Object>> domainActions = executeDomainActions(seed, execId, request);
         configFacade.upsertAdminValue(playbookConfigKey(seed.code(), "lastExecution"), execId, "STRING", GROUP_SOP, request.reason().trim());
-        appendExecution(seed, execId, emergency, request, notificationDispatch);
+        configFacade.upsertAdminValue(idemConfigKey, execId, "STRING", GROUP_SOP, "J4 SOP idempotency replay marker");
+        appendExecution(seed, execId, emergency, request, notificationDispatch, domainActions);
         audit("J4_SOP_PLAYBOOK_EXECUTED", "SOP_PLAYBOOK_EXECUTION", execId, request.operator(), emergency ? "CRITICAL" : "HIGH", map(
                 "code", seed.code(),
                 "emergency", emergency,
                 "steps", seed.seq(),
+                "domainActions", domainActions,
                 "notificationDispatch", notificationDispatch,
                 "rollback", seed.rollback(),
                 "reason", request.reason().trim(),
@@ -376,6 +389,7 @@ public class OpsEmergencyControlService {
                 "executionId", execId,
                 "code", seed.code(),
                 "emergency", emergency,
+                "domainActions", domainActions,
                 "notificationDispatch", notificationDispatch,
                 "rollback", seed.rollback()));
         return ApiResult.ok(response);
@@ -403,12 +417,132 @@ public class OpsEmergencyControlService {
                 .orElse(null);
     }
 
+    private List<Map<String, Object>> executeDomainActions(PlaybookSeed seed, String execId, SopPlaybookRunRequest request) {
+        List<Map<String, Object>> writes = new ArrayList<>();
+        int index = 0;
+        for (Map<String, Object> step : seed.seq()) {
+            index++;
+            String domain = stringValue(step.get("domain"), "").toUpperCase(Locale.ROOT);
+            String action = stringValue(step.get("action"), "").replace("**", "");
+            String normalizedAction = action.toLowerCase(Locale.ROOT);
+            switch (domain) {
+                case "J1" -> executeJ1Action(writes, index, action, normalizedAction, execId, request);
+                case "D2" -> executeD2Action(writes, index, action, normalizedAction, execId, request);
+                case "B1" -> executeB1Action(writes, index, action, execId, request);
+                case "C2" -> executeC2Action(writes, index, action, normalizedAction, execId, request);
+                case "K1" -> addDomainWrite(writes, "K1", index, action, "risk.k1.cluster_investigation.required",
+                        "true", "BOOLEAN", "risk", "J4 K1 cluster investigation escalation | execId=" + execId, request);
+                case "J2" -> addDomainWrite(writes, "J2", index, action, "emergency.geo.j4.block.required",
+                        "true", "BOOLEAN", GROUP_GEO_BLOCK, "J4 J2 geo block escalation | execId=" + execId, request);
+                case "I4", "I5" -> executeDisclosureAction(writes, index, domain, action, execId, request);
+                default -> {
+                    // I3 notification dispatch is handled once per playbook, not as a config write.
+                }
+            }
+        }
+        return writes;
+    }
+
+    private void executeJ1Action(List<Map<String, Object>> writes, int stepIndex, String action,
+                                 String normalizedAction, String execId, SopPlaybookRunRequest request) {
+        if (containsAny(normalizedAction, "withdraw", "提现")) {
+            addDomainWrite(writes, "J1", stepIndex, action, "killswitch.withdraw", "disabled",
+                    "STRING", "admin_killswitch", "J4 withdraw kill switch | execId=" + execId, request);
+        }
+        if (containsAny(normalizedAction, "exchange", "兑换")) {
+            addDomainWrite(writes, "J1", stepIndex, action, "killswitch.exchange", "disabled",
+                    "STRING", "admin_killswitch", "J4 exchange kill switch | execId=" + execId, request);
+        }
+        if (containsAny(normalizedAction, "genesis", "二级市场")) {
+            addDomainWrite(writes, "J1", stepIndex, action, "killswitch.genesis", "disabled",
+                    "STRING", "admin_killswitch", "J4 Genesis kill switch | execId=" + execId, request);
+        }
+        if (containsAny(normalizedAction, "maintenance", "维护", "隔离")) {
+            addDomainWrite(writes, "J1", stepIndex, action, "killswitch.maintenance", "enabled",
+                    "STRING", "admin_killswitch", "J4 maintenance mode | execId=" + execId, request);
+        }
+        if (containsAny(normalizedAction, "restore", "恢复")) {
+            addDomainWrite(writes, "J1", stepIndex, action, "emergency.j4.restore.pending_b1",
+                    String.valueOf(containsAny(normalizedAction, "b1", "覆盖")), "BOOLEAN", GROUP_SOP,
+                    "J4 restore requires B1 check | execId=" + execId, request);
+        }
+    }
+
+    private void executeD2Action(List<Map<String, Object>> writes, int stepIndex, String action,
+                                 String normalizedAction, String execId, SopPlaybookRunRequest request) {
+        if (containsAny(normalizedAction, "rate", "limit", "限流", "降速", "50")) {
+            addDomainWrite(writes, "D2", stepIndex, action, "withdrawal.j4.rate_limit_pct", "50",
+                    "NUMBER", "wallet", "J4 D2 withdrawal rate limit | execId=" + execId, request);
+        }
+        if (containsAny(normalizedAction, "batch", "分批", "放行", "b1")) {
+            addDomainWrite(writes, "D2", stepIndex, action, "withdrawal.j4.batch_release.mode", "B1_CAPACITY",
+                    "STRING", "wallet", "J4 D2 B1-capacity batch release | execId=" + execId, request);
+        }
+    }
+
+    private void executeB1Action(List<Map<String, Object>> writes, int stepIndex, String action,
+                                 String execId, SopPlaybookRunRequest request) {
+        addDomainWrite(writes, "B1", stepIndex, action, "treasury.j4.coverage_check.required", "true",
+                "BOOLEAN", "wallet", "J4 B1 coverage check required | execId=" + execId, request);
+        addDomainWrite(writes, "B1", stepIndex, action, "treasury.j4.coverage_check.execution", execId,
+                "STRING", "wallet", "J4 B1 coverage execution link", request);
+    }
+
+    private void executeC2Action(List<Map<String, Object>> writes, int stepIndex, String action,
+                                 String normalizedAction, String execId, SopPlaybookRunRequest request) {
+        if (containsAny(normalizedAction, "readonly", "只读")) {
+            addDomainWrite(writes, "C2", stepIndex, action, "user.j4.account_readonly.required", "true",
+                    "BOOLEAN", "user", "J4 C2 account readonly action | execId=" + execId, request);
+            return;
+        }
+        addDomainWrite(writes, "C2", stepIndex, action, "user.j4.account_freeze.required", "true",
+                "BOOLEAN", "user", "J4 C2 account freeze action | execId=" + execId, request);
+    }
+
+    private void executeDisclosureAction(List<Map<String, Object>> writes, int stepIndex, String sourceDomain,
+                                         String action, String execId, SopPlaybookRunRequest request) {
+        for (String gate : List.of("withdraw", "exchange", "staking", "genesis")) {
+            addDomainWrite(writes, sourceDomain, stepIndex, action, "disclosure.gate." + gate, "true",
+                    "BOOLEAN", "content", "J4 I4 disclosure gate required | execId=" + execId, request);
+        }
+        addDomainWrite(writes, sourceDomain, stepIndex, action, "disclosure.gate.lastExecution", execId,
+                "STRING", "content", "J4 I4 disclosure gate execution link", request);
+    }
+
+    private void addDomainWrite(List<Map<String, Object>> writes, String domain, int stepIndex, String action,
+                                String configKey, String value, String valueType, String group, String remark,
+                                SopPlaybookRunRequest request) {
+        configFacade.upsertAdminValue(configKey, value, valueType, group, remark);
+        writes.add(map(
+                "domain", domain,
+                "step", stepIndex,
+                "action", action,
+                "configKey", configKey,
+                "value", value,
+                "valueType", valueType,
+                "group", group,
+                "operator", stringValue(request.operator(), "system")));
+    }
+
+    private boolean containsAny(String value, String... candidates) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        for (String candidate : candidates) {
+            if (StringUtils.hasText(candidate) && value.contains(candidate.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void appendExecution(
             PlaybookSeed seed,
             String execId,
             boolean emergency,
             SopPlaybookRunRequest request,
-            Map<String, Object> notificationDispatch) {
+            Map<String, Object> notificationDispatch,
+            List<Map<String, Object>> domainActions) {
         List<Map<String, Object>> rows = new ArrayList<>(executionSeeds());
         Map<String, Object> row = execution(
                 LocalDateTime.now().format(TS),
@@ -421,6 +555,7 @@ public class OpsEmergencyControlService {
                 seed.owner());
         row.put("executionId", execId);
         row.put("notificationDispatch", notificationDispatch);
+        row.put("domainActions", domainActions);
         row.put("rollback", seed.rollback());
         rows.add(0, row);
         if (rows.size() > 50) {
@@ -1047,6 +1182,11 @@ public class OpsEmergencyControlService {
             return String.valueOf(value);
         }
         return fallback;
+    }
+
+    private String sanitizeConfigPart(String value) {
+        String normalized = stringValue(value, "missing").replaceAll("[^A-Za-z0-9_.-]", "_");
+        return normalized.length() > 80 ? normalized.substring(0, 80) : normalized;
     }
 
     private String firstText(Object... values) {

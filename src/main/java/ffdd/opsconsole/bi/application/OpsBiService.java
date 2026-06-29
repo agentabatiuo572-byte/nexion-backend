@@ -19,6 +19,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.time.LocalDateTime;
@@ -38,6 +39,7 @@ public class OpsBiService {
 
     private final BiReportRepository reportRepository;
     private final GrowthRhythmFacade growthRhythmFacade;
+    private final TreasuryLedgerRepository ledgerRepository;
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -70,7 +72,10 @@ public class OpsBiService {
     }
 
     public ApiResult<Map<String, Object>> financeOverview() {
-        return ApiResult.ok(reportRepository.dashboard("L3"));
+        Map<String, Object> response = new LinkedHashMap<>(reportRepository.dashboard("L3"));
+        response.put("ledgerLive", ledgerLiveSummary());
+        response.put("sources", appendSources(response.get("sources"), "nx_wallet_ledger"));
+        return ApiResult.ok(response);
     }
 
     public ApiResult<Map<String, Object>> operationsOverview() {
@@ -80,8 +85,9 @@ public class OpsBiService {
     public ApiResult<Map<String, Object>> exportOverview() {
         Map<String, Object> response = new LinkedHashMap<>(reportRepository.dashboard("L5"));
         response.put("summary", reportRepository.overview());
+        response.put("ledgerLive", ledgerLiveSummary());
         response.put("reports", reportRepository.reports(null, List.of(), 1, 20));
-        response.put("sources", List.of("nx_admin_bi_dashboard_payload", "nx_admin_fourth_batch_report", "nx_audit_log"));
+        response.put("sources", List.of("nx_admin_bi_dashboard_payload", "nx_admin_fourth_batch_report", "nx_audit_log", "nx_wallet_ledger"));
         return ApiResult.ok(response);
     }
 
@@ -312,7 +318,7 @@ public class OpsBiService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         String body = "\ufeff"
-                + csvRow(List.of("report_id", "name", "type", "cycle", "format", "scope", "fields", "row_count", "contains_pii", "masking_policy", "status"))
+                + csvRow(List.of("report_id", "name", "type", "cycle", "format", "scope", "fields", "row_count", "ledger_bill_count", "contains_pii", "masking_policy", "status"))
                 + csvRow(List.of(
                         report.reportId(),
                         report.name(),
@@ -322,11 +328,38 @@ public class OpsBiService {
                         report.scope(),
                         report.fields(),
                         String.valueOf(report.rowCount()),
+                        String.valueOf(ledgerRepository.countLedgerBills(null, null, null)),
                         String.valueOf(Boolean.TRUE.equals(report.containsPii())),
                         report.maskingPolicy(),
                         report.status()));
         String fileName = report.reportId().toLowerCase(Locale.ROOT) + ".csv";
+        auditResource("L_BI_REPORT_DOWNLOAD_FILE", "BI_REPORT", report.reportId(), "system",
+                Boolean.TRUE.equals(report.containsPii()) ? "HIGH" : "MEDIUM", Map.of(
+                "reportId", report.reportId(),
+                "type", report.type(),
+                "ledgerBillCount", ledgerRepository.countLedgerBills(null, null, null),
+                "maskingPolicy", report.maskingPolicy()));
         return ApiResult.ok(new BiReportDownloadFile(fileName, "text/csv;charset=UTF-8", body.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private Map<String, Object> ledgerLiveSummary() {
+        return Map.of(
+                "totalBills", ledgerRepository.countLedgerBills(null, null, null),
+                "refundBills", ledgerRepository.countLedgerBills("REFUND", null, null),
+                "teamCommissionBills", ledgerRepository.countLedgerBills("TEAM_COMMISSION", null, null),
+                "genesisDividendBills", ledgerRepository.countLedgerBills("GENESIS_DIVIDEND", null, null),
+                "earningBills", ledgerRepository.countLedgerBills("EARNING", null, null));
+    }
+
+    private List<Object> appendSources(Object rawSources, String source) {
+        List<Object> sources = new ArrayList<>();
+        if (rawSources instanceof List<?> values) {
+            sources.addAll(values);
+        }
+        if (!sources.contains(source)) {
+            sources.add(source);
+        }
+        return sources;
     }
 
     private String nextStatus(BiReportView report, String action) {

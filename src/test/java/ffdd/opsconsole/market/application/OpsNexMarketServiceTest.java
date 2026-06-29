@@ -29,11 +29,13 @@ import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +47,7 @@ class OpsNexMarketServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeNexMarketRepository marketRepository = new FakeNexMarketRepository();
+    private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsNexMarketService service = service();
@@ -54,6 +57,7 @@ class OpsNexMarketServiceTest {
                 configFacade,
                 coverageFacade,
                 marketRepository,
+                ledgerPostingFacade,
                 auditLogService,
                 new ObjectMapper(),
                 clock);
@@ -125,6 +129,20 @@ class OpsNexMarketServiceTest {
         assertThat((List<?>) result.getData().get("queue")).hasSize(1);
         assertThat(detailMap(result.getData().get("swap"))).containsEntry("enabled", false);
         assertThat((List<?>) result.getData().get("geoBlocked")).isNotEmpty();
+    }
+
+    @Test
+    void exchangeOverviewReadsI4DisclosureGateAsBlocked() {
+        configFacade.values.put("disclosure.gate.exchange", "true");
+
+        ApiResult<Map<String, Object>> result = service.exchangeOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(detailMap(result.getData().get("swap")))
+                .containsEntry("enabled", false)
+                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+        assertThat(detailMap(result.getData().get("disclosureGate")))
+                .containsEntry("exchange", true);
     }
 
     @Test
@@ -474,6 +492,18 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void genesisOverviewReadsJ1CanonicalKillSwitchKey() {
+        configFacade.values.put("killswitch.genesis", "disabled");
+
+        ApiResult<Map<String, Object>> result = service.genesisOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(detailMap(result.getData().get("market")))
+                .containsEntry("enabled", false)
+                .containsEntry("configKey", "killswitch.genesis");
+    }
+
+    @Test
     void genesisNodeLedgerIsPaginated() {
         ApiResult<Map<String, Object>> firstPage = service.genesisOverview(1, 2);
 
@@ -561,6 +591,14 @@ class OpsNexMarketServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("G.genesis.rerun.GD-0611", "done");
+        assertThat(ledgerPostingFacade.entries).hasSize(1);
+        assertThat(ledgerPostingFacade.entries.get(0))
+                .containsEntry("bizNo", "G4-DIVIDEND-GD-0611-RERUN")
+                .containsEntry("userId", 0L)
+                .containsEntry("bizType", "GENESIS_DIVIDEND")
+                .containsEntry("asset", "USDT")
+                .containsEntry("direction", "IN")
+                .containsEntry("status", "PENDING");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -586,6 +624,33 @@ class OpsNexMarketServiceTest {
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+    }
+
+    @Test
+    void stakingOverviewReadsJ1CanonicalKillSwitchKey() {
+        configFacade.values.put("killswitch.staking", "disabled");
+
+        ApiResult<Map<String, Object>> result = service.stakingOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(detailMap(result.getData().get("gate")))
+                .containsEntry("enabled", false)
+                .containsEntry("configKey", "killswitch.staking");
+    }
+
+    @Test
+    void stakingOverviewReadsI4DisclosureGateAsBlocked() {
+        configFacade.values.put("disclosure.gate.staking", "true");
+
+        ApiResult<Map<String, Object>> result = service.stakingOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(detailMap(result.getData().get("stats"))).containsEntry("stakingGateOn", false);
+        assertThat(detailMap(result.getData().get("gate")))
+                .containsEntry("enabled", false)
+                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+        assertThat(detailMap(result.getData().get("disclosureGate")))
+                .containsEntry("staking", true);
     }
 
     @Test
@@ -768,6 +833,24 @@ class OpsNexMarketServiceTest {
         @Override
         public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
             values.put(configKey, configValue);
+        }
+    }
+
+    private static final class FakeTreasuryLedgerPostingFacade implements TreasuryLedgerPostingFacade {
+        private final List<Map<String, Object>> entries = new ArrayList<>();
+
+        @Override
+        public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                                    BigDecimal amount, String status, String remark) {
+            entries.add(Map.of(
+                    "bizNo", bizNo,
+                    "userId", userId,
+                    "bizType", bizType,
+                    "asset", asset,
+                    "direction", direction,
+                    "amount", amount,
+                    "status", status,
+                    "remark", remark));
         }
     }
 

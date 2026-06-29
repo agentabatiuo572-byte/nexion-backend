@@ -8,6 +8,7 @@ import ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.stereotype.Repository;
@@ -124,6 +125,29 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                                BigDecimal amount, String status, String remark) {
+        Long safeUserId = userId == null ? 0L : userId;
+        String normalizedAsset = upper(asset, "USDT");
+        String normalizedDirection = upper(direction, "IN");
+        BigDecimal safeAmount = amount == null ? BigDecimal.ZERO : amount.abs();
+        BigDecimal current = currentUserBalance(safeUserId, normalizedAsset).orElse(BigDecimal.ZERO);
+        BigDecimal balanceAfter = "OUT".equals(normalizedDirection)
+                ? current.subtract(safeAmount)
+                : current.add(safeAmount);
+        mapper.insertLedgerEntry(
+                trim(bizNo),
+                safeUserId,
+                upper(bizType, "ADJUSTMENT"),
+                normalizedAsset,
+                normalizedDirection,
+                safeAmount,
+                balanceAfter,
+                upper(status, "SUCCESS"),
+                trim(remark));
+    }
+
+    @Override
     public void seedD4FallbackData(Map<String, Long> userIds) {
         seedLedger(userIds.get("usr_77D4"), "D4-SEED-DEP-7741", "DEPOSIT", "USDT", "IN",
                 "1280.00", "2260.00", "SUCCESS", "D1 fallback topup credited", 12);
@@ -163,5 +187,12 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
 
     private String trim(String value) {
         return value == null ? null : value.trim();
+    }
+
+    private String upper(String value, String fallback) {
+        String trimmed = trim(value);
+        return trimmed == null || trimmed.isBlank()
+                ? fallback
+                : trimmed.toUpperCase(Locale.ROOT);
     }
 }

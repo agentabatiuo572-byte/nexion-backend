@@ -16,7 +16,9 @@ import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,9 +29,10 @@ import org.mockito.ArgumentCaptor;
 class OpsGrowthServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
+    private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsGrowthService service =
-            new OpsGrowthService(configFacade, coverageFacade, auditLogService, new ObjectMapper());
+            new OpsGrowthService(configFacade, coverageFacade, ledgerPostingFacade, auditLogService, new ObjectMapper());
 
     @Test
     void checkInUsesNexAndKeepsPointsSunset() {
@@ -152,6 +155,49 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo("TRIAL_SESSION_ALREADY_TERMINAL");
+    }
+
+    @Test
+    void chargeTrialSessionPostsD4LedgerEntry() {
+        configFacade.values.put("growth.trial.param.price", "$1,299");
+
+        ApiResult<Map<String, Object>> result = service.chargeTrialSession(
+                "idem-h2-charge",
+                "usr_9921",
+                new GrowthConfigUpdateRequest("charge", "redeemed", "force charge", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(ledgerPostingFacade.entries).hasSize(1);
+        Map<String, Object> entry = ledgerPostingFacade.entries.get(0);
+        assertThat(entry)
+                .containsEntry("bizNo", "H2-TRIAL-CHARGE-usr_9921")
+                .containsEntry("userId", 9921L)
+                .containsEntry("bizType", "TRIAL_CHARGE")
+                .containsEntry("asset", "USDT")
+                .containsEntry("direction", "OUT")
+                .containsEntry("status", "SUCCESS");
+        assertThat((BigDecimal) entry.get("amount")).isEqualByComparingTo("1299");
+    }
+
+    @Test
+    void j1TrialKillSwitchBlocksTrialChargeAndIsVisibleInOverview() {
+        configFacade.values.put("killswitch.trial", "disabled");
+
+        ApiResult<Map<String, Object>> overview = service.trials();
+        ApiResult<Map<String, Object>> result = service.chargeTrialSession(
+                "idem-h2-charge-blocked",
+                "usr_9921",
+                new GrowthConfigUpdateRequest("charge", "redeemed", "incident freeze", "superadmin"));
+
+        assertThat(overview.getCode()).isZero();
+        assertThat(detailMap(overview.getData().get("j1TrialGate")))
+                .containsEntry("enabled", false)
+                .containsEntry("blockedBy", "J1_TRIAL_KILL_SWITCH")
+                .containsEntry("configKey", "killswitch.trial");
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TRIAL_KILL_SWITCH_DISABLED");
+        assertThat(configFacade.values).containsEntry("growth.trial.session.usr_9921.state", "active");
+        assertThat(ledgerPostingFacade.entries).isEmpty();
     }
 
     @Test
@@ -323,6 +369,17 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("EVENT_FEATURED_UNIQUE_VIOLATION");
+    }
+
+    @Test
+    void disabledBooleanAliasTurnsOffEventFeatured() {
+        ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
+                "idem-h4-featured-off",
+                "pro-7d",
+                new GrowthConfigUpdateRequest("featured", "disabled", "pause hero placement", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.event.pro-7d.featured", "false");
     }
 
     @Test
@@ -673,6 +730,24 @@ class OpsGrowthServiceTest {
         @Override
         public TreasuryCoverageSnapshot snapshot() {
             return snapshot;
+        }
+    }
+
+    private static final class FakeTreasuryLedgerPostingFacade implements TreasuryLedgerPostingFacade {
+        private final List<Map<String, Object>> entries = new ArrayList<>();
+
+        @Override
+        public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                                    BigDecimal amount, String status, String remark) {
+            entries.add(Map.of(
+                    "bizNo", bizNo,
+                    "userId", userId,
+                    "bizType", bizType,
+                    "asset", asset,
+                    "direction", direction,
+                    "amount", amount,
+                    "status", status,
+                    "remark", remark));
         }
     }
 }

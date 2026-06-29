@@ -16,6 +16,7 @@ import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.util.ArrayList;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -124,6 +125,7 @@ public class OpsTeamService {
 
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
+    private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -433,6 +435,7 @@ public class OpsTeamService {
         String configKey = uiConfigKey(key);
         String oldValue = configFacade.activeValue(configKey).orElse("");
         configFacade.upsertAdminValue(configKey, value, "TEXT", "team", "F domain UI-backed policy state");
+        postCommissionLedgerIfStatusChanged(key, value);
         audit("F_TEAM_UI_CONFIG_CHANGED", configKey, request.operator(), Map.of(
                 "key", key,
                 "oldValue", oldValue,
@@ -442,6 +445,73 @@ public class OpsTeamService {
         Map<String, Object> response = overview().getData();
         response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", value));
         return ApiResult.ok(response);
+    }
+
+    private void postCommissionLedgerIfStatusChanged(String key, String value) {
+        Optional<String> eventId = commissionStatusEventId(key);
+        if (eventId.isEmpty()) {
+            return;
+        }
+        seedF5CommissionAuditIfMissing();
+        Map<String, Object> event = commissionEvents().stream()
+                .filter(row -> eventId.get().equals(row.get("id")))
+                .findFirst()
+                .orElse(null);
+        if (event == null) {
+            return;
+        }
+        BigDecimal amount = decimalValue(event.get("amount"), BigDecimal.ZERO);
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        String state = normalizeUiValue(value);
+        ledgerPostingFacade.postLedgerEntry(
+                "F5-COMMISSION-" + eventId.get() + "-" + ledgerStateCode(state),
+                userIdFromText(String.valueOf(event.get("user"))),
+                "TEAM_COMMISSION",
+                String.valueOf(event.getOrDefault("currency", "USDT")),
+                commissionLedgerDirection(state),
+                amount,
+                commissionLedgerStatus(state),
+                "F5 commission status disposition | eventId=" + eventId.get() + " | state=" + state);
+    }
+
+    private Optional<String> commissionStatusEventId(String key) {
+        String prefix = "F.commission.";
+        String suffix = ".status";
+        if (!key.startsWith(prefix) || !key.endsWith(suffix)) {
+            return Optional.empty();
+        }
+        return Optional.of(key.substring(prefix.length(), key.length() - suffix.length()));
+    }
+
+    private String ledgerStateCode(String state) {
+        return normalizeUiValue(state).toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", "_");
+    }
+
+    private String commissionLedgerDirection(String state) {
+        String normalized = normalizeUiValue(state).toLowerCase(Locale.ROOT);
+        return "unlocked".equals(normalized) || normalized.contains("可提") ? "IN" : "OUT";
+    }
+
+    private String commissionLedgerStatus(String state) {
+        String normalized = normalizeUiValue(state).toLowerCase(Locale.ROOT);
+        return "unlocked".equals(normalized) || normalized.contains("可提") ? "PENDING" : "SUCCESS";
+    }
+
+    private Long userIdFromText(String value) {
+        if (!StringUtils.hasText(value)) {
+            return 0L;
+        }
+        String digits = value.replaceAll("\\D+", "");
+        if (!StringUtils.hasText(digits)) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(digits);
+        } catch (NumberFormatException ex) {
+            return 0L;
+        }
     }
 
     private Map<String, Object> commissionPolicy() {

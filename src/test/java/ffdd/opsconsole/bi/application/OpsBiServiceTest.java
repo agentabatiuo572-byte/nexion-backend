@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
@@ -18,8 +19,12 @@ import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,10 +34,11 @@ import org.mockito.ArgumentCaptor;
 
 class OpsBiServiceTest {
     private final FakeBiReportRepository reportRepository = new FakeBiReportRepository();
+    private final FakeTreasuryLedgerRepository ledgerRepository = new FakeTreasuryLedgerRepository();
     private GrowthRhythmSnapshot h1Snapshot = h1Snapshot(12, 7, "P3");
     private final GrowthRhythmFacade growthRhythmFacade = () -> h1Snapshot;
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, auditLogService);
+    private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, ledgerRepository, auditLogService);
 
     @Test
     void overviewDeclaresSensitiveExportRules() {
@@ -85,6 +91,27 @@ class OpsBiServiceTest {
         assertThat(l5.getData().toString()).contains("数据库导出安全参数");
         assertThat(l6.getData()).containsEntry("trackedCount", 1);
         assertThat(l6.getData().get("activity").toString()).contains("pages/index/index");
+    }
+
+    @Test
+    void financeOverviewReadsLiveD4LedgerCounts() {
+        ledgerRepository.counts.put(null, 12L);
+        ledgerRepository.counts.put("REFUND", 2L);
+        ledgerRepository.counts.put("TEAM_COMMISSION", 3L);
+        ledgerRepository.counts.put("GENESIS_DIVIDEND", 1L);
+        ledgerRepository.counts.put("EARNING", 4L);
+
+        ApiResult<Map<String, Object>> result = service.financeOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("ledgerLive"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("totalBills", 12L)
+                .containsEntry("refundBills", 2L)
+                .containsEntry("teamCommissionBills", 3L)
+                .containsEntry("genesisDividendBills", 1L)
+                .containsEntry("earningBills", 4L);
+        assertThat(result.getData().get("sources").toString()).contains("nx_wallet_ledger");
     }
 
     @Test
@@ -175,6 +202,37 @@ class OpsBiServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
 
+    @Test
+    void downloadFileUsesLiveLedgerSummaryAndAudits() {
+        reportRepository.report = new BiReportView(
+                "EXP-READY",
+                "Bill CSV",
+                "DetailExport",
+                "OnDemand",
+                "CSV",
+                "full bills",
+                "masked PII",
+                100L,
+                true,
+                "masked",
+                "READY",
+                "confirm",
+                null,
+                null,
+                null);
+        ledgerRepository.counts.put(null, 12L);
+
+        ApiResult<BiReportDownloadFile> result = service.downloadFile("EXP-READY");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(new String(result.getData().body(), StandardCharsets.UTF_8))
+                .contains("ledger_bill_count")
+                .contains("12");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("L_BI_REPORT_DOWNLOAD_FILE");
+    }
+
     private GrowthRhythmSnapshot h1Snapshot(int totalMonths, int currentMonth, String currentPhase) {
         return new GrowthRhythmSnapshot(
                 totalMonths,
@@ -190,6 +248,125 @@ class OpsBiServiceTest {
                 new BigDecimal("100"),
                 7,
                 List.of("H1.rhythm.currentMonth"));
+    }
+
+    private static final class FakeTreasuryLedgerRepository implements TreasuryLedgerRepository {
+        private final Map<String, Long> counts = new LinkedHashMap<>();
+        private final List<TreasuryLedgerBillView> bills = new ArrayList<>();
+
+        @Override
+        public long countDeposits(LocalDateTime since, String status) {
+            return counts.getOrDefault("DEPOSIT", 0L);
+        }
+
+        @Override
+        public long countWithdrawals(LocalDateTime since, String status) {
+            return counts.getOrDefault("WITHDRAWAL", 0L);
+        }
+
+        @Override
+        public long countExchanges(LocalDateTime since, String status) {
+            return counts.getOrDefault("EXCHANGE", 0L);
+        }
+
+        @Override
+        public long countLedgers(LocalDateTime since, String direction) {
+            return counts.getOrDefault(direction, 0L);
+        }
+
+        @Override
+        public BigDecimal sumUsdtAvailable() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumPendingWithdraw() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumNexAvailable() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumActiveStakingPrincipalUsdt() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumActiveStakingInterestUsdt() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumActiveNexLocked() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumActiveNexReward() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumActiveWithdrawalQueueUsdt() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public long countActiveWithdrawalQueue() {
+            return 0;
+        }
+
+        @Override
+        public BigDecimal avgActiveWithdrawalQueueRiskScore() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumPendingCommissionUsdt() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt) {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public long countLedgerBills(String type, Long userId, String keyword) {
+            return counts.getOrDefault(type, counts.getOrDefault(null, 0L));
+        }
+
+        @Override
+        public List<TreasuryLedgerBillView> pageLedgerBills(String type, Long userId, String keyword, int pageSize, int offset) {
+            return bills.stream().skip(offset).limit(pageSize).toList();
+        }
+
+        @Override
+        public List<TreasuryLedgerBillView> userLedgerRows(Long userId, int limit) {
+            return bills.stream().filter(row -> row.userId().equals(userId)).limit(limit).toList();
+        }
+
+        @Override
+        public Optional<BigDecimal> currentUserBalance(Long userId, String asset) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void createLedgerAdjustment(String adjustmentNo, Long userId, String asset, String direction,
+                                           BigDecimal amount, String relatedBizNo, String reason, String operator) {
+        }
+
+        @Override
+        public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                                    BigDecimal amount, String status, String remark) {
+        }
+
+        @Override
+        public void seedD4FallbackData(Map<String, Long> userIds) {
+        }
     }
 
     private static final class FakeBiReportRepository implements BiReportRepository {

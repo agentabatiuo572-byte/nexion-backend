@@ -13,7 +13,9 @@ import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,8 +26,9 @@ import org.mockito.ArgumentCaptor;
 class OpsTeamServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
+    private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsTeamService service = new OpsTeamService(configFacade, coverageFacade, auditLogService);
+    private final OpsTeamService service = new OpsTeamService(configFacade, coverageFacade, ledgerPostingFacade, auditLogService);
 
     @Test
     void overviewDeclaresSunsetExclusions() {
@@ -400,6 +403,14 @@ class OpsTeamServiceTest {
                 "idem-f-commission-status",
                 new TeamCommissionConfigUpdateRequest("F.commission.CM-7781.status", "frozen", "freeze abnormal commission", "risk-ops"));
 
+        assertThat(ledgerPostingFacade.entries).hasSize(1);
+        assertThat(ledgerPostingFacade.entries.get(0))
+                .containsEntry("bizNo", "F5-COMMISSION-CM-7781-FROZEN")
+                .containsEntry("bizType", "TEAM_COMMISSION")
+                .containsEntry("asset", "USDT")
+                .containsEntry("direction", "OUT")
+                .containsEntry("status", "SUCCESS");
+
         ApiResult<Map<String, Object>> result = service.commissions();
 
         assertThat(result.getCode()).isZero();
@@ -459,6 +470,24 @@ class OpsTeamServiceTest {
         @Override
         public TreasuryCoverageSnapshot snapshot() {
             return snapshot;
+        }
+    }
+
+    private static final class FakeTreasuryLedgerPostingFacade implements TreasuryLedgerPostingFacade {
+        private final List<Map<String, Object>> entries = new ArrayList<>();
+
+        @Override
+        public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                                    BigDecimal amount, String status, String remark) {
+            entries.add(Map.of(
+                    "bizNo", bizNo,
+                    "userId", userId,
+                    "bizType", bizType,
+                    "asset", asset,
+                    "direction", direction,
+                    "amount", amount,
+                    "status", status,
+                    "remark", remark));
         }
     }
 }

@@ -16,6 +16,7 @@ import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -60,6 +61,8 @@ public class OpsGrowthService {
     private static final String TRIAL_PARAM_PREFIX = "growth.trial.param.";
     private static final String TRIAL_SESSION_PREFIX = "growth.trial.session.";
     private static final String TRIAL_AUTO_PUSH_KILLED_KEY = "growth.trial.auto_push_killed";
+    private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
+    private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
     private static final String QUEST_PREFIX = "growth.quest.";
     private static final String EVENT_PREFIX = "growth.event.";
     private static final String WHEEL_PREFIX = "growth.wheel.";
@@ -118,6 +121,7 @@ public class OpsGrowthService {
 
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
+    private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
     private final ObjectMapper objectMapper;
 
@@ -355,12 +359,14 @@ public class OpsGrowthService {
         response.put("states", trialStates());
         response.put("sessions", trialSessions());
         response.put("autoPushKilled", trialAutoPushKilled());
+        response.put("j1TrialGate", trialKillSwitch());
         response.put("serverOnlyFields", List.of("failRate"));
         response.put("coverage", coverage());
         response.put("sources", List.of(
                 "nx_config_item:" + TRIAL_PARAM_PREFIX + "*",
                 "nx_config_item:" + TRIAL_SESSION_PREFIX + "*",
-                "nx_config_item:" + TRIAL_AUTO_PUSH_KILLED_KEY));
+                "nx_config_item:" + TRIAL_AUTO_PUSH_KILLED_KEY,
+                "nx_config_item:" + TRIAL_KILLSWITCH_KEY));
         return ApiResult.ok(response);
     }
 
@@ -434,6 +440,9 @@ public class OpsGrowthService {
             return guard;
         }
         String sid = normalizeTrialSessionId(sessionId);
+        if (!trialKillSwitchEnabled()) {
+            return validation("TRIAL_KILL_SWITCH_DISABLED");
+        }
         String state = trialSessionState(sid);
         if (TRIAL_TERMINAL_STATES.contains(state)) {
             return invalidState("TRIAL_SESSION_ALREADY_TERMINAL");
@@ -442,6 +451,15 @@ public class OpsGrowthService {
         String timeKey = trialSessionConfigKey(sid, "charged_at");
         configFacade.upsertAdminValue(stateKey, "redeemed", "STRING", "growth", "H2 trial session state");
         configFacade.upsertAdminValue(timeKey, Instant.now().toString(), "STRING", "growth", "H2 trial session charged time");
+        ledgerPostingFacade.postLedgerEntry(
+                "H2-TRIAL-CHARGE-" + sid,
+                userIdFromToken(sid),
+                "TRIAL_CHARGE",
+                "USDT",
+                "OUT",
+                trialChargeAmount(),
+                "SUCCESS",
+                "H2 trial session charged | sessionId=" + sid);
         audit("H2_TRIAL_SESSION_CHARGED", "TRIAL_SESSION", sid, request.operator(), Map.of(
                 "sessionId", sid,
                 "oldState", state,
@@ -1494,6 +1512,30 @@ public class OpsGrowthService {
 
     private boolean trialAutoPushKilled() {
         return Boolean.TRUE.equals(parseBooleanValue(configFacade.activeValue(TRIAL_AUTO_PUSH_KILLED_KEY).orElse("false")));
+    }
+
+    private Map<String, Object> trialKillSwitch() {
+        boolean enabled = trialKillSwitchEnabled();
+        Map<String, Object> gate = new LinkedHashMap<>();
+        gate.put("ownerDomain", "J1");
+        gate.put("configKey", TRIAL_KILLSWITCH_KEY);
+        gate.put("enabled", enabled);
+        gate.put("blockedBy", enabled ? null : "J1_TRIAL_KILL_SWITCH");
+        return gate;
+    }
+
+    private boolean trialKillSwitchEnabled() {
+        return configFacade.activeValue(TRIAL_KILLSWITCH_KEY)
+                .or(() -> configFacade.activeValue(TRIAL_LEGACY_KILLSWITCH_KEY))
+                .map(value -> {
+                    String normalized = value.trim().toLowerCase(Locale.ROOT);
+                    return "enabled".equals(normalized)
+                            || "enable".equals(normalized)
+                            || "on".equals(normalized)
+                            || "true".equals(normalized)
+                            || "1".equals(normalized);
+                })
+                .orElse(true);
     }
 
     private String normalizeTrialParamKey(String key) {
@@ -3132,8 +3174,8 @@ public class OpsGrowthService {
             return null;
         }
         return switch (raw.trim().toLowerCase(Locale.ROOT)) {
-            case "true", "1", "yes", "on", "enabled", "disabled" -> true;
-            case "false", "0", "no", "off", "active" -> false;
+            case "true", "1", "yes", "on", "enabled", "active" -> true;
+            case "false", "0", "no", "off", "disabled", "inactive" -> false;
             default -> null;
         };
     }
@@ -3224,6 +3266,25 @@ public class OpsGrowthService {
 
     private BigDecimal parseMoney(String value) {
         return numericToken(value.replace("$", ""));
+    }
+
+    private BigDecimal trialChargeAmount() {
+        return parseMoney(trialParamCurrentValue("price", "$1,299"));
+    }
+
+    private Long userIdFromToken(String token) {
+        if (!StringUtils.hasText(token)) {
+            return 0L;
+        }
+        String digits = token.replaceAll("\\D+", "");
+        if (!StringUtils.hasText(digits)) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(digits);
+        } catch (NumberFormatException ex) {
+            return 0L;
+        }
     }
 
     private String normalizeEarnMilestoneKey(String key) {

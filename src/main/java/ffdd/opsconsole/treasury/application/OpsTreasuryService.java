@@ -229,8 +229,8 @@ public class OpsTreasuryService {
         BigDecimal runRisk = hasRunRisk
                 ? threshold(request.runRiskPct(), "runRiskPct", BigDecimal.ZERO, BigDecimal.valueOf(100))
                 : configDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
-        if (redline.compareTo(healthy) > 0) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_NOT_EXCEED_HEALTHY");
+        if (redline.compareTo(healthy) >= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_BE_BELOW_HEALTHY");
         }
 
         Map<String, Object> changed = new LinkedHashMap<>();

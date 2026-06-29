@@ -191,6 +191,20 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    void thresholdUpdateRejectsEqualRedlineAndHealthy() {
+        TreasuryThresholdRequest request = new TreasuryThresholdRequest(
+                new BigDecimal("95"), new BigDecimal("95"), null, "risk policy", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.updateThresholds("idem-threshold", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("REDLINE_MUST_BE_BELOW_HEALTHY");
+        assertThat(configFacade.values)
+                .doesNotContainKeys("wallet.dual-ledger.redline-pct", "wallet.dual-ledger.healthy-pct");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void ledgerBillsReturnsServerPage() {
         ledgerRepository.bills.add(new TreasuryLedgerBillView(
                 1L,
@@ -468,6 +482,26 @@ class OpsTreasuryServiceTest {
                     "relatedBizNo", relatedBizNo,
                     "reason", reason,
                     "operator", operator));
+        }
+
+        @Override
+        public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                                    BigDecimal amount, String status, String remark) {
+            bills.add(new TreasuryLedgerBillView(
+                    (long) bills.size() + 1,
+                    userId,
+                    "U" + String.format("%08d", userId),
+                    "账单用户",
+                    bizNo,
+                    bizType,
+                    asset,
+                    direction,
+                    amount,
+                    currentUserBalance(userId, asset).orElse(BigDecimal.ZERO).add(amount),
+                    status,
+                    remark,
+                    LocalDateTime.now(CLOCK),
+                    LocalDateTime.now(CLOCK)));
         }
 
         @Override

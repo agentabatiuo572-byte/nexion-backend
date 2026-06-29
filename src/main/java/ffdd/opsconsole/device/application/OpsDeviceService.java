@@ -47,6 +47,7 @@ import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -343,6 +344,7 @@ public class OpsDeviceService {
     private final DeviceOpsRepository deviceRepository;
     private final DeviceCatalogRepository catalogRepository;
     private final PlatformConfigFacade configFacade;
+    private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
 
@@ -1660,6 +1662,9 @@ public class OpsDeviceService {
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         DeviceOrderView updated = catalogRepository.updateOrderState(normalizedOrderNo, toState, LocalDateTime.now(clock)).orElse(before);
+        if ("E4_ORDER_REFUNDED".equals(auditAction)) {
+            postRefundLedger(normalizedOrderNo, before);
+        }
         audit(auditAction, "DEVICE_ORDER", normalizedOrderNo, request.operator(), detail(
                 "orderNo", normalizedOrderNo,
                 "fromState", fromState,
@@ -1668,6 +1673,37 @@ public class OpsDeviceService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
+    }
+
+    private void postRefundLedger(String orderNo, DeviceOrderView before) {
+        BigDecimal amount = before.amount() == null ? BigDecimal.ZERO : before.amount();
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        ledgerPostingFacade.postLedgerEntry(
+                "E4-REFUND-" + orderNo,
+                parseUserId(before.userNo()),
+                "REFUND",
+                "USDT",
+                "IN",
+                amount,
+                "SUCCESS",
+                "E4 order refund reversal | orderNo=" + orderNo);
+    }
+
+    private Long parseUserId(String userNo) {
+        if (!StringUtils.hasText(userNo)) {
+            return 0L;
+        }
+        String digits = userNo.replaceAll("\\D+", "");
+        if (!StringUtils.hasText(digits)) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(digits);
+        } catch (NumberFormatException ex) {
+            return 0L;
+        }
     }
 
     private boolean canMoveOrder(String fromState, String toState) {

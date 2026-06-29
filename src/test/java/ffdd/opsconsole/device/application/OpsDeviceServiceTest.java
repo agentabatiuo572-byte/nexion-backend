@@ -49,6 +49,7 @@ import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -68,12 +69,13 @@ class OpsDeviceServiceTest {
     private final FakeDeviceOpsRepository deviceRepository = new FakeDeviceOpsRepository();
     private final FakeDeviceCatalogRepository catalogRepository = new FakeDeviceCatalogRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsDeviceService service = service();
 
     private OpsDeviceService service() {
-        return new OpsDeviceService(deviceRepository, catalogRepository, configFacade, auditLogService, clock);
+        return new OpsDeviceService(deviceRepository, catalogRepository, configFacade, ledgerPostingFacade, auditLogService, clock);
     }
 
     @Test
@@ -786,6 +788,33 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.name());
+    }
+
+    @Test
+    void refundOrderPostsD4ReversalLedgerAndAudits() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<DeviceOrderView> result = service.refundOrder(
+                "OD-1",
+                "idem-order-refund",
+                new DeviceOrderActionRequest(null, "customer refund approved", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().state()).isEqualTo("refunded");
+        assertThat(ledgerPostingFacade.entries).hasSize(1);
+        Map<String, Object> entry = ledgerPostingFacade.entries.get(0);
+        assertThat(entry)
+                .containsEntry("bizNo", "E4-REFUND-OD-1")
+                .containsEntry("userId", 1L)
+                .containsEntry("bizType", "REFUND")
+                .containsEntry("asset", "USDT")
+                .containsEntry("direction", "IN")
+                .containsEntry("status", "SUCCESS");
+        assertThat((BigDecimal) entry.get("amount")).isEqualByComparingTo("1299");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_REFUNDED");
     }
 
     @Test
@@ -1938,6 +1967,24 @@ class OpsDeviceServiceTest {
                 });
             }
             return matched;
+        }
+    }
+
+    private static final class FakeTreasuryLedgerPostingFacade implements TreasuryLedgerPostingFacade {
+        private final List<Map<String, Object>> entries = new ArrayList<>();
+
+        @Override
+        public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                                    BigDecimal amount, String status, String remark) {
+            entries.add(Map.of(
+                    "bizNo", bizNo,
+                    "userId", userId,
+                    "bizType", bizType,
+                    "asset", asset,
+                    "direction", direction,
+                    "amount", amount,
+                    "status", status,
+                    "remark", remark));
         }
     }
 }

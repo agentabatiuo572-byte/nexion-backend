@@ -201,6 +201,69 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void reviewWithdrawalRejectsApproveWhenB1CoverageBelowRedline() {
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(withdrawalRepository.lastStatus).isNull();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_BLOCKED");
+        assertThat(captor.getValue().getResult()).isEqualTo("BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("blockedReason", OpsErrorCode.COVERAGE_BELOW_REDLINE.name())
+                .containsEntry("coverageRatio", new BigDecimal("80.00"))
+                .containsEntry("redlinePct", new BigDecimal("85.00"))
+                .containsEntry("statusUnchanged", true);
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenWithdrawKillSwitchDisabled() {
+        configFacade.values.put("killswitch.withdraw", "disabled");
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_KILL_SWITCH_DISABLED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("blockedReason", "WITHDRAWAL_KILL_SWITCH_DISABLED")
+                .containsEntry("statusUnchanged", true);
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenI4DisclosureGateActive() {
+        configFacade.values.put("disclosure.gate.withdraw", "true");
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_DISCLOSURE_REACK_REQUIRED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("blockedReason", "WITHDRAWAL_DISCLOSURE_REACK_REQUIRED")
+                .containsEntry("statusUnchanged", true);
+    }
+
+    @Test
     void reviewWithdrawalAllowsDelayWhenD5DailyLimitExceededAndAudits() {
         assertOverLimitReviewActionAudits("DELAY", "DELAYED");
     }

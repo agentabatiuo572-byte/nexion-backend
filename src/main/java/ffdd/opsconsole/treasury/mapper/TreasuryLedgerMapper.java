@@ -52,6 +52,37 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                            @Param("remark") String remark,
                            @Param("minutesAgo") int minutesAgo);
 
+    @Insert("""
+            INSERT INTO nx_wallet_ledger (
+                user_id, biz_no, biz_type, asset, direction, amount, balance_after, status, remark,
+                created_at, updated_at, is_deleted
+            )
+            VALUES (
+                #{userId}, #{bizNo}, #{bizType}, #{asset}, #{direction}, #{amount}, #{balanceAfter}, #{status}, #{remark},
+                NOW(), NOW(), 0
+            )
+            ON DUPLICATE KEY UPDATE
+                user_id = VALUES(user_id),
+                biz_type = VALUES(biz_type),
+                asset = VALUES(asset),
+                direction = VALUES(direction),
+                amount = VALUES(amount),
+                balance_after = VALUES(balance_after),
+                status = VALUES(status),
+                remark = VALUES(remark),
+                updated_at = VALUES(updated_at),
+                is_deleted = 0
+            """)
+    int insertLedgerEntry(@Param("bizNo") String bizNo,
+                          @Param("userId") Long userId,
+                          @Param("bizType") String bizType,
+                          @Param("asset") String asset,
+                          @Param("direction") String direction,
+                          @Param("amount") BigDecimal amount,
+                          @Param("balanceAfter") BigDecimal balanceAfter,
+                          @Param("status") String status,
+                          @Param("remark") String remark);
+
     @Select("""
             <script>
             SELECT COUNT(*) FROM nx_deposit_order

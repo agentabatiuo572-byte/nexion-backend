@@ -65,6 +65,9 @@ public class OpsFinanceService {
     private static final Set<String> REVIEWABLE = Set.of("REVIEWING", "DELAYED");
     private static final Set<String> REJECTABLE = Set.of("REVIEWING", "DELAYED", "FROZEN", "PENDING_CHAIN", "CHAIN_SUBMITTED", "DEAD");
     private static final Set<String> FINAL_STATUSES = Set.of("SUCCESS", "FAILED", "REJECTED");
+    private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
+    private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
+    private static final String WITHDRAW_DISCLOSURE_GATE_KEY = "disclosure.gate.withdraw";
     private static final int HIGH_RISK_SCORE = 70;
     private static final List<String> D_SEED_USER_KEYS = List.of(
             "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
@@ -404,7 +407,10 @@ public class OpsFinanceService {
             String blockedReason = approvalBlockReason(order, dailyLimitCount);
             if (blockedReason != null) {
                 auditWithdrawalReviewBlocked(order, action, blockedReason, dailyLimitCount, idempotencyKey, request);
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), blockedReason);
+                int httpStatus = OpsErrorCode.COVERAGE_BELOW_REDLINE.name().equals(blockedReason)
+                        ? OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus()
+                        : OpsErrorCode.VALIDATION_FAILED.httpStatus();
+                return ApiResult.fail(httpStatus, blockedReason);
             }
         }
         String failureReason = "REJECTED".equals(newStatus) ? request.reason().trim() : null;
@@ -767,6 +773,15 @@ public class OpsFinanceService {
     }
 
     private String approvalBlockReason(WithdrawalOrderView order, int dailyLimitCount) {
+        if (!withdrawGateEnabled()) {
+            return "WITHDRAWAL_KILL_SWITCH_DISABLED";
+        }
+        if (withdrawDisclosureGateActive()) {
+            return "WITHDRAWAL_DISCLOSURE_REACK_REQUIRED";
+        }
+        if (coverageBelowRedline()) {
+            return OpsErrorCode.COVERAGE_BELOW_REDLINE.name();
+        }
         if (exceedsDailyLimit(order, dailyLimitCount)) {
             return "WITHDRAWAL_DAILY_LIMIT_EXCEEDED";
         }
@@ -794,7 +809,47 @@ public class OpsFinanceService {
         detail.put("requestedAction", action);
         detail.put("blockedReason", blockedReason);
         detail.put("statusUnchanged", true);
+        if (OpsErrorCode.COVERAGE_BELOW_REDLINE.name().equals(blockedReason)) {
+            TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+            detail.put("coverageRatio", coverage.coverageRatio());
+            detail.put("redlinePct", coverage.redlinePct());
+        }
         audit("D2_WITHDRAWAL_REVIEW_BLOCKED", "WITHDRAWAL", order.withdrawalNo(), request.operator(), "BLOCKED", detail);
+    }
+
+    private boolean withdrawGateEnabled() {
+        return configFacade.activeValue(WITHDRAW_KILLSWITCH_KEY)
+                .or(() -> configFacade.activeValue(WITHDRAW_LEGACY_KILLSWITCH_KEY))
+                .map(this::parseSwitchEnabled)
+                .orElse(true);
+    }
+
+    private boolean withdrawDisclosureGateActive() {
+        return configFacade.activeValue(WITHDRAW_DISCLOSURE_GATE_KEY)
+                .map(this::parseDisclosureGateActive)
+                .orElse(false);
+    }
+
+    private boolean coverageBelowRedline() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        return coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
+    }
+
+    private boolean parseSwitchEnabled(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "enabled", "enable", "on", "true", "1" -> true;
+            case "disabled", "disable", "off", "false", "0" -> false;
+            default -> true;
+        };
+    }
+
+    private boolean parseDisclosureGateActive(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "enabled", "enable", "on", "true", "1", "blocked", "required" -> true;
+            default -> false;
+        };
     }
 
     private void auditWithdrawalReviewBlockedByK5(

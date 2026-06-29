@@ -178,6 +178,68 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void executePlaybookRunsTargetDomainActionsAndPersistsSharedConfig() {
+        var result = service.executePlaybook(
+                "SOP-02",
+                "idem-j4-domain-actions",
+                new SopPlaybookRunRequest(true, "ledger gap containment", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("killswitch.withdraw", "disabled")
+                .containsEntry("treasury.j4.coverage_check.required", "true")
+                .containsEntry("withdrawal.j4.batch_release.mode", "B1_CAPACITY");
+        Map<String, Object> updated = (Map<String, Object>) result.getData().get("updated");
+        assertThat((List<Map<String, Object>>) updated.get("domainActions"))
+                .extracting("domain")
+                .contains("J1", "B1", "D2");
+        assertThat(configFacade.values.get("emergency.sop.executions"))
+                .contains("domainActions")
+                .contains("killswitch.withdraw")
+                .contains("withdrawal.j4.batch_release.mode");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void executePlaybookReplaysSameIdempotencyKeyWithoutDuplicateSideEffects() {
+        service.createPlaybook(
+                "idem-j4-create",
+                new SopPlaybookCreateRequest(
+                        "监管点名快速止血",
+                        "监管点名",
+                        "合规审计",
+                        "15 分钟",
+                        true,
+                        "J1·熔断提现\nI3·通知法务",
+                        "CMP-2617",
+                        "SFC 风险披露重新确认",
+                        "根因消除后常规轨恢复",
+                        false,
+                        "wire I3 campaign",
+                        "superadmin"));
+
+        var first = service.executePlaybook(
+                "SOP-DRAFT-1",
+                "idem-j4-replay",
+                new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
+        String executionsAfterFirst = configFacade.values.get("emergency.sop.executions");
+        var second = service.executePlaybook(
+                "SOP-DRAFT-1",
+                "idem-j4-replay",
+                new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
+
+        assertThat(first.getCode()).isZero();
+        assertThat(second.getCode()).isZero();
+        assertThat(notificationDispatchFacade.calls).containsExactly("CMP-2617:SOP-DRAFT-1");
+        assertThat(configFacade.values.get("emergency.sop.executions")).isEqualTo(executionsAfterFirst);
+        Map<String, Object> updated = (Map<String, Object>) second.getData().get("updated");
+        assertThat(updated)
+                .containsEntry("idempotentReplay", true)
+                .containsEntry("code", "SOP-DRAFT-1");
+    }
+
+    @Test
     void geoAndTamperOverviewsSeedConfigWhenDatabaseIsEmpty() {
         var geo = service.geoBlockOverview();
         var tamper = service.tamperOverview();

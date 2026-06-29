@@ -50,5 +50,8 @@ public interface TreasuryLedgerRepository {
     void createLedgerAdjustment(String adjustmentNo, Long userId, String asset, String direction,
                                 BigDecimal amount, String relatedBizNo, String reason, String operator);
 
+    void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
+                         BigDecimal amount, String status, String remark);
+
     void seedD4FallbackData(Map<String, Long> userIds);
 }

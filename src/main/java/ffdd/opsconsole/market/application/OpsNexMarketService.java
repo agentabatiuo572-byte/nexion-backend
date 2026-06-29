@@ -28,6 +28,7 @@ import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -56,6 +57,7 @@ public class OpsNexMarketService {
     private static final String EXCHANGE_KYC_THRESHOLD_KEY = "wallet.exchange.kyc_threshold_usdt";
     private static final String EXCHANGE_KILLSWITCH_KEY = "killswitch.exchange";
     private static final String EXCHANGE_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.exchange";
+    private static final String DISCLOSURE_GATE_PREFIX = "disclosure.gate.";
     private static final String CURRENT_PRICE_KEY = "wallet.exchange.nex_usdt_price";
     private static final String WEEKLY_CURVE_KEY = "wallet.nex_market.weekly_curve";
     private static final String PUMP_PROBABILITY_KEY = "wallet.nex_market.pump_probability";
@@ -70,7 +72,8 @@ public class OpsNexMarketService {
     private static final String LOOP_CONTROL_KEY = CONTROL_PREFIX + "loop";
     private static final String ACTIVE_DAY_INDEX_KEY = CONTROL_PREFIX + "active_day_index";
     private static final String GENESIS_PREFIX = "G.genesis.";
-    private static final String GENESIS_KILLSWITCH_KEY = "J.killswitch.genesis";
+    private static final String GENESIS_KILLSWITCH_KEY = "killswitch.genesis";
+    private static final String GENESIS_LEGACY_KILLSWITCH_KEY = "J.killswitch.genesis";
     private static final String GENESIS_DAILY_VOLUME_BASE_KEY = "wallet.genesis.daily_volume_base_usdt";
     private static final String GENESIS_SECONDARY_FLOOR_KEY = "wallet.genesis.secondary_floor_usdt";
     private static final int GENESIS_SOLD = 847;
@@ -84,7 +87,8 @@ public class OpsNexMarketService {
     private static final int GENESIS_NODE_DEFAULT_PAGE_SIZE = 10;
     private static final int GENESIS_NODE_MAX_PAGE_SIZE = 50;
     private static final String STAKING_PREFIX = "G.staking.";
-    private static final String STAKING_KILLSWITCH_KEY = "J.killswitch.staking";
+    private static final String STAKING_KILLSWITCH_KEY = "killswitch.staking";
+    private static final String STAKING_LEGACY_KILLSWITCH_KEY = "J.killswitch.staking";
     private static final String REPURCHASE_PREFIX = "G.repurchase.";
     private static final BigDecimal REPURCHASE_PRINCIPAL_USD = new BigDecimal("390000");
     private static final int REPURCHASE_LOCK_DAYS = 90;
@@ -99,6 +103,7 @@ public class OpsNexMarketService {
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
     private final NexMarketRepository marketRepository;
+    private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -111,6 +116,7 @@ public class OpsNexMarketService {
         long gateUser = marketRepository.todayExchangeCountByStatus("USER_CAP");
         long gatePlatform = marketRepository.todayExchangeCountByStatus("PLATFORM_CAP");
         long gateGeo = marketRepository.todayExchangeCountByStatus("GEO_BLOCKED");
+        boolean disclosureGate = disclosureGateActive("exchange");
         boolean swapEnabled = exchangeSwapEnabled();
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -137,7 +143,9 @@ public class OpsNexMarketService {
                 "enabled", swapEnabled,
                 "status", swapEnabled ? "enabled" : "disabled",
                 "configKey", EXCHANGE_KILLSWITCH_KEY,
+                "blockedBy", disclosureGate ? "I4_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
+        response.put("disclosureGate", map("exchange", disclosureGate));
         response.put("geoBlocked", blockedCountryViews());
         response.put("coverage", exchangeCoverage());
         response.put("serverCanonical", true);
@@ -198,6 +206,9 @@ public class OpsNexMarketService {
         boolean before = exchangeSwapEnabled();
         boolean after = request.enabled();
         if (after && !before) {
+            if (disclosureGateActive("exchange")) {
+                return validation("G2_DISCLOSURE_GATE_REACK_REQUIRED");
+            }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
             if (redline != null) {
                 return redline;
@@ -304,7 +315,9 @@ public class OpsNexMarketService {
         response.put("gate", map(
                 "enabled", stakingGateOn(),
                 "configKey", STAKING_KILLSWITCH_KEY,
+                "blockedBy", disclosureGateActive("staking") ? "I4_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
+        response.put("disclosureGate", map("staking", disclosureGateActive("staking")));
         response.put("pools", pools);
         response.put("positions", stakingPositionGroups());
         response.put("stateMachine", List.of(
@@ -392,6 +405,9 @@ public class OpsNexMarketService {
         String configKey = STAKING_PREFIX + "enabled." + pool.tierKey();
         boolean before = stakingPoolEnabled(pool);
         if (enabled && !before) {
+            if (disclosureGateActive("staking")) {
+                return validation("G1_DISCLOSURE_GATE_REACK_REQUIRED");
+            }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
             if (redline != null) {
                 return redline;
@@ -675,6 +691,9 @@ public class OpsNexMarketService {
         }
         boolean before = genesisMarketOn();
         if (enabled && !before) {
+            if (disclosureGateActive("genesis")) {
+                return validation("G4_DISCLOSURE_GATE_REACK_REQUIRED");
+            }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
             if (redline != null) {
                 return redline;
@@ -712,6 +731,15 @@ public class OpsNexMarketService {
         String configKey = GENESIS_PREFIX + "rerun." + normalizedBatch;
         String before = readText(configKey, "ready");
         configFacade.upsertAdminValue(configKey, "done", "STRING", "market", "G4 Genesis dividend batch rerun marker");
+        ledgerPostingFacade.postLedgerEntry(
+                "G4-DIVIDEND-" + normalizedBatch + "-RERUN",
+                0L,
+                "GENESIS_DIVIDEND",
+                "USDT",
+                "IN",
+                genesisDividendRerunAmount(),
+                "PENDING",
+                "G4 Genesis dividend batch rerun pending ledger | batchNo=" + normalizedBatch);
         audit("G4_GENESIS_DIVIDEND_BATCH_RERUN", "GENESIS_DIVIDEND_BATCH", normalizedBatch, request.operator(), map(
                 "batchNo", normalizedBatch,
                 "before", before,
@@ -991,11 +1019,24 @@ public class OpsNexMarketService {
         upsertMissingConfig(GENESIS_PREFIX + "divBase", "platform daily volume * 0.1% / 1000 slots", "STRING", "market", "G4 Genesis dividend base seed");
         upsertMissingConfig(GENESIS_DAILY_VOLUME_BASE_KEY, GENESIS_DAILY_VOLUME_BASE.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G4 Genesis daily volume base seed");
         upsertMissingConfig(GENESIS_SECONDARY_FLOOR_KEY, GENESIS_SECONDARY_FLOOR.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G4 Genesis secondary floor fallback seed");
-        upsertMissingConfig(GENESIS_KILLSWITCH_KEY, "on", "STRING", "admin_killswitch", "G4 Genesis market switch seed");
+        upsertMissingConfig(
+                GENESIS_KILLSWITCH_KEY,
+                GENESIS_LEGACY_KILLSWITCH_KEY,
+                "on",
+                "STRING",
+                "admin_killswitch",
+                "G4 Genesis market switch seed");
     }
 
     private void upsertMissingConfig(String configKey, String configValue, String valueType, String configGroup, String remark) {
         if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isEmpty()) {
+            configFacade.upsertAdminValue(configKey, configValue, valueType, configGroup, remark);
+        }
+    }
+
+    private void upsertMissingConfig(String configKey, String legacyConfigKey, String configValue, String valueType, String configGroup, String remark) {
+        if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isEmpty()
+                && configFacade.activeValue(legacyConfigKey).filter(StringUtils::hasText).isEmpty()) {
             configFacade.upsertAdminValue(configKey, configValue, valueType, configGroup, remark);
         }
     }
@@ -1509,7 +1550,8 @@ public class OpsNexMarketService {
     }
 
     private boolean stakingGateOn() {
-        return configFacade.activeValue(STAKING_KILLSWITCH_KEY)
+        return !disclosureGateActive("staking") && configFacade.activeValue(STAKING_KILLSWITCH_KEY)
+                .or(() -> configFacade.activeValue(STAKING_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
                 .orElse(true);
     }
@@ -2041,6 +2083,13 @@ public class OpsNexMarketService {
         return parseRepurchaseNumber(readText(def.configKey(), def.defaultValue()), new BigDecimal(def.defaultValue()));
     }
 
+    private BigDecimal genesisDividendRerunAmount() {
+        GenesisParamDef dividend = genesisParamDef("dividend");
+        return GENESIS_DAILY_VOLUME_BASE
+                .multiply(genesisNumberValue(dividend))
+                .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
+    }
+
     private String displayGenesisValue(GenesisParamDef def, String value) {
         return switch (def.kind()) {
             case INTEGER -> value + " slots";
@@ -2051,7 +2100,8 @@ public class OpsNexMarketService {
     }
 
     private boolean genesisMarketOn() {
-        return configFacade.activeValue(GENESIS_KILLSWITCH_KEY)
+        return !disclosureGateActive("genesis") && configFacade.activeValue(GENESIS_KILLSWITCH_KEY)
+                .or(() -> configFacade.activeValue(GENESIS_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
                 .orElse(true);
     }
@@ -2268,10 +2318,24 @@ public class OpsNexMarketService {
     }
 
     private boolean exchangeSwapEnabled() {
-        return configFacade.activeValue(EXCHANGE_KILLSWITCH_KEY)
+        return !disclosureGateActive("exchange") && configFacade.activeValue(EXCHANGE_KILLSWITCH_KEY)
                 .or(() -> configFacade.activeValue(EXCHANGE_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
                 .orElse(true);
+    }
+
+    private boolean disclosureGateActive(String domain) {
+        return configFacade.activeValue(DISCLOSURE_GATE_PREFIX + domain)
+                .map(this::parseDisclosureGateActive)
+                .orElse(false);
+    }
+
+    private boolean parseDisclosureGateActive(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "enabled", "enable", "on", "true", "1", "blocked", "required" -> true;
+            default -> false;
+        };
     }
 
     private boolean parseSwitchEnabled(String raw) {
