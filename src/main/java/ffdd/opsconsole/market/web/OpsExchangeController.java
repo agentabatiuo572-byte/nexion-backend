@@ -2,6 +2,7 @@ package ffdd.opsconsole.market.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.market.application.OpsNexMarketService;
+import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -54,5 +55,13 @@ public class OpsExchangeController {
             @PathVariable String exchangeNo,
             @RequestBody ExchangeQueueCancelRequest request) {
         return marketService.cancelExchangeQueueOrder(idempotencyKey, exchangeNo, request);
+    }
+
+    @PostMapping("/queue/{exchangeNo}/kyc-review")
+    public ApiResult<Map<String, Object>> triggerKycReview(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String exchangeNo,
+            @RequestBody ExchangeKycReviewRequest request) {
+        return marketService.triggerExchangeKycReview(idempotencyKey, exchangeNo, request);
     }
 }

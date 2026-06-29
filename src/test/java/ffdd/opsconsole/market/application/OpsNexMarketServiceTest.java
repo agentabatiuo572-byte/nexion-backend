@@ -1,6 +1,7 @@
 package ffdd.opsconsole.market.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -19,6 +20,7 @@ import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
+import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -27,6 +29,9 @@ import ffdd.opsconsole.market.dto.NexMarketCurveFrame;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
+import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -48,6 +53,7 @@ class OpsNexMarketServiceTest {
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeNexMarketRepository marketRepository = new FakeNexMarketRepository();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
+    private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsNexMarketService service = service();
@@ -58,6 +64,7 @@ class OpsNexMarketServiceTest {
                 coverageFacade,
                 marketRepository,
                 ledgerPostingFacade,
+                riskKycReviewFacade,
                 auditLogService,
                 new ObjectMapper(),
                 clock);
@@ -245,6 +252,97 @@ class OpsNexMarketServiceTest {
                 new ExchangeQueueCancelRequest("not queued", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void triggerLargeExchangeKycReviewCallsK5AndMovesOrderToKycRequired() {
+        marketRepository.orders = List.of(exchange("EX-LARGE-1", "QUEUED", new BigDecimal("8200.00")));
+
+        ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
+                "idem-g2-k5",
+                "EX-LARGE-1",
+                new ExchangeKycReviewRequest("large exchange review", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskKycReviewFacade.lastExchangeNo).isEqualTo("EX-LARGE-1");
+        assertThat(riskKycReviewFacade.lastAmountUsdt).isEqualByComparingTo("8200.00");
+        assertThat(marketRepository.findExchangeOrder("EX-LARGE-1"))
+                .get()
+                .extracting(ExchangeOrderView::status)
+                .isEqualTo("KYC_REQUIRED");
+        assertThat(detailMap(result.getData().get("updated")))
+                .containsEntry("before", "QUEUED")
+                .containsEntry("after", "KYC_REQUIRED")
+                .containsEntry("ticketId", "KR-G2-TEST");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("G2_EXCHANGE_K5_REVIEW_REQUIRED");
+        assertThat(captor.getValue().getResult()).isEqualTo("BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("idempotencyKey", "idem-g2-k5")
+                .containsEntry("toStatus", "KYC_REQUIRED");
+    }
+
+    @Test
+    void triggerExchangeKycReviewDoesNotHoldOrderWhenK5TicketAlreadyOpen() {
+        marketRepository.orders = List.of(exchange("EX-LARGE-1", "QUEUED", new BigDecimal("8200.00")));
+        riskKycReviewFacade.alreadyOpen = true;
+
+        ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
+                "idem-g2-k5",
+                "EX-LARGE-1",
+                new ExchangeKycReviewRequest("large exchange review", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("EXCHANGE_K5_REVIEW_ALREADY_OPEN");
+        assertThat(marketRepository.findExchangeOrder("EX-LARGE-1"))
+                .get()
+                .extracting(ExchangeOrderView::status)
+                .isEqualTo("QUEUED");
+    }
+
+    @Test
+    void triggerExchangeKycReviewRollsBackWhenOrderLeavesQueueBeforeHold() {
+        marketRepository.orders = List.of(exchange("EX-LARGE-1", "QUEUED", new BigDecimal("8200.00")));
+        marketRepository.failConditionalUpdate = true;
+
+        assertThatThrownBy(() -> service.triggerExchangeKycReview(
+                "idem-g2-k5",
+                "EX-LARGE-1",
+                new ExchangeKycReviewRequest("large exchange review", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage(OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        assertThat(marketRepository.findExchangeOrder("EX-LARGE-1"))
+                .get()
+                .extracting(ExchangeOrderView::status)
+                .isEqualTo("QUEUED");
+    }
+
+    @Test
+    void triggerExchangeKycReviewRejectsTerminalOrder() {
+        marketRepository.orders = List.of(exchange("EX-DONE-1", "COMPLETED", new BigDecimal("8200.00")));
+
+        ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
+                "idem-g2-k5",
+                "EX-DONE-1",
+                new ExchangeKycReviewRequest("large exchange review", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(riskKycReviewFacade.lastExchangeNo).isNull();
+    }
+
+    @Test
+    void triggerExchangeKycReviewRejectsNonQueueGateOrder() {
+        marketRepository.orders = List.of(exchange("EX-CAP-1", "USER_CAP", new BigDecimal("8200.00")));
+
+        ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
+                "idem-g2-k5",
+                "EX-CAP-1",
+                new ExchangeKycReviewRequest("large exchange review", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(riskKycReviewFacade.lastExchangeNo).isNull();
     }
 
     @Test
@@ -501,6 +599,20 @@ class OpsNexMarketServiceTest {
         assertThat(detailMap(result.getData().get("market")))
                 .containsEntry("enabled", false)
                 .containsEntry("configKey", "killswitch.genesis");
+    }
+
+    @Test
+    void genesisOverviewReadsI4DisclosureGateAsBlocked() {
+        configFacade.values.put("disclosure.gate.genesis", "true");
+
+        ApiResult<Map<String, Object>> result = service.genesisOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(detailMap(result.getData().get("market")))
+                .containsEntry("enabled", false)
+                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+        assertThat(detailMap(result.getData().get("disclosureGate")))
+                .containsEntry("genesis", true);
     }
 
     @Test
@@ -768,6 +880,10 @@ class OpsNexMarketServiceTest {
     }
 
     private static ExchangeOrderView exchange(String exchangeNo, String status) {
+        return exchange(exchangeNo, status, new BigDecimal("17.10"));
+    }
+
+    private static ExchangeOrderView exchange(String exchangeNo, String status, BigDecimal amountUsdt) {
         return new ExchangeOrderView(
                 1L,
                 10001L,
@@ -778,13 +894,13 @@ class OpsNexMarketServiceTest {
                 "NEX",
                 "USDT",
                 new BigDecimal("100"),
-                new BigDecimal("17.10"),
+                amountUsdt,
                 new BigDecimal("0.171"),
                 status,
                 status,
                 "warn",
                 "NEX→USDT",
-                new BigDecimal("17.10"),
+                amountUsdt,
                 null,
                 null,
                 "明天 00:00",
@@ -863,6 +979,45 @@ class OpsNexMarketServiceTest {
         }
     }
 
+    private static final class FakeRiskKycReviewFacade implements RiskKycReviewFacade {
+        private String lastWithdrawalNo;
+        private String lastExchangeNo;
+        private BigDecimal lastAmountUsdt;
+        private boolean alreadyOpen;
+
+        @Override
+        public KycReviewTriggerResult triggerLargeWithdrawalReview(
+                String userNo,
+                BigDecimal amountUsdt,
+                String kycStatus,
+                String withdrawalNo,
+                String operator,
+                String reason) {
+            lastWithdrawalNo = withdrawalNo;
+            lastAmountUsdt = amountUsdt;
+            return KycReviewTriggerResult.notRequired();
+        }
+
+        @Override
+        public KycReviewTriggerResult triggerLargeExchangeReview(
+                String userNo,
+                BigDecimal amountUsdt,
+                String kycStatus,
+                String exchangeNo,
+                String operator,
+                String reason) {
+            lastExchangeNo = exchangeNo;
+            lastAmountUsdt = amountUsdt;
+            if (alreadyOpen) {
+                return new KycReviewTriggerResult(true, false, null, "K5_REVIEW_ALREADY_OPEN");
+            }
+            if (amountUsdt != null && amountUsdt.compareTo(new BigDecimal("1000")) >= 0) {
+                return new KycReviewTriggerResult(true, true, "KR-G2-TEST", "K5_LARGE_EXCHANGE_REVIEW_REQUIRED");
+            }
+            return KycReviewTriggerResult.notRequired();
+        }
+    }
+
     private static final class FakeNexMarketRepository implements NexMarketRepository {
         private BigDecimal lastPrice;
         private Optional<BigDecimal> latestPrice = Optional.of(new BigDecimal("0.171"));
@@ -879,6 +1034,7 @@ class OpsNexMarketServiceTest {
         private boolean stakingSeeded;
         private boolean repurchaseSeeded;
         private boolean genesisSeeded;
+        private boolean failConditionalUpdate;
         private final List<String> cancelled = new java.util.ArrayList<>();
 
         @Override
@@ -957,6 +1113,18 @@ class OpsNexMarketServiceTest {
                     .map(order -> order.exchangeNo().equals(exchangeNo) ? exchangeOrderWithStatus(order, status) : order)
                     .toList();
             return true;
+        }
+
+        @Override
+        public boolean updateExchangeStatusIfCurrent(String exchangeNo, String status, List<String> currentStatuses) {
+            if (failConditionalUpdate) {
+                return false;
+            }
+            Optional<ExchangeOrderView> current = findExchangeOrder(exchangeNo);
+            if (current.isEmpty() || !currentStatuses.contains(current.get().status())) {
+                return false;
+            }
+            return updateExchangeStatus(exchangeNo, status);
         }
 
         @Override

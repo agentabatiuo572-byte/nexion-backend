@@ -233,6 +233,24 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
     int updateStatus(@Param("exchangeNo") String exchangeNo, @Param("status") String status);
 
     @Update("""
+            <script>
+            UPDATE nx_exchange_order
+               SET status = #{status},
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE exchange_no = #{exchangeNo}
+               AND UPPER(status) IN
+               <foreach collection="currentStatuses" item="currentStatus" open="(" separator="," close=")">
+                 #{currentStatus}
+               </foreach>
+               AND is_deleted = 0
+            </script>
+            """)
+    int updateStatusIfCurrent(
+            @Param("exchangeNo") String exchangeNo,
+            @Param("status") String status,
+            @Param("currentStatuses") List<String> currentStatuses);
+
+    @Update("""
             UPDATE nx_exchange_order
                SET status = 'CANCELLED',
                    updated_at = CURRENT_TIMESTAMP

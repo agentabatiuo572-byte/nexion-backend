@@ -16,6 +16,7 @@ import ffdd.opsconsole.market.domain.NexMarketRepository;
 import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
 import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
+import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -26,6 +27,9 @@ import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
+import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -44,6 +48,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -97,6 +102,7 @@ public class OpsNexMarketService {
     private static final String REPURCHASE_RATE_KEY = REPURCHASE_PREFIX + "rate";
     private static final List<String> CONTROL_KEYS = List.of("schedule", "pin", "loop");
     private static final List<String> EXCHANGE_QUEUE_STATUSES = List.of("QUEUED");
+    private static final List<String> EXCHANGE_KYC_REVIEWABLE_STATUSES = EXCHANGE_QUEUE_STATUSES;
     private static final List<String> OVERRIDE_KEYS = List.of(
             "currentPrice", "volatilityPct", "oracle", "deviationPct", "costBasis", "paused");
 
@@ -104,6 +110,7 @@ public class OpsNexMarketService {
     private final TreasuryCoverageFacade coverageFacade;
     private final NexMarketRepository marketRepository;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
+    private final RiskKycReviewFacade riskKycReviewFacade;
     private final AuditLogService auditLogService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -255,6 +262,62 @@ public class OpsNexMarketService {
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = exchangeOverview().getData();
         response.put("updated", map("exchangeNo", exchangeNo, "before", "QUEUED", "after", "CANCELLED"));
+        return ApiResult.ok(response);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> triggerExchangeKycReview(
+            String idempotencyKey,
+            String exchangeNo,
+            ExchangeKycReviewRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (!StringUtils.hasText(exchangeNo)) {
+            return validation("EXCHANGE_NO_REQUIRED");
+        }
+        Optional<ExchangeOrderView> before = marketRepository.findExchangeOrder(exchangeNo.trim());
+        if (before.isEmpty()) {
+            return ApiResult.fail(404, "EXCHANGE_ORDER_NOT_FOUND");
+        }
+        ExchangeOrderView order = before.get();
+        if (!EXCHANGE_KYC_REVIEWABLE_STATUSES.contains(order.status())) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeExchangeReview(
+                order.userNo(),
+                order.amountUsdt(),
+                exchangeKycStatus(order),
+                order.exchangeNo(),
+                request.operator(),
+                request.reason().trim());
+        if (!k5Review.requiresReview()) {
+            return validation("EXCHANGE_K5_REVIEW_NOT_REQUIRED");
+        }
+        if (!StringUtils.hasText(k5Review.ticketId())) {
+            return validation("EXCHANGE_K5_REVIEW_ALREADY_OPEN");
+        }
+        boolean updated = marketRepository.updateExchangeStatusIfCurrent(
+                order.exchangeNo(),
+                "KYC_REQUIRED",
+                EXCHANGE_KYC_REVIEWABLE_STATUSES);
+        if (!updated) {
+            throw new BizException(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        auditExchangeK5ReviewRequired(order, updated, idempotencyKey, request, k5Review);
+        Map<String, Object> response = exchangeOverview().getData();
+        response.put("updated", map(
+                "exchangeNo", order.exchangeNo(),
+                "before", order.status(),
+                "after", "KYC_REQUIRED",
+                "ticketId", k5Review.ticketId(),
+                "reviewReason", k5Review.reason(),
+                "updated", updated));
         return ApiResult.ok(response);
     }
 
@@ -616,10 +679,13 @@ public class OpsNexMarketService {
                 "payoutToday", payoutToday,
                 "batchNo", GENESIS_TODAY_BATCH,
                 "batchStatus", readText(GENESIS_PREFIX + "rerun." + GENESIS_TODAY_BATCH, "ready")));
+        boolean disclosureGate = disclosureGateActive("genesis");
         response.put("market", map(
                 "enabled", genesisMarketOn(),
                 "configKey", GENESIS_KILLSWITCH_KEY,
+                "blockedBy", disclosureGate ? "I4_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
+        response.put("disclosureGate", map("genesis", disclosureGate));
         response.put("geoBlocked", blockedCountryViews());
         response.put("nodes", genesisNodes(
                 perSlotPerDay,
@@ -2466,6 +2532,40 @@ public class OpsNexMarketService {
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
+    }
+
+    private void auditExchangeK5ReviewRequired(
+            ExchangeOrderView order,
+            boolean updated,
+            String idempotencyKey,
+            ExchangeKycReviewRequest request,
+            KycReviewTriggerResult k5Review) {
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("G2_EXCHANGE_K5_REVIEW_REQUIRED")
+                .resourceType("EXCHANGE_ORDER")
+                .resourceId(order.exchangeNo())
+                .bizNo(order.exchangeNo())
+                .actorType("ADMIN")
+                .actorUsername(operator(request.operator()))
+                .result(updated ? "BLOCKED" : "SKIPPED")
+                .riskLevel("HIGH")
+                .detail(map(
+                        "exchangeNo", order.exchangeNo(),
+                        "userNo", order.userNo(),
+                        "amountUsdt", order.amountUsdt(),
+                        "fromStatus", order.status(),
+                        "toStatus", "KYC_REQUIRED",
+                        "ticketId", k5Review.ticketId(),
+                        "reviewReason", k5Review.reason(),
+                        "reason", request.reason().trim(),
+                        "idempotencyKey", idempotencyKey.trim()))
+                .build());
+    }
+
+    private String exchangeKycStatus(ExchangeOrderView order) {
+        return StringUtils.hasText(order.gateType()) && "kyc".equalsIgnoreCase(order.gateType())
+                ? "PENDING_REVIEW"
+                : "UNKNOWN";
     }
 
     private void auditOverride(

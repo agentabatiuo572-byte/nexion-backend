@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.application.OpsNexMarketService;
+import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -63,5 +64,15 @@ class OpsExchangeControllerTest {
         assertThat(controller.cancelQueueOrder("idem-cancel", "EX-Q-1", request).getCode()).isZero();
 
         verify(marketService).cancelExchangeQueueOrder("idem-cancel", "EX-Q-1", request);
+    }
+
+    @Test
+    void triggerKycReviewDelegatesWithIdempotencyKey() {
+        ExchangeKycReviewRequest request = new ExchangeKycReviewRequest("large exchange review", "superadmin");
+        when(marketService.triggerExchangeKycReview("idem-k5", "EX-Q-1", request)).thenReturn(ApiResult.ok(Map.of("ok", true)));
+
+        assertThat(controller.triggerKycReview("idem-k5", "EX-Q-1", request).getCode()).isZero();
+
+        verify(marketService).triggerExchangeKycReview("idem-k5", "EX-Q-1", request);
     }
 }

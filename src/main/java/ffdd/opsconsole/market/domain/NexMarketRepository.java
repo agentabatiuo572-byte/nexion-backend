@@ -38,6 +38,8 @@ public interface NexMarketRepository {
 
     boolean updateExchangeStatus(String exchangeNo, String status);
 
+    boolean updateExchangeStatusIfCurrent(String exchangeNo, String status, List<String> currentStatuses);
+
     boolean cancelQueuedExchange(String exchangeNo);
 
     void ensureStakingSeedData();
