@@ -139,8 +139,26 @@ public class OpsAdminAuthService {
                 admin.getId(),
                 admin.getUsername(),
                 StringUtils.hasText(admin.getNickname()) ? admin.getNickname() : admin.getUsername(),
-                superAdmin(admin) ? "superadmin" : "auditor",
+                frontendRole(admin),
                 List.copyOf(authorities));
+    }
+
+    private String frontendRole(AdminEntity admin) {
+        if (superAdmin(admin)) {
+            return "superadmin";
+        }
+        String role = adminMapper.selectA1Role(admin.getId());
+        if (!StringUtils.hasText(role)) {
+            return "auditor";
+        }
+        String normalized = role.trim().toLowerCase(Locale.ROOT);
+        if ("audit".equals(normalized)) {
+            return "auditor";
+        }
+        if (List.of("finance", "risk", "content", "growth", "support", "auditor").contains(normalized)) {
+            return normalized;
+        }
+        return "auditor";
     }
 
     private boolean activeRecord(AdminEntity admin) {

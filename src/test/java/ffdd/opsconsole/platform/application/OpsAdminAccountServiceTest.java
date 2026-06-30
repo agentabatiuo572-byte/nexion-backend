@@ -219,6 +219,46 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
+    void createAccountAllowsHandoffInitialPasswordWithoutReturningPlaintextCredential() {
+        AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "资金测试值班",
+                "finance-shift@nexion.io",
+                "finance",
+                "handoff",
+                "local e2e shift bootstrap",
+                "superadmin",
+                "E2eShift@12345");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-shift", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().credentialDeliveryStatus()).isEqualTo("HANDOFF_PENDING");
+        AdminEntity created = admins.stream()
+                .filter(admin -> "finance-shift@nexion.io".equals(admin.getEmail()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(passwordEncoder.matches("E2eShift@12345", created.getPasswordHash())).isTrue();
+        assertThat(result.getData().toString()).doesNotContain("E2eShift@12345");
+    }
+
+    @Test
+    void createAccountRejectsInitialPasswordOutsideHandoffDelivery() {
+        AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "资金测试值班",
+                "finance-shift@nexion.io",
+                "finance",
+                "mail",
+                "local e2e shift bootstrap",
+                "superadmin",
+                "E2eShift@12345");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-shift", request);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("INITIAL_PASSWORD_HANDOFF_ONLY");
+    }
+
+    @Test
     void updateSecurityBaselineParsesSessionLimitAndAudits() {
         AdminAccountSecurityBaselineUpdateRequest request =
                 new AdminAccountSecurityBaselineUpdateRequest("45min / 10h", "shorten console sessions", "superadmin");
@@ -287,6 +327,20 @@ class OpsAdminAccountServiceTest {
 
         assertThat(result.getCode()).isZero();
         verify(adminSessionRegistry).revokeSessions(5L);
+    }
+
+    @Test
+    void revokeSessionsAllowsDisabledE2eSuperShiftCleanup() {
+        admins.add(admin(6L, "e2e_pa_2606290801", "Agent-1 平台审计值班", "e2e_pa_2606290801@nexion.io", 1, 0));
+        authenticateAs(1L);
+        when(adminSessionRegistry.revokeSessions(6L)).thenReturn(1);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("cleanup disabled e2e shift", "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result =
+                service.revokeSessions("idem-session-e2e-cleanup", "6", request);
+
+        assertThat(result.getCode()).isZero();
+        verify(adminSessionRegistry).revokeSessions(6L);
     }
 
     @Test

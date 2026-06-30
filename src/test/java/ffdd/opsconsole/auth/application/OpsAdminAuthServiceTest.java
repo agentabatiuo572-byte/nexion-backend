@@ -66,6 +66,24 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
+    void loginUsesA1StoredRoleForNonSuperAdminSessions() {
+        AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(adminMapper.selectA1Role(4L)).thenReturn("risk");
+        when(permissionMapper.selectActivePermissionCodes(4L))
+                .thenReturn(List.of("PERM_RISK_READ", "PERM_RISK_WRITE"));
+        when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
+
+        ApiResult<AdminLoginResponse> result =
+                service.login(new AdminLoginRequest("risk.shift", "RiskShift@123"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().session().role()).isEqualTo("risk");
+        assertThat(result.getData().session().authorities())
+                .containsExactly("PERM_RISK_READ", "PERM_RISK_WRITE");
+    }
+
+    @Test
     void loginRejectsWrongPasswordWithoutLeakingAccountState() {
         when(adminMapper.selectOne(any())).thenReturn(activeSuperAdmin(passwordEncoder.encode("Admin@123456")));
 
@@ -114,6 +132,18 @@ class OpsAdminAuthServiceTest {
         admin.setPasswordHash(hash);
         admin.setNickname("Super Admin");
         admin.setSuperAdmin(1);
+        admin.setStatus(1);
+        admin.setIsDeleted(0);
+        return admin;
+    }
+
+    private AdminEntity activeAdmin(Long id, String username, String nickname, String hash) {
+        AdminEntity admin = new AdminEntity();
+        admin.setId(id);
+        admin.setUsername(username);
+        admin.setPasswordHash(hash);
+        admin.setNickname(nickname);
+        admin.setSuperAdmin(0);
         admin.setStatus(1);
         admin.setIsDeleted(0);
         return admin;

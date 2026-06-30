@@ -173,10 +173,18 @@ public class OpsAdminAccountService {
         if (deliver == null) {
             return ApiResult.fail(422, "CREDENTIAL_DELIVERY_INVALID");
         }
+        if (StringUtils.hasText(request.initialPassword()) && !"handoff".equals(deliver)) {
+            return ApiResult.fail(422, "INITIAL_PASSWORD_HANDOFF_ONLY");
+        }
+        if (StringUtils.hasText(request.initialPassword()) && !strongInitialPassword(request.initialPassword())) {
+            return ApiResult.fail(422, "INITIAL_PASSWORD_WEAK");
+        }
 
+        String initialPassword = normalizeInitialPassword(request.initialPassword(), deliver);
         AdminEntity admin = new AdminEntity();
         admin.setUsername(uniqueUsername(email));
-        admin.setPasswordHash(passwordEncoder.encode(UUID.randomUUID().toString()));
+        admin.setPasswordHash(passwordEncoder.encode(
+                StringUtils.hasText(initialPassword) ? initialPassword : UUID.randomUUID().toString()));
         admin.setNickname(displayName);
         admin.setEmail(email);
         admin.setSuperAdmin("super".equals(role) ? 1 : 0);
@@ -202,7 +210,8 @@ public class OpsAdminAccountService {
         save(prefix + ".createdAt", LocalDateTime.now().format(ISO), GROUP_ACCOUNT, "A1 account created at");
 
         audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,
-                Map.of("role", role, "credentialDeliveryStatus", credentialStatus));
+                Map.of("role", role, "credentialDeliveryStatus", credentialStatus,
+                        "initialPasswordProvided", StringUtils.hasText(initialPassword)));
         AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
         linkA2Proposal(idempotencyKey, "运营账号创建(A1)", operatorLabel(created), "—",
                 role + " / " + credentialStatus, request.operator(), currentOperatorRole(configs), "acct",
@@ -764,10 +773,17 @@ public class OpsAdminAccountService {
         if (!SESSION_REVOKE_ROLES.contains(actor.role())) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
         }
-        if ("super".equals(target.role())) {
+        if ("super".equals(target.role()) && !disabledE2eShiftSuper(target)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
         }
         return null;
+    }
+
+    private boolean disabledE2eShiftSuper(AdminAccountOverview.OperatorRecord target) {
+        return "disabled".equals(target.status())
+                && StringUtils.hasText(target.email())
+                && target.email().startsWith("e2e_")
+                && target.email().endsWith("@nexion.io");
     }
 
     private void save(String key, String value, String group, String remark) {
@@ -927,6 +943,21 @@ public class OpsAdminAccountService {
     private String normalizeDeliver(String deliver) {
         String normalized = StringUtils.hasText(deliver) ? deliver.trim().toLowerCase(Locale.ROOT) : "mail";
         return List.of("mail", "handoff").contains(normalized) ? normalized : null;
+    }
+
+    private String normalizeInitialPassword(String initialPassword, String deliver) {
+        if (!"handoff".equals(deliver) || !StringUtils.hasText(initialPassword)) {
+            return null;
+        }
+        return initialPassword.trim();
+    }
+
+    private boolean strongInitialPassword(String initialPassword) {
+        String normalized = initialPassword.trim();
+        return normalized.length() >= 12
+                && Pattern.compile("[A-Z]").matcher(normalized).find()
+                && Pattern.compile("[a-z]").matcher(normalized).find()
+                && Pattern.compile("\\d").matcher(normalized).find();
     }
 
     private String normalizeDomainGroup(String domainGroup) {

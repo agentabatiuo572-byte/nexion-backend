@@ -1,15 +1,21 @@
 package ffdd.opsconsole.treasury.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
+import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
@@ -18,9 +24,13 @@ import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
 import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -32,6 +42,10 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsTreasuryService {
+    private static final TypeReference<List<Map<String, Object>>> LIST_MAP_TYPE = new TypeReference<>() {
+    };
+    private static final TypeReference<List<BigDecimal>> DECIMAL_LIST_TYPE = new TypeReference<>() {
+    };
     private static final int DEFAULT_DAYS = 7;
     private static final int MAX_DAYS = 90;
     private static final String RESERVE_CONFIG_KEY = "wallet.dual-ledger.reserve-usd";
@@ -40,15 +54,45 @@ public class OpsTreasuryService {
     private static final String HEALTHY_CONFIG_KEY = "wallet.dual-ledger.healthy-pct";
     private static final String RUN_RISK_CONFIG_KEY = "wallet.dual-ledger.run-risk-pct";
     private static final String SCOPE_CONFIG_KEY = "wallet.dual-ledger.scope";
+    private static final String B_LIQUIDITY_RUNWAY_KEY = "treasury.b.liquidity.runway";
+    private static final String B_LIQUIDITY_FLOW_KEY = "treasury.b.liquidity.flow";
+    private static final String B_FUNNEL_STAGES_KEY = "treasury.b.funnel.stages";
+    private static final String B_FUNNEL_TRANSITIONS_KEY = "treasury.b.funnel.transitions";
+    private static final String B_FUNNEL_COHORT_KEY = "treasury.b.funnel.cohort";
+    private static final String B_FUNNEL_CHANNELS_KEY = "treasury.b.funnel.channels";
+    private static final String B_FUNNEL_DAILY_KEY = "treasury.b.funnel.daily";
+    private static final String B_FUNNEL_DAILY_TARGET_KEY = "treasury.b.funnel.daily-target";
+    private static final String B_RHYTHM_PHASES_KEY = "treasury.b.rhythm.phases";
+    private static final String B_RHYTHM_INFLOW_KEY = "treasury.b.rhythm.inflow";
+    private static final String B_RHYTHM_BUDGET_KEY = "treasury.b.rhythm.budget";
+    private static final String B_RHYTHM_RATIO_KEY = "treasury.b.rhythm.ratio";
+    private static final String B_RHYTHM_HEALTHY_RATIO_KEY = "treasury.b.rhythm.healthy-ratio";
+    private static final String B_RISK_FEED_KEY = "treasury.b.risk.feed";
+    private static final String B_RISK_PRESSURE_KEY = "treasury.b.risk.pressure";
+    private static final String B_RISK_PRESSURE_TIGHT_KEY = "treasury.b.risk.pressure-tight-pct";
+    private static final String B_RISK_RULES_KEY = "treasury.b.risk.rules";
+    private static final String B_RISK_SEVERITY_KEY = "treasury.b.risk.severity";
+    private static final String B_RISK_VOLUME_KEY = "treasury.b.risk.volume";
+    private static final String B_ALERT_COVERAGE_ID = "coverage-redline";
+    private static final String B_ALERT_COVERAGE_ACK_KEY = "treasury.b.alert.coverage-redline.ack";
+    private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
+    private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
+            new GateSeed("withdraw", "提现闸"),
+            new GateSeed("exchange", "兑换闸"),
+            new GateSeed("staking", "算力质押闸"),
+            new GateSeed("genesis", "Genesis 闸"),
+            new GateSeed("trial", "试用闸"));
     private static final List<String> D_SEED_USER_KEYS = List.of(
             "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
 
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
+    private final AdminIdempotencyService idempotencyService;
     private final Clock clock;
     private final TreasuryDualLedgerProperties dualLedgerProperties;
     private final UserSeedRepository userSeedRepository;
+    private final ObjectMapper objectMapper;
 
     public ApiResult<Map<String, Object>> overview(int days) {
         ensureD3FallbackSeedData();
@@ -88,6 +132,10 @@ public class OpsTreasuryService {
 
     public ApiResult<Map<String, Object>> dualLedger() {
         ensureD3FallbackSeedData();
+        return ApiResult.ok(dualLedgerSnapshot());
+    }
+
+    private Map<String, Object> dualLedgerSnapshot() {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
@@ -149,7 +197,80 @@ public class OpsTreasuryService {
         response.put("maturity7d", maturity7d(queueBacklogUsd, stakingInterestUsd));
         response.put("prev", section(
                 "reserveUsd", money(reserveUsd.subtract(prevNetFlow24hUsd)),
-                "netFlow24hUsd", money(prevNetFlow24hUsd)));
+                "netFlow24hUsd", money(prevNetFlow24hUsd),
+                "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
+                "avgRiskScore", avgRiskScore.longValue()));
+        return response;
+    }
+
+    public ApiResult<Map<String, Object>> bDomainDashboard() {
+        Map<String, Object> dualLedger = dualLedgerSnapshot();
+        List<Map<String, Object>> warnings = new ArrayList<>();
+        Map<String, Object> response = section(
+                "service", "nexion-backend",
+                "domain", "B",
+                "generatedAt", LocalDateTime.now(clock),
+                "sources", List.of(
+                        "nx_config_item:treasury.b.*",
+                        "nx_user_wallet",
+                        "nx_wallet_ledger",
+                        "nx_withdrawal_order",
+                        "nx_staking_position",
+                        "nx_config_item:killswitch.*",
+                        "nx_config_item:emergency.killswitch.*"));
+        response.put("warnings", warnings);
+        response.put("dualLedger", dualLedger);
+        response.put("alerts", section(
+                "coverageRedlineAcked", Boolean.parseBoolean(configFacade.activeValue(B_ALERT_COVERAGE_ACK_KEY).orElse("false")),
+                "sources", List.of("nx_config_item:" + B_ALERT_COVERAGE_ACK_KEY)));
+        response.put("liquidity", liquidityDashboard(dualLedger, warnings));
+        response.put("funnel", funnelDashboard(warnings));
+        response.put("rhythm", rhythmDashboard(dualLedger, warnings));
+        response.put("riskRadar", riskRadarDashboard(dualLedger, warnings));
+        return ApiResult.ok(response);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ApiResult<Map<String, Object>> acknowledgeBDomainAlert(String alertId, String idempotencyKey, TreasuryAlertAckRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalizedAlertId = alertId == null ? "" : alertId.trim().toLowerCase(Locale.ROOT);
+        if (!B_ALERT_COVERAGE_ID.equals(normalizedAlertId)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "B_ALERT_NOT_SUPPORTED");
+        }
+        String operator = trimToNull(request.operator());
+        if (operator == null) {
+            return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
+        }
+        String reason = request.reason().trim();
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+                B_ALERT_ACK_IDEMPOTENCY_SCOPE,
+                idempotencyKey,
+                bAlertAckRequestHash(normalizedAlertId, reason, operator),
+                ApiResult.class,
+                () -> acknowledgeBDomainAlertNew(normalizedAlertId, idempotencyKey.trim(), reason, operator));
+    }
+
+    private ApiResult<Map<String, Object>> acknowledgeBDomainAlertNew(
+            String normalizedAlertId,
+            String idempotencyKey,
+            String reason,
+            String operator) {
+        configFacade.upsertAdminValue(
+                B_ALERT_COVERAGE_ACK_KEY,
+                "true",
+                "BOOLEAN",
+                "treasury_b",
+                "B1 coverage redline alert acknowledgement");
+        audit("B1_COVERAGE_ALERT_ACKED", "TREASURY_ALERT", normalizedAlertId, null, section(
+                "alertId", normalizedAlertId,
+                "reason", reason,
+                "operator", operator,
+                "idempotencyKey", idempotencyKey));
+        Map<String, Object> response = bDomainDashboard().getData();
+        response.put("alertAck", section("alertId", normalizedAlertId, "acknowledged", true));
         return ApiResult.ok(response);
     }
 
@@ -352,6 +473,416 @@ public class OpsTreasuryService {
                 "status", "PENDING_REVIEW",
                 "ledgerPosting", "deferred-to-review",
                 "relatedBizNo", relatedBizNo));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> liquidityDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
+        Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
+        BigDecimal liabilitiesUsd = decimal(snapshot.get("liabilitiesUsd"));
+        List<Map<String, Object>> accounts = ((List<Map<String, Object>>) dualLedger.getOrDefault("accounts", List.of()))
+                .stream()
+                .map(account -> {
+                    BigDecimal amount = decimal(account.get("amount"));
+                    Map<String, Object> row = new LinkedHashMap<>(account);
+                    row.put("pc", pctScale(pct(amount, liabilitiesUsd)));
+                    return row;
+                })
+                .toList();
+        List<Map<String, Object>> runway = readJsonRows(B_LIQUIDITY_RUNWAY_KEY, defaultLiquidityRunway(), "B2 liquidity runway seed", warnings);
+        List<BigDecimal> flow = readDecimalList(B_LIQUIDITY_FLOW_KEY, defaultLiquidityFlow(), "B2 liquidity flow seed", warnings);
+        BigDecimal runwayTotalWan = runway.stream()
+                .map(row -> decimal(row.get("valueWan")))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        Map<String, Object> response = section(
+                "coverage", snapshot,
+                "liabilities", accounts,
+                "runway", runway,
+                "runwayTotalWan", runwayTotalWan,
+                "flow", flowRows(flow),
+                "sources", List.of("nx_config_item:" + B_LIQUIDITY_RUNWAY_KEY, "nx_config_item:" + B_LIQUIDITY_FLOW_KEY, "B1 dualLedger"));
+        return response;
+    }
+
+    private Map<String, Object> funnelDashboard(List<Map<String, Object>> warnings) {
+        List<Map<String, Object>> stages = readJsonRows(B_FUNNEL_STAGES_KEY, defaultFunnelStages(), "B3 funnel stage seed", warnings);
+        List<Map<String, Object>> transitions = readJsonRows(B_FUNNEL_TRANSITIONS_KEY, defaultFunnelTransitions(), "B3 funnel transition seed", warnings);
+        List<BigDecimal> cohort = readDecimalList(B_FUNNEL_COHORT_KEY, defaultFunnelCohort(), "B3 funnel cohort seed", warnings);
+        List<Map<String, Object>> channels = readJsonRows(B_FUNNEL_CHANNELS_KEY, defaultFunnelChannels(), "B3 funnel channel seed", warnings);
+        List<BigDecimal> daily = readDecimalList(B_FUNNEL_DAILY_KEY, defaultFunnelDaily(), "B3 funnel daily seed", warnings);
+        BigDecimal dailyTarget = readDecimalSeed(B_FUNNEL_DAILY_TARGET_KEY, new BigDecimal("18"), "B3 funnel daily target seed", warnings);
+        BigDecimal first = stages.isEmpty() ? BigDecimal.ZERO : decimal(stages.get(0).get("ct"));
+        BigDecimal last = stages.isEmpty() ? BigDecimal.ZERO : decimal(stages.get(stages.size() - 1).get("ct"));
+        Map<String, Object> bottleneck = transitions.stream()
+                .filter(row -> Boolean.TRUE.equals(row.get("bad")))
+                .findFirst()
+                .orElse(transitions.isEmpty() ? Map.of() : transitions.get(0));
+        return section(
+                "stages", stages,
+                "transitions", transitions,
+                "cohort", cohort,
+                "channels", channels,
+                "daily", daily,
+                "dailyTarget", dailyTarget,
+                "overallConversionPct", pctScale(pct(last, first)),
+                "bottleneck", bottleneck,
+                "sources", List.of(
+                        "nx_config_item:" + B_FUNNEL_STAGES_KEY,
+                        "nx_config_item:" + B_FUNNEL_TRANSITIONS_KEY,
+                        "nx_config_item:" + B_FUNNEL_COHORT_KEY,
+                        "nx_config_item:" + B_FUNNEL_CHANNELS_KEY,
+                        "nx_config_item:" + B_FUNNEL_DAILY_KEY,
+                        "nx_config_item:" + B_FUNNEL_DAILY_TARGET_KEY));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> rhythmDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
+        List<Map<String, Object>> phaseNodes = readJsonRows(B_RHYTHM_PHASES_KEY, defaultRhythmPhases(), "B4 rhythm phase seed", warnings);
+        List<BigDecimal> inflow = readDecimalList(B_RHYTHM_INFLOW_KEY, defaultRhythmInflow(), "B4 rhythm inflow seed", warnings);
+        List<Map<String, Object>> budget = readJsonRows(B_RHYTHM_BUDGET_KEY, defaultRhythmBudget(), "B4 rhythm budget seed", warnings);
+        List<BigDecimal> ratio = readDecimalList(B_RHYTHM_RATIO_KEY, defaultRhythmRatio(), "B4 rhythm ratio seed", warnings);
+        BigDecimal healthyRatio = readDecimalSeed(B_RHYTHM_HEALTHY_RATIO_KEY, new BigDecimal("1.2"), "B4 rhythm healthy ratio seed", warnings);
+        Map<String, Object> h1Rhythm = (Map<String, Object>) dualLedger.getOrDefault("h1Rhythm", Map.of());
+        BigDecimal currentRatio = ratio.isEmpty() ? BigDecimal.ZERO : ratio.get(ratio.size() - 1);
+        return section(
+                "h1", h1Rhythm,
+                "phaseNodes", phaseNodes,
+                "inflowWan", inflow,
+                "budget", budget,
+                "ratio", ratio,
+                "healthyRatio", healthyRatio,
+                "currentRatio", currentRatio,
+                "suggestion", currentRatio.compareTo(healthyRatio) >= 0 ? "维持扩张" : "切入收紧",
+                "sources", List.of(
+                        "nx_config_item:H1.rhythm.*",
+                        "nx_config_item:" + B_RHYTHM_PHASES_KEY,
+                        "nx_config_item:" + B_RHYTHM_INFLOW_KEY,
+                        "nx_config_item:" + B_RHYTHM_BUDGET_KEY,
+                        "nx_config_item:" + B_RHYTHM_RATIO_KEY,
+                        "nx_config_item:" + B_RHYTHM_HEALTHY_RATIO_KEY));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> riskRadarDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
+        Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
+        List<Map<String, Object>> configuredFeed = readJsonRows(B_RISK_FEED_KEY, defaultRiskFeed(), "B5 risk feed seed", warnings);
+        List<Map<String, Object>> feed = new ArrayList<>();
+        feed.add(dynamicCoverageFeed(snapshot));
+        feed.addAll(configuredFeed);
+        List<BigDecimal> pressure = readDecimalList(B_RISK_PRESSURE_KEY, defaultRiskPressure(), "B5 risk pressure seed", warnings);
+        List<Map<String, Object>> rules = readJsonRows(B_RISK_RULES_KEY, defaultRiskRules(), "B5 risk rule seed", warnings);
+        List<Map<String, Object>> severity = readJsonRows(B_RISK_SEVERITY_KEY, defaultRiskSeverity(), "B5 risk severity seed", warnings);
+        List<Map<String, Object>> volume = readJsonRows(B_RISK_VOLUME_KEY, defaultRiskVolume(), "B5 risk volume seed", warnings);
+        BigDecimal pressureTightPct = readDecimalSeed(B_RISK_PRESSURE_TIGHT_KEY, new BigDecimal("70"), "B5 risk pressure threshold seed", warnings);
+        BigDecimal reserveUsd = decimal(snapshot.get("reserveUsd"));
+        BigDecimal queueBacklogUsd = decimal(snapshot.get("queueBacklogUsd"));
+        BigDecimal bankRunRatio = pctScale(pct(queueBacklogUsd, reserveUsd));
+        List<Map<String, Object>> gates = riskGates();
+        long tripped = gates.stream().filter(gate -> Boolean.FALSE.equals(gate.get("on"))).count();
+        return section(
+                "gates", gates,
+                "trippedGateCount", tripped,
+                "feed", feed,
+                "pressureSeries", pressure,
+                "pressureTightPct", pressureTightPct,
+                "currentPressurePct", pressure.isEmpty() ? BigDecimal.ZERO : pressure.get(pressure.size() - 1),
+                "rules", rules,
+                "flaggedAccounts", rules.stream().map(row -> decimal(row.get("ct"))).reduce(BigDecimal.ZERO, BigDecimal::add),
+                "severity", severity,
+                "volume", volume,
+                "bankRunRatio", bankRunRatio,
+                "sources", List.of(
+                        "nx_config_item:killswitch.*",
+                        "nx_config_item:emergency.killswitch.*",
+                        "nx_config_item:" + B_RISK_FEED_KEY,
+                        "nx_config_item:" + B_RISK_PRESSURE_KEY,
+                        "nx_config_item:" + B_RISK_PRESSURE_TIGHT_KEY,
+                        "nx_config_item:" + B_RISK_RULES_KEY,
+                        "nx_config_item:" + B_RISK_SEVERITY_KEY,
+                        "nx_config_item:" + B_RISK_VOLUME_KEY,
+                        "B1 dualLedger"));
+    }
+
+    private List<Map<String, Object>> riskGates() {
+        List<Map<String, Object>> gates = new ArrayList<>();
+        for (GateSeed seed : B_RISK_GATE_SEEDS) {
+            String key = seed.key();
+            String configKey = "killswitch." + key;
+            String emergencyKey = "emergency.killswitch." + key;
+            String sourceKey = null;
+            String configured = configFacade.activeValue(configKey).filter(StringUtils::hasText).orElse(null);
+            if (StringUtils.hasText(configured)) {
+                sourceKey = configKey;
+            }
+            if (!StringUtils.hasText(configured)) {
+                configured = configFacade.activeValue(emergencyKey).filter(StringUtils::hasText).orElse(null);
+                if (StringUtils.hasText(configured)) {
+                    sourceKey = emergencyKey;
+                }
+            }
+            boolean configuredPresent = StringUtils.hasText(configured);
+            boolean on = !configuredPresent || enabledFromConfig(configured);
+            String state = configuredPresent ? (on ? "on" : "off") : "missing";
+            gates.add(section("nm", seed.name(), "dom", key, "on", on, "state", state, "configKey", sourceKey));
+        }
+        return gates;
+    }
+
+    private Map<String, Object> dynamicCoverageFeed(Map<String, Object> snapshot) {
+        BigDecimal reserve = decimal(snapshot.get("reserveUsd"));
+        BigDecimal queue = decimal(snapshot.get("queueBacklogUsd"));
+        BigDecimal bankRun = pctScale(pct(queue, reserve));
+        BigDecimal coverage = decimal(snapshot.get("coverageRatio"));
+        String severity = bankRun.compareTo(new BigDecimal("40")) >= 0 ? "p0" : bankRun.compareTo(new BigDecimal("20")) >= 0 ? "p1" : "p2";
+        return section(
+                "sev", severity,
+                "t", "挤兑比率 " + bankRun.stripTrailingZeros().toPlainString() + "% · 覆盖率 " + coverage.stripTrailingZeros().toPlainString() + "%",
+                "m", "B1 双账本 · 实时",
+                "href", "/overview/dual-ledger");
+    }
+
+    private List<Map<String, Object>> readJsonRows(String key, List<Map<String, Object>> fallback, String remark,
+                                                   List<Map<String, Object>> warnings) {
+        seedJsonIfAbsent(key, fallback, remark);
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .map(raw -> {
+                    try {
+                        return objectMapper.readValue(raw, LIST_MAP_TYPE);
+                    } catch (JsonProcessingException ex) {
+                        warnConfig(warnings, key, "B_CONFIG_JSON_INVALID", "Configured JSON is invalid; existing value was not overwritten.");
+                        return List.<Map<String, Object>>of();
+                    }
+                })
+                .orElse(fallback);
+    }
+
+    private List<BigDecimal> readDecimalList(String key, List<BigDecimal> fallback, String remark,
+                                             List<Map<String, Object>> warnings) {
+        seedJsonIfAbsent(key, fallback, remark);
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .map(raw -> {
+                    try {
+                        return objectMapper.readValue(raw, DECIMAL_LIST_TYPE);
+                    } catch (JsonProcessingException ex) {
+                        warnConfig(warnings, key, "B_CONFIG_JSON_INVALID", "Configured numeric array is invalid; existing value was not overwritten.");
+                        return List.<BigDecimal>of();
+                    }
+                })
+                .orElse(fallback);
+    }
+
+    private BigDecimal readDecimalSeed(String key, BigDecimal fallback, String remark, List<Map<String, Object>> warnings) {
+        seedConfigIfAbsent(key, safe(fallback).toPlainString(), "NUMBER", "treasury_b", remark);
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .map(raw -> {
+                    try {
+                        return new BigDecimal(raw.trim());
+                    } catch (RuntimeException ex) {
+                        warnConfig(warnings, key, "B_CONFIG_NUMBER_INVALID", "Configured number is invalid; existing value was not overwritten.");
+                        return safe(fallback);
+                    }
+                })
+                .orElse(safe(fallback));
+    }
+
+    private void warnConfig(List<Map<String, Object>> warnings, String key, String code, String message) {
+        warnings.add(section("key", key, "code", code, "message", message));
+    }
+
+    private void seedJsonIfAbsent(String key, Object fallback, String remark) {
+        if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
+            return;
+        }
+        seedJson(key, fallback, remark);
+    }
+
+    private void seedJson(String key, Object value, String remark) {
+        try {
+            configFacade.upsertAdminValue(key, objectMapper.writeValueAsString(value), "JSON", "treasury_b", remark);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Unable to seed treasury B config: " + key, ex);
+        }
+    }
+
+    private List<Map<String, Object>> defaultLiquidityRunway() {
+        return List.of(
+                section("day", "D+1", "valueWan", new BigDecimal("38")),
+                section("day", "D+2", "valueWan", new BigDecimal("52")),
+                section("day", "D+3", "valueWan", new BigDecimal("47")),
+                section("day", "D+4", "valueWan", new BigDecimal("61")),
+                section("day", "D+5", "valueWan", new BigDecimal("55")),
+                section("day", "D+6", "valueWan", new BigDecimal("73")),
+                section("day", "D+7", "valueWan", new BigDecimal("49")));
+    }
+
+    private List<BigDecimal> defaultLiquidityFlow() {
+        return decimalList("4", "6", "8", "9", "10", "11", "11", "12");
+    }
+
+    private List<Map<String, Object>> flowRows(List<BigDecimal> flow) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int i = 0; i < flow.size(); i++) {
+            rows.add(section("label", "W" + (i + 1), "valueWan", safe(flow.get(i))));
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> defaultFunnelStages() {
+        return List.of(
+                section("key", "reg", "nm", "注册", "ct", 1240, "lc", "L1", "color", "var(--brand)"),
+                section("key", "bind", "nm", "绑卡", "ct", 769, "lc", "L2", "conv", "62.0%", "color", "color-mix(in srgb, var(--brand) 78%, #fff)"),
+                section("key", "buy", "nm", "首购", "ct", 223, "lc", "L3→L4", "conv", "29.0%", "bad", true, "color", "var(--cyan)"),
+                section("key", "rebuy", "nm", "复购", "ct", 78, "lc", "L5", "conv", "35.0%", "color", "color-mix(in srgb, var(--cyan) 70%, #fff)"),
+                section("key", "cash", "nm", "提现", "ct", 41, "lc", "L5", "conv", "52.6%", "color", "var(--success)"));
+    }
+
+    private List<Map<String, Object>> defaultFunnelTransitions() {
+        return List.of(
+                section("from", "reg", "to", "bind", "a", "注册→绑卡", "v", "62.0%", "flow", "1,240 → 769", "note", "$1 KYC express", "noteKind", "muted"),
+                section("from", "bind", "to", "buy", "a", "绑卡→首购", "v", "29.0%", "vColor", "var(--brand-2)", "flow", "769 → 223", "note", "环比 -2.4pt", "noteKind", "dn", "bad", true),
+                section("from", "buy", "to", "rebuy", "a", "首购→复购", "v", "35.0%", "flow", "223 → 78", "note", "达标 +1.1pt", "noteKind", "up"),
+                section("from", "rebuy", "to", "cash", "a", "复购→提现", "v", "52.6%", "flow", "78 → 41", "note", "高价值留存样本"),
+                section("from", "reg", "to", "cash", "a", "整体转化", "v", "3.3%", "flow", "1,240 → 41", "note", "L1-L5 全链路"));
+    }
+
+    private List<BigDecimal> defaultFunnelCohort() {
+        return decimalList("100", "86", "74", "68", "61", "57", "54", "52");
+    }
+
+    private List<Map<String, Object>> defaultFunnelChannels() {
+        return List.of(
+                section("nm", "Affiliate", "v", 41, "c", "var(--brand)", "q", "高 ROAS"),
+                section("nm", "KOL", "v", 26, "c", "var(--cyan)", "q", "首购偏低"),
+                section("nm", "Organic", "v", 18, "c", "var(--success)", "q", "复购稳定"),
+                section("nm", "Referral", "v", 15, "c", "var(--warning)", "q", "返佣敏感"));
+    }
+
+    private List<BigDecimal> defaultFunnelDaily() {
+        return decimalList("17.2", "16.8", "18.1", "19.0", "18.4", "17.6", "18.2", "18.0");
+    }
+
+    private List<Map<String, Object>> defaultRhythmPhases() {
+        return List.of(
+                section("code", "P1", "name", "拉新", "intensity", 55),
+                section("code", "P2", "name", "成长", "intensity", 78),
+                section("code", "P3", "name", "扩张", "intensity", 92),
+                section("code", "P4", "name", "稳态", "intensity", 70),
+                section("code", "P5", "name", "收紧", "intensity", 40),
+                section("code", "P6", "name", "收场", "intensity", 18));
+    }
+
+    private List<BigDecimal> defaultRhythmInflow() {
+        return decimalList("62", "84", "118", "142", "168", "190", "205", "198");
+    }
+
+    private List<Map<String, Object>> defaultRhythmBudget() {
+        return List.of(
+                section("nm", "获客", "v", 38, "c", "var(--brand)"),
+                section("nm", "奖励", "v", 27, "c", "var(--cyan)"),
+                section("nm", "安全", "v", 20, "c", "var(--warning)"),
+                section("nm", "储备", "v", 15, "c", "var(--success)"));
+    }
+
+    private List<BigDecimal> defaultRhythmRatio() {
+        return decimalList("1.62", "1.58", "1.55", "1.53", "1.51", "1.49", "1.45", "1.42");
+    }
+
+    private List<Map<String, Object>> defaultRiskFeed() {
+        return List.of(
+                section("sev", "p1", "t", "套利检测命中 cluster-k2-018 · 触发提现延迟", "m", "K2 套利检测 · 6m 前", "href", "/risk/arbitrage"),
+                section("sev", "p2", "t", "24h 资金净流入保持正向 · 扩张节奏允许", "m", "B2 流动性 · 14m 前", "href", "/overview/liquidity"),
+                section("sev", "p1", "t", "提现队列中存在 KYC 复审样本", "m", "D2/K5 · 18m 前", "href", "/finance/withdrawals"),
+                section("sev", "p2", "t", "B5 规则压力低于收紧阈值", "m", "B5 风险雷达 · 28m 前", "href", "/overview/risk-radar"),
+                section("sev", "p2", "t", "风险评分均值低于人工覆盖线", "m", "K4 风险评分 · 31m 前", "href", "/risk/risk-score"));
+    }
+
+    private List<BigDecimal> defaultRiskPressure() {
+        return decimalList("9", "12", "18", "24", "28", "30", "31", "32");
+    }
+
+    private List<Map<String, Object>> defaultRiskRules() {
+        return List.of(
+                section("nm", "多账户", "ct", 9, "sev", "P1", "dom", "K1"),
+                section("nm", "套利", "ct", 4, "sev", "P1", "dom", "K2"),
+                section("nm", "提现规则", "ct", 7, "sev", "P2", "dom", "K3"),
+                section("nm", "KYC 复审", "ct", 5, "sev", "P1", "dom", "K5"));
+    }
+
+    private List<Map<String, Object>> defaultRiskSeverity() {
+        return List.of(
+                section("nm", "P0", "v", 1, "c", "var(--danger)"),
+                section("nm", "P1", "v", 11, "c", "var(--warning)"),
+                section("nm", "P2", "v", 23, "c", "var(--cyan)"),
+                section("nm", "P3", "v", 37, "c", "var(--success)"));
+    }
+
+    private List<Map<String, Object>> defaultRiskVolume() {
+        return List.of(
+                section("label", "D-6", "count", 3),
+                section("label", "D-5", "count", 4),
+                section("label", "D-4", "count", 6),
+                section("label", "D-3", "count", 5),
+                section("label", "D-2", "count", 7),
+                section("label", "D-1", "count", 6),
+                section("label", "今日", "count", 9));
+    }
+
+    private List<BigDecimal> decimalList(String... values) {
+        List<BigDecimal> rows = new ArrayList<>();
+        for (String value : values) {
+            rows.add(new BigDecimal(value));
+        }
+        return rows;
+    }
+
+    private boolean enabledFromConfig(String value) {
+        if (!StringUtils.hasText(value)) {
+            return true;
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return !List.of("0", "false", "off", "disabled", "disable", "closed", "close").contains(normalized);
+    }
+
+    private BigDecimal decimal(Object value) {
+        if (value == null) {
+            return BigDecimal.ZERO;
+        }
+        if (value instanceof BigDecimal decimal) {
+            return decimal;
+        }
+        if (value instanceof Number number) {
+            return new BigDecimal(number.toString());
+        }
+        String text = String.valueOf(value)
+                .trim()
+                .replace("%", "")
+                .replace(",", "")
+                .replace("$", "");
+        if (!StringUtils.hasText(text)) {
+            return BigDecimal.ZERO;
+        }
+        try {
+            return new BigDecimal(text);
+        } catch (RuntimeException ex) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private String bAlertAckRequestHash(String normalizedAlertId, String reason, String operator) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(objectMapper.writeValueAsString(section(
+                    "alertId", normalizedAlertId,
+                    "reason", reason,
+                    "operator", operator)).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (JsonProcessingException ex) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "B_ALERT_ACK_HASH_FAILED");
+        } catch (NoSuchAlgorithmException ex) {
+            throw new BizException(500, "SHA256_UNAVAILABLE");
+        }
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {
@@ -589,5 +1120,8 @@ public class OpsTreasuryService {
             }
         }
         return detail;
+    }
+
+    private record GateSeed(String key, String name) {
     }
 }

@@ -1,17 +1,27 @@
 package ffdd.opsconsole.treasury.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
+import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
@@ -27,7 +37,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -39,6 +52,9 @@ class OpsTreasuryServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeUserSeedRepository userSeedRepository = new FakeUserSeedRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final Map<String, String> idempotencyHashes = new LinkedHashMap<>();
+    private final Map<String, ApiResult<Map<String, Object>>> idempotencyResponses = new LinkedHashMap<>();
     private final OpsTreasuryService service = service();
 
     private OpsTreasuryService service() {
@@ -46,10 +62,35 @@ class OpsTreasuryServiceTest {
                 ledgerRepository,
                 configFacade,
                 auditLogService,
+                idempotencyService,
                 CLOCK,
                 new TreasuryDualLedgerProperties(),
-                userSeedRepository);
+                userSeedRepository,
+                new ObjectMapper());
         return service;
+    }
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void setUpIdempotency() {
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any(Supplier.class)))
+                .thenAnswer(invocation -> {
+                    String scope = invocation.getArgument(0);
+                    String key = invocation.getArgument(1);
+                    String hash = invocation.getArgument(2);
+                    Supplier<ApiResult<Map<String, Object>>> action = invocation.getArgument(4);
+                    String cacheKey = scope + ":" + key;
+                    if (idempotencyResponses.containsKey(cacheKey)) {
+                        if (!Objects.equals(idempotencyHashes.get(cacheKey), hash)) {
+                            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                        }
+                        return idempotencyResponses.get(cacheKey);
+                    }
+                    ApiResult<Map<String, Object>> response = action.get();
+                    idempotencyHashes.put(cacheKey, hash);
+                    idempotencyResponses.put(cacheKey, response);
+                    return response;
+                });
     }
 
     @Test
@@ -119,6 +160,164 @@ class OpsTreasuryServiceTest {
                 "wallet.dual-ledger.reserve-usd",
                 "wallet.dual-ledger.redline-pct",
                 "wallet.dual-ledger.scope");
+    }
+
+    @Test
+    void bDomainDashboardDoesNotSeedD3OrD4FallbackDataWhenTreasuryIsEmpty() {
+        Map<String, Object> dashboard = service.bDomainDashboard().getData();
+
+        assertThat(dashboard).containsEntry("domain", "B");
+        assertThat(ledgerRepository.seedCalls).isZero();
+        assertThat(userSeedRepository.accountSeedCalls).isZero();
+        assertThat(userSeedRepository.kycSeedCalls).isZero();
+        assertThat(configFacade.upsertedKeys)
+                .isNotEmpty()
+                .allMatch(key -> key.startsWith("treasury.b."))
+                .noneMatch(key -> key.startsWith("wallet.dual-ledger."));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void bDomainDashboardSeedsConfigRowsAndReadsThemBack() {
+        ledgerRepository.usdtAvailable = new BigDecimal("1000");
+        ledgerRepository.withdrawalQueue = new BigDecimal("120");
+        ledgerRepository.activeQueueCount = 2L;
+        ledgerRepository.avgRiskScore = new BigDecimal("36.4");
+        configFacade.values.put("killswitch.withdraw", "disabled");
+        configFacade.values.put("emergency.killswitch.exchange", "off");
+
+        Map<String, Object> dashboard = service.bDomainDashboard().getData();
+
+        assertThat(dashboard)
+                .containsEntry("domain", "B")
+                .containsKeys("dualLedger", "liquidity", "funnel", "rhythm", "riskRadar");
+        assertThat(configFacade.values).containsKeys(
+                "treasury.b.liquidity.runway",
+                "treasury.b.funnel.stages",
+                "treasury.b.funnel.daily-target",
+                "treasury.b.rhythm.phases",
+                "treasury.b.rhythm.healthy-ratio",
+                "treasury.b.risk.pressure-tight-pct",
+                "treasury.b.risk.rules");
+        assertThat(configFacade.upsertedKeys)
+                .isNotEmpty()
+                .allMatch(key -> key.startsWith("treasury.b."))
+                .noneMatch(key -> key.startsWith("wallet.dual-ledger."))
+                .noneMatch(key -> key.startsWith("killswitch.") || key.startsWith("emergency.killswitch."));
+        Map<String, Object> liquidity = (Map<String, Object>) dashboard.get("liquidity");
+        assertThat((List<Map<String, Object>>) liquidity.get("runway")).isNotEmpty();
+        Map<String, Object> funnel = (Map<String, Object>) dashboard.get("funnel");
+        assertThat((List<Map<String, Object>>) funnel.get("stages"))
+                .extracting(row -> row.get("key"))
+                .contains("reg", "cash");
+        Map<String, Object> riskRadar = (Map<String, Object>) dashboard.get("riskRadar");
+        assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
+                .anySatisfy(gate -> {
+                    assertThat(gate).containsEntry("dom", "withdraw");
+                    assertThat(gate).containsEntry("on", false);
+                    assertThat(gate).containsEntry("state", "off");
+                });
+        assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
+                .anySatisfy(gate -> {
+                    assertThat(gate).containsEntry("dom", "exchange");
+                    assertThat(gate).containsEntry("on", false);
+                    assertThat(gate).containsEntry("state", "off");
+                    assertThat(gate).containsEntry("configKey", "emergency.killswitch.exchange");
+                });
+        assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
+                .anySatisfy(gate -> {
+                    assertThat(gate).containsEntry("dom", "staking");
+                    assertThat(gate).containsEntry("state", "missing");
+                });
+        assertThat(riskRadar).containsEntry("trippedGateCount", 2L);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void bDomainDashboardReportsCorruptConfigWithoutOverwriting() {
+        configFacade.values.put("treasury.b.funnel.stages", "{bad-json");
+        configFacade.values.put("treasury.b.funnel.daily-target", "oops");
+
+        Map<String, Object> dashboard = service.bDomainDashboard().getData();
+
+        assertThat((List<Map<String, Object>>) dashboard.get("warnings"))
+                .anySatisfy(warning -> assertThat(warning)
+                        .containsEntry("key", "treasury.b.funnel.stages")
+                        .containsEntry("code", "B_CONFIG_JSON_INVALID"))
+                .anySatisfy(warning -> assertThat(warning)
+                        .containsEntry("key", "treasury.b.funnel.daily-target")
+                        .containsEntry("code", "B_CONFIG_NUMBER_INVALID"));
+        assertThat(configFacade.values)
+                .containsEntry("treasury.b.funnel.stages", "{bad-json")
+                .containsEntry("treasury.b.funnel.daily-target", "oops");
+        assertThat(configFacade.upsertedKeys)
+                .doesNotContain("treasury.b.funnel.stages", "treasury.b.funnel.daily-target");
+        Map<String, Object> funnel = (Map<String, Object>) dashboard.get("funnel");
+        assertThat((List<Map<String, Object>>) funnel.get("stages")).isEmpty();
+        assertThat(funnel).containsEntry("dailyTarget", new BigDecimal("18"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void bDomainAlertAckWritesConfigAndAudits() {
+        TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("covered by treasury shift", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("treasury.b.alert.coverage-redline.ack", "true");
+        assertThat((Map<String, Object>) result.getData().get("alertAck"))
+                .containsEntry("alertId", "coverage-redline")
+                .containsEntry("acknowledged", true);
+        assertThat((Map<String, Object>) result.getData().get("alerts"))
+                .containsEntry("coverageRedlineAcked", true);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("B1_COVERAGE_ALERT_ACKED");
+        assertThat(captor.getValue().getActorUsername()).isNull();
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("reason", "covered by treasury shift")
+                .containsEntry("operator", "superadmin")
+                .containsEntry("idempotencyKey", "idem-b-alert");
+    }
+
+    @Test
+    void bDomainAlertAckReplaysDuplicateIdempotencyWithoutSideEffects() {
+        TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("covered by treasury shift", "superadmin");
+
+        ApiResult<Map<String, Object>> first = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
+        ApiResult<Map<String, Object>> second = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
+
+        assertThat(first.getCode()).isZero();
+        assertThat(second.getCode()).isZero();
+        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
+        assertThat(configFacade.upsertedKeys.stream()
+                .filter("treasury.b.alert.coverage-redline.ack"::equals)
+                .count()).isEqualTo(1);
+    }
+
+    @Test
+    void bDomainAlertAckRejectsIdempotencyPayloadMismatch() {
+        TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("covered by treasury shift", "superadmin");
+        TreasuryAlertAckRequest changed = new TreasuryAlertAckRequest("changed reason", "superadmin");
+
+        service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
+
+        assertThatThrownBy(() -> service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", changed))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void bDomainAlertAckRejectsMissingOperator() {
+        TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("covered by treasury shift", " ");
+
+        ApiResult<Map<String, Object>> result = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.httpStatus());
+        assertThat(configFacade.values).doesNotContainKey("treasury.b.alert.coverage-redline.ack");
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -302,6 +501,7 @@ class OpsTreasuryServiceTest {
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
         private final Map<String, String> values = new LinkedHashMap<>();
+        private final List<String> upsertedKeys = new ArrayList<>();
 
         @Override
         public Optional<String> activeValue(String configKey) {
@@ -310,6 +510,7 @@ class OpsTreasuryServiceTest {
 
         @Override
         public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
+            upsertedKeys.add(configKey);
             values.put(configKey, configValue);
         }
     }

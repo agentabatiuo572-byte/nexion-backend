@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
+import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
@@ -26,6 +27,29 @@ class OpsTreasuryControllerTest {
 
         assertThat(result.getData()).containsEntry("domain", "B");
         verify(treasuryService).overview(7);
+    }
+
+    @Test
+    void bDomainDashboardDelegatesToTreasuryService() {
+        when(treasuryService.bDomainDashboard()).thenReturn(ApiResult.ok(Map.of("domain", "B")));
+
+        ApiResult<Map<String, Object>> result = controller.bDomainDashboard();
+
+        assertThat(result.getData()).containsEntry("domain", "B");
+        verify(treasuryService).bDomainDashboard();
+    }
+
+    @Test
+    void bDomainAlertAckDelegatesWithIdempotencyHeader() {
+        TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("handled", "superadmin");
+        when(treasuryService.acknowledgeBDomainAlert("coverage-redline", "idem-alert", request))
+                .thenReturn(ApiResult.ok(Map.of("ok", true)));
+
+        ApiResult<Map<String, Object>> result =
+                controller.acknowledgeBDomainAlert("coverage-redline", "idem-alert", request);
+
+        assertThat(result.getData()).containsEntry("ok", true);
+        verify(treasuryService).acknowledgeBDomainAlert("coverage-redline", "idem-alert", request);
     }
 
     @Test

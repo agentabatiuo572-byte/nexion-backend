@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
+import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
@@ -16,6 +17,7 @@ import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -39,6 +41,21 @@ public class OpsTreasuryController {
     @PreAuthorize("hasAuthority('PERM_TREASURY_READ')")
     public ApiResult<Map<String, Object>> dualLedger() {
         return treasuryService.dualLedger();
+    }
+
+    @GetMapping("/b-domain")
+    @PreAuthorize("hasAuthority('PERM_TREASURY_READ')")
+    public ApiResult<Map<String, Object>> bDomainDashboard() {
+        return treasuryService.bDomainDashboard();
+    }
+
+    @PostMapping("/b-domain/alerts/{alertId}/ack")
+    @PreAuthorize("hasAuthority('PERM_TREASURY_WRITE')")
+    public ApiResult<Map<String, Object>> acknowledgeBDomainAlert(
+            @PathVariable String alertId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) TreasuryAlertAckRequest request) {
+        return treasuryService.acknowledgeBDomainAlert(alertId, idempotencyKey, request);
     }
 
     @PostMapping("/injections")
