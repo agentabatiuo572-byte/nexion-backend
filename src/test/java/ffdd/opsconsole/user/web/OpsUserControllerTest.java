@@ -50,6 +50,17 @@ class OpsUserControllerTest {
     }
 
     @Test
+    void legacyAssetsOverviewDelegatesToAssetAdjustmentOverview() {
+        when(userService.assetAdjustmentOverview()).thenReturn(ApiResult.ok(Map.of("domain", "C3")));
+
+        ApiResult<Map<String, Object>> result = controller.assetsOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("domain", "C3");
+        verify(userService).assetAdjustmentOverview();
+    }
+
+    @Test
     void profilesReturnPageResultAndDelegateQuery() {
         UserQueryRequest request = new UserQueryRequest("Alice", "ACTIVE", "PENDING", null, 1, 20, null);
         when(userService.profilePage(request)).thenReturn(ApiResult.ok(new PageResult<UserAccountView>(0, 1, 20, List.of())));

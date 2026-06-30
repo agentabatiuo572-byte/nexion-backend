@@ -18,6 +18,7 @@ import ffdd.opsconsole.content.dto.DisclosureGateUpdateRequest;
 import ffdd.opsconsole.content.dto.TrustDisclosureActionRequest;
 import ffdd.opsconsole.content.dto.TrustSectionPublishRequest;
 import ffdd.opsconsole.content.dto.TrustSectionRollbackRequest;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.time.Clock;
@@ -36,10 +37,12 @@ import org.mockito.ArgumentCaptor;
 
 class OpsTrustDisclosureServiceTest {
     private final FakeTrustDisclosureRepository repository = new FakeTrustDisclosureRepository();
+    private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T10:30:00Z"), ZoneOffset.UTC);
     private final OpsTrustDisclosureService service = new OpsTrustDisclosureService(
             repository,
+            configFacade,
             auditLogService,
             clock,
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
@@ -139,6 +142,8 @@ class OpsTrustDisclosureServiceTest {
                 .containsExactlyInAnyOrder("withdraw", "staking");
         assertThat(result.getData().gatedActions()).filteredOn(action -> action.key().equals("nexv2"))
                 .allSatisfy(action -> assertThat(action.active()).isFalse());
+        verify(configFacade).upsertAdminValue("disclosure.gate.withdraw", "true", "BOOLEAN", "content", "调整合规闸范围");
+        verify(configFacade).upsertAdminValue("disclosure.gate.staking", "true", "BOOLEAN", "content", "调整合规闸范围");
     }
 
     @Test

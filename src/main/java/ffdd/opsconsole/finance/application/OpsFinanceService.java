@@ -69,6 +69,7 @@ public class OpsFinanceService {
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
     private static final String WITHDRAW_DISCLOSURE_GATE_KEY = "disclosure.gate.withdraw";
+    private static final String WITHDRAW_GEO_EMERGENCY_KEY = "emergency.geo.j4.block.required";
     private static final int HIGH_RISK_SCORE = 70;
     private static final List<String> D_SEED_USER_KEYS = List.of(
             "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
@@ -819,6 +820,9 @@ public class OpsFinanceService {
         if (withdrawDisclosureGateActive()) {
             return "WITHDRAWAL_DISCLOSURE_REACK_REQUIRED";
         }
+        if (withdrawGeoEmergencyBlocked()) {
+            return "WITHDRAWAL_GEO_BLOCKED";
+        }
         if (coverageBelowRedline()) {
             return OpsErrorCode.COVERAGE_BELOW_REDLINE.name();
         }
@@ -866,6 +870,12 @@ public class OpsFinanceService {
 
     private boolean withdrawDisclosureGateActive() {
         return configFacade.activeValue(WITHDRAW_DISCLOSURE_GATE_KEY)
+                .map(this::parseDisclosureGateActive)
+                .orElse(false);
+    }
+
+    private boolean withdrawGeoEmergencyBlocked() {
+        return configFacade.activeValue(WITHDRAW_GEO_EMERGENCY_KEY)
                 .map(this::parseDisclosureGateActive)
                 .orElse(false);
     }

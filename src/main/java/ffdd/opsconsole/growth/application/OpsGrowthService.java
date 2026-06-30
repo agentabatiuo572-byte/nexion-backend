@@ -65,6 +65,7 @@ public class OpsGrowthService {
     private static final String WITHDRAW_HOLD_DAYS_KEY = "growth.withdraw_nex_gate.hold_days";
     private static final String WITHDRAW_MIN_BALANCE_MIRROR_KEY = "withdrawal.nex_gate.min_balance_nex";
     private static final String WITHDRAW_HOLD_DAYS_MIRROR_KEY = "withdrawal.nex_gate.hold_days";
+    private static final String WITHDRAW_STAKING_DISCLOSURE_GATE_KEY = "disclosure.gate.staking";
     private static final String TRIAL_PARAM_PREFIX = "growth.trial.param.";
     private static final String TRIAL_SESSION_PREFIX = "growth.trial.session.";
     private static final String TRIAL_AUTO_PUSH_KILLED_KEY = "growth.trial.auto_push_killed";
@@ -987,15 +988,22 @@ public class OpsGrowthService {
 
     public ApiResult<Map<String, Object>> withdrawGate() {
         ensureWithdrawGateSeedData();
+        boolean disclosureGateActive = disclosureGateActive(WITHDRAW_STAKING_DISCLOSURE_GATE_KEY);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "D5_H1");
         response.put("asset", "NEX");
+        response.put("enabled", !disclosureGateActive);
+        response.put("blockedBy", disclosureGateActive ? "I4_DISCLOSURE_GATE" : null);
+        response.put("disclosureGate", Map.of("staking", disclosureGateActive));
         response.put("minBalanceNex", configDecimal(WITHDRAW_MIN_BALANCE_KEY, new BigDecimal("100")));
         response.put("holdDays", configDecimal(WITHDRAW_HOLD_DAYS_KEY, new BigDecimal("7")).intValue());
         response.put("canonicalOwner", "H1");
         response.put("mirrors", List.of("D5 withdrawal parameters", "D2 withdrawal queue readonly"));
         response.put("retiredReplacement", "withdrawPointsRatio -> withdrawNexGate");
-        response.put("sources", List.of("nx_config_item:" + WITHDRAW_MIN_BALANCE_KEY, "nx_config_item:" + WITHDRAW_HOLD_DAYS_KEY));
+        response.put("sources", List.of(
+                "nx_config_item:" + WITHDRAW_MIN_BALANCE_KEY,
+                "nx_config_item:" + WITHDRAW_HOLD_DAYS_KEY,
+                "nx_config_item:" + WITHDRAW_STAKING_DISCLOSURE_GATE_KEY));
         return ApiResult.ok(response);
     }
 
@@ -2660,6 +2668,15 @@ public class OpsGrowthService {
 
     private Map<String, Object> fallbackMap(Map<String, Object> fallback) {
         return readTimeSeedPolicy.enabled() ? new LinkedHashMap<>(fallback) : new LinkedHashMap<>();
+    }
+
+    private boolean disclosureGateActive(String key) {
+        return configFacade.activeValue(key)
+                .map(value -> switch (value.trim().toLowerCase(Locale.ROOT)) {
+                    case "enabled", "enable", "on", "true", "1", "blocked", "required" -> true;
+                    default -> false;
+                })
+                .orElse(false);
     }
 
     private List<Map<String, Object>> defaultVouchers() {

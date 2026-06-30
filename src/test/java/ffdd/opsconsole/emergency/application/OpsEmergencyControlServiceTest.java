@@ -255,6 +255,7 @@ class OpsEmergencyControlServiceTest {
         assertThat(tamper.getCode()).isZero();
         assertThat(configFacade.values)
                 .containsEntry("emergency.geo.country.KP", "blocked")
+                .containsEntry("emergency.geo.j4.block.required", "false")
                 .containsKeys("emergency.geo.hits", "emergency.geo.edge.metrics", "emergency.tamper.trend", "emergency.tamper.paths", "emergency.tamper.accounts");
     }
 

@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -38,6 +39,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     List<SimpleGrantedAuthority> authorities = extractAuthorities(claims);
                     UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                             claims.getSubject(), null, authorities);
+                    String username = claims.get("username", String.class);
+                    if (StringUtils.hasText(username)) {
+                        authentication.setDetails(Map.of("username", username.trim()));
+                    }
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 } else {
                     SecurityContextHolder.clearContext();
@@ -72,6 +77,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                 subjectId, null, authorities);
+        String username = request.getHeader(AuthHeaders.USERNAME);
+        if (StringUtils.hasText(username)) {
+            authentication.setDetails(Map.of("username", username.trim()));
+        }
         SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 

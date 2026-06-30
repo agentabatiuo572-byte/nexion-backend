@@ -169,4 +169,17 @@ class WithdrawalOrderMapperSqlTest {
         assertThat(normalizedDetailSql)
                 .contains("COALESCE( k4o.override_score, k4.model_score, rd.risk_score,");
     }
+
+    @Test
+    void freezePendingByUserIdIncludesFreshPendingWithdrawals() throws Exception {
+        String sql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod("freezePendingByUserId", Long.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Update.class)
+                .value());
+
+        assertThat(sql)
+                .contains("'PENDING'")
+                .contains("'SUBMITTED'")
+                .contains("'REVIEWING'");
+    }
 }

@@ -59,6 +59,8 @@ class OpsConsoleArchitectureTest {
             Pattern.compile("@(?:Select|Insert|Update|Delete)\\(\\\"\\\"\\\"([\\s\\S]*?)\\\"\\\"\\\"\\)");
     private static final Pattern RAW_XML_UNSAFE_LESS_THAN_OPERATOR_PATTERN =
             Pattern.compile("(?m)\\s<=?\\s");
+    private static final Pattern XML_ENTITY_OPERATOR_PATTERN =
+            Pattern.compile("&(?:lt|gt);");
 
     @Test
     void domainCatalogContainsTwelveOpsConsoleDomains() {
@@ -297,7 +299,7 @@ class OpsConsoleArchitectureTest {
     }
 
     @Test
-    void mybatisAnnotationSqlDoesNotLeakXmlUnsafeLessThanOperators() throws Exception {
+    void mybatisAnnotationSqlUsesJdbcOperatorsExceptInsideDynamicXmlScripts() throws Exception {
         List<String> violations = new ArrayList<>();
 
         for (Path file : sourceFiles()) {
@@ -305,14 +307,18 @@ class OpsConsoleArchitectureTest {
             java.util.regex.Matcher matcher = MYBATIS_TEXT_BLOCK_ANNOTATION_PATTERN.matcher(source);
             while (matcher.find()) {
                 String sql = matcher.group(1);
-                if (RAW_XML_UNSAFE_LESS_THAN_OPERATOR_PATTERN.matcher(sql).find()) {
-                    violations.add(displayPath(file));
+                boolean dynamicXmlScript = sql.contains("<script>");
+                if (dynamicXmlScript && RAW_XML_UNSAFE_LESS_THAN_OPERATOR_PATTERN.matcher(sql).find()) {
+                    violations.add(displayPath(file) + " uses raw less-than operators inside MyBatis XML script SQL");
+                }
+                if (!dynamicXmlScript && XML_ENTITY_OPERATOR_PATTERN.matcher(sql).find()) {
+                    violations.add(displayPath(file) + " uses XML entity operators in plain JDBC annotation SQL");
                 }
             }
         }
 
         assertThat(violations)
-                .as("MyBatis annotation SQL is parsed by XMLLanguageDriver; use &lt; or &lt;= for less-than operators")
+                .as("MyBatis annotation SQL must use XML entities only inside <script> dynamic SQL; plain annotation SQL is sent to JDBC as-is")
                 .isEmpty();
     }
 

@@ -64,6 +64,7 @@ public class OpsNexMarketService {
     private static final String EXCHANGE_KILLSWITCH_KEY = "killswitch.exchange";
     private static final String EXCHANGE_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.exchange";
     private static final String DISCLOSURE_GATE_PREFIX = "disclosure.gate.";
+    private static final String GEO_EMERGENCY_BLOCK_KEY = "emergency.geo.j4.block.required";
     private static final String CURRENT_PRICE_KEY = "wallet.exchange.nex_usdt_price";
     private static final String WEEKLY_CURVE_KEY = "wallet.nex_market.weekly_curve";
     private static final String PUMP_PROBABILITY_KEY = "wallet.nex_market.pump_probability";
@@ -290,6 +291,12 @@ public class OpsNexMarketService {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if (disclosureGateActive("exchange")) {
+            return validation("G2_DISCLOSURE_GATE_REACK_REQUIRED");
+        }
+        if (exchangeGeoBlocked(order)) {
+            return validation("G2_GEO_BLOCKED");
         }
         KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeExchangeReview(
                 order.userNo(),
@@ -2461,6 +2468,21 @@ public class OpsNexMarketService {
         return configFacade.activeValue(DISCLOSURE_GATE_PREFIX + domain)
                 .map(this::parseDisclosureGateActive)
                 .orElse(false);
+    }
+
+    private boolean exchangeGeoBlocked(ExchangeOrderView order) {
+        if (configFacade.activeValue(GEO_EMERGENCY_BLOCK_KEY)
+                .map(this::parseDisclosureGateActive)
+                .orElse(false)) {
+            return true;
+        }
+        if (order == null || !StringUtils.hasText(order.countryCode())) {
+            return false;
+        }
+        String countryCode = order.countryCode().trim().toUpperCase(Locale.ROOT);
+        return blockedCountryViews().stream()
+                .map(row -> String.valueOf(row.getOrDefault("cc", "")).trim().toUpperCase(Locale.ROOT))
+                .anyMatch(countryCode::equals);
     }
 
     private boolean parseDisclosureGateActive(String raw) {

@@ -59,6 +59,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/market/**", "PERM_MARKET_READ", "PERM_MARKET_WRITE"),
             rule("/api/admin/growth/**", "PERM_GROWTH_READ", "PERM_GROWTH_WRITE"),
             rule("/api/admin/content/**", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE"),
+            rule("/api/admin/emergency-control/**", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE"),
             rule("/api/admin/emergency/**", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE"),
             rule("/api/admin/risk/**", "PERM_RISK_READ", "PERM_RISK_WRITE"),
             rule("/api/admin/bi/exports/**", "PERM_BI_EXPORT", "PERM_BI_EXPORT"),

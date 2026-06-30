@@ -223,6 +223,11 @@ public class OpsUserController {
         return userService.assetAdjustmentOverview();
     }
 
+    @GetMapping("/assets/overview")
+    public ApiResult<Map<String, Object>> assetsOverview() {
+        return userService.assetAdjustmentOverview();
+    }
+
     @GetMapping("/asset-adjustments")
     public ApiResult<PageResult<UserAssetAdjustmentView>> assetAdjustments(@ModelAttribute UserAssetAdjustmentQueryRequest request) {
         return userService.assetAdjustments(request);

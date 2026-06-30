@@ -51,7 +51,7 @@ public class AdminRbacBaselineInitializer {
             grant(SUPER_ADMIN, permissionCodes()),
             grant(CONFIG_ADMIN,
                     "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE",
-                    "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT",
+                    "PERM_AUDIT_READ",
                     "PERM_TREASURY_READ", "PERM_USER_READ", "PERM_WITHDRAWAL_READ",
                     "PERM_DEVICE_READ", "PERM_TEAM_READ", "PERM_MARKET_READ", "PERM_GROWTH_READ",
                     "PERM_CONTENT_READ", "PERM_EMERGENCY_READ", "PERM_RISK_READ", "PERM_BI_READ"),
@@ -87,6 +87,8 @@ public class AdminRbacBaselineInitializer {
                     "PERM_WITHDRAWAL_READ", "PERM_DEVICE_READ", "PERM_TEAM_READ", "PERM_MARKET_READ",
                     "PERM_GROWTH_READ", "PERM_CONTENT_READ", "PERM_EMERGENCY_READ", "PERM_RISK_READ",
                     "PERM_BI_READ", "PERM_BI_EXPORT", "PERM_AUDIT_EXPORT"));
+    private static final List<RoleGrant> REVOKED_ROLE_GRANTS = List.of(
+            grant(CONFIG_ADMIN, "PERM_AUDIT_EXPORT"));
 
     private final AdminRolePermissionMapper mapper;
 
@@ -103,6 +105,11 @@ public class AdminRbacBaselineInitializer {
             for (String permissionCode : grant.permissionCodes()) {
                 mapper.restoreRolePermission(grant.roleCode(), permissionCode);
                 mapper.insertMissingRolePermission(grant.roleCode(), permissionCode);
+            }
+        }
+        for (RoleGrant grant : REVOKED_ROLE_GRANTS) {
+            for (String permissionCode : grant.permissionCodes()) {
+                mapper.disableRolePermission(grant.roleCode(), permissionCode);
             }
         }
     }

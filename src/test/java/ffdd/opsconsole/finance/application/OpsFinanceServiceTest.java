@@ -285,6 +285,26 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void reviewWithdrawalRejectsApproveWhenJ2EmergencyGeoBlockActive() {
+        configFacade.values.put("emergency.geo.j4.block.required", "true");
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_GEO_BLOCKED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("blockedReason", "WITHDRAWAL_GEO_BLOCKED")
+                .containsEntry("statusUnchanged", true);
+    }
+
+    @Test
     void reviewWithdrawalAllowsDelayWhenD5DailyLimitExceededAndAudits() {
         assertOverLimitReviewActionAudits("DELAY", "DELAYED");
     }

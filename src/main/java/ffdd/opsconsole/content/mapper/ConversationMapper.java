@@ -17,7 +17,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='TRANSFERRED'")
     long countIncomingPending();
 
-    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND unread_count>0 AND status&lt;&gt;'CLOSED'")
+    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND unread_count>0 AND status<>'CLOSED'")
     long countUnread();
 
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='RESOLVED'")
@@ -145,8 +145,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
             WHERE c.is_deleted=0
               AND c.status='TRANSFERRED'
-              AND t.transferred_at &lt;= #{cutoff}
-              AND COALESCE(t.to_type,'') &lt;&gt; 'standby'
+              AND t.transferred_at <= #{cutoff}
+              AND COALESCE(t.to_type,'') <> 'standby'
             ORDER BY t.transferred_at ASC
             LIMIT #{limit}
             """)
@@ -237,7 +237,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                    fallback_at=#{now},
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND status='PENDING' AND is_deleted=0
-               AND COALESCE(to_type,'') &lt;&gt; 'standby'
+               AND COALESCE(to_type,'') <> 'standby'
                AND fallback_at IS NULL
             """)
     int markTransferFallback(@Param("conversationNo") String conversationNo, @Param("targetId") String targetId,

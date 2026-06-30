@@ -90,7 +90,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4 ON k4.user_no = CONCAT('U', LPAD(w.user_id, 8, '0')) AND k4.is_deleted = 0
-              LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = k4.user_no AND k4o.active = 1 AND k4o.is_deleted = 0
+              LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = CONCAT('U', LPAD(w.user_id, 8, '0')) AND k4o.active = 1 AND k4o.is_deleted = 0
               LEFT JOIN (
                     SELECT withdrawal_no,
                            GROUP_CONCAT(CONCAT(rule_id, ':', action) ORDER BY id DESC SEPARATOR ', ') AS hit_rules,
@@ -242,7 +242,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4 ON k4.user_no = CONCAT('U', LPAD(w.user_id, 8, '0')) AND k4.is_deleted = 0
-              LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = k4.user_no AND k4o.active = 1 AND k4o.is_deleted = 0
+              LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = CONCAT('U', LPAD(w.user_id, 8, '0')) AND k4o.active = 1 AND k4o.is_deleted = 0
               LEFT JOIN (
                     SELECT withdrawal_no,
                            GROUP_CONCAT(CONCAT(h.rule_id, ':', h.action, '@', h.time_text) ORDER BY h.id DESC SEPARATOR ', ') AS hit_rules,
@@ -412,7 +412,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4 ON k4.user_no = CONCAT('U', LPAD(w.user_id, 8, '0')) AND k4.is_deleted = 0
-              LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = k4.user_no AND k4o.active = 1 AND k4o.is_deleted = 0
+              LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = CONCAT('U', LPAD(w.user_id, 8, '0')) AND k4o.active = 1 AND k4o.is_deleted = 0
               LEFT JOIN (
                     SELECT withdrawal_no,
                            GROUP_CONCAT(CONCAT(h.rule_id, ':', h.action, '@', h.time_text) ORDER BY h.id DESC SEPARATOR ', ') AS hit_rules,
@@ -459,7 +459,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    updated_at = CURRENT_TIMESTAMP
              WHERE user_id = #{userId}
                AND is_deleted = 0
-               AND status IN ('SUBMITTED','REVIEWING','DELAYED','PENDING_CHAIN','CHAIN_SUBMITTED','DEAD')
+               AND status IN ('PENDING','SUBMITTED','REVIEWING','DELAYED','PENDING_CHAIN','CHAIN_SUBMITTED','DEAD')
             """)
     int freezePendingByUserId(@Param("userId") Long userId, @Param("reason") String reason);
 }

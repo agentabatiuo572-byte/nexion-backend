@@ -587,6 +587,22 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void withdrawGateReadsI4DisclosureGateAsBlocked() {
+        configFacade.values.put("disclosure.gate.staking", "true");
+
+        ApiResult<Map<String, Object>> result = service.withdrawGate();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("enabled", false)
+                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+        assertThat(detailMap(result.getData().get("disclosureGate"))).containsEntry("staking", true);
+        assertThat(result.getData().get("sources"))
+                .asList()
+                .contains("nx_config_item:disclosure.gate.staking");
+    }
+
+    @Test
     void retiredPhaseDialReturnsReadonly422() {
         ApiResult<Map<String, Object>> result = service.updatePhaseDial(
                 "idem-h1",

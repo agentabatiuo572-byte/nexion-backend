@@ -101,6 +101,32 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void permitsEmergencyControlReadWhenEmergencyReadAuthorityIsPresent() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("PERM_EMERGENCY_READ");
+
+        filter.doFilter(
+                request("GET", "/api/admin/emergency-control/geo-block"),
+                new MockHttpServletResponse(),
+                mark(invoked));
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
+    void permitsEmergencyControlWriteWhenEmergencyWriteAuthorityIsPresent() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("PERM_EMERGENCY_WRITE");
+
+        filter.doFilter(
+                request("POST", "/api/admin/emergency-control/geo-block/emergency-blocks"),
+                new MockHttpServletResponse(),
+                mark(invoked));
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
     void permitsMediaReadForAnyAuthenticatedAdmin() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         authenticate();

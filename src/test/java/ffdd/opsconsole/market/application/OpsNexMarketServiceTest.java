@@ -345,6 +345,44 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void triggerExchangeKycReviewBlocksWhenI4DisclosureGateActive() {
+        configFacade.values.put("disclosure.gate.exchange", "true");
+        marketRepository.orders = List.of(exchange("EX-GATE-1", "QUEUED", new BigDecimal("8200.00")));
+
+        ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
+                "idem-g2-i4",
+                "EX-GATE-1",
+                new ExchangeKycReviewRequest("large exchange review", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("G2_DISCLOSURE_GATE_REACK_REQUIRED");
+        assertThat(riskKycReviewFacade.lastExchangeNo).isNull();
+        assertThat(marketRepository.findExchangeOrder("EX-GATE-1"))
+                .get()
+                .extracting(ExchangeOrderView::status)
+                .isEqualTo("QUEUED");
+    }
+
+    @Test
+    void triggerExchangeKycReviewBlocksWhenJ2EmergencyGeoBlockActive() {
+        configFacade.values.put("emergency.geo.j4.block.required", "true");
+        marketRepository.orders = List.of(exchange("EX-GEO-1", "QUEUED", new BigDecimal("8200.00")));
+
+        ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
+                "idem-g2-j2",
+                "EX-GEO-1",
+                new ExchangeKycReviewRequest("large exchange review", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("G2_GEO_BLOCKED");
+        assertThat(riskKycReviewFacade.lastExchangeNo).isNull();
+        assertThat(marketRepository.findExchangeOrder("EX-GEO-1"))
+                .get()
+                .extracting(ExchangeOrderView::status)
+                .isEqualTo("QUEUED");
+    }
+
+    @Test
     void triggerExchangeKycReviewRollsBackWhenOrderLeavesQueueBeforeHold() {
         marketRepository.orders = List.of(exchange("EX-LARGE-1", "QUEUED", new BigDecimal("8200.00")));
         marketRepository.failConditionalUpdate = true;

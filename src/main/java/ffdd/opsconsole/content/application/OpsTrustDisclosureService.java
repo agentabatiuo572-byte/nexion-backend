@@ -15,6 +15,7 @@ import ffdd.opsconsole.content.dto.DisclosureGateUpdateRequest;
 import ffdd.opsconsole.content.dto.TrustDisclosureActionRequest;
 import ffdd.opsconsole.content.dto.TrustSectionPublishRequest;
 import ffdd.opsconsole.content.dto.TrustSectionRollbackRequest;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -51,6 +52,7 @@ public class OpsTrustDisclosureService {
     private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|nex\\s*v?2|nexv2|points|积分", Pattern.CASE_INSENSITIVE);
 
     private final TrustDisclosureRepository trustDisclosureRepository;
+    private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
@@ -173,6 +175,7 @@ public class OpsTrustDisclosureService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_GATE_SCOPE_EMPTY");
         }
         trustDisclosureRepository.updateGateScope(activeKeys, operator(request.operator()), now());
+        syncDisclosureGateConfig(activeKeys, request.reason());
         audit("I5_DISCLOSURE_GATE_CHANGED", "DISCLOSURE_GATE", "restricted-actions", request.operator(), idempotencyKey, request.reason(), Map.of(
                 "scope", request.scope().trim(),
                 "activeKeys", String.join(",", activeKeys)));
@@ -237,6 +240,20 @@ public class OpsTrustDisclosureService {
             }
         }
         return keys;
+    }
+
+    private void syncDisclosureGateConfig(Set<String> activeKeys, String reason) {
+        for (DisclosureGateActionView action : trustDisclosureRepository.listGateActions()) {
+            if ("nexv2".equalsIgnoreCase(action.key())) {
+                continue;
+            }
+            configFacade.upsertAdminValue(
+                    "disclosure.gate." + action.key().toLowerCase(Locale.ROOT),
+                    String.valueOf(activeKeys.contains(action.key())),
+                    "BOOLEAN",
+                    "content",
+                    StringUtils.hasText(reason) ? reason.trim() : "I4 disclosure gate scope");
+        }
     }
 
     private ApiResult<Void> requirePublishSection(String sectionKey, String idempotencyKey, TrustSectionPublishRequest request) {

@@ -88,6 +88,14 @@ public class AuditLogSanitizer {
         if (json == null || json.length() <= MAX_DETAIL_JSON_LENGTH) {
             return json;
         }
-        return json.substring(0, MAX_DETAIL_JSON_LENGTH - 3) + "...";
+        Map<String, Object> clipped = new LinkedHashMap<>();
+        clipped.put("truncated", true);
+        clipped.put("originalLength", json.length());
+        clipped.put("preview", json.substring(0, Math.min(3500, json.length())));
+        try {
+            return objectMapper.writeValueAsString(clipped);
+        } catch (JsonProcessingException ex) {
+            return "{\"truncated\":true,\"serialization\":\"failed\"}";
+        }
     }
 }

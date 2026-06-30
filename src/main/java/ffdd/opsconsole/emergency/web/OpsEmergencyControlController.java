@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/emergency")
+@RequestMapping({OpsAdminApi.ADMIN_PREFIX + "/emergency", OpsAdminApi.ADMIN_PREFIX + "/emergency-control"})
 @RequiredArgsConstructor
 public class OpsEmergencyControlController {
     private final OpsEmergencyControlService emergencyControlService;

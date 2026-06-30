@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
@@ -101,7 +102,7 @@ public class AuditLogService {
         Long actorId = request.getActorId() == null ? parseLong(actorName) : request.getActorId();
         String actorUsername = StringUtils.hasText(request.getActorUsername())
                 ? request.getActorUsername()
-                : actorName;
+                : authenticatedUsername(authentication, actorName);
         return new AuditLogMapper.AuditLogWrite(
                 firstText(request.getTraceId(), AuditTraceContext.currentTraceId(), requestTraceId(servletRequest)),
                 applicationNameProperties.getName(),
@@ -168,6 +169,24 @@ public class AuditLogService {
             return attributes.getRequest();
         }
         return null;
+    }
+
+    private String authenticatedUsername(Authentication authentication, String fallback) {
+        if (authentication == null) {
+            return fallback;
+        }
+        Object details = authentication.getDetails();
+        if (details instanceof Map<?, ?> values) {
+            Object username = values.get("username");
+            if (username instanceof String text && StringUtils.hasText(text)) {
+                return text.trim();
+            }
+        }
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof String text && StringUtils.hasText(text) && parseLong(text) == null) {
+            return text.trim();
+        }
+        return fallback;
     }
 
     private String requestTraceId(HttpServletRequest request) {

@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 class ConversationMapperSqlTest {
     @Test
-    void overdueTransferQueryUsesXmlSafeOperators() throws Exception {
+    void overdueTransferQueryUsesJdbcOperators() throws Exception {
         String sql = String.join("\n", ConversationMapper.class
                 .getMethod("overdueTransferredConversations", LocalDateTime.class, int.class)
                 .getAnnotation(Select.class)
@@ -18,14 +18,14 @@ class ConversationMapperSqlTest {
         assertThat(sql)
                 .contains("t.status='PENDING'")
                 .contains("c.status='TRANSFERRED'")
-                .contains("t.transferred_at &lt;= #{cutoff}")
-                .contains("COALESCE(t.to_type,'') &lt;&gt; 'standby'")
-                .doesNotContain("t.transferred_at <= #{cutoff}")
-                .doesNotContain("COALESCE(t.to_type,'') <> 'standby'");
+                .contains("t.transferred_at <= #{cutoff}")
+                .contains("COALESCE(t.to_type,'') <> 'standby'")
+                .doesNotContain("&lt;")
+                .doesNotContain("&gt;");
     }
 
     @Test
-    void fallbackClaimUpdateUsesXmlSafeOperator() throws Exception {
+    void fallbackClaimUpdateUsesJdbcOperator() throws Exception {
         String sql = String.join("\n", ConversationMapper.class
                 .getMethod(
                         "markTransferFallback",
@@ -40,8 +40,9 @@ class ConversationMapperSqlTest {
 
         assertThat(sql)
                 .contains("status='PENDING'")
-                .contains("COALESCE(to_type,'') &lt;&gt; 'standby'")
+                .contains("COALESCE(to_type,'') <> 'standby'")
                 .contains("fallback_at IS NULL")
-                .doesNotContain("COALESCE(to_type,'') <> 'standby'");
+                .doesNotContain("&lt;")
+                .doesNotContain("&gt;");
     }
 }

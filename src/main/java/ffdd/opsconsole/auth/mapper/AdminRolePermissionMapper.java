@@ -103,4 +103,21 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             """)
     int insertMissingRolePermission(@Param("roleCode") String roleCode,
                                     @Param("permissionCode") String permissionCode);
+
+    @Update("""
+            UPDATE nx_admin_role_permission rp
+            JOIN nx_admin_role r
+              ON r.id = rp.role_id
+             AND r.role_code = #{roleCode}
+             AND r.is_deleted = 0
+            JOIN nx_admin_permission p
+              ON p.id = rp.permission_id
+             AND p.permission_code = #{permissionCode}
+             AND p.is_deleted = 0
+            SET rp.is_deleted = 1,
+                rp.updated_at = NOW()
+            WHERE rp.is_deleted = 0
+            """)
+    int disableRolePermission(@Param("roleCode") String roleCode,
+                              @Param("permissionCode") String permissionCode);
 }

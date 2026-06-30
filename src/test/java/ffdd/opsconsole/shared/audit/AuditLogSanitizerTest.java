@@ -2,6 +2,7 @@ package ffdd.opsconsole.shared.audit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -27,11 +28,14 @@ class AuditLogSanitizerTest {
     }
 
     @Test
-    void clipsLargePayloads() {
+    void clipsLargePayloadsAsValidJsonEnvelope() throws Exception {
         String json = sanitizer.toSafeJson(Map.of("note", "x".repeat(7000)));
 
         assertThat(json).hasSizeLessThanOrEqualTo(4096);
-        assertThat(json).endsWith("...");
+        JsonNode node = new ObjectMapper().readTree(json);
+        assertThat(node.get("truncated").asBoolean()).isTrue();
+        assertThat(node.get("originalLength").asInt()).isGreaterThan(4096);
+        assertThat(node.get("preview").asText()).contains("\"note\"");
     }
 
     @Test

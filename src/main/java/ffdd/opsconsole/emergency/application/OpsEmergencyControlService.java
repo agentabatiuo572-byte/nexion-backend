@@ -55,6 +55,7 @@ public class OpsEmergencyControlService {
     private static final String GROUP_TAMPER = "admin_tamper";
     private static final String GROUP_SOP = "admin_sop";
     private static final String GEO_CUSTOM_COUNTRIES = "emergency.geo.customCountries";
+    private static final String GEO_J4_BLOCK_REQUIRED = "emergency.geo.j4.block.required";
     private static final String GEO_EDGE_SOURCE = "emergency.geo.edgeJudgeSource";
     private static final String GEO_EDGE_METRICS = "emergency.geo.edge.metrics";
     private static final String GEO_HITS = "emergency.geo.hits";
@@ -497,7 +498,7 @@ public class OpsEmergencyControlService {
                 case "C2" -> executeC2Action(writes, index, action, normalizedAction, execId, request);
                 case "K1" -> addDomainWrite(writes, "K1", index, action, "risk.k1.cluster_investigation.required",
                         "true", "BOOLEAN", "risk", "J4 K1 cluster investigation escalation | execId=" + execId, request);
-                case "J2" -> addDomainWrite(writes, "J2", index, action, "emergency.geo.j4.block.required",
+                case "J2" -> addDomainWrite(writes, "J2", index, action, GEO_J4_BLOCK_REQUIRED,
                         "true", "BOOLEAN", GROUP_GEO_BLOCK, "J4 J2 geo block escalation | execId=" + execId, request);
                 case "I4", "I5" -> executeDisclosureAction(writes, index, domain, action, execId, request);
                 default -> {
@@ -718,6 +719,7 @@ public class OpsEmergencyControlService {
             ensureConfig(countryConfigKey(seed.cc()), seed.status(), "STRING", GROUP_GEO_BLOCK, "J2 geo country status");
         }
         ensureConfig(GEO_CUSTOM_COUNTRIES, "", "STRING", GROUP_GEO_BLOCK, "J2 custom countries");
+        ensureConfig(GEO_J4_BLOCK_REQUIRED, "false", "BOOLEAN", GROUP_GEO_BLOCK, "J4 J2 geo block escalation gate");
         ensureConfig(GEO_EDGE_SOURCE, "服务器边缘 IP 判定", "STRING", GROUP_GEO_BLOCK, "J2 edge IP judge source");
         ensureJsonConfig(GEO_EDGE_METRICS, defaultGeoEdgeMetrics(), GROUP_GEO_BLOCK, "J2 edge judge health metrics");
         ensureJsonConfig(GEO_HITS, defaultGeoHits(), GROUP_GEO_BLOCK, "J2 daily geo block hits");
