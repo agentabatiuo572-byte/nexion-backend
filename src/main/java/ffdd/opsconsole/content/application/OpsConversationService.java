@@ -24,6 +24,7 @@ import ffdd.opsconsole.content.dto.ConversationStatusRequest;
 import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -34,6 +35,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -46,10 +48,14 @@ public class OpsConversationService {
     private static final Set<String> TICKET_PRIORITIES = Set.of("LOW", "NORMAL", "HIGH", "URGENT");
     private static final DateTimeFormatter CONVERSATION_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final DateTimeFormatter TICKET_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
+    private static final String TIMEOUT_FALLBACK_CONFIG_KEY = "I.session.workbench.timeoutFallback";
+    private static final int TRANSFER_TIMEOUT_MINUTES = 30;
+    private static final int AUTO_FALLBACK_BATCH_SIZE = 50;
 
     private final ConversationRepository conversationRepository;
     private final SupportTicketRepository ticketRepository;
     private final OpsSupportAgentService supportAgentService;
+    private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
 
@@ -294,6 +300,7 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional
     public ApiResult<ContentConversationView> fallbackTransfer(
             String conversationNo,
             String idempotencyKey,
@@ -312,7 +319,10 @@ public class OpsConversationService {
         }
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        conversationRepository.fallbackTransfer(conversation, request.reason().trim(), actor, now);
+        boolean changed = conversationRepository.fallbackTransfer(conversation, request.reason().trim(), actor, now);
+        if (!changed) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_TRANSFER_FALLBACK", conversation.conversationNo(), actor, Map.of(
                 "fromTargetId", conversation.transferToId(),
@@ -320,6 +330,33 @@ public class OpsConversationService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
+    }
+
+    @Transactional
+    public int runTimeoutFallback() {
+        if (!timeoutFallbackEnabled()) {
+            return 0;
+        }
+        ensureSeedData();
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime cutoff = now.minusMinutes(TRANSFER_TIMEOUT_MINUTES);
+        List<ContentConversationView> overdue = conversationRepository.overdueTransferredConversations(cutoff, AUTO_FALLBACK_BATCH_SIZE);
+        int changed = 0;
+        for (ContentConversationView conversation : overdue) {
+            String reason = "Transfer pending over " + TRANSFER_TIMEOUT_MINUTES + " minutes; server fallback to standby pool";
+            if (!conversationRepository.fallbackTransfer(conversation, reason, "system", now)) {
+                continue;
+            }
+            changed += 1;
+            audit("I9_CONVERSATION_TRANSFER_AUTO_FALLBACK", conversation.conversationNo(), "system", auditDetail(
+                    "fromTargetId", conversation.transferToId(),
+                    "toTargetId", "standby-pool",
+                    "transferredAt", conversation.transferredAt(),
+                    "timeoutMinutes", TRANSFER_TIMEOUT_MINUTES,
+                    "reason", reason,
+                    "idempotencyKey", "system:auto-timeout-fallback:" + conversation.conversationNo() + ":" + now));
+        }
+        return changed;
     }
 
     public ApiResult<ConversationTicketResult> convertToTicket(
@@ -633,6 +670,13 @@ public class OpsConversationService {
 
     private String assignedName(String assignedAdminName, String fallback) {
         return StringUtils.hasText(assignedAdminName) ? assignedAdminName.trim() : fallback;
+    }
+
+    private boolean timeoutFallbackEnabled() {
+        return configFacade.activeValue(TIMEOUT_FALLBACK_CONFIG_KEY)
+                .map(value -> value.trim().toLowerCase(Locale.ROOT))
+                .filter(value -> Set.of("on", "true", "1", "enabled", "yes").contains(value))
+                .isPresent();
     }
 
     private Optional<Long> parseLong(String value) {

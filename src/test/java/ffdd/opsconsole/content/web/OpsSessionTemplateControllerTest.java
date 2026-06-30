@@ -50,6 +50,16 @@ class OpsSessionTemplateControllerTest {
     }
 
     @Test
+    void workbenchPolicyDelegatesWithIdempotencyHeader() {
+        SessionAdvisorPolicyUpdateRequest request = new SessionAdvisorPolicyUpdateRequest("on", "Marina K.", "开启超时回落");
+        when(templateService.updateWorkbenchPolicy("timeoutFallback", "idem-m3-workbench", request)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.updateWorkbenchPolicy("timeoutFallback", "idem-m3-workbench", request).getCode()).isZero();
+
+        verify(templateService).updateWorkbenchPolicy("timeoutFallback", "idem-m3-workbench", request);
+    }
+
+    @Test
     void scriptCreateDelegatesWithIdempotencyHeader() {
         SessionScriptCreateRequest request = new SessionScriptCreateRequest("升级", "升级话术", "/store", "全量", "draft", "Marina K.", "新增话术");
         when(templateService.createScript("idem-m5-script", request)).thenReturn(ApiResult.ok(null));

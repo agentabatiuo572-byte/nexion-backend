@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.PageResult;
@@ -26,6 +27,7 @@ import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -41,6 +43,7 @@ class OpsConversationServiceTest {
     private final FakeConversationRepository conversationRepository = new FakeConversationRepository();
     private final FakeSupportTicketRepository ticketRepository = new FakeSupportTicketRepository();
     private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
+    private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsConversationService service = service();
@@ -48,7 +51,7 @@ class OpsConversationServiceTest {
     private OpsConversationService service() {
         when(supportAgentService.transferTargets())
                 .thenReturn(List.of(Map.of("targetType", "agent", "targetId", "agent-2", "targetName", "Agent Two")));
-        return new OpsConversationService(conversationRepository, ticketRepository, supportAgentService, auditLogService, clock);
+        return new OpsConversationService(conversationRepository, ticketRepository, supportAgentService, configFacade, auditLogService, clock);
     }
 
     @Test
@@ -295,6 +298,54 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void timeoutFallbackDoesNothingWhenWorkbenchPolicyOff() {
+        configFacade.values.put("I.session.workbench.timeoutFallback", "off");
+        conversationRepository.overdueConversations = List.of(transferredConversation("CV-OVER"));
+
+        int changed = service.runTimeoutFallback();
+
+        assertThat(changed).isZero();
+        assertThat(conversationRepository.seedCalls).isZero();
+        assertThat(conversationRepository.fallbackCount).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void timeoutFallbackMovesOverdueTransfersToStandbyAndAudits() {
+        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
+        ContentConversationView overdue = transferredConversation("CV-OVER");
+        conversationRepository.conversation = overdue;
+        conversationRepository.overdueConversations = List.of(overdue);
+
+        int changed = service.runTimeoutFallback();
+
+        assertThat(changed).isEqualTo(1);
+        assertThat(conversationRepository.fallbackCount).isEqualTo(1);
+        assertThat(conversationRepository.lastCutoff).isEqualTo(LocalDateTime.of(2026, 6, 16, 23, 30));
+        assertThat(conversationRepository.lastLimit).isEqualTo(50);
+        assertThat(conversationRepository.conversation.transferToId()).isEqualTo("standby-pool");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("I9_CONVERSATION_TRANSFER_AUTO_FALLBACK");
+        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("timeoutMinutes", 30);
+    }
+
+    @Test
+    void timeoutFallbackDoesNotAuditWhenRepositoryClaimFails() {
+        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
+        conversationRepository.fallbackClaimSucceeds = false;
+        conversationRepository.overdueConversations = List.of(transferredConversation("CV-RACE"));
+
+        int changed = service.runTimeoutFallback();
+
+        assertThat(changed).isZero();
+        assertThat(conversationRepository.fallbackCount).isZero();
+        assertThat(conversationRepository.lastCutoff).isEqualTo(LocalDateTime.of(2026, 6, 16, 23, 30));
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void convertToTicketCreatesSupportTicketAndResolvesConversation() {
         conversationRepository.conversation = conversation("CV-1", "OPEN");
 
@@ -383,8 +434,13 @@ class OpsConversationServiceTest {
 
     private static final class FakeConversationRepository implements ConversationRepository {
         private ContentConversationView conversation;
+        private List<ContentConversationView> overdueConversations = List.of();
         private ConversationQueryRequest lastQuery;
         private int seedCalls;
+        private int fallbackCount;
+        private LocalDateTime lastCutoff;
+        private int lastLimit;
+        private boolean fallbackClaimSucceeds = true;
 
         @Override
         public void ensureSeedData(LocalDateTime now) {
@@ -420,6 +476,13 @@ class OpsConversationServiceTest {
                     "User",
                     "please help",
                     LocalDateTime.now()));
+        }
+
+        @Override
+        public List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit) {
+            lastCutoff = cutoff;
+            lastLimit = limit;
+            return overdueConversations;
         }
 
         @Override
@@ -573,8 +636,13 @@ class OpsConversationServiceTest {
         }
 
         @Override
-        public void fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+        public boolean fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+            if (!fallbackClaimSucceeds) {
+                return false;
+            }
+            fallbackCount += 1;
             transferToPending(conversation, "standby", "standby-pool", "Standby pool", reason, operator, now);
+            return true;
         }
 
         @Override
@@ -606,6 +674,20 @@ class OpsConversationServiceTest {
                     null,
                     now);
             return this.conversation;
+        }
+    }
+
+    private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
+        private final Map<String, String> values = new LinkedHashMap<>();
+
+        @Override
+        public Optional<String> activeValue(String configKey) {
+            return Optional.ofNullable(values.get(configKey));
+        }
+
+        @Override
+        public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
+            values.put(configKey, configValue);
         }
     }
 

@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.domain.SessionCategoryView;
 import ffdd.opsconsole.content.domain.SessionReplyTemplateView;
 import ffdd.opsconsole.content.domain.SessionScriptView;
 import ffdd.opsconsole.content.domain.SessionTemplateOverview;
+import ffdd.opsconsole.content.domain.SessionWorkbenchPolicyView;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
 import ffdd.opsconsole.content.dto.SessionCategoryToggleRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
@@ -63,6 +64,14 @@ public class OpsSessionTemplateController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionAdvisorPolicyUpdateRequest request) {
         return templateService.updateAdvisorPolicy(field, idempotencyKey, request);
+    }
+
+    @PatchMapping("/workbench-policy/{field}")
+    public ApiResult<SessionWorkbenchPolicyView> updateWorkbenchPolicy(
+            @PathVariable String field,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody SessionAdvisorPolicyUpdateRequest request) {
+        return templateService.updateWorkbenchPolicy(field, idempotencyKey, request);
     }
 
     @PostMapping("/scripts")

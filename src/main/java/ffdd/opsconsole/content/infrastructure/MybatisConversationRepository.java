@@ -132,6 +132,11 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit) {
+        return mapper.overdueTransferredConversations(cutoff, Math.max(1, Math.min(limit, 200)));
+    }
+
+    @Override
     public void transferToPending(ContentConversationView conversation, String targetType, String targetId, String targetName, String reason, String operator, LocalDateTime now) {
         mapper.markTransferred(conversation.conversationNo(), targetId, targetName, now);
         mapper.insertTransfer(
@@ -194,13 +199,20 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
-    public void fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+    public boolean fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
         String targetId = "standby-pool";
         String targetName = "Standby pool";
-        mapper.fallbackConversation(conversation.conversationNo(), targetId, targetName, now);
-        mapper.markTransferFallback(conversation.conversationNo(), targetId, targetName, reason, operator, now);
+        int claimed = mapper.markTransferFallback(conversation.conversationNo(), targetId, targetName, reason, operator, now);
+        if (claimed == 0) {
+            return false;
+        }
+        int updated = mapper.fallbackConversation(conversation.conversationNo(), targetId, targetName, now);
+        if (updated == 0) {
+            throw new IllegalStateException("CONVERSATION_FALLBACK_HEADER_UPDATE_FAILED");
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
                 "转入待处理超时回落 " + targetName + ": " + reason, now);
+        return true;
     }
 
     @Override

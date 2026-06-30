@@ -47,6 +47,7 @@ class OpsSessionTemplateServiceTest {
     void overviewUsesBackendSourcesAndConfigFacade() {
         configFacade.values.put("I.session.cat.support.enabled", "off");
         configFacade.values.put("I.session.advisor.policy.delayMs", "2500");
+        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
 
         var result = service.overview();
 
@@ -57,6 +58,7 @@ class OpsSessionTemplateServiceTest {
             assertThat(category.enabled()).isFalse();
         });
         assertThat(result.getData().advisorPolicy().delayMs()).isEqualTo(2500);
+        assertThat(result.getData().workbenchPolicy().timeoutFallback()).isTrue();
         assertThat(result.getData().statusOptions()).containsExactly("published", "draft");
         assertThat(result.getData().scripts()).extracting(SessionScriptView::id).contains("AS-001");
         assertThat(result.getData().sources()).contains("nx_config_item:content-session", "nx_help_article:session_script");
@@ -134,6 +136,40 @@ class OpsSessionTemplateServiceTest {
         assertThat(result.getData().cooldownHours()).isEqualTo(48);
         assertThat(configFacade.values).containsEntry("I.session.advisor.policy.cooldownHours", "48");
         assertAuditAction("M5_SESSION_ADVISOR_POLICY_UPDATED");
+    }
+
+    @Test
+    void workbenchPolicyPersistsBackendConfigAndAudits() {
+        var result = service.updateWorkbenchPolicy("timeoutFallback", "idem-m3-workbench", new SessionAdvisorPolicyUpdateRequest(
+                "on",
+                "Marina K.",
+                "开启超时自动回落备勤池"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().timeoutFallback()).isTrue();
+        assertThat(configFacade.values).containsEntry("I.session.workbench.timeoutFallback", "on");
+        assertAuditAction("M3_SESSION_WORKBENCH_POLICY_UPDATED");
+    }
+
+    @Test
+    void workbenchPolicyRejectsUnsupportedField() {
+        var result = service.updateWorkbenchPolicy("localOnly", "idem-m3-workbench", new SessionAdvisorPolicyUpdateRequest(
+                "on",
+                "Marina K.",
+                "尝试写入非后端策略"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(configFacade.values).doesNotContainKey("I.session.workbench.localOnly");
+    }
+
+    @Test
+    void workbenchPolicyRequiresIdempotencyAndReason() {
+        var result = service.updateWorkbenchPolicy("timeoutFallback", "", new SessionAdvisorPolicyUpdateRequest(
+                "on",
+                "Marina K.",
+                "开启超时自动回落备勤池"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
     }
 
     @Test

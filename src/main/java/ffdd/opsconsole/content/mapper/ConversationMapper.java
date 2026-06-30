@@ -120,6 +120,39 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
             """)
     ContentConversationView findByConversationNo(@Param("conversationNo") String conversationNo);
 
+    @Select("""
+            SELECT
+              c.id,
+              c.conversation_no AS conversationNo,
+              c.user_id AS userId,
+              c.conversation_type AS conversationType,
+              c.status,
+              c.owner_agent_id AS ownerAgentId,
+              c.owner_agent_name AS ownerAgentName,
+              c.unread_count AS unreadCount,
+              c.last_message AS lastMessage,
+              c.last_message_at AS lastMessageAt,
+              t.from_agent_id AS transferFromAgentId,
+              t.from_agent_name AS transferFromAgentName,
+              t.to_type AS transferToType,
+              t.to_id AS transferToId,
+              t.to_name AS transferToName,
+              t.reason AS transferReason,
+              t.transferred_at AS transferredAt,
+              c.updated_at AS updatedAt
+            FROM nx_conversation c
+            JOIN nx_conversation_transfer t
+              ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
+            WHERE c.is_deleted=0
+              AND c.status='TRANSFERRED'
+              AND t.transferred_at &lt;= #{cutoff}
+              AND COALESCE(t.to_type,'') &lt;&gt; 'standby'
+            ORDER BY t.transferred_at ASC
+            LIMIT #{limit}
+            """)
+    List<ContentConversationView> overdueTransferredConversations(@Param("cutoff") LocalDateTime cutoff,
+                                                                  @Param("limit") int limit);
+
     @Update("""
             UPDATE nx_conversation
                SET status='TRANSFERRED', owner_agent_id=#{targetId}, owner_agent_name=#{targetName}, updated_at=#{now}
@@ -204,6 +237,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                    fallback_at=#{now},
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND status='PENDING' AND is_deleted=0
+               AND COALESCE(to_type,'') &lt;&gt; 'standby'
+               AND fallback_at IS NULL
             """)
     int markTransferFallback(@Param("conversationNo") String conversationNo, @Param("targetId") String targetId,
                              @Param("targetName") String targetName, @Param("reason") String reason,

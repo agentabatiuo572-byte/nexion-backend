@@ -5,6 +5,7 @@ import java.util.List;
 public record SessionTemplateOverview(
         List<SessionCategoryView> categories,
         SessionAdvisorPolicyView advisorPolicy,
+        SessionWorkbenchPolicyView workbenchPolicy,
         List<String> audienceOptions,
         List<SessionSegmentField> segmentFields,
         List<SessionCtaOption> ctaOptions,

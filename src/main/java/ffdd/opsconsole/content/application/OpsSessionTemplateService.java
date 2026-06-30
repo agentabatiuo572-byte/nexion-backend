@@ -10,6 +10,7 @@ import ffdd.opsconsole.content.domain.SessionScriptView;
 import ffdd.opsconsole.content.domain.SessionSegmentField;
 import ffdd.opsconsole.content.domain.SessionTemplateOverview;
 import ffdd.opsconsole.content.domain.SessionTemplateRepository;
+import ffdd.opsconsole.content.domain.SessionWorkbenchPolicyView;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
 import ffdd.opsconsole.content.dto.SessionCategoryToggleRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
@@ -74,6 +75,7 @@ public class OpsSessionTemplateService {
         return ApiResult.ok(new SessionTemplateOverview(
                 CATEGORY_SEEDS.stream().map(this::categoryView).toList(),
                 advisorPolicy(),
+                workbenchPolicy(),
                 AUDIENCE_OPTIONS,
                 SEGMENT_FIELDS,
                 CTA_OPTIONS,
@@ -147,6 +149,33 @@ public class OpsSessionTemplateService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(advisorPolicy());
+    }
+
+    public ApiResult<SessionWorkbenchPolicyView> updateWorkbenchPolicy(
+            String field,
+            String idempotencyKey,
+            SessionAdvisorPolicyUpdateRequest request) {
+        ensureSeedData();
+        String normalizedField = normalizeField(field);
+        if (!"timeoutFallback".equals(normalizedField)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_WORKBENCH_POLICY_FIELD_UNSUPPORTED");
+        }
+        ApiResult<SessionWorkbenchPolicyView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String value;
+        try {
+            value = normalizeWorkbenchPolicyValue(normalizedField, request.value());
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
+        configFacade.upsertAdminValue(workbenchKey(normalizedField), value, "BOOLEAN", CONFIG_GROUP, request.reason().trim());
+        audit("M3_SESSION_WORKBENCH_POLICY_UPDATED", normalizedField, request.operator(), detail(
+                "value", value,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(workbenchPolicy());
     }
 
     public ApiResult<SessionScriptView> createScript(String idempotencyKey, SessionScriptCreateRequest request) {
@@ -279,6 +308,7 @@ public class OpsSessionTemplateService {
         seedConfigValue(policyKey("cooldownHours"), "24", "NUMBER");
         seedConfigValue(policyKey("maxPerSession"), "1", "NUMBER");
         seedConfigValue(policyKey("audience"), AUDIENCE_OPTIONS.get(0), "STRING");
+        seedConfigValue(workbenchKey("timeoutFallback"), "off", "BOOLEAN");
     }
 
     private void seedConfigValue(String key, String value, String valueType) {
@@ -294,6 +324,10 @@ public class OpsSessionTemplateService {
                 intConfig(policyKey("cooldownHours"), 24),
                 intConfig(policyKey("maxPerSession"), 1),
                 configValue(policyKey("audience"), AUDIENCE_OPTIONS.get(0)));
+    }
+
+    private SessionWorkbenchPolicyView workbenchPolicy() {
+        return new SessionWorkbenchPolicyView("on".equalsIgnoreCase(configValue(workbenchKey("timeoutFallback"), "off")));
     }
 
     private SessionCategoryView categoryView(SessionCategorySeed seed) {
@@ -386,6 +420,13 @@ public class OpsSessionTemplateService {
         };
     }
 
+    private String normalizeWorkbenchPolicyValue(String field, String value) {
+        return switch (field) {
+            case "timeoutFallback" -> parseBooleanSwitch(value);
+            default -> throw new IllegalArgumentException("SESSION_WORKBENCH_POLICY_FIELD_UNSUPPORTED");
+        };
+    }
+
     private String requireCtaPath(String value) {
         String normalized = StringUtils.hasText(value) ? value.trim() : "—";
         if (normalized.startsWith("http://") || normalized.startsWith("https://")) {
@@ -439,6 +480,7 @@ public class OpsSessionTemplateService {
             case "cooldownhours", "cooldown-hours" -> "cooldownHours";
             case "maxpersession", "max-per-session" -> "maxPerSession";
             case "audience" -> "audience";
+            case "timeoutfallback", "timeout-fallback" -> "timeoutFallback";
             default -> field.trim();
         };
     }
@@ -482,6 +524,10 @@ public class OpsSessionTemplateService {
 
     private String policyKey(String field) {
         return "I.session.advisor.policy." + field;
+    }
+
+    private String workbenchKey(String field) {
+        return "I.session.workbench." + field;
     }
 
     private String valueType(String field) {

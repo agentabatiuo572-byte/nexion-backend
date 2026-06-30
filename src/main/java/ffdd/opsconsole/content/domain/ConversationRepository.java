@@ -18,6 +18,8 @@ public interface ConversationRepository {
 
     List<ContentConversationMessageView> messages(String conversationNo);
 
+    List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit);
+
     void transferToPending(
             ContentConversationView conversation,
             String targetType,
@@ -39,7 +41,7 @@ public interface ConversationRepository {
 
     void archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now);
 
-    void fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
+    boolean fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
 
     void markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now);
 
