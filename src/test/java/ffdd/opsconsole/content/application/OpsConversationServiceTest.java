@@ -51,7 +51,14 @@ class OpsConversationServiceTest {
     private OpsConversationService service() {
         when(supportAgentService.transferTargets())
                 .thenReturn(List.of(Map.of("targetType", "agent", "targetId", "agent-2", "targetName", "Agent Two")));
-        return new OpsConversationService(conversationRepository, ticketRepository, supportAgentService, configFacade, auditLogService, clock);
+        return new OpsConversationService(
+                conversationRepository,
+                ticketRepository,
+                supportAgentService,
+                configFacade,
+                auditLogService,
+                clock,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
     }
 
     @Test

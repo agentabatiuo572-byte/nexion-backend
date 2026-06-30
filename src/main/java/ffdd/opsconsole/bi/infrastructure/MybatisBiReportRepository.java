@@ -10,6 +10,7 @@ import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import jakarta.annotation.PostConstruct;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,11 +27,15 @@ public class MybatisBiReportRepository implements BiReportRepository {
 
     private final BiReportMapper mapper;
     private final ObjectMapper objectMapper;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     @PostConstruct
     void ensureSchema() {
         mapper.createReportTable();
         mapper.createDashboardPayloadTable();
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         ensureDashboardSeed("L1");
         ensureDashboardSeed("L2");
         ensureDashboardSeed("L3");
@@ -52,6 +57,9 @@ public class MybatisBiReportRepository implements BiReportRepository {
 
     @Override
     public Map<String, Object> dashboard(String moduleCode) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return Map.of();
+        }
         String normalized = normalizeModule(moduleCode);
         ensureDashboardSeed(normalized);
         List<BiReportMapper.DashboardPayloadRow> rows = mapper.dashboardPayloads(normalized);
@@ -69,6 +77,9 @@ public class MybatisBiReportRepository implements BiReportRepository {
 
     @Override
     public void saveDashboard(String moduleCode, Map<String, Object> dashboard) {
+        if (!readTimeSeedPolicy.enabled()) {
+            throw new IllegalStateException("BI_DASHBOARD_PAYLOAD_DISABLED");
+        }
         String normalized = normalizeModule(moduleCode);
         mapper.upsertDashboardPayload(normalized, "root", toJson(dashboard == null ? Map.of() : dashboard), 0);
     }
@@ -113,6 +124,9 @@ public class MybatisBiReportRepository implements BiReportRepository {
     }
 
     private void ensureDashboardSeed(String moduleCode) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         String normalized = normalizeModule(moduleCode);
         if (mapper.countDashboardPayloads(normalized) > 0) {
             return;
@@ -121,6 +135,9 @@ public class MybatisBiReportRepository implements BiReportRepository {
     }
 
     private void ensureReportSeeds() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (mapper.countTotalReports() > 0) {
             return;
         }

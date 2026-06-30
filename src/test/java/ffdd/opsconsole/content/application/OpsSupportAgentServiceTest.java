@@ -19,6 +19,7 @@ import ffdd.opsconsole.platform.dto.AdminAccountOverview;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -37,7 +38,12 @@ class OpsSupportAgentServiceTest {
     private final OpsAdminAccountService accountService = mock(OpsAdminAccountService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-27T00:00:00Z"), ZoneId.of("UTC"));
-    private final OpsSupportAgentService service = new OpsSupportAgentService(repository, accountService, auditLogService, clock);
+    private final OpsSupportAgentService service = new OpsSupportAgentService(
+            repository,
+            accountService,
+            auditLogService,
+            OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+            clock);
 
     @BeforeEach
     void setUp() {

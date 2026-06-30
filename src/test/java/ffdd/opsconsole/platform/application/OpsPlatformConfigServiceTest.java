@@ -14,6 +14,7 @@ import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.PlatformConfigOverview;
 import ffdd.opsconsole.platform.dto.PlatformConfigResponse;
 import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -26,7 +27,10 @@ import org.mockito.ArgumentCaptor;
 class OpsPlatformConfigServiceTest {
     private final InMemoryPlatformConfigRepository repository = new InMemoryPlatformConfigRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsPlatformConfigService service = new OpsPlatformConfigService(repository, auditLogService);
+    private final OpsPlatformConfigService service = new OpsPlatformConfigService(
+            repository,
+            auditLogService,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewSeedsRemainingA3DataAndExcludesDeletedDomains() {
@@ -51,6 +55,28 @@ class OpsPlatformConfigServiceTest {
                         "admin.health.event_pipeline");
         assertThat(repository.items.get("admin.system.ntp_source").status()).isZero();
         assertThat(repository.items.get("admin.idempotency.window_hours").status()).isZero();
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotExposeA3SeededCurrentState() {
+        OpsPlatformConfigService realOnlyService = new OpsPlatformConfigService(
+                repository,
+                auditLogService,
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<PlatformConfigOverview> result = realOnlyService.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().featureFlags()).isEmpty();
+        assertThat(result.getData().killSwitches()).isEmpty();
+        assertThat(result.getData().systemHealth()).extracting(row -> row.get("name")).containsExactly("JVM 堆内存");
+        assertThat(result.getData().stats())
+                .containsEntry("flagCount", 0)
+                .containsEntry("killGates", 0);
+        assertThat(repository.items).doesNotContainKeys(
+                "feature.ab.newWithdrawFlow",
+                "killswitch.withdraw",
+                "admin.health.event_pipeline");
     }
 
     @Test

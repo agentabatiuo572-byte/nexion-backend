@@ -28,7 +28,12 @@ class OpsTeamServiceTest {
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsTeamService service = new OpsTeamService(configFacade, coverageFacade, ledgerPostingFacade, auditLogService);
+    private final OpsTeamService service = new OpsTeamService(
+            configFacade,
+            coverageFacade,
+            ledgerPostingFacade,
+            auditLogService,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewDeclaresSunsetExclusions() {
@@ -85,6 +90,41 @@ class OpsTeamServiceTest {
                 .containsEntry("currentMonth", 10)
                 .containsEntry("currentPhase", "P5")
                 .containsEntry("h1CommissionTighteningPct", new BigDecimal("25"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void disabledReadTimeSeedsDoNotExposeFDomainBusinessDefaults() {
+        OpsTeamService realOnlyService = new OpsTeamService(
+                new FakePlatformConfigFacade(),
+                coverageFacade,
+                ledgerPostingFacade,
+                mock(AuditLogService.class),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> rates = realOnlyService.rates();
+        ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
+
+        assertThat(rates.getCode()).isZero();
+        assertThat((List<Map<String, Object>>) rates.getData().get("metrics")).isEmpty();
+        assertThat((List<Map<String, Object>>) rates.getData().get("unilevelRates")).isEmpty();
+        assertThat((List<Map<String, Object>>) rates.getData().get("rateTiers")).isEmpty();
+        assertThat((List<Map<String, Object>>) rates.getData().get("policyParams"))
+                .allSatisfy(row -> assertThat(row)
+                        .containsEntry("value", "")
+                        .containsEntry("defaultValue", ""));
+
+        assertThat(pool.getCode()).isZero();
+        assertThat(pool.getData())
+                .containsEntry("poolRatio", "")
+                .containsEntry("poolRatioValue", BigDecimal.ZERO)
+                .containsEntry("weeklyGmvUsd", 0)
+                .containsEntry("weeklyInjectedUsd", 0)
+                .containsEntry("monthlyCapUsd", 0)
+                .containsEntry("settlementWindow", "");
+        assertThat((List<Map<String, Object>>) pool.getData().get("quotaRows")).isEmpty();
+        assertThat((List<Map<String, Object>>) pool.getData().get("ambassadorBands")).isEmpty();
+        assertThat((List<Map<String, Object>>) pool.getData().get("podium")).isEmpty();
     }
 
     @Test

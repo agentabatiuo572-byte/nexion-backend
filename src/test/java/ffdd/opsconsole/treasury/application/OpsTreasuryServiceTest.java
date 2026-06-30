@@ -18,6 +18,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
@@ -58,6 +59,10 @@ class OpsTreasuryServiceTest {
     private final OpsTreasuryService service = service();
 
     private OpsTreasuryService service() {
+        return service(ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+    }
+
+    private OpsTreasuryService service(OpsReadTimeSeedPolicy seedPolicy) {
         OpsTreasuryService service = new OpsTreasuryService(
                 ledgerRepository,
                 configFacade,
@@ -66,7 +71,8 @@ class OpsTreasuryServiceTest {
                 CLOCK,
                 new TreasuryDualLedgerProperties(),
                 userSeedRepository,
-                new ObjectMapper());
+                new ObjectMapper(),
+                seedPolicy);
         return service;
     }
 
@@ -109,6 +115,19 @@ class OpsTreasuryServiceTest {
                 .containsEntry("total", 3L)
                 .containsEntry("success", 3L);
         assertThat((Map<String, Object>) result.getData().get("dualLedger")).containsKey("snapshot");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void disabledReadTimeSeedsDoNotExposeB5SeededRiskGates() {
+        OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> result = realOnlyService.bDomainDashboard();
+
+        assertThat(result.getCode()).isZero();
+        Map<String, Object> riskRadar = (Map<String, Object>) result.getData().get("riskRadar");
+        assertThat((List<Map<String, Object>>) riskRadar.get("gates")).isEmpty();
+        assertThat(riskRadar).containsEntry("trippedGateCount", 0L);
     }
 
     @Test

@@ -49,7 +49,13 @@ class OpsAuditCenterServiceTest {
     private final AuditOperationHistoryMapper historyMapper = mock(AuditOperationHistoryMapper.class);
     private final AuditConfirmCategoryMapper confirmCategoryMapper = mock(AuditConfirmCategoryMapper.class);
     private final OpsAuditCenterService service =
-            new OpsAuditCenterService(repository, auditLogService, ticketMapper, historyMapper, confirmCategoryMapper);
+            new OpsAuditCenterService(
+                    repository,
+                    auditLogService,
+                    ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    ticketMapper,
+                    historyMapper,
+                    confirmCategoryMapper);
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
     private final List<AuditOperationHistoryEntity> historyRows = new ArrayList<>();
     private final List<AuditConfirmCategoryEntity> categoryRows = new ArrayList<>();

@@ -28,6 +28,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -142,6 +143,7 @@ public class OpsAuditCenterService {
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final AuditOperationTicketMapper ticketMapper;
     private final AuditOperationHistoryMapper historyMapper;
     private final AuditConfirmCategoryMapper confirmCategoryMapper;
@@ -562,7 +564,10 @@ public class OpsAuditCenterService {
 
     private String value(Map<String, PlatformConfigItem> configs, String key, String fallback) {
         PlatformConfigItem item = configs.get(key);
-        return item == null || !StringUtils.hasText(item.configValue()) ? fallback : item.configValue();
+        if (item != null && StringUtils.hasText(item.configValue())) {
+            return item.configValue();
+        }
+        return readTimeSeedPolicy.enabled() ? fallback : "";
     }
 
     private String status(String value) {
@@ -619,6 +624,9 @@ public class OpsAuditCenterService {
         ticketMapper.createTicketTable();
         historyMapper.createHistoryTable();
         confirmCategoryMapper.createConfirmCategoryTable();
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         seedTicketsIfEmpty();
         seedHistoryIfEmpty();
         seedConfirmCategoriesIfEmpty();

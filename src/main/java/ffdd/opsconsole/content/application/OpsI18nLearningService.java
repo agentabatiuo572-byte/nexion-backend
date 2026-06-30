@@ -21,6 +21,7 @@ import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -65,9 +66,12 @@ public class OpsI18nLearningService {
     private final AuditLogService auditLogService;
     private final TreasuryCoverageFacade coverageFacade;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<I18nLearningOverview> overview() {
-        learningRepository.ensureSeedData(now());
+        if (readTimeSeedPolicy.enabled()) {
+            learningRepository.ensureSeedData(now());
+        }
         return ApiResult.ok(currentOverview());
     }
 
@@ -250,7 +254,7 @@ public class OpsI18nLearningService {
         return new I18nLearningOverview(
                 new I18nLearningStats(
                         managedKeys,
-                        managedKeys + 2,
+                        managedKeys,
                         openIssues,
                         online,
                         weeklyNexPayout(online),
@@ -272,6 +276,9 @@ public class OpsI18nLearningService {
     }
 
     private List<LearningMetricView> metrics(int onlineCourses) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         return List.of(
                 new LearningMetricView("本周开课", decimalK(onlineCourses * 3150L)),
                 new LearningMetricView("完课率", "42%"),
@@ -279,7 +286,7 @@ public class OpsI18nLearningService {
     }
 
     private String weeklyNexPayout(int onlineCourses) {
-        return decimalK(onlineCourses * 5760L);
+        return readTimeSeedPolicy.enabled() ? decimalK(onlineCourses * 5760L) : "0K";
     }
 
     private String decimalK(long value) {

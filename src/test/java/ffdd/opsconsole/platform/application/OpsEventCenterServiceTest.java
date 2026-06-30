@@ -18,6 +18,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +30,10 @@ import org.mockito.ArgumentCaptor;
 class OpsEventCenterServiceTest {
     private final FakeConfigFacade configFacade = new FakeConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsEventCenterService service = new OpsEventCenterService(configFacade, auditLogService);
+    private final OpsEventCenterService service = new OpsEventCenterService(
+            configFacade,
+            auditLogService,
+            OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @BeforeEach
     void setUp() {

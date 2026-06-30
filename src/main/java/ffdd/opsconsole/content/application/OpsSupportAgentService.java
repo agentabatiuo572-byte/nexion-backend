@@ -17,6 +17,7 @@ import ffdd.opsconsole.platform.dto.AdminAccountOverview;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -43,6 +44,7 @@ public class OpsSupportAgentService {
     private final SupportAgentRepository repository;
     private final OpsAdminAccountService accountService;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final Clock clock;
 
     public ApiResult<SupportAgentOverview> overview() {
@@ -167,10 +169,10 @@ public class OpsSupportAgentService {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now);
         List<String> serviceTypes = normalizeServiceTypes(request.serviceTypes());
         List<String> tags = normalizeTags(request.tags());
         int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, 10);
+        repository.ensureDefaultProfile(adminId, request.position().trim(), serviceTypes, tags, maxConcurrent, now);
         repository.updateProfile(
                 adminId,
                 request.position().trim(),
@@ -205,8 +207,13 @@ public class OpsSupportAgentService {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now);
-        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElseThrow();
+        if (readTimeSeedPolicy.enabled()) {
+            repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now);
+        }
+        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
+        if (profile == null) {
+            return ApiResult.fail(404, "SUPPORT_AGENT_PROFILE_NOT_CONFIGURED");
+        }
         if (!profile.serviceTypes().contains("advisor")) {
             return ApiResult.fail(422, "SUPPORT_AGENT_NOT_ADVISOR");
         }
@@ -285,6 +292,9 @@ public class OpsSupportAgentService {
     }
 
     private void ensureDefaultProfiles(List<AdminAccountOverview.OperatorRecord> operators) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         for (AdminAccountOverview.OperatorRecord operator : operators) {
             parseAdminId(operator.id()).ifPresent(adminId ->

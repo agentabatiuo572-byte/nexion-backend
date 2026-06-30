@@ -23,6 +23,7 @@ import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserSeedRepository;
@@ -45,7 +46,27 @@ class OpsFinanceServiceTest {
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsFinanceService service =
-            new OpsFinanceService(configFacade, coverageFacade, withdrawalRepository, depositOpsRepository, userSeedRepository, riskKycReviewFacade, auditLogService);
+            new OpsFinanceService(
+                    configFacade,
+                    coverageFacade,
+                    withdrawalRepository,
+                    depositOpsRepository,
+                    userSeedRepository,
+                    riskKycReviewFacade,
+                    auditLogService,
+                    ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+
+    private OpsFinanceService service(OpsReadTimeSeedPolicy seedPolicy) {
+        return new OpsFinanceService(
+                configFacade,
+                coverageFacade,
+                withdrawalRepository,
+                depositOpsRepository,
+                userSeedRepository,
+                riskKycReviewFacade,
+                auditLogService,
+                seedPolicy);
+    }
 
     @Test
     void withdrawalParamsIncludeCoverageAndConfigValues() {
@@ -385,6 +406,19 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void disabledReadTimeSeedsDoNotSeedTopupFallbackData() {
+        OpsFinanceService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> result = realOnlyService.topupOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(depositOpsRepository.seedCalls).isZero();
+        assertThat(userSeedRepository.accountSeedCalls).isZero();
+        assertThat(result.getData()).containsEntry("ledgerCount", 0L);
+        assertThat(result.getData().get("reconciliation")).asList().isEmpty();
+    }
+
+    @Test
     void topupChannelWriteRequiresIdempotencyAndReason() {
         TopupCommandRequest request = new TopupCommandRequest(null, false, "pause incident channel", "superadmin");
 
@@ -449,6 +483,19 @@ class OpsFinanceServiceTest {
         assertThat(withdrawalRepository.seedCalls).isEqualTo(1);
         assertThat(result.getData().getTotal()).isEqualTo(1);
         assertThat(result.getData().getRecords()).extracting(WithdrawalOrderView::withdrawalNo).containsExactly("D2-SEED-WD-1");
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotSeedWithdrawalFallbackData() {
+        OpsFinanceService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<PageResult<WithdrawalOrderView>> result = realOnlyService.withdrawals(
+                new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(withdrawalRepository.seedCalls).isZero();
+        assertThat(result.getData().getTotal()).isZero();
+        assertThat(result.getData().getRecords()).isEmpty();
     }
 
     @Test

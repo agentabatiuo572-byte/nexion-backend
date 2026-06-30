@@ -21,6 +21,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreUserView;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.risk.mapper.RiskOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
@@ -36,6 +37,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private final RiskOpsMapper mapper;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     @PostConstruct
     void ensureRiskSchema() {
@@ -58,7 +60,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         mapper.createIpWhitelistTable();
         mapper.createKycReviewTicketTable();
         mapper.createKycAlertTable();
-        seedRiskDataIfEmpty();
+        if (readTimeSeedPolicy.enabled()) {
+            seedRiskDataIfEmpty();
+        }
     }
 
     @Override
@@ -221,7 +225,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         Map<String, String> values = new LinkedHashMap<>();
         mapper.scoreConfigRows().forEach(row -> values.put(row.configKey(), row.valueText()));
         return new RiskScoreConfigView(
-                values.getOrDefault("inputSource", "全部启用"),
+                values.getOrDefault("inputSource", readTimeSeedPolicy.enabled() ? "全部启用" : ""),
                 intValue(values.get("bandLowMax"), 40),
                 intValue(values.get("bandHighMin"), 70),
                 intValue(values.get("autoEscalateScore"), 85));
@@ -359,6 +363,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 .filter(c -> "frozen".equalsIgnoreCase(c.status()))
                 .mapToLong(c -> c.n() == null ? 0 : c.n())
                 .sum();
+        long flaggedAccounts = allClusters.stream()
+                .filter(c -> !"cleared".equalsIgnoreCase(c.status()) && !"released".equalsIgnoreCase(c.status()))
+                .mapToLong(c -> c.n() == null ? 0 : c.n())
+                .sum();
         long clusterTotal = mapper.countMultiAccountClustersByLayer(normalizedLayer);
         List<RiskOpsMapper.MultiAccountClusterRecord> clusters = mapper.pageMultiAccountClusters(
                 normalizedLayer,
@@ -370,17 +378,17 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 normalizedWhitelistPageSize);
 
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("clusterBase", 44);
-        stats.put("activeClusters", 44 + activeClusters);
-        stats.put("highBase", 7);
-        stats.put("highClusters", 7 + highClusters);
-        stats.put("frozenBase", 11);
-        stats.put("frozenClusters", 11 + frozenClusters);
-        stats.put("frozenAccountsBase", 80);
-        stats.put("frozenAccounts", 80 + frozenAccounts);
-        stats.put("giftBlockedUsd", 2140);
-        stats.put("giftBlockedCnt", 428);
-        stats.put("flaggedAccounts", 342);
+        stats.put("clusterBase", null);
+        stats.put("activeClusters", activeClusters);
+        stats.put("highBase", null);
+        stats.put("highClusters", highClusters);
+        stats.put("frozenBase", null);
+        stats.put("frozenClusters", frozenClusters);
+        stats.put("frozenAccountsBase", null);
+        stats.put("frozenAccounts", frozenAccounts);
+        stats.put("giftBlockedUsd", null);
+        stats.put("giftBlockedCnt", null);
+        stats.put("flaggedAccounts", flaggedAccounts);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", stats);
@@ -422,12 +430,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         long openTickets = mapper.countKycOpenTickets();
         long overdue = mapper.countKycTicketsByStatus("overdue");
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("reviewOpenBase", 10);
-        stats.put("openTickets", 10 + openTickets);
+        stats.put("reviewOpenBase", null);
+        stats.put("openTickets", openTickets);
         stats.put("reviewOverdue", overdue);
-        stats.put("reviewDecidedMonth", 86);
-        stats.put("reviewDecidedPass", 71);
-        stats.put("reviewFrozenUsd", 31200);
+        stats.put("reviewDecidedMonth", null);
+        stats.put("reviewDecidedPass", null);
+        stats.put("reviewFrozenUsd", null);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", stats);
@@ -604,18 +612,18 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     private int intValue(String value, int fallback) {
         if (!StringUtils.hasText(value)) {
-            return fallback;
+            return intFallback(fallback);
         }
         try {
             return Integer.parseInt(value.trim());
         } catch (NumberFormatException ex) {
-            return fallback;
+            return intFallback(fallback);
         }
     }
 
     private int scoreLineValue(String value, int fallback) {
         if (!StringUtils.hasText(value)) {
-            return fallback;
+            return intFallback(fallback);
         }
         String digits = value.replaceAll("[^0-9]", "");
         return intValue(digits, fallback);
@@ -626,7 +634,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 .filter(param -> key.equals(param.key()))
                 .findFirst()
                 .map(param -> scoreLineValue(param.value(), fallback))
-                .orElse(fallback);
+                .orElseGet(() -> intFallback(fallback));
+    }
+
+    private int intFallback(int fallback) {
+        return readTimeSeedPolicy.enabled() ? fallback : 0;
     }
 
     private String money(BigDecimal amount) {

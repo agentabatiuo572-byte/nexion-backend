@@ -15,6 +15,7 @@ import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -49,9 +50,12 @@ public class OpsNotificationCampaignService {
     private final NotificationCampaignRepository campaignRepository;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<NotificationCampaignOverview> overview() {
-        campaignRepository.ensureSeedData(now());
+        if (readTimeSeedPolicy.enabled()) {
+            campaignRepository.ensureSeedData(now());
+        }
         List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns();
         return ApiResult.ok(new NotificationCampaignOverview(
                 stats(campaigns),

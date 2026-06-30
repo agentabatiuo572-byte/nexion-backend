@@ -19,6 +19,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -47,6 +48,7 @@ public class OpsSupportTicketService {
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> overview() {
         ensureSeedData();
@@ -295,6 +297,9 @@ public class OpsSupportTicketService {
     }
 
     private void ensureSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         ticketRepository.ensureSeedData(now);
         ensureLoadConfigSeedData();
@@ -311,6 +316,9 @@ public class OpsSupportTicketService {
     }
 
     private void seedLoadValue(Map<String, String> values, String suffix, String value, String valueType) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         String key = LOAD_PREFIX + suffix;
         if (!values.containsKey(key)) {
             configFacade.upsertAdminValue(key, value, valueType, LOAD_GROUP, "seed support load config");
@@ -329,13 +337,14 @@ public class OpsSupportTicketService {
 
     private Map<String, Object> loadConfigView() {
         Map<String, String> values = configFacade.activeValuesByGroup(LOAD_GROUP);
+        int defaultCap = intValue(values, "defaultCap", readTimeSeedPolicy.enabled() ? 8 : 0);
         Map<String, Object> loadConfig = new LinkedHashMap<>();
-        loadConfig.put("autoBalance", boolValue(values, "autoBalance", true));
-        loadConfig.put("defaultCap", intValue(values, "defaultCap", 8));
-        loadConfig.put("burstCap", intValue(values, "burstCap", 12));
-        loadConfig.put("warnPct", intValue(values, "warnPct", 80));
-        loadConfig.put("quietHourBalance", boolValue(values, "quietHourBalance", true));
-        loadConfig.put("overflowQueue", textValue(values, "overflowQueue", "转人工备勤队列"));
+        loadConfig.put("autoBalance", boolValue(values, "autoBalance", readTimeSeedPolicy.enabled()));
+        loadConfig.put("defaultCap", defaultCap);
+        loadConfig.put("burstCap", intValue(values, "burstCap", readTimeSeedPolicy.enabled() ? 12 : 0));
+        loadConfig.put("warnPct", intValue(values, "warnPct", readTimeSeedPolicy.enabled() ? 80 : 0));
+        loadConfig.put("quietHourBalance", boolValue(values, "quietHourBalance", readTimeSeedPolicy.enabled()));
+        loadConfig.put("overflowQueue", textValue(values, "overflowQueue", readTimeSeedPolicy.enabled() ? "转人工备勤队列" : ""));
 
         Map<String, Map<String, Object>> agentState = new LinkedHashMap<>();
         String agentPrefix = LOAD_PREFIX + "agent.";
@@ -355,7 +364,7 @@ public class OpsSupportTicketService {
             }
             Map<String, Object> state = agentState.computeIfAbsent(agentId, ignored -> new LinkedHashMap<>());
             if ("cap".equals(field)) {
-                state.put("cap", boundedInt(parseInt(value), 0, 40, intValue(values, "defaultCap", 8)));
+                state.put("cap", boundedInt(parseInt(value), 0, 40, defaultCap));
             } else if ("busy".equals(field)) {
                 state.put("busy", Boolean.parseBoolean(value));
             }

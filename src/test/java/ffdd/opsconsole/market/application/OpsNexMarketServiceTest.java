@@ -32,6 +32,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -59,6 +60,10 @@ class OpsNexMarketServiceTest {
     private final OpsNexMarketService service = service();
 
     private OpsNexMarketService service() {
+        return service(OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+    }
+
+    private OpsNexMarketService service(OpsReadTimeSeedPolicy seedPolicy) {
         OpsNexMarketService service = new OpsNexMarketService(
                 configFacade,
                 coverageFacade,
@@ -67,7 +72,8 @@ class OpsNexMarketServiceTest {
                 riskKycReviewFacade,
                 auditLogService,
                 new ObjectMapper(),
-                clock);
+                clock,
+                seedPolicy);
         return service;
     }
 
@@ -181,6 +187,42 @@ class OpsNexMarketServiceTest {
         assertThat((List<?>) result.getData().get("queue"))
                 .extracting("exchangeNo")
                 .containsExactly("DEMO-EX-QUEUE-1", "DEMO-EX-QUEUE-2");
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotExposeG3ScheduleOrSeedExchangeQueue() {
+        configFacade.values.clear();
+        marketRepository.orders = List.of();
+        OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> overview = realOnlyService.overview();
+        ApiResult<Map<String, Object>> exchange = realOnlyService.exchangeOverview();
+
+        assertThat(overview.getCode()).isZero();
+        assertThat(realOnlyService.currentSchedule().displayValue()).isEmpty();
+        assertThat(realOnlyService.currentSchedule().cronExpression()).isEmpty();
+        assertThat((List<?>) overview.getData().get("frames")).isEmpty();
+        assertThat(exchange.getCode()).isZero();
+        assertThat(marketRepository.exchangeSeeded).isFalse();
+        assertThat((List<?>) exchange.getData().get("queue")).isEmpty();
+        assertThat(detailMap(exchange.getData().get("stats"))).containsEntry("queueDepth", 0L);
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotBackfillGeoBlockReason() {
+        configFacade.values.clear();
+        configFacade.values.put("emergency.geo.country.US", "blocked");
+        OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> result = realOnlyService.exchangeOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat((List<Map<String, Object>>) result.getData().get("geoBlocked"))
+                .singleElement()
+                .satisfies(row -> assertThat(row)
+                        .containsEntry("cc", "US")
+                        .containsEntry("status", "blocked")
+                        .containsEntry("reason", ""));
     }
 
     @Test

@@ -314,7 +314,7 @@ public class OpsDashboardService {
         rows.add(linked(
                 "id", "L-EXPORT",
                 "role", "audit",
-                "count", 1L,
+                "count", configuredPendingCount("L-EXPORT"),
                 "title", "Sensitive export review",
                 "href", "/analytics/export"));
         return rows;
@@ -333,19 +333,31 @@ public class OpsDashboardService {
                 .count();
         long kpiPass = kpis.stream().filter(row -> Boolean.TRUE.equals(row.get("pass"))).count();
         return linked(
-                "A", "RBAC and A2 audit online",
+                "A", configuredDomainPulse("A"),
                 "B", "Coverage " + decimal(ledger.get("coverageRatio")).toPlainString() + "%",
-                "C", "User 360 uses server profile contracts",
+                "C", configuredDomainPulse("C"),
                 "D", "Pending withdrawals " + longValue(operations.get("pendingWithdrawalCount")),
-                "E", "Device lifecycle actions use admin APIs",
-                "F", "Team commission reads server ranks",
-                "G", "NEX market curve is server-canonical",
-                "H", "Growth phase and check-in rewards use active NEX rules",
+                "E", configuredDomainPulse("E"),
+                "F", configuredDomainPulse("F"),
+                "G", configuredDomainPulse("G"),
+                "H", configuredDomainPulse("H"),
                 "I", "I9 transferred conversations " + longValue(conversationOverview.get("transferred")),
                 "J", "Active gates " + enabledGates + "/" + list(killSwitch.get("gates")).size(),
                 "K", "High risk accounts " + longValue(risk.get("flaggedAccounts")),
                 "L", "KPI pass " + kpiPass + "/" + kpis.size(),
                 "M", "Support pending " + longValue(conversationOverview.get("pending")));
+    }
+
+    private long configuredPendingCount(String code) {
+        return configFacade.activeValue("admin.dashboard.pending." + code)
+                .map(this::longValue)
+                .orElse(0L);
+    }
+
+    private String configuredDomainPulse(String domain) {
+        return configFacade.activeValue("admin.dashboard.domainPulse." + domain)
+                .map(String::trim)
+                .orElse("");
     }
 
     private Map<String, Object> exportTarget() {

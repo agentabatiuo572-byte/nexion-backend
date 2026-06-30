@@ -77,7 +77,8 @@ class OpsUserServiceTest {
             configFacade,
             financeWithdrawalControlFacade,
             riskUserStateFacade,
-            auditLogService);
+            auditLogService,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewKeepsSunsetCapabilitiesHistoricalOnly() {

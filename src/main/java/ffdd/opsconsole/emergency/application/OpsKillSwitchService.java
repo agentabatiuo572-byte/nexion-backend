@@ -11,6 +11,7 @@ import ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest;
 import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
 import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -65,15 +66,16 @@ public class OpsKillSwitchService {
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> matrix() {
         ensureSeedData();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        List<Map<String, Object>> gates = ACTIVE_GATES.stream().map(this::gateView).toList();
+        List<Map<String, Object>> gates = activeGateKeys().stream().map(this::gateView).toList();
         long live = gates.stream().filter(gate -> Boolean.TRUE.equals(gate.get("enabled"))).count();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "J1");
-        response.put("activeGateCount", ACTIVE_GATES.size());
+        response.put("activeGateCount", gates.size());
         response.put("activeGates", gates);
         response.put("retiredGates", retiredGates());
         response.put("coverage", Map.of(
@@ -83,7 +85,7 @@ public class OpsKillSwitchService {
                 "recoveryAllowed", coverage.coverageRatio().compareTo(coverage.redlinePct()) >= 0));
         response.put("stats", Map.of(
                 "liveGateCount", live,
-                "killedGateCount", ACTIVE_GATES.size() - live,
+                "killedGateCount", gates.size() - live,
                 "emergencyProposalCount", gates.stream().filter(gate -> Boolean.TRUE.equals(gate.get("emergency"))).count(),
                 "coverageBlockedCount", 0));
         response.put("emergencySla", emergencySlaRows(coverage));
@@ -212,10 +214,21 @@ public class OpsKillSwitchService {
         gate.put("coverageImpactCategory", seed.coverageImpactCategory());
         gate.put("amplifies", seed.amplifies());
         gate.put("ownerDomain", "J1");
-        gate.put("lastChange", activeValue(lastChangeConfigKey(key)).orElse(seed.lastChange()));
+        gate.put("lastChange", activeValue(lastChangeConfigKey(key))
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.lastChange() : ""));
         gate.put("proposalStatus", seed.proposalStatus());
         gate.put("emergency", Boolean.parseBoolean(activeValue(emergencyFlagConfigKey(key)).orElse("false")));
         return gate;
+    }
+
+    private List<String> activeGateKeys() {
+        if (readTimeSeedPolicy.enabled()) {
+            return ACTIVE_GATES;
+        }
+        return ACTIVE_GATES.stream()
+                .filter(key -> activeValue(configKey(key)).filter(StringUtils::hasText).isPresent()
+                        || activeValue(legacyConfigKey(key)).filter(StringUtils::hasText).isPresent())
+                .toList();
     }
 
     private List<Map<String, Object>> retiredGates() {
@@ -289,7 +302,7 @@ public class OpsKillSwitchService {
                     String normalized = raw.trim().toLowerCase(Locale.ROOT);
                     return "enabled".equals(normalized) || "enable".equals(normalized) || "on".equals(normalized) || "true".equals(normalized) || "1".equals(normalized);
                 })
-                .orElse(true);
+                .orElse(readTimeSeedPolicy.enabled());
     }
 
     private void writeGate(String key, boolean enabled) {
@@ -306,6 +319,9 @@ public class OpsKillSwitchService {
     }
 
     private void ensureSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         for (GateSeed seed : GATE_SEEDS) {
             ensureConfig(configKey(seed.key()), "enabled", "STRING", GROUP_KILL_SWITCH, "J1 active kill switch default");
             ensureConfig(emergencyFlagConfigKey(seed.key()), "false", "BOOLEAN", GROUP_KILL_SWITCH, "J1 emergency kill switch marker");
@@ -324,6 +340,9 @@ public class OpsKillSwitchService {
     }
 
     private void ensureConfig(String key, String value, String valueType, String group, String remark) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (activeValue(key).isEmpty()) {
             configFacade.upsertAdminValue(key, value, valueType, group, remark);
         }
@@ -334,7 +353,11 @@ public class OpsKillSwitchService {
     }
 
     private List<Map<String, Object>> emergencySlaRows(TreasuryCoverageSnapshot coverage) {
-        return EMERGENCY_SLA_SEEDS.stream().map(seed -> {
+        return EMERGENCY_SLA_SEEDS.stream()
+                .filter(seed -> readTimeSeedPolicy.enabled()
+                        || "recoverGate".equals(seed.id())
+                        || activeValue(emergencySlaConfigKey(seed.id())).filter(StringUtils::hasText).isPresent())
+                .map(seed -> {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
             row.put("k", seed.name());
@@ -344,17 +367,26 @@ public class OpsKillSwitchService {
             row.put("editable", seed.editable());
             row.put("v", "recoverGate".equals(seed.id())
                     ? coverage.redlinePct().stripTrailingZeros().toPlainString()
-                    : activeValue(emergencySlaConfigKey(seed.id())).orElse(seed.defaultValue()));
+                    : activeValue(emergencySlaConfigKey(seed.id()))
+                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.defaultValue() : ""));
             row.put("source", "recoverGate".equals(seed.id()) ? "B1 treasury coverage" : emergencySlaConfigKey(seed.id()));
             return row;
         }).toList();
     }
 
     private List<Map<String, Object>> autoRuleRows() {
-        return AUTO_RULE_SEEDS.stream().map(seed -> {
+        return AUTO_RULE_SEEDS.stream()
+                .filter(seed -> readTimeSeedPolicy.enabled()
+                        || activeValue(autoRuleConfigKey(seed.id())).filter(StringUtils::hasText).isPresent()
+                        || ("tamperCluster".equals(seed.id())
+                        && activeValue("emergency.tamper.alert.threshold").filter(StringUtils::hasText).isPresent()))
+                .map(seed -> {
             String threshold = "tamperCluster".equals(seed.id())
-                    ? activeValue("emergency.tamper.alert.threshold").map(value -> value + " 次 / 24h").orElse(activeValue(autoRuleConfigKey(seed.id())).orElse(seed.threshold()))
-                    : activeValue(autoRuleConfigKey(seed.id())).orElse(seed.threshold());
+                    ? activeValue("emergency.tamper.alert.threshold").map(value -> value + " 次 / 24h")
+                    .orElseGet(() -> activeValue(autoRuleConfigKey(seed.id()))
+                            .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.threshold() : ""))
+                    : activeValue(autoRuleConfigKey(seed.id()))
+                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.threshold() : "");
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
             row.put("nm", seed.name());

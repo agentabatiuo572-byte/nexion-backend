@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -93,6 +94,7 @@ public class OpsTreasuryService {
     private final TreasuryDualLedgerProperties dualLedgerProperties;
     private final UserSeedRepository userSeedRepository;
     private final ObjectMapper objectMapper;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> overview(int days) {
         ensureD3FallbackSeedData();
@@ -178,7 +180,7 @@ public class OpsTreasuryService {
                 "domain", "B",
                 "generatedAt", now,
                 "sources", List.of("nx_user_wallet", "nx_wallet_ledger", "nx_withdrawal_order", "nx_staking_position", "nx_nex_lock_order", "nx_config_item", "H1 growth rhythm facade"));
-        response.put("h1Rhythm", GrowthRhythmSnapshot.from(configFacade).summary());
+        response.put("h1Rhythm", GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).summary());
         response.put("snapshot", section(
                 "reserveUsd", money(reserveUsd),
                 "liabilitiesUsd", money(liabilitiesUsd),
@@ -620,6 +622,9 @@ public class OpsTreasuryService {
                 }
             }
             boolean configuredPresent = StringUtils.hasText(configured);
+            if (!configuredPresent && !readTimeSeedPolicy.enabled()) {
+                continue;
+            }
             boolean on = !configuredPresent || enabledFromConfig(configured);
             String state = configuredPresent ? (on ? "on" : "off") : "missing";
             gates.add(section("nm", seed.name(), "dom", key, "on", on, "state", state, "configKey", sourceKey));
@@ -653,7 +658,7 @@ public class OpsTreasuryService {
                         return List.<Map<String, Object>>of();
                     }
                 })
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : List.of());
     }
 
     private List<BigDecimal> readDecimalList(String key, List<BigDecimal> fallback, String remark,
@@ -669,7 +674,7 @@ public class OpsTreasuryService {
                         return List.<BigDecimal>of();
                     }
                 })
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : List.of());
     }
 
     private BigDecimal readDecimalSeed(String key, BigDecimal fallback, String remark, List<Map<String, Object>> warnings) {
@@ -681,10 +686,10 @@ public class OpsTreasuryService {
                         return new BigDecimal(raw.trim());
                     } catch (RuntimeException ex) {
                         warnConfig(warnings, key, "B_CONFIG_NUMBER_INVALID", "Configured number is invalid; existing value was not overwritten.");
-                        return safe(fallback);
+                        return readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO;
                     }
                 })
-                .orElse(safe(fallback));
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO);
     }
 
     private void warnConfig(List<Map<String, Object>> warnings, String key, String code, String message) {
@@ -692,6 +697,9 @@ public class OpsTreasuryService {
     }
 
     private void seedJsonIfAbsent(String key, Object fallback, String remark) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
             return;
         }
@@ -910,6 +918,9 @@ public class OpsTreasuryService {
     }
 
     private void ensureD3FallbackSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         ensureD3ConfigDefaults();
         if (treasuryLiabilitiesPresent()) {
             return;
@@ -918,6 +929,9 @@ public class OpsTreasuryService {
     }
 
     private void ensureD4FallbackSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         ensureD3ConfigDefaults();
         if (ledgerRepository.countLedgerBills(null, null, null) > 0) {
             return;
@@ -959,6 +973,9 @@ public class OpsTreasuryService {
     }
 
     private void seedConfigIfAbsent(String key, String value, String type, String group, String remark) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
             return;
         }
@@ -1041,18 +1058,20 @@ public class OpsTreasuryService {
     private BigDecimal configDecimal(String key, BigDecimal fallback) {
         return configFacade.activeValue(key)
                 .map(value -> parseDecimal(value, fallback))
-                .orElse(safe(fallback));
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO);
     }
 
     private String configValue(String key, String fallback) {
-        return configFacade.activeValue(key).filter(StringUtils::hasText).orElse(fallback);
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
     }
 
     private BigDecimal parseDecimal(String value, BigDecimal fallback) {
         try {
             return new BigDecimal(value.trim());
         } catch (RuntimeException ex) {
-            return safe(fallback);
+            return readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO;
         }
     }
 

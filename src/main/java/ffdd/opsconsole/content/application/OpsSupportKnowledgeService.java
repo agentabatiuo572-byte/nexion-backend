@@ -13,6 +13,7 @@ import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -35,6 +36,7 @@ public class OpsSupportKnowledgeService {
     private final SupportKnowledgeRepository knowledgeRepository;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<SupportKnowledgeOverview> overview() {
         ensureSeedData();
@@ -185,6 +187,9 @@ public class OpsSupportKnowledgeService {
     }
 
     private void ensureSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         knowledgeRepository.ensureSeedData(LocalDateTime.now(clock));
     }
 

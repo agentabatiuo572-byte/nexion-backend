@@ -38,7 +38,11 @@ class OpsTrustDisclosureServiceTest {
     private final FakeTrustDisclosureRepository repository = new FakeTrustDisclosureRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T10:30:00Z"), ZoneOffset.UTC);
-    private final OpsTrustDisclosureService service = new OpsTrustDisclosureService(repository, auditLogService, clock);
+    private final OpsTrustDisclosureService service = new OpsTrustDisclosureService(
+            repository,
+            auditLogService,
+            clock,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewReturnsTrustDisclosureDataAndSources() {

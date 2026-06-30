@@ -115,6 +115,26 @@ class OpsDashboardServiceTest {
 
         Map<String, Object> killSwitch = cast(data.get("killSwitch"));
         assertThat((List<?>) killSwitch.get("gates")).hasSize(2);
+
+        List<Map<String, Object>> pendingOperations = cast(data.get("pendingOperations"));
+        assertThat(pendingOperations)
+                .filteredOn(row -> "L-EXPORT".equals(row.get("id")))
+                .singleElement()
+                .satisfies(row -> assertThat(row).containsEntry("count", 0L));
+
+        Map<String, Object> domainPulse = cast(data.get("domainPulse"));
+        assertThat(domainPulse)
+                .containsEntry("A", "")
+                .containsEntry("C", "")
+                .containsEntry("E", "")
+                .containsEntry("F", "")
+                .containsEntry("G", "")
+                .containsEntry("H", "");
+        assertThat(domainPulse.toString())
+                .doesNotContain("online")
+                .doesNotContain("server profile contracts")
+                .doesNotContain("server-canonical")
+                .doesNotContain("active NEX rules");
     }
 
     private WithdrawalOrderView withdrawal(String withdrawalNo, String status, BigDecimal amount) {

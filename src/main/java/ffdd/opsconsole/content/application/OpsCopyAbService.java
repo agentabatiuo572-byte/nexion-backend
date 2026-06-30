@@ -17,6 +17,7 @@ import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -44,9 +45,12 @@ public class OpsCopyAbService {
     private final CopyAbRepository copyAbRepository;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<CopyAbOverview> overview() {
-        copyAbRepository.ensureSeedData(now());
+        if (readTimeSeedPolicy.enabled()) {
+            copyAbRepository.ensureSeedData(now());
+        }
         List<CopyContentRow> copies = copyAbRepository.listCopies();
         List<CopyExperimentRow> experiments = copyAbRepository.listExperiments();
         return ApiResult.ok(new CopyAbOverview(

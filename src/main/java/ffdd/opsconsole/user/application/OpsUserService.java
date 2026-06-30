@@ -11,6 +11,7 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.RiskUserStateFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserAccountActionOverview;
@@ -235,6 +236,7 @@ public class OpsUserService {
     private final FinanceWithdrawalControlFacade financeWithdrawalControlFacade;
     private final RiskUserStateFacade riskUserStateFacade;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(userRepository.overview());
@@ -313,6 +315,9 @@ public class OpsUserService {
     }
 
     private void ensureC1ProfileSeeds() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         boolean seedUsersMissing = ACCOUNT_ACTION_SEED_LOOKUP_KEYS.stream()
                 .anyMatch(key -> userRepository.findUserIdByLookupKey(key).isEmpty());
         if (seedUsersMissing) {
@@ -544,7 +549,7 @@ public class OpsUserService {
     public ApiResult<PageResult<UserSessionView>> sessionPage(Long userId, Integer pageNum, Integer pageSize, Integer limit) {
         int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 20, 200) : normalizeLimit(pageSize, 20, 200);
         PageResult<UserSessionView> page = userRepository.pageSessions(userId, normalizePageNum(pageNum), normalizedPageSize);
-        if (page.getTotal() == 0) {
+        if (page.getTotal() == 0 && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
             page = userRepository.pageSessions(userId, normalizePageNum(pageNum), normalizedPageSize);
         }
@@ -566,7 +571,7 @@ public class OpsUserService {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         UserSecurityOverview overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
-        if (securityOverviewSeedsMissing(overview)) {
+        if (securityOverviewSeedsMissing(overview) && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
             overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
         }
@@ -574,6 +579,9 @@ public class OpsUserService {
     }
 
     private void ensureSecuritySessionSeeds() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (securitySeedUsersMissing()) {
             userRepository.upsertSecuritySessionSeeds();
         }
@@ -684,7 +692,7 @@ public class OpsUserService {
 
     public ApiResult<UserAccountActionOverview> accountActionOverview() {
         UserAccountActionOverview overview = loadAccountActionOverview();
-        if (accountActionSeedsMissing(overview)) {
+        if (accountActionSeedsMissing(overview) && readTimeSeedPolicy.enabled()) {
             userRepository.upsertAccountActionSeeds();
             overview = loadAccountActionOverview();
         }
@@ -888,7 +896,7 @@ public class OpsUserService {
         if (reasonGuard != null) {
             return reasonGuard;
         }
-        if (userRepository.findById(userId).isEmpty()) {
+        if (userRepository.findById(userId).isEmpty() && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
         }
         if (userRepository.findById(userId).isEmpty()) {
@@ -916,7 +924,7 @@ public class OpsUserService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
         UserSecurityStatusView status = loadSecurityStatus(userId);
-        if (status == null) {
+        if (status == null && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
             status = loadSecurityStatus(userId);
         }
@@ -997,6 +1005,9 @@ public class OpsUserService {
     }
 
     private void ensureRegistrationRiskConfigSeeds() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         REGISTRATION_RISK_PARAM_DEFINITIONS.forEach(definition -> {
             ensureAdminConfigSeed(definition.configKey(), String.valueOf(definition.fallback()), "NUMBER");
             if (definition.composite()) {
@@ -1014,6 +1025,9 @@ public class OpsUserService {
     }
 
     private void ensureAdminConfigSeed(String configKey, String configValue, String valueType) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isPresent()) {
             return;
         }
@@ -1093,7 +1107,7 @@ public class OpsUserService {
             return guard;
         }
         UserSecurityStatusView before = loadSecurityStatus(userId);
-        if (before == null) {
+        if (before == null && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
             before = loadSecurityStatus(userId);
         }
@@ -1115,7 +1129,7 @@ public class OpsUserService {
         if (guard != null) {
             return guard;
         }
-        if (loadSecurityStatus(userId) == null) {
+        if (loadSecurityStatus(userId) == null && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
         }
         if (loadSecurityStatus(userId) == null) {
@@ -1139,7 +1153,7 @@ public class OpsUserService {
             return guard;
         }
         UserSecurityStatusView before = loadSecurityStatus(userId);
-        if (before == null) {
+        if (before == null && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
             before = loadSecurityStatus(userId);
         }
@@ -1209,7 +1223,7 @@ public class OpsUserService {
             return guard;
         }
         UserSessionView session = userRepository.findSession(refreshTokenId.trim()).orElse(null);
-        if (session == null) {
+        if (session == null && readTimeSeedPolicy.enabled()) {
             userRepository.upsertSecuritySessionSeeds();
             session = userRepository.findSession(refreshTokenId.trim()).orElse(null);
         }
@@ -1559,6 +1573,9 @@ public class OpsUserService {
     }
 
     private void ensureAssetAdjustmentSeeds() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         boolean missingSeed = ASSET_ADJUSTMENT_SEED_NOS.stream()
                 .anyMatch(adjustmentNo -> userRepository.findAssetAdjustment(adjustmentNo).isEmpty());
         if (missingSeed) {
@@ -1567,6 +1584,9 @@ public class OpsUserService {
     }
 
     private void ensureKycLedgerSeeds() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         boolean missingSeed = KYC_LEDGER_SEED_LOOKUP_KEYS.stream()
                 .anyMatch(lookupKey -> userRepository.findUserIdByLookupKey(lookupKey).isEmpty());
         if (missingSeed) {
@@ -1934,7 +1954,7 @@ public class OpsUserService {
 
     private int boundedConfigInt(String configKey, int fallback, int min, int max) {
         int value = configInt(configKey, fallback);
-        return value < min || value > max ? fallback : value;
+        return value < min || value > max ? (readTimeSeedPolicy.enabled() ? fallback : value) : value;
     }
 
     private int configInt(String configKey, int fallback) {
@@ -1943,9 +1963,9 @@ public class OpsUserService {
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .map(Integer::parseInt)
-                    .orElse(fallback);
+                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : 0);
         } catch (NumberFormatException ex) {
-            return fallback;
+            return readTimeSeedPolicy.enabled() ? fallback : 0;
         }
     }
 
@@ -1955,9 +1975,9 @@ public class OpsUserService {
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .map(Long::parseLong)
-                    .orElse(fallback);
+                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : 0L);
         } catch (NumberFormatException ex) {
-            return fallback;
+            return readTimeSeedPolicy.enabled() ? fallback : 0L;
         }
     }
 

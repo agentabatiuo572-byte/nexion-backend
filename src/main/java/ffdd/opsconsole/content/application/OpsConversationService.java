@@ -25,6 +25,7 @@ import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -58,6 +59,7 @@ public class OpsConversationService {
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> overview() {
         ensureSeedData();
@@ -496,6 +498,9 @@ public class OpsConversationService {
     }
 
     private void ensureSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         conversationRepository.ensureSeedData(now);
         ticketRepository.ensureSeedData(now);

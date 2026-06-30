@@ -40,7 +40,8 @@ class OpsI18nLearningServiceTest {
             repository,
             auditLogService,
             coverageFacade,
-            Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")));
+            Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewUsesBackendRecordsAndNoActivePremiumNamespace() {
@@ -98,7 +99,8 @@ class OpsI18nLearningServiceTest {
                 repository,
                 auditLogService,
                 () -> new TreasuryCoverageSnapshot(new BigDecimal("88"), new BigDecimal("100")),
-                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")));
+                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
         var result = redlineService.updateCourseReward("what-is-nexion", "idem-i7-reward", new LearningRewardUpdateRequest(
                 new BigDecimal("40"),

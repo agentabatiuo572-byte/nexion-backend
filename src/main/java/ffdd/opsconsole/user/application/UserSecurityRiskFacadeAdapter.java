@@ -1,6 +1,7 @@
 package ffdd.opsconsole.user.application;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
 import ffdd.opsconsole.user.facade.UserSecurityRiskDecision;
@@ -16,6 +17,7 @@ public class UserSecurityRiskFacadeAdapter implements UserSecurityRiskFacade {
 
     private final UserOpsRepository userRepository;
     private final PlatformConfigFacade configFacade;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     @Override
     public UserSecurityRiskDecision evaluateLogin(Long userId) {
@@ -120,14 +122,14 @@ public class UserSecurityRiskFacadeAdapter implements UserSecurityRiskFacade {
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .map(value -> parseInt(value, fallback))
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : 0);
     }
 
     private int parseInt(String value, int fallback) {
         try {
             return Integer.parseInt(value);
         } catch (NumberFormatException ex) {
-            return fallback;
+            return readTimeSeedPolicy.enabled() ? fallback : 0;
         }
     }
 

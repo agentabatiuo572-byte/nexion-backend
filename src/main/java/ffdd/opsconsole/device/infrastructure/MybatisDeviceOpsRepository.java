@@ -11,6 +11,7 @@ import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -48,6 +49,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             "promoRoutes",
             "inventorySoftMax");
     private final DeviceOpsMapper mapper;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final AtomicBoolean datacenterCatalogReady = new AtomicBoolean(false);
 
     @Override
@@ -138,7 +140,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public Map<String, String> e3Config() {
-        Map<String, String> config = defaultE3Config();
+        Map<String, String> config = readTimeSeedPolicy.enabled() ? defaultE3Config() : new LinkedHashMap<>();
         mapper.defaultLifecycleRules().forEach(row -> {
             int startMonth = row.startMonth() == null ? 0 : row.startMonth();
             if (startMonth == 1) {
@@ -229,7 +231,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             return;
         }
         mapper.ensureDatacenterCatalogTable();
-        if (mapper.countDatacenterCatalogRows() == 0) {
+        if (readTimeSeedPolicy.enabled() && mapper.countDatacenterCatalogRows() == 0) {
             mapper.seedDefaultDatacenters();
         }
         datacenterCatalogReady.set(true);

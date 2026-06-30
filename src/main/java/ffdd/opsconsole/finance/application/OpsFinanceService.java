@@ -26,6 +26,7 @@ import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserSeedRepository;
@@ -79,6 +80,7 @@ public class OpsFinanceService {
     private final UserSeedRepository userSeedRepository;
     private final RiskKycReviewFacade riskKycReviewFacade;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -103,8 +105,11 @@ public class OpsFinanceService {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("channels", channels);
-        response.put("primaryPsp", configValue("finance.topup.psp.primary", "Checkout.com"));
-        response.put("backupPsp", "Checkout.com".equals(configValue("finance.topup.psp.primary", "Checkout.com")) ? "Stripe" : "Checkout.com");
+        String primaryPsp = configValue("finance.topup.psp.primary", "Checkout.com");
+        response.put("primaryPsp", primaryPsp);
+        response.put("backupPsp", StringUtils.hasText(primaryPsp)
+                ? ("Checkout.com".equals(primaryPsp) ? "Stripe" : "Checkout.com")
+                : "");
         response.put("cardParams", topupCardParams());
         response.put("reconciliation", reconciliation);
         response.put("ledgerTotal", ledgerTotal);
@@ -279,7 +284,7 @@ public class OpsFinanceService {
     public ApiResult<Map<String, Object>> withdrawalParams() {
         ensureD5ConfigDefaults();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade);
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
         BigDecimal maxBalanceRatio = configDecimal("withdrawal.max_balance_pct", new BigDecimal("0.80"));
         BigDecimal feeRate = configDecimal("withdrawal.fee_rate", new BigDecimal("0.02"));
         Map<String, Object> response = new LinkedHashMap<>();
@@ -458,6 +463,7 @@ public class OpsFinanceService {
     private List<DepositChannelView> topupChannels() {
         ensureD1ConfigDefaults();
         return TOPUP_CHANNELS.stream()
+                .filter(channel -> readTimeSeedPolicy.enabled() || hasAnyTopupChannelConfig(channel))
                 .map(channel -> new DepositChannelView(
                         channel.id(),
                         channel.code(),
@@ -470,12 +476,20 @@ public class OpsFinanceService {
     private List<DepositCardRiskParamView> topupCardParams() {
         ensureD1ConfigDefaults();
         return TOPUP_CARD_PARAMS.stream()
+                .filter(param -> readTimeSeedPolicy.enabled()
+                        || configFacade.activeValue(cardParamConfigKey(param.key())).filter(StringUtils::hasText).isPresent())
                 .map(param -> new DepositCardRiskParamView(
                         param.key(),
                         param.name(),
                         configValue(cardParamConfigKey(param.key()), param.defaultValue()),
                         param.note()))
                 .toList();
+    }
+
+    private boolean hasAnyTopupChannelConfig(TopupChannelDef channel) {
+        return configFacade.activeValue(channelConfigKey(channel.code(), "fee")).filter(StringUtils::hasText).isPresent()
+                || configFacade.activeValue(channelConfigKey(channel.code(), "min_amount")).filter(StringUtils::hasText).isPresent()
+                || configFacade.activeValue(channelConfigKey(channel.code(), "enabled")).filter(StringUtils::hasText).isPresent();
     }
 
     private List<DepositReconciliationRowView> reconciliationRows() {
@@ -489,25 +503,37 @@ public class OpsFinanceService {
             aggregates.put("card", new DepositAggregateView("Card", cardPaidCount, cardPaidAmount, cardPaidCount, cardPaidAmount));
         }
         List<DepositReconciliationRowView> rows = new ArrayList<>();
+        if (!readTimeSeedPolicy.enabled()) {
+            for (Map.Entry<String, DepositAggregateView> entry : aggregates.entrySet()) {
+                String channelCode = entry.getKey();
+                TopupChannelDef channel = topupChannel(channelCode);
+                rows.add(reconciliationRow(channel == null ? channelCode : channel.id(), channelCode, entry.getValue()));
+            }
+            return rows;
+        }
         for (TopupChannelDef channel : TOPUP_CHANNELS) {
             DepositAggregateView aggregate = aggregates.getOrDefault(channel.code(),
                     new DepositAggregateView(channel.id(), 0L, BigDecimal.ZERO, 0L, BigDecimal.ZERO));
-            BigDecimal providerAmount = safe(aggregate.providerAmount());
-            BigDecimal ledgerAmount = safe(aggregate.ledgerAmount());
-            BigDecimal diffAmount = providerAmount.subtract(ledgerAmount);
-            boolean reconciled = "RECONCILED".equalsIgnoreCase(configValue(reconciliationConfigKey(channel.code()), ""));
-            String diff = diffText(diffAmount, aggregate.providerCount(), aggregate.ledgerCount(), reconciled);
-            rows.add(new DepositReconciliationRowView(
-                    channel.id(),
-                    aggregate.providerCount() == null ? 0L : aggregate.providerCount(),
-                    providerAmount,
-                    aggregate.ledgerCount() == null ? 0L : aggregate.ledgerCount(),
-                    ledgerAmount,
-                    diffAmount,
-                    diff,
-                    reconciled));
+            rows.add(reconciliationRow(channel.id(), channel.code(), aggregate));
         }
         return rows;
+    }
+
+    private DepositReconciliationRowView reconciliationRow(String channelId, String channelCode, DepositAggregateView aggregate) {
+        BigDecimal providerAmount = safe(aggregate.providerAmount());
+        BigDecimal ledgerAmount = safe(aggregate.ledgerAmount());
+        BigDecimal diffAmount = providerAmount.subtract(ledgerAmount);
+        boolean reconciled = "RECONCILED".equalsIgnoreCase(configValue(reconciliationConfigKey(channelCode), ""));
+        String diff = diffText(diffAmount, aggregate.providerCount(), aggregate.ledgerCount(), reconciled);
+        return new DepositReconciliationRowView(
+                channelId,
+                aggregate.providerCount() == null ? 0L : aggregate.providerCount(),
+                providerAmount,
+                aggregate.ledgerCount() == null ? 0L : aggregate.ledgerCount(),
+                ledgerAmount,
+                diffAmount,
+                diff,
+                reconciled);
     }
 
     private String diffText(BigDecimal diffAmount, Long providerCount, Long ledgerCount, boolean reconciled) {
@@ -552,6 +578,9 @@ public class OpsFinanceService {
     }
 
     private void ensureD1FallbackSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         ensureD1ConfigDefaults();
         if (hasD1LiveData()) {
             return;
@@ -567,6 +596,9 @@ public class OpsFinanceService {
     }
 
     private void ensureD2FallbackSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         PageResult<WithdrawalOrderView> firstPage = withdrawalRepository.page(null, null, null, null, null, null, 1, 1);
         if (firstPage.getTotal() == 0) {
             withdrawalRepository.seedD2FallbackData(seedUserIds());
@@ -614,6 +646,9 @@ public class OpsFinanceService {
     }
 
     private void seedConfigIfAbsent(String key, String value, String type, String group, String remark) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
             return;
         }
@@ -686,7 +721,9 @@ public class OpsFinanceService {
     }
 
     private String configValue(String key, String fallback) {
-        return configFacade.activeValue(key).filter(StringUtils::hasText).orElse(fallback);
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
     }
 
     private boolean configBooleanValue(String value) {
@@ -697,7 +734,7 @@ public class OpsFinanceService {
         try {
             return Integer.parseInt(value.replaceAll("[^0-9-]", ""));
         } catch (RuntimeException ex) {
-            return fallback;
+            return readTimeSeedPolicy.enabled() ? fallback : 0;
         }
     }
 
@@ -764,12 +801,15 @@ public class OpsFinanceService {
         int count = configDecimal("withdrawal.daily_count_limit", BigDecimal.ONE)
                 .setScale(0, RoundingMode.DOWN)
                 .intValue();
+        if (count <= 0) {
+            return 0;
+        }
         return clamp(count, 1, 10);
     }
 
     private boolean exceedsDailyLimit(WithdrawalOrderView order, int dailyLimitCount) {
         Integer count24h = order.withdrawalCount24h();
-        return count24h != null && count24h > dailyLimitCount;
+        return dailyLimitCount > 0 && count24h != null && count24h > dailyLimitCount;
     }
 
     private String approvalBlockReason(WithdrawalOrderView order, int dailyLimitCount) {
@@ -821,7 +861,7 @@ public class OpsFinanceService {
         return configFacade.activeValue(WITHDRAW_KILLSWITCH_KEY)
                 .or(() -> configFacade.activeValue(WITHDRAW_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
-                .orElse(true);
+                .orElse(readTimeSeedPolicy.enabled());
     }
 
     private boolean withdrawDisclosureGateActive() {
@@ -840,7 +880,7 @@ public class OpsFinanceService {
         return switch (value) {
             case "enabled", "enable", "on", "true", "1" -> true;
             case "disabled", "disable", "off", "false", "0" -> false;
-            default -> true;
+            default -> readTimeSeedPolicy.enabled();
         };
     }
 
@@ -1002,16 +1042,16 @@ public class OpsFinanceService {
                     try {
                         return new BigDecimal(value.trim());
                     } catch (RuntimeException ex) {
-                        return fallback;
+                        return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
                     }
                 })
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO);
     }
 
     private boolean configBoolean(String key, boolean fallback) {
         return configFacade.activeValue(key)
                 .map(value -> "true".equalsIgnoreCase(value) || "1".equals(value))
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() && fallback);
     }
 
     private BigDecimal percent(BigDecimal ratio) {

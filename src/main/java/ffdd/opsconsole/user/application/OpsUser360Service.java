@@ -19,6 +19,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -62,6 +63,7 @@ public class OpsUser360Service {
     private final OpsRiskService riskService;
     private final AuditLogService auditLogService;
     private final UserOpsRepository userRepository;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     @Transactional
     public ApiResult<Map<String, Object>> detail(String userKey) {
@@ -80,6 +82,11 @@ public class OpsUser360Service {
         Long seededUserId = userRepository.findUserIdByLookupKey(seed.referralCode()).orElse(null);
         if (seededUserId != null && !seedNeedsRepair(seededUserId, seed)) {
             return detail(seededUserId);
+        }
+        if (!readTimeSeedPolicy.enabled()) {
+            return seededUserId == null
+                    ? ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_NOT_FOUND")
+                    : detail(seededUserId);
         }
         userRepository.upsertUser360Seed(seed);
         seededUserId = userRepository.findUserIdByLookupKey(seed.referralCode()).orElse(null);

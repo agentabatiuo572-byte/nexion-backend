@@ -41,7 +41,12 @@ class OpsSupportTicketServiceTest {
     private final OpsSupportTicketService service = service();
 
     private OpsSupportTicketService service() {
-        return new OpsSupportTicketService(ticketRepository, configFacade, auditLogService, clock);
+        return new OpsSupportTicketService(
+                ticketRepository,
+                configFacade,
+                auditLogService,
+                clock,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
     }
 
     @Test

@@ -14,6 +14,7 @@ import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -32,7 +33,13 @@ class OpsGrowthServiceTest {
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsGrowthService service =
-            new OpsGrowthService(configFacade, coverageFacade, ledgerPostingFacade, auditLogService, new ObjectMapper());
+            new OpsGrowthService(
+                    configFacade,
+                    coverageFacade,
+                    ledgerPostingFacade,
+                    auditLogService,
+                    new ObjectMapper(),
+                    ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void checkInUsesNexAndKeepsPointsSunset() {
@@ -562,9 +569,57 @@ class OpsGrowthServiceTest {
                 .containsEntry("H1.rhythm.currentMonth", "11")
                 .containsEntry("growth.phase.current_month", "11")
                 .containsEntry("growth.phase.current", "P6");
-        GrowthRhythmSnapshot snapshot = GrowthRhythmSnapshot.from(configFacade);
+        GrowthRhythmSnapshot snapshot = GrowthRhythmSnapshot.from(configFacade, OpsReadTimeSeedPolicy.enabledForDirectConstruction());
         assertThat(snapshot.currentMonth()).isEqualTo(11);
         assertThat(snapshot.currentPhase()).isEqualTo("P6");
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotExposeH1DemoRhythmOrPhaseRows() {
+        OpsGrowthService realOnlyService = new OpsGrowthService(
+                new FakePlatformConfigFacade(),
+                coverageFacade,
+                ledgerPostingFacade,
+                mock(AuditLogService.class),
+                new ObjectMapper(),
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> rhythm = realOnlyService.rhythm();
+        ApiResult<Map<String, Object>> phases = realOnlyService.phases();
+
+        assertThat(rhythm.getCode()).isZero();
+        assertThat(rhythm.getData())
+                .containsEntry("totalMonths", 0)
+                .containsEntry("currentMonth", 0)
+                .containsEntry("currentPhase", "")
+                .containsEntry("phaseProgressPct", 0);
+        assertThat(phases.getCode()).isZero();
+        assertThat(phases.getData())
+                .containsEntry("currentMonth", 0)
+                .containsEntry("currentPhase", "");
+        assertThat(phases.getData().get("monthlyDials")).asList().isEmpty();
+        assertThat(phases.getData().get("controls")).asList().isEmpty();
+        assertThat(phases.getData().get("overrides")).asList().isEmpty();
+        assertThat(phases.getData().get("attribution")).asList().isEmpty();
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotExposeH2OrH5DemoStats() {
+        OpsGrowthService realOnlyService = new OpsGrowthService(
+                new FakePlatformConfigFacade(),
+                coverageFacade,
+                ledgerPostingFacade,
+                mock(AuditLogService.class),
+                new ObjectMapper(),
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> trials = realOnlyService.trials();
+        ApiResult<Map<String, Object>> checkIn = realOnlyService.checkIn();
+
+        assertThat(trials.getCode()).isZero();
+        assertThat(trials.getData().get("stats")).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP).isEmpty();
+        assertThat(checkIn.getCode()).isZero();
+        assertThat(checkIn.getData().get("earnMilestones")).asList().isEmpty();
     }
 
     @Test

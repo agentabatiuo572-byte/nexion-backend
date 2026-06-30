@@ -27,6 +27,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -51,14 +52,19 @@ class OpsUser360ServiceTest {
     private final OpsRiskService riskService = mock(OpsRiskService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final UserOpsRepository userRepository = mock(UserOpsRepository.class);
-    private final OpsUser360Service service = new OpsUser360Service(
-            userService,
-            financeService,
-            treasuryService,
-            deviceService,
-            riskService,
-            auditLogService,
-            userRepository);
+    private final OpsUser360Service service = service(OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+
+    private OpsUser360Service service(OpsReadTimeSeedPolicy readTimeSeedPolicy) {
+        return new OpsUser360Service(
+                userService,
+                financeService,
+                treasuryService,
+                deviceService,
+                riskService,
+                auditLogService,
+                userRepository,
+                readTimeSeedPolicy);
+    }
 
     @Test
     void detailRejectsInvalidUserIdWith422() {
@@ -122,6 +128,19 @@ class OpsUser360ServiceTest {
                         && "NX-8821".equals(seed.referralCode())
                         && "Marcus Lee".equals(seed.nickname())));
         verify(userService).profile(88421L);
+    }
+
+    @Test
+    void detailByLookupKeyDoesNotSeedWhenReadTimeSeedsAreDisabled() {
+        OpsUser360Service disabledService = service(new OpsReadTimeSeedPolicy(false));
+        when(userRepository.findUserIdByLookupKey("usr_84F2")).thenReturn(Optional.empty());
+        when(userRepository.findUserIdByLookupKey("NX-8821")).thenReturn(Optional.empty());
+
+        ApiResult<Map<String, Object>> result = disabledService.detail("usr_84F2");
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("USER_NOT_FOUND");
+        verify(userRepository, never()).upsertUser360Seed(any(User360Seed.class));
     }
 
     @Test

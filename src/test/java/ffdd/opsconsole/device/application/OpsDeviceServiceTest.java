@@ -49,6 +49,7 @@ import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -75,7 +76,18 @@ class OpsDeviceServiceTest {
     private final OpsDeviceService service = service();
 
     private OpsDeviceService service() {
-        return new OpsDeviceService(deviceRepository, catalogRepository, configFacade, ledgerPostingFacade, auditLogService, clock);
+        return service(ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+    }
+
+    private OpsDeviceService service(OpsReadTimeSeedPolicy seedPolicy) {
+        return new OpsDeviceService(
+                deviceRepository,
+                catalogRepository,
+                configFacade,
+                ledgerPostingFacade,
+                auditLogService,
+                clock,
+                seedPolicy);
     }
 
     @Test
@@ -109,6 +121,16 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.name());
+    }
+
+    @Test
+    void disabledReadTimeSeedsRequireConfiguredE3TradeinCliff() {
+        OpsDeviceService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<DeviceTradeinOverviewView> result = realOnlyService.e3TradeinOverview();
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("E3_STAGE_MID_END_NOT_CONFIGURED");
     }
 
     @Test

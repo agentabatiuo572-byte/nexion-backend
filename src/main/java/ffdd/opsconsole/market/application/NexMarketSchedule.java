@@ -24,6 +24,10 @@ record NexMarketSchedule(
         return new NexMarketSchedule(DEFAULT_DISPLAY, DEFAULT_DISPLAY, DEFAULT_CRON, DEFAULT_ZONE, true);
     }
 
+    static NexMarketSchedule unconfigured() {
+        return new NexMarketSchedule("", "", "", DEFAULT_ZONE, false);
+    }
+
     static NexMarketSchedule parse(String raw) {
         if (!StringUtils.hasText(raw)) {
             return defaultSchedule();

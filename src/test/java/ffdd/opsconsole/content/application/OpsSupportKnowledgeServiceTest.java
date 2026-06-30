@@ -33,7 +33,8 @@ class OpsSupportKnowledgeServiceTest {
         return new OpsSupportKnowledgeService(
                 knowledgeRepository,
                 auditLogService,
-                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")));
+                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
     }
 
     @Test

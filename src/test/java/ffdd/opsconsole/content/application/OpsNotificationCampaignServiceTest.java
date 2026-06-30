@@ -32,7 +32,11 @@ class OpsNotificationCampaignServiceTest {
     private final FakeNotificationCampaignRepository repository = new FakeNotificationCampaignRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T08:30:00Z"), ZoneOffset.UTC);
-    private final OpsNotificationCampaignService service = new OpsNotificationCampaignService(repository, auditLogService, clock);
+    private final OpsNotificationCampaignService service = new OpsNotificationCampaignService(
+            repository,
+            auditLogService,
+            clock,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewReturnsCampaignsCapsAndServerSources() {

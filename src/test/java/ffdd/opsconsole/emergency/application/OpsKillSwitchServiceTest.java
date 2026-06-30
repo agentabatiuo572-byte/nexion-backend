@@ -10,6 +10,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
 import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -24,7 +25,11 @@ class OpsKillSwitchServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsKillSwitchService service = new OpsKillSwitchService(configFacade, coverageFacade, auditLogService);
+    private final OpsKillSwitchService service = new OpsKillSwitchService(
+            configFacade,
+            coverageFacade,
+            auditLogService,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void matrixHasFiveActiveGatesAndRetiredSunsetGates() {
@@ -37,6 +42,25 @@ class OpsKillSwitchServiceTest {
                 .containsEntry("killswitch.withdraw", "enabled")
                 .containsEntry("ops.J.emergency.confirmSlaMins", "15")
                 .containsEntry("emergency.autorule.maturityGap", "$50K");
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotExposeJ1SeededGateMatrix() {
+        OpsKillSwitchService realOnlyService = new OpsKillSwitchService(
+                configFacade,
+                coverageFacade,
+                mock(AuditLogService.class),
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        var result = realOnlyService.matrix();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("activeGateCount", 0);
+        assertThat(result.getData().get("activeGates")).asList().isEmpty();
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("liveGateCount", 0L)
+                .containsEntry("killedGateCount", 0L);
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
@@ -120,6 +144,11 @@ class OpsKillSwitchServiceTest {
         @Override
         public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
             values.put(configKey, configValue);
+        }
+
+        @Override
+        public Map<String, String> activeValuesByGroup(String configGroup) {
+            return values;
         }
     }
 

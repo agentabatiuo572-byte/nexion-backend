@@ -34,7 +34,11 @@ class OpsCopyAbServiceTest {
     private final FakeCopyAbRepository repository = new FakeCopyAbRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T09:30:00Z"), ZoneOffset.UTC);
-    private final OpsCopyAbService service = new OpsCopyAbService(repository, auditLogService, clock);
+    private final OpsCopyAbService service = new OpsCopyAbService(
+            repository,
+            auditLogService,
+            clock,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewReturnsCopyExperimentsFrameworkAndSources() {

@@ -12,6 +12,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -127,6 +128,7 @@ public class OpsTeamService {
     private final TreasuryCoverageFacade coverageFacade;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> overview() {
         seedVRankIfMissing();
@@ -306,7 +308,8 @@ public class OpsTeamService {
         String value = normalizeVRankThreshold(normalizedField, request.value());
         String key = "F.vrank." + seed.v() + "." + normalizedField;
         String configKey = uiConfigKey(key);
-        String oldValue = configFacade.activeValue(configKey).orElse(defaultField(seed, normalizedField));
+        String oldValue = configFacade.activeValue(configKey)
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? defaultField(seed, normalizedField) : "");
         configFacade.upsertAdminValue(configKey, value, "TEXT", "team", "F1 V-Rank threshold");
         audit("F_TEAM_VRANK_THRESHOLD_CHANGED", configKey, request.operator(), Map.of(
                 "rank", seed.v(),
@@ -521,11 +524,14 @@ public class OpsTeamService {
         policy.put("binaryPairRatePct", percent(configDecimal("team.binary_pair_rate_pct", new BigDecimal("1.5"))));
         policy.put("maxCombinedOutflowPct", percent(configDecimal("team.max_combined_outflow_pct", new BigDecimal("25"))));
         policy.put("minPayoutUsdt", configDecimal("team.min_payout_usdt", new BigDecimal("20")));
-        policy.put("settlementStatus", "single-process-transaction");
+        policy.put("settlementStatus", configText("F.settlement.status", "single-process-transaction"));
         return policy;
     }
 
     private List<Map<String, Object>> rankLadder() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         int window = configDecimal("team.rank_window_days", new BigDecimal("30")).intValue();
         return List.of(
                 rank("V1", "starter", new BigDecimal("0"), new BigDecimal("0"), window),
@@ -544,6 +550,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> vrankRows() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         return VRANK_SEEDS.stream().map(this::vrank).toList();
     }
 
@@ -565,7 +574,8 @@ public class OpsTeamService {
         if (fallback == null) {
             return;
         }
-        row.put(field, configFacade.activeValue(uiConfigKey("F.vrank." + seed.v() + "." + field)).orElse(fallback));
+        row.put(field, configFacade.activeValue(uiConfigKey("F.vrank." + seed.v() + "." + field))
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : ""));
     }
 
     private List<Map<String, Object>> fulfillmentQueues() {
@@ -573,7 +583,9 @@ public class OpsTeamService {
                 fulfillment("V3", "Apple Watch SE", 24),
                 fulfillment("V4", "iPhone 16 Pro", 10),
                 fulfillment("V5", "Apple Vision Pro", 3),
-                fulfillment("V6", "Rolex Submariner", 1));
+                fulfillment("V6", "Rolex Submariner", 1)).stream()
+                .filter(row -> readTimeSeedPolicy.enabled() || StringUtils.hasText(String.valueOf(row.get("status"))))
+                .toList();
     }
 
     private Map<String, Object> fulfillment(String v, String name, int count) {
@@ -581,13 +593,17 @@ public class OpsTeamService {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("v", v);
         row.put("name", name);
-        row.put("count", count);
-        row.put("status", configFacade.activeValue(uiConfigKey(configKey)).orElse("pending"));
+        row.put("count", readTimeSeedPolicy.enabled() ? count : 0);
+        row.put("status", configFacade.activeValue(uiConfigKey(configKey))
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? "pending" : ""));
         row.put("configKey", configKey);
         return row;
     }
 
     private List<Map<String, Object>> f2Metrics() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         return F2_METRIC_SEEDS.stream().map(this::f2Metric).toList();
     }
 
@@ -604,6 +620,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> unilevelRates() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         return F2_UNILEVEL_SEEDS.stream().map(this::unilevel).toList();
     }
 
@@ -637,8 +656,9 @@ public class OpsTeamService {
         row.put("id", seed.id());
         row.put("name", seed.name());
         row.put("key", seed.key());
-        row.put("value", configFacade.activeValue(uiConfigKey(seed.key())).orElse(seed.defaultValue()));
-        row.put("defaultValue", seed.defaultValue());
+        row.put("value", configFacade.activeValue(uiConfigKey(seed.key()))
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.defaultValue() : ""));
+        row.put("defaultValue", readTimeSeedPolicy.enabled() ? seed.defaultValue() : "");
         row.put("viewClass", seed.viewClass());
         row.put("sub", seed.sub());
         row.put("amplifies", seed.amplifies());
@@ -656,6 +676,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> rateTiers() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         return F2_RATE_TIER_SEEDS.stream().map(this::tier).toList();
     }
 
@@ -674,6 +697,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> f3Metrics() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         return F3_METRIC_SEEDS.stream().map(this::f3Metric).toList();
     }
 
@@ -717,7 +743,7 @@ public class OpsTeamService {
     }
 
     private Map<String, Object> f3DailyCap() {
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade);
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
         Map<String, Object> cap = new LinkedHashMap<>();
         cap.put("currentLabel", configText("F3.dailyCap.currentLabel", "$5,000"));
         cap.put("windowLabel", configText("F3.dailyCap.windowLabel", "月 1-6 现值 · 全局统一"));
@@ -731,16 +757,18 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> binarySettlements() {
-        String value = configFacade.activeValue(uiConfigKey("F3.binary.rows"))
-                .orElseGet(() -> binaryRowsJson(F3_BINARY_SEEDS));
+        Optional<String> value = configFacade.activeValue(uiConfigKey("F3.binary.rows"));
+        if (value.isEmpty()) {
+            return readTimeSeedPolicy.enabled() ? F3_BINARY_SEEDS.stream().map(this::binarySettlement).toList() : List.of();
+        }
         try {
-            List<Map<String, Object>> parsed = JSON.readValue(value, REWARD_LIST_TYPE);
+            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
             if (parsed == null || parsed.isEmpty()) {
-                return F3_BINARY_SEEDS.stream().map(this::binarySettlement).toList();
+                return readTimeSeedPolicy.enabled() ? F3_BINARY_SEEDS.stream().map(this::binarySettlement).toList() : List.of();
             }
             return parsed.stream().map(this::normalizeBinarySettlementMap).toList();
         } catch (JsonProcessingException ex) {
-            return F3_BINARY_SEEDS.stream().map(this::binarySettlement).toList();
+            return readTimeSeedPolicy.enabled() ? F3_BINARY_SEEDS.stream().map(this::binarySettlement).toList() : List.of();
         }
     }
 
@@ -772,7 +800,7 @@ public class OpsTeamService {
         return binarySettlements().stream()
                 .mapToInt(row -> Math.max(intValue(row.get("trackA"), 0), intValue(row.get("trackB"), 0)))
                 .max()
-                .orElse(1);
+                .orElse(0);
     }
 
     private Map<String, Object> leadershipPoolReadModel() {
@@ -833,6 +861,13 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> f4Metrics(Map<String, Object> pool) {
+        if (!readTimeSeedPolicy.enabled()
+                && intValue(pool.get("weeklyGmvUsd"), 0) == 0
+                && intValue(pool.get("weeklyInjectedUsd"), 0) == 0
+                && pool.get("quotaRows") instanceof List<?> quotaRows
+                && quotaRows.isEmpty()) {
+            return List.of();
+        }
         return List.of(
                 f4Metric(
                         "weeklyLeadershipPool",
@@ -892,16 +927,18 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> quotaRows() {
-        String value = configFacade.activeValue(uiConfigKey("F4.quota.rows"))
-                .orElseGet(() -> f4QuotaRowsJson(F4_QUOTA_SEEDS));
+        Optional<String> value = configFacade.activeValue(uiConfigKey("F4.quota.rows"));
+        if (value.isEmpty()) {
+            return readTimeSeedPolicy.enabled() ? F4_QUOTA_SEEDS.stream().map(this::quotaRow).toList() : List.of();
+        }
         try {
-            List<Map<String, Object>> parsed = JSON.readValue(value, REWARD_LIST_TYPE);
+            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
             if (parsed == null || parsed.isEmpty()) {
-                return F4_QUOTA_SEEDS.stream().map(this::quotaRow).toList();
+                return readTimeSeedPolicy.enabled() ? F4_QUOTA_SEEDS.stream().map(this::quotaRow).toList() : List.of();
             }
             return parsed.stream().map(this::normalizeQuotaRow).toList();
         } catch (JsonProcessingException ex) {
-            return F4_QUOTA_SEEDS.stream().map(this::quotaRow).toList();
+            return readTimeSeedPolicy.enabled() ? F4_QUOTA_SEEDS.stream().map(this::quotaRow).toList() : List.of();
         }
     }
 
@@ -924,16 +961,18 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> ambassadorBands() {
-        String value = configFacade.activeValue(uiConfigKey("F4.ambassador.bands"))
-                .orElseGet(() -> f4AmbassadorBandsJson(F4_AMBASSADOR_BAND_SEEDS));
+        Optional<String> value = configFacade.activeValue(uiConfigKey("F4.ambassador.bands"));
+        if (value.isEmpty()) {
+            return readTimeSeedPolicy.enabled() ? F4_AMBASSADOR_BAND_SEEDS.stream().map(this::ambassadorBand).toList() : List.of();
+        }
         try {
-            List<Map<String, Object>> parsed = JSON.readValue(value, REWARD_LIST_TYPE);
+            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
             if (parsed == null || parsed.isEmpty()) {
-                return F4_AMBASSADOR_BAND_SEEDS.stream().map(this::ambassadorBand).toList();
+                return readTimeSeedPolicy.enabled() ? F4_AMBASSADOR_BAND_SEEDS.stream().map(this::ambassadorBand).toList() : List.of();
             }
             return parsed.stream().map(this::normalizeAmbassadorBand).toList();
         } catch (JsonProcessingException ex) {
-            return F4_AMBASSADOR_BAND_SEEDS.stream().map(this::ambassadorBand).toList();
+            return readTimeSeedPolicy.enabled() ? F4_AMBASSADOR_BAND_SEEDS.stream().map(this::ambassadorBand).toList() : List.of();
         }
     }
 
@@ -948,16 +987,18 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> leaderboardPodium() {
-        String value = configFacade.activeValue(uiConfigKey("F4.leaderboard.podium"))
-                .orElseGet(() -> f4PodiumJson(F4_PODIUM_SEEDS));
+        Optional<String> value = configFacade.activeValue(uiConfigKey("F4.leaderboard.podium"));
+        if (value.isEmpty()) {
+            return readTimeSeedPolicy.enabled() ? F4_PODIUM_SEEDS.stream().map(this::podium).toList() : List.of();
+        }
         try {
-            List<Map<String, Object>> parsed = JSON.readValue(value, REWARD_LIST_TYPE);
+            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
             if (parsed == null || parsed.isEmpty()) {
-                return F4_PODIUM_SEEDS.stream().map(this::podium).toList();
+                return readTimeSeedPolicy.enabled() ? F4_PODIUM_SEEDS.stream().map(this::podium).toList() : List.of();
             }
             return parsed.stream().map(this::normalizePodium).toList();
         } catch (JsonProcessingException ex) {
-            return F4_PODIUM_SEEDS.stream().map(this::podium).toList();
+            return readTimeSeedPolicy.enabled() ? F4_PODIUM_SEEDS.stream().map(this::podium).toList() : List.of();
         }
     }
 
@@ -1095,16 +1136,27 @@ public class OpsTeamService {
             Function<Map<String, Object>, Map<String, Object>> normalizer,
             String label) {
         String configKey = uiConfigKey(key);
-        String value = configFacade.activeValue(configKey)
-                .orElseThrow(() -> new IllegalStateException(label + " config is missing"));
+        Optional<String> value = configFacade.activeValue(configKey);
+        if (value.isEmpty()) {
+            if (readTimeSeedPolicy.enabled()) {
+                throw new IllegalStateException(label + " config is missing");
+            }
+            return List.of();
+        }
         try {
-            List<Map<String, Object>> parsed = JSON.readValue(value, REWARD_LIST_TYPE);
+            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
             if (parsed == null || parsed.isEmpty()) {
-                throw new IllegalStateException(label + " config is empty");
+                if (readTimeSeedPolicy.enabled()) {
+                    throw new IllegalStateException(label + " config is empty");
+                }
+                return List.of();
             }
             return parsed.stream().map(normalizer).toList();
         } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("Invalid " + label + " config", ex);
+            if (readTimeSeedPolicy.enabled()) {
+                throw new IllegalStateException("Invalid " + label + " config", ex);
+            }
+            return List.of();
         }
     }
 
@@ -1380,6 +1432,9 @@ public class OpsTeamService {
     }
 
     private void seedText(String key, String value, String remark) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (!StringUtils.hasText(value)) {
             return;
         }
@@ -1396,6 +1451,9 @@ public class OpsTeamService {
     }
 
     private void seedJson(String key, String value, String remark) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         String configKey = uiConfigKey(key);
         if (configFacade.activeValue(configKey).isEmpty()) {
             try {
@@ -1432,13 +1490,15 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> activeRewards(String level) {
-        String value = configFacade.activeValue(rewardConfigKey(level))
-                .orElseGet(() -> rewardsJson(VRANK_REWARD_SEEDS.getOrDefault(level, List.of())));
+        Optional<String> value = configFacade.activeValue(rewardConfigKey(level));
+        if (value.isEmpty()) {
+            return readTimeSeedPolicy.enabled() ? VRANK_REWARD_SEEDS.getOrDefault(level, List.of()) : List.of();
+        }
         try {
-            List<Map<String, Object>> parsed = JSON.readValue(value, REWARD_LIST_TYPE);
+            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
             return parsed == null ? List.of() : parsed.stream().map(this::normalizeRewardMap).toList();
         } catch (JsonProcessingException ex) {
-            return VRANK_REWARD_SEEDS.getOrDefault(level, List.of());
+            return readTimeSeedPolicy.enabled() ? VRANK_REWARD_SEEDS.getOrDefault(level, List.of()) : List.of();
         }
     }
 
@@ -1588,6 +1648,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> leadershipRanks() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return List.of();
+        }
         List<Map<String, Object>> ranks = new ArrayList<>();
         for (int i = 3; i <= 12; i++) {
             VRankSeed seed = requireVRank("V" + i);
@@ -1839,14 +1902,14 @@ public class OpsTeamService {
     private BigDecimal configDecimal(String key, BigDecimal fallback) {
         return configFacade.activeValue(key)
                 .flatMap(value -> Optional.ofNullable(parseDecimal(value, fallback)))
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO);
     }
 
     private String configText(String key, String fallback) {
         return configFacade.activeValue(uiConfigKey(key))
                 .filter(StringUtils::hasText)
                 .map(String::trim)
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
     }
 
     private boolean boolConfig(String key, boolean fallback) {
@@ -1856,7 +1919,7 @@ public class OpsTeamService {
                     String normalized = value.trim().toLowerCase(Locale.ROOT);
                     return "true".equals(normalized) || "1".equals(normalized) || "on".equals(normalized);
                 })
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() && fallback);
     }
 
     private BigDecimal parseDecimal(String raw) {
@@ -1866,7 +1929,7 @@ public class OpsTeamService {
     private BigDecimal parseDecimal(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             if (fallback != null) {
-                return fallback;
+                return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
             }
             throw new IllegalArgumentException("Numeric value is required");
         }
@@ -1874,7 +1937,7 @@ public class OpsTeamService {
             return new BigDecimal(raw.trim().replace("%", "").replace(",", ""));
         } catch (NumberFormatException ex) {
             if (fallback != null) {
-                return fallback;
+                return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
             }
             throw new IllegalArgumentException("Numeric value is invalid", ex);
         }
@@ -1882,7 +1945,7 @@ public class OpsTeamService {
 
     private BigDecimal percentRatio(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
-            return fallback;
+            return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
         }
         String value = raw.trim();
         if (value.endsWith("%")) {
@@ -1918,7 +1981,7 @@ public class OpsTeamService {
 
     private int moneyLabelToInt(String raw, int fallback) {
         if (!StringUtils.hasText(raw)) {
-            return fallback;
+            return readTimeSeedPolicy.enabled() ? fallback : 0;
         }
         String normalized = raw.trim()
                 .replace("$", "")

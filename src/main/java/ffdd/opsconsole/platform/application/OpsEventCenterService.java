@@ -21,6 +21,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -115,6 +116,7 @@ public class OpsEventCenterService {
 
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<EventCenterOverview> overview() {
         AuditStatsSummaryResponse todaySummary = auditLogService.summary(statsQuery(1, 10));
@@ -226,7 +228,7 @@ public class OpsEventCenterService {
     private List<EventDimensionParam> dimensionParams() {
         return paramDefinitions().stream()
                 .map(definition -> paramView(definition, configFacade.activeValue(definition.configKey())
-                        .orElse(definition.defaultValue())))
+                        .orElseGet(() -> readTimeSeedPolicy.enabled() ? definition.defaultValue() : "")))
                 .toList();
     }
 
@@ -235,55 +237,58 @@ public class OpsEventCenterService {
     }
 
     private List<EventDomainExtensionBatch> domainExtensions() {
-        List<EventDomainExtensionBatch> batches = new ArrayList<>(List.of(
-                new EventDomainExtensionBatch(
-                        "v3-init",
-                        "V3 起始批",
-                        "done",
-                        "活动(H4)/ 里程碑(H6)/ 金融产品(G)",
-                        "活跃事件已迁回各自 domain; premium 仅保留历史兼容说明",
-                        domains("event", "milestone", "nex", "repurchase"),
-                        List.of(
-                                row("event.*", "活动中心事件(H4)已迁回"),
-                                row("milestone.*", "收益里程碑(H6)已迁回"),
-                                row("nex.* / repurchase.*", "金融产品活跃事件已迁回"),
-                                row("premium.*", "已下线,仅允许历史兼容、到期兑付或迁移对账"))),
-                new EventDomainExtensionBatch(
-                        "v4-content",
-                        "V4 内容批",
-                        "inprogress",
-                        "内容域(I1/I3/I5/I7)",
-                        "四类事件暂记 admin 占位 + 临时编号",
-                        domains("content", "notification", "disclosure", "learn"),
-                        List.of(
-                                row("content.variant_exposed / converted", "文案 A/B 曝光与转化(I1/I6)占位中"),
-                                row("content.trust_section_viewed", "信任版块曝光(I4)占位中"),
-                                row("notification.delivered / read / swipe_action_taken", "通知三件套(I3)占位中"),
-                                row("disclosure.viewed / acked / reack_triggered / gated_action_blocked", "披露操作链(I5)占位中"),
-                                row("learn.course_started / quiz_passed / course_completed", "课程链(I7)占位中"))),
-                new EventDomainExtensionBatch(
-                        "j-schema",
-                        "J 域 schema 批",
-                        "pending",
-                        "应急域(J3/J4)",
-                        "risk / admin 域内新事件,无需新 domain",
-                        List.of(new EventDomainItem("risk.tamper_detected", false),
-                                new EventDomainItem("admin.emergency_playbook_*", false)),
-                        List.of(
-                                row("risk.tamper_detected", "篡改防御命中(J3)"),
-                                row("admin.emergency_playbook_executed", "应急剧本执行(J4)"),
-                                row("admin.emergency_playbook_edited", "应急剧本编辑(J4)"))),
-                new EventDomainExtensionBatch(
-                        "v4-close",
-                        "V4 收口核对",
-                        "scheduled",
-                        "A4 自查",
-                        "目标:无遗漏、无双源",
-                        List.of(),
-                        List.of(
-                                row("核对范围", "12 域全部 admin.* 事件"),
-                                row("目标", "无遗漏 · 无双源 · 命名合规"),
-                                row("产出", "差异清单 → 逐条补注册或改名")))));
+        List<EventDomainExtensionBatch> batches = new ArrayList<>();
+        if (readTimeSeedPolicy.enabled()) {
+            batches.addAll(List.of(
+                    new EventDomainExtensionBatch(
+                            "v3-init",
+                            "V3 起始批",
+                            "done",
+                            "活动(H4)/ 里程碑(H6)/ 金融产品(G)",
+                            "活跃事件已迁回各自 domain; premium 仅保留历史兼容说明",
+                            domains("event", "milestone", "nex", "repurchase"),
+                            List.of(
+                                    row("event.*", "活动中心事件(H4)已迁回"),
+                                    row("milestone.*", "收益里程碑(H6)已迁回"),
+                                    row("nex.* / repurchase.*", "金融产品活跃事件已迁回"),
+                                    row("premium.*", "已下线,仅允许历史兼容、到期兑付或迁移对账"))),
+                    new EventDomainExtensionBatch(
+                            "v4-content",
+                            "V4 内容批",
+                            "inprogress",
+                            "内容域(I1/I3/I5/I7)",
+                            "四类事件暂记 admin 占位 + 临时编号",
+                            domains("content", "notification", "disclosure", "learn"),
+                            List.of(
+                                    row("content.variant_exposed / converted", "文案 A/B 曝光与转化(I1/I6)占位中"),
+                                    row("content.trust_section_viewed", "信任版块曝光(I4)占位中"),
+                                    row("notification.delivered / read / swipe_action_taken", "通知三件套(I3)占位中"),
+                                    row("disclosure.viewed / acked / reack_triggered / gated_action_blocked", "披露操作链(I5)占位中"),
+                                    row("learn.course_started / quiz_passed / course_completed", "课程链(I7)占位中"))),
+                    new EventDomainExtensionBatch(
+                            "j-schema",
+                            "J 域 schema 批",
+                            "pending",
+                            "应急域(J3/J4)",
+                            "risk / admin 域内新事件,无需新 domain",
+                            List.of(new EventDomainItem("risk.tamper_detected", false),
+                                    new EventDomainItem("admin.emergency_playbook_*", false)),
+                            List.of(
+                                    row("risk.tamper_detected", "篡改防御命中(J3)"),
+                                    row("admin.emergency_playbook_executed", "应急剧本执行(J4)"),
+                                    row("admin.emergency_playbook_edited", "应急剧本编辑(J4)"))),
+                    new EventDomainExtensionBatch(
+                            "v4-close",
+                            "V4 收口核对",
+                            "scheduled",
+                            "A4 自查",
+                            "目标:无遗漏、无双源",
+                            List.of(),
+                            List.of(
+                                    row("核对范围", "12 域全部 admin.* 事件"),
+                                    row("目标", "无遗漏 · 无双源 · 命名合规"),
+                                    row("产出", "差异清单 → 逐条补注册或改名")))));
+        }
 
         configFacade.activeValuesByGroup(GROUP_A4).entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(BATCH_KEY_PREFIX) && entry.getKey().endsWith(BATCH_KEY_SUFFIX))
@@ -318,7 +323,8 @@ public class OpsEventCenterService {
     }
 
     private String schemaVersion() {
-        return configFacade.activeValue(SCHEMA_VERSION_KEY).orElse(DEFAULT_SCHEMA_VERSION);
+        return configFacade.activeValue(SCHEMA_VERSION_KEY)
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? DEFAULT_SCHEMA_VERSION : "");
     }
 
     private <T> ApiResult<T> requireMutation(String idempotencyKey, EventCenterMutationRequest request) {

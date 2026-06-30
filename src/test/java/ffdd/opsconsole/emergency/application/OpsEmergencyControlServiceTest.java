@@ -31,7 +31,8 @@ class OpsEmergencyControlServiceTest {
             configFacade,
             notificationDispatchFacade,
             auditLogService,
-            new ObjectMapper());
+            new ObjectMapper(),
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void geoCountryChangePersistsConfigAndAudits() {

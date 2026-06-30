@@ -10,6 +10,7 @@ import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.time.LocalDateTime;
@@ -65,6 +66,7 @@ public class OpsPlatformConfigService {
 
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<PlatformConfigOverview> overview() {
         ensureSeedData();
@@ -135,6 +137,9 @@ public class OpsPlatformConfigService {
 
     private void ensureSeedData() {
         retireDeletedConfigData();
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         FEATURE_SEEDS.forEach(seed -> ensureConfig(seed.configKey(), seed.status(), GROUP_FLAG, seed.remark()));
         GATE_SEEDS.forEach(seed -> ensureConfig(seed.configKey(), seed.status(), GROUP_GATE, seed.remark()));
         HEALTH_SEEDS.forEach(seed -> ensureConfig(seed.configKey(), seed.metric(), GROUP_HEALTH, seed.remark()));
@@ -183,9 +188,29 @@ public class OpsPlatformConfigService {
     }
 
     private List<Map<String, Object>> featureFlags(Map<String, PlatformConfigItem> configs) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return configs.values().stream()
+                    .filter(item -> GROUP_FLAG.equals(item.configGroup()))
+                    .map(this::genericFeature)
+                    .toList();
+        }
         return FEATURE_SEEDS.stream()
                 .map(seed -> feature(configs, seed))
                 .toList();
+    }
+
+    private Map<String, Object> genericFeature(PlatformConfigItem item) {
+        String key = item.configKey().startsWith("feature.")
+                ? item.configKey().substring("feature.".length())
+                : item.configKey();
+        return Map.of(
+                "key", key,
+                "name", key,
+                "desc", item.remark() == null ? "" : item.remark(),
+                "status", item.configValue() == null ? "" : item.configValue(),
+                "scope", "",
+                "lastChange", updatedAt(item),
+                "resourceOwner", "");
     }
 
     private Map<String, Object> feature(Map<String, PlatformConfigItem> configs, FeatureSeed seed) {
@@ -202,9 +227,29 @@ public class OpsPlatformConfigService {
     }
 
     private List<Map<String, Object>> killSwitches(Map<String, PlatformConfigItem> configs) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return configs.values().stream()
+                    .filter(item -> GROUP_GATE.equals(item.configGroup()))
+                    .map(this::genericGate)
+                    .toList();
+        }
         return GATE_SEEDS.stream()
                 .map(seed -> gate(configs, seed))
                 .toList();
+    }
+
+    private Map<String, Object> genericGate(PlatformConfigItem item) {
+        String key = item.configKey().startsWith("killswitch.")
+                ? item.configKey().substring("killswitch.".length())
+                : item.configKey();
+        String status = normalizeGateDisplay(item.configValue());
+        return Map.of(
+                "key", key,
+                "name", key,
+                "status", status,
+                "up", isGateUp(status),
+                "lastChange", updatedAt(item),
+                "chain", "");
     }
 
     private Map<String, Object> gate(Map<String, PlatformConfigItem> configs, GateSeed seed) {
@@ -221,11 +266,23 @@ public class OpsPlatformConfigService {
     }
 
     private List<Map<String, Object>> systemHealth(Map<String, PlatformConfigItem> configs) {
-        List<Map<String, Object>> seededHealth = HEALTH_SEEDS.stream()
+        List<Map<String, Object>> seededHealth = readTimeSeedPolicy.enabled()
+                ? HEALTH_SEEDS.stream()
                 .map(seed -> health(configs, seed))
+                .collect(Collectors.toList())
+                : configs.values().stream()
+                .filter(item -> GROUP_HEALTH.equals(item.configGroup()))
+                .map(this::genericHealth)
                 .collect(Collectors.toList());
         seededHealth.add(jvmHealth());
         return seededHealth;
+    }
+
+    private Map<String, Object> genericHealth(PlatformConfigItem item) {
+        return Map.of(
+                "name", item.configKey(),
+                "tone", "",
+                "metric", item.configValue() == null ? "" : item.configValue());
     }
 
     private Map<String, Object> health(Map<String, PlatformConfigItem> configs, HealthSeed seed) {
@@ -299,11 +356,17 @@ public class OpsPlatformConfigService {
     }
 
     private String valueOf(PlatformConfigItem item, String fallback) {
-        return item == null || !StringUtils.hasText(item.configValue()) ? fallback : item.configValue();
+        if (item != null && StringUtils.hasText(item.configValue())) {
+            return item.configValue();
+        }
+        return readTimeSeedPolicy.enabled() ? fallback : "";
     }
 
     private String updatedAt(PlatformConfigItem item) {
-        return item == null || item.updatedAt() == null ? "后端种子" : item.updatedAt().format(ISO);
+        if (item != null && item.updatedAt() != null) {
+            return item.updatedAt().format(ISO);
+        }
+        return readTimeSeedPolicy.enabled() ? "后端种子" : "未配置";
     }
 
     private static String joinMeta(String... parts) {

@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
 import ffdd.opsconsole.user.facade.UserSecurityRiskDecision;
@@ -20,7 +21,10 @@ class UserSecurityRiskFacadeAdapterTest {
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
     private final Map<String, String> config = new LinkedHashMap<>();
     private final UserSecurityRiskFacadeAdapter adapter =
-            new UserSecurityRiskFacadeAdapter(userRepository, configFacade);
+            new UserSecurityRiskFacadeAdapter(
+                    userRepository,
+                    configFacade,
+                    OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void loginDecisionReadsLatestC5C6LockThresholds() {

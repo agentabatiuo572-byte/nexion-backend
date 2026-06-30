@@ -22,6 +22,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -70,6 +71,7 @@ public class OpsEmergencyControlService {
     private final ContentNotificationDispatchFacade notificationDispatchFacade;
     private final AuditLogService auditLogService;
     private final ObjectMapper objectMapper;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> geoBlockOverview() {
         ensureSeedData();
@@ -94,8 +96,8 @@ public class OpsEmergencyControlService {
                         "blockedCount", blocked.size(),
                         "limitedCount", limited.size(),
                         "totalHits", totalHits,
-                        "health", "99.8%",
-                        "confirmSlaMins", activeValue("ops.J.emergency.confirmSlaMins").orElse("15")),
+                        "health", activeValue("ops.J.emergency.health").orElseGet(() -> readTimeSeedPolicy.enabled() ? "99.8%" : ""),
+                        "confirmSlaMins", activeValue("ops.J.emergency.confirmSlaMins").orElseGet(() -> readTimeSeedPolicy.enabled() ? "15" : "")),
                 "sources", List.of("nx_config_item:emergency.geo.*", "server edge geo decision stream"));
         return ApiResult.ok(response);
     }
@@ -269,15 +271,19 @@ public class OpsEmergencyControlService {
                         "todoCount", playbooks.size() - ready,
                         "emergencyCount", emergency,
                         "liveExec90d", executions.stream().filter(row -> !String.valueOf(row.get("name")).contains("(演练)")).count(),
-                        "drill90d", executions.stream().filter(row -> String.valueOf(row.get("name")).contains("(演练)")).count() + 12),
+                        "drill90d", executions.stream().filter(row -> String.valueOf(row.get("name")).contains("(演练)")).count()
+                                + (readTimeSeedPolicy.enabled() ? 12 : 0)),
                 "sla", map(
-                        "confirmSlaMins", activeValue("ops.J.emergency.confirmSlaMins").orElse("15"),
-                        "escalateMaxMins", activeValue("ops.J.emergency.escalateMaxMins").orElse("60"),
-                        "escalateMaxRounds", activeValue("ops.J.emergency.escalateMaxRounds").orElse("4")),
+                        "confirmSlaMins", activeValue("ops.J.emergency.confirmSlaMins")
+                                .orElseGet(() -> readTimeSeedPolicy.enabled() ? "15" : ""),
+                        "escalateMaxMins", activeValue("ops.J.emergency.escalateMaxMins")
+                                .orElseGet(() -> readTimeSeedPolicy.enabled() ? "60" : ""),
+                        "escalateMaxRounds", activeValue("ops.J.emergency.escalateMaxRounds")
+                                .orElseGet(() -> readTimeSeedPolicy.enabled() ? "4" : "")),
                 "scenes", List.of("全部", "监管点名", "资金异常", "数据泄露", "舆情挤兑", "技术故障"),
-                "actionOptions", jsonList(SOP_ACTION_OPTIONS, defaultActionOptions()),
-                "rollbackOptions", jsonList(SOP_ROLLBACK_OPTIONS, defaultRollbackOptions()),
-                "h1Rhythm", GrowthRhythmSnapshot.from(configFacade).summary(),
+                "actionOptions", enumJsonList(SOP_ACTION_OPTIONS, defaultActionOptions()),
+                "rollbackOptions", enumJsonList(SOP_ROLLBACK_OPTIONS, defaultRollbackOptions()),
+                "h1Rhythm", GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).summary(),
                 "playbooks", playbooks,
                 "executions", executions,
                 "sources", List.of("nx_config_item:emergency.sop.*", "nx_notification_campaign", "nx_notification", "A2 emergency playbook audit", "H1 growth rhythm facade"));
@@ -575,6 +581,9 @@ public class OpsEmergencyControlService {
     }
 
     private void ensureSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         for (CountrySeed seed : countrySeeds()) {
             ensureConfig(countryConfigKey(seed.cc()), seed.status(), "STRING", GROUP_GEO_BLOCK, "J2 geo country status");
         }
@@ -602,6 +611,9 @@ public class OpsEmergencyControlService {
     }
 
     private void ensureConfig(String key, String value, String valueType, String group, String remark) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (activeValue(key).isEmpty()) {
             configFacade.upsertAdminValue(key, value, valueType, group, remark);
         }
@@ -613,7 +625,9 @@ public class OpsEmergencyControlService {
 
     private List<Map<String, Object>> countryViews() {
         Set<String> countries = new LinkedHashSet<>();
-        countrySeeds().forEach(seed -> countries.add(seed.cc()));
+        if (readTimeSeedPolicy.enabled()) {
+            countrySeeds().forEach(seed -> countries.add(seed.cc()));
+        }
         countries.addAll(readCsv(GEO_CUSTOM_COUNTRIES));
         return countries.stream()
                 .map(this::countryView)
@@ -625,9 +639,11 @@ public class OpsEmergencyControlService {
     private Map<String, Object> countryView(String countryCode) {
         String cc = normalizeCountry(countryCode);
         Optional<CountrySeed> seed = countrySeed(cc);
-        String status = activeValue(countryConfigKey(cc)).orElse(seed.map(CountrySeed::status).orElse("allowed"));
+        String status = activeValue(countryConfigKey(cc))
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.map(CountrySeed::status).orElse("allowed") : "allowed");
         String name = seed.map(CountrySeed::name).orElse(cc);
-        String reason = seed.map(CountrySeed::reason).orElse("运营加入 · A2 留痕");
+        String reason = activeValue(countryConfigKey(cc) + ".reason")
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.map(CountrySeed::reason).orElse("运营加入 · A2 留痕") : "");
         return map("cc", cc, "name", name, "status", status, "reason", reason);
     }
 
@@ -674,14 +690,18 @@ public class OpsEmergencyControlService {
     }
 
     private List<Map<String, Object>> geoEndpoints() {
-        return endpointSeeds().stream().map(this::endpointView).toList();
+        return endpointSeeds().stream()
+                .filter(seed -> readTimeSeedPolicy.enabled() || endpointConfigured(seed))
+                .map(this::endpointView)
+                .toList();
     }
 
     private Map<String, Object> endpointView(EndpointSeed seed) {
         List<String> countries = activeValue(endpointConfigKey(seed.key()))
                 .map(OpsEmergencyControlService::splitCsv)
-                .orElse(seed.countries());
-        String source = activeValue(endpointSourceConfigKey(seed.key())).orElse(seed.source());
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.countries() : List.of());
+        String source = activeValue(endpointSourceConfigKey(seed.key()))
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.source() : "");
         return map(
                 "key", seed.key(),
                 "endpoint", seed.endpoint(),
@@ -695,13 +715,20 @@ public class OpsEmergencyControlService {
                     case "derived" -> "继承全局";
                     default -> "待设置";
                 },
-                "sourceDescription", activeValue(endpointSourceDescriptionConfigKey(seed.key())).orElse(seed.sourceDescription()),
-                "hits", seed.hits());
+                "sourceDescription", activeValue(endpointSourceDescriptionConfigKey(seed.key()))
+                        .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.sourceDescription() : ""),
+                "hits", readTimeSeedPolicy.enabled() ? seed.hits() : 0);
+    }
+
+    private boolean endpointConfigured(EndpointSeed seed) {
+        return activeValue(endpointConfigKey(seed.key())).isPresent()
+                || activeValue(endpointSourceConfigKey(seed.key())).isPresent()
+                || activeValue(endpointSourceDescriptionConfigKey(seed.key())).isPresent();
     }
 
     private Map<String, Object> geoEdge() {
         return map(
-                "source", activeValue(GEO_EDGE_SOURCE).orElse("服务器边缘 IP 判定"),
+                "source", activeValue(GEO_EDGE_SOURCE).orElseGet(() -> readTimeSeedPolicy.enabled() ? "服务器边缘 IP 判定" : ""),
                 "metrics", jsonList(GEO_EDGE_METRICS, defaultGeoEdgeMetrics()));
     }
 
@@ -710,8 +737,12 @@ public class OpsEmergencyControlService {
     }
 
     private Map<String, Object> tamperAlertConfig() {
-        int threshold = activeValue(TAMPER_THRESHOLD).map(Integer::parseInt).orElse(10);
-        boolean feedK4 = activeValue(TAMPER_FEED_K4).map(Boolean::parseBoolean).orElse(true);
+        int threshold = activeValue(TAMPER_THRESHOLD)
+                .map(Integer::parseInt)
+                .orElse(readTimeSeedPolicy.enabled() ? 10 : 0);
+        boolean feedK4 = activeValue(TAMPER_FEED_K4)
+                .map(Boolean::parseBoolean)
+                .orElse(readTimeSeedPolicy.enabled());
         return map("threshold", threshold, "label", threshold + " 次 / 24h", "feedK4", feedK4);
     }
 
@@ -1136,6 +1167,18 @@ public class OpsEmergencyControlService {
                     try {
                         return objectMapper.readValue(value, LIST_MAP_TYPE);
                     } catch (Exception e) {
+                        return readTimeSeedPolicy.enabled() ? fallback : List.<Map<String, Object>>of();
+                    }
+                })
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : List.of());
+    }
+
+    private List<Map<String, Object>> enumJsonList(String configKey, List<Map<String, Object>> fallback) {
+        return activeValue(configKey)
+                .map(value -> {
+                    try {
+                        return objectMapper.readValue(value, LIST_MAP_TYPE);
+                    } catch (Exception e) {
                         return fallback;
                     }
                 })
@@ -1148,10 +1191,10 @@ public class OpsEmergencyControlService {
                     try {
                         return objectMapper.readValue(value, MAP_TYPE);
                     } catch (Exception e) {
-                        return fallback;
+                        return readTimeSeedPolicy.enabled() ? fallback : Map.<String, Object>of();
                     }
                 })
-                .orElse(fallback);
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : Map.of());
     }
 
     private int intValue(Object value) {

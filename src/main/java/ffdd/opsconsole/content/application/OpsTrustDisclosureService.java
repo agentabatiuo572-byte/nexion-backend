@@ -18,6 +18,7 @@ import ffdd.opsconsole.content.dto.TrustSectionRollbackRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -52,9 +53,12 @@ public class OpsTrustDisclosureService {
     private final TrustDisclosureRepository trustDisclosureRepository;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<TrustDisclosureOverview> overview() {
-        trustDisclosureRepository.ensureSeedData(now());
+        if (readTimeSeedPolicy.enabled()) {
+            trustDisclosureRepository.ensureSeedData(now());
+        }
         return ApiResult.ok(currentOverview());
     }
 

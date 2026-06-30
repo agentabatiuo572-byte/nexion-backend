@@ -25,6 +25,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -69,6 +70,7 @@ public class OpsSessionTemplateService {
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<SessionTemplateOverview> overview() {
         ensureSeedData();
@@ -299,6 +301,9 @@ public class OpsSessionTemplateService {
     }
 
     private void ensureSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         templateRepository.ensureSeedData(LocalDateTime.now(clock));
         for (SessionCategorySeed seed : CATEGORY_SEEDS) {
             seedConfigValue(categoryKey(seed.type()), seed.enabled() ? "on" : "off", "BOOLEAN");
@@ -312,6 +317,9 @@ public class OpsSessionTemplateService {
     }
 
     private void seedConfigValue(String key, String value, String valueType) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (configFacade.activeValue(key).isEmpty()) {
             configFacade.upsertAdminValue(key, value, valueType, CONFIG_GROUP, "seed session template config");
         }
@@ -510,12 +518,14 @@ public class OpsSessionTemplateService {
         try {
             return Integer.parseInt(configValue(key, String.valueOf(fallback)));
         } catch (NumberFormatException ex) {
-            return fallback;
+            return readTimeSeedPolicy.enabled() ? fallback : 0;
         }
     }
 
     private String configValue(String key, String fallback) {
-        return configFacade.activeValue(key).filter(StringUtils::hasText).orElse(fallback);
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
     }
 
     private String categoryKey(String type) {

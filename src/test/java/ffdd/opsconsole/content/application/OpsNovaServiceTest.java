@@ -15,6 +15,7 @@ import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,7 +27,10 @@ import org.mockito.ArgumentCaptor;
 class OpsNovaServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsNovaService service = new OpsNovaService(configFacade, auditLogService);
+    private final OpsNovaService service = new OpsNovaService(
+            configFacade,
+            auditLogService,
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
     void overviewListsServerDefaultsAndSources() {
@@ -37,6 +41,24 @@ class OpsNovaServiceTest {
         assertThat(result.getData().templates()).hasSize(7);
         assertThat(result.getData().stats().onlineChannels()).isEqualTo(10);
         assertThat(result.getData().sources()).contains("nx_config_item");
+    }
+
+    @Test
+    void disabledReadTimeSeedsDoNotExposeNovaSeedRows() {
+        OpsNovaService realOnlyService = new OpsNovaService(
+                new FakePlatformConfigFacade(),
+                auditLogService,
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        var result = realOnlyService.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().channels()).isEmpty();
+        assertThat(result.getData().templates()).isEmpty();
+        assertThat(result.getData().socialDistribution()).isEmpty();
+        assertThat(result.getData().socialPools()).isEmpty();
+        assertThat(result.getData().eventDriven()).isEmpty();
+        assertThat(result.getData().stats().totalChannels()).isZero();
     }
 
     @Test

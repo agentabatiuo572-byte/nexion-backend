@@ -47,6 +47,7 @@ import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -347,6 +348,7 @@ public class OpsDeviceService {
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(deviceRepository.overviewCounters());
@@ -375,7 +377,7 @@ public class OpsDeviceService {
     @Transactional
     public ApiResult<PageResult<DeviceSkuView>> skus(DeviceSkuQueryRequest request) {
         PageResult<DeviceSkuView> page = catalogRepository.pageSkus(request);
-        if (shouldSeedDefaultSkus(request, page)) {
+        if (readTimeSeedPolicy.enabled() && shouldSeedDefaultSkus(request, page)) {
             seedDefaultE1SkusIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP), LocalDateTime.now(clock));
             page = catalogRepository.pageSkus(request);
         }
@@ -487,7 +489,7 @@ public class OpsDeviceService {
     @Transactional
     public ApiResult<PageResult<DeviceReviewView>> reviews(DeviceReviewQueryRequest request) {
         PageResult<DeviceReviewView> page = catalogRepository.pageReviews(request);
-        if (shouldSeedDefaultReviews(request, page)) {
+        if (readTimeSeedPolicy.enabled() && shouldSeedDefaultReviews(request, page)) {
             seedDefaultE1ReviewsIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP), LocalDateTime.now(clock));
             page = catalogRepository.pageReviews(request);
         }
@@ -580,7 +582,7 @@ public class OpsDeviceService {
     @Transactional
     public ApiResult<PageResult<DeviceTaskView>> tasks(DeviceTaskQueryRequest request) {
         PageResult<DeviceTaskView> page = catalogRepository.pageTasks(request);
-        if (shouldSeedDefaultTasks(request, page)) {
+        if (readTimeSeedPolicy.enabled() && shouldSeedDefaultTasks(request, page)) {
             seedDefaultTasks(LocalDateTime.now(clock));
             page = catalogRepository.pageTasks(request);
         }
@@ -590,7 +592,7 @@ public class OpsDeviceService {
     @Transactional
     public ApiResult<List<DevicePhoneTierRewardView>> phoneTierRewards() {
         List<DevicePhoneTierRewardView> rewards = catalogRepository.listPhoneTierRewards();
-        if (rewards.isEmpty()) {
+        if (rewards.isEmpty() && readTimeSeedPolicy.enabled()) {
             seedDefaultPhoneTierRewards(LocalDateTime.now(clock));
             rewards = catalogRepository.listPhoneTierRewards();
         }
@@ -619,7 +621,7 @@ public class OpsDeviceService {
         if (request.dailyNex() != null && request.dailyNex().compareTo(BigDecimal.ZERO) <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_NEX_INVALID");
         }
-        if (catalogRepository.listPhoneTierRewards().isEmpty()) {
+        if (catalogRepository.listPhoneTierRewards().isEmpty() && readTimeSeedPolicy.enabled()) {
             seedDefaultPhoneTierRewards(LocalDateTime.now(clock));
         }
         DevicePhoneTierRewardView before = catalogRepository.findPhoneTierReward(tier).orElse(null);
@@ -859,14 +861,18 @@ public class OpsDeviceService {
     public ApiResult<Map<String, Object>> e1GenerationGates() {
         int platformMonth = currentPlatformMonth();
         Map<String, String> e1Configs = configFacade.activeValuesByGroup(E1_GATE_GROUP);
-        seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
-        seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         List<DeviceGenerationGateView> gates = catalogRepository.listGenerationGates(false);
         Map<String, String> configValues = e1GateConfigValues(gates);
         List<DevicePhaseView> phases = e1PhaseDefs();
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade);
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
         List<String> phaseOrder = phases.stream().map(DevicePhaseView::p).toList();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "E1");
@@ -997,7 +1003,9 @@ public class OpsDeviceService {
         if (guard != null) {
             return guard;
         }
-        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         List<DevicePhaseView> phases = e1PhaseDefs();
         String normalized = matchE1PhaseId(phaseId, phases);
@@ -1034,7 +1042,9 @@ public class OpsDeviceService {
         if (request == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_REQUEST_REQUIRED");
         }
-        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         String skuId = normalizeGenerationId(request.skuId());
         if (!StringUtils.hasText(skuId)) {
@@ -1079,7 +1089,9 @@ public class OpsDeviceService {
             return guard;
         }
         String normalized = normalizeGenerationId(skuId);
-        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
         if (before == null) {
@@ -1131,9 +1143,13 @@ public class OpsDeviceService {
             return guard;
         }
         Map<String, String> e1Configs = configFacade.activeValuesByGroup(E1_GATE_GROUP);
-        seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
-        seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         String[] key = normalizeE1GateKey(request.key());
         String value = normalizeE1GateValue(key[1], request.value());
@@ -1183,7 +1199,10 @@ public class OpsDeviceService {
 
     public ApiResult<DeviceTradeinOverviewView> e3TradeinOverview() {
         Map<String, String> config = deviceRepository.e3Config();
-        int cliffMonth = parsePositiveInt(config.get("stageMidEnd"), 8) + 1;
+        if (!readTimeSeedPolicy.enabled() && !StringUtils.hasText(config.get("stageMidEnd"))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E3_STAGE_MID_END_NOT_CONFIGURED");
+        }
+        int cliffMonth = parsePositiveInt(config.get("stageMidEnd"), readTimeSeedPolicy.enabled() ? 8 : 0) + 1;
         LocalDateTime now = LocalDateTime.now(clock);
         return ApiResult.ok(deviceRepository.e3TradeinOverview(
                 now.minusHours(24),
@@ -1398,7 +1417,9 @@ public class OpsDeviceService {
         if (!allows(request.lifecycle(), SKU_LIFECYCLES)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_LIFECYCLE_INVALID");
         }
-        seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        if (readTimeSeedPolicy.enabled()) {
+            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
+        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         if (!"Share".equals(tier) && !isConfiguredE1PhaseId(request.unlockPhase())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLOCK_PHASE_INVALID");
@@ -1570,6 +1591,9 @@ public class OpsDeviceService {
     }
 
     private void seedDefaultE1SkusIfEmpty(Map<String, String> e1Configs, LocalDateTime now) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         PageResult<DeviceSkuView> existing = catalogRepository.pageSkus(new DeviceSkuQueryRequest(null, null, 1L, 1L));
         if (existing.getTotal() > 0) {
             return;
@@ -1585,6 +1609,9 @@ public class OpsDeviceService {
     }
 
     private void seedDefaultE1ReviewsIfEmpty(Map<String, String> e1Configs, LocalDateTime now) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         PageResult<DeviceReviewView> existing = catalogRepository.pageReviews(new DeviceReviewQueryRequest(null, null, null, null, 1L, 1L));
         if (existing.getTotal() > 0) {
             return;
@@ -1613,6 +1640,9 @@ public class OpsDeviceService {
     }
 
     private void seedDefaultTasks(LocalDateTime now) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         for (DefaultTaskSeed seed : DEFAULT_E2_TASKS) {
             if (catalogRepository.findTask(seed.taskId()).isPresent()) {
                 continue;
@@ -1622,6 +1652,9 @@ public class OpsDeviceService {
     }
 
     private void seedDefaultPhoneTierRewards(LocalDateTime now) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         for (DefaultPhoneTierRewardSeed seed : DEFAULT_PHONE_TIER_REWARDS) {
             if (catalogRepository.findPhoneTierReward(seed.tier()).isPresent()) {
                 continue;
@@ -1761,6 +1794,9 @@ public class OpsDeviceService {
     }
 
     private void seedE1GenerationGatesFromLegacyConfigIfEmpty(Map<String, String> e1Configs) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (!catalogRepository.listGenerationGates(true).isEmpty()) {
             return;
         }
@@ -1810,6 +1846,9 @@ public class OpsDeviceService {
     }
 
     private void seedE1PhasesFromLegacyConfigIfEmpty(Map<String, String> e1Configs) {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         if (!catalogRepository.listPhases(E1_PHASE_SCOPE, true).isEmpty()) {
             return;
         }
@@ -1889,7 +1928,7 @@ public class OpsDeviceService {
     }
 
     private int currentPlatformMonth() {
-        int month = GrowthRhythmSnapshot.from(configFacade).currentMonth();
+        int month = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).currentMonth();
         return month >= 1 ? Math.min(month, 12) : 0;
     }
 
@@ -1905,7 +1944,7 @@ public class OpsDeviceService {
         return configFacade.activeValue(CURRENT_PHASE_KEY)
                 .map(value -> matchE1PhaseId(value, phases))
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> phaseForMonth(platformMonth, phases));
+                .orElseGet(() -> readTimeSeedPolicy.enabled() ? phaseForMonth(platformMonth, phases) : "");
     }
 
     private int readInt(String configKey, int fallback) {
