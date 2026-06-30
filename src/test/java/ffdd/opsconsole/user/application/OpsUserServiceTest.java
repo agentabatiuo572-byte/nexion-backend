@@ -528,6 +528,34 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void assetAdjustmentStoresStructuredH7ReferenceInBusinessTableAndAudit() {
+        ApiResult<Map<String, Object>> created = service.createAssetAdjustment(
+                1L,
+                "idem-c3-h7",
+                new UserAssetAdjustmentRequest(
+                        "NEX",
+                        "DEBIT",
+                        "3.5",
+                        "manual compensation with voucher evidence",
+                        "superadmin",
+                        "H7_VOUCHER",
+                        "voucher-agent-f"));
+
+        String adjustmentNo = String.valueOf(created.getData().get("adjustmentNo"));
+        ApiResult<UserAssetAdjustmentDetail> detail = service.assetAdjustmentDetail(adjustmentNo);
+
+        assertThat(created.getCode()).isZero();
+        assertThat(created.getData()).containsEntry("reasonCode", "H7_VOUCHER:voucher-agent-f");
+        assertThat(detail.getData().adjustment().reasonCode()).isEqualTo("H7_VOUCHER:voucher-agent-f");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat((Map<String, Object>) captor.getValue().getDetail())
+                .containsEntry("reasonCode", "H7_VOUCHER:voucher-agent-f")
+                .containsEntry("referenceType", "H7_VOUCHER")
+                .containsEntry("referenceId", "voucher-agent-f");
+    }
+
+    @Test
     void assetAdjustmentsHistoryOnlyReturnsTerminalRows() {
         service.createAssetAdjustment(
                 1L,
@@ -1362,8 +1390,8 @@ class OpsUserServiceTest {
         }
 
         @Override
-        public void createAssetAdjustment(String adjustmentNo, Long userId, String asset, String direction, BigDecimal amount, String reason, String operator) {
-            adjustments.put(adjustmentNo, adjustment(adjustmentNo, userId, asset, direction, amount, reason, operator, "PENDING_REVIEW", null, null));
+        public void createAssetAdjustment(String adjustmentNo, Long userId, String asset, String direction, BigDecimal amount, String reasonCode, String reason, String operator) {
+            adjustments.put(adjustmentNo, adjustment(adjustmentNo, userId, asset, direction, amount, reasonCode, reason, operator, "PENDING_REVIEW", null, null, null));
         }
 
         @Override
@@ -1404,6 +1432,7 @@ class OpsUserServiceTest {
                     adjustment.asset(),
                     adjustment.direction(),
                     adjustment.amount(),
+                    adjustment.reasonCode(),
                     adjustment.reason(),
                     adjustment.maker(),
                     "APPROVED",
@@ -1422,6 +1451,7 @@ class OpsUserServiceTest {
                     before.asset(),
                     before.direction(),
                     before.amount(),
+                    before.reasonCode(),
                     before.reason(),
                     before.maker(),
                     status,
@@ -1557,6 +1587,22 @@ class OpsUserServiceTest {
                 String checker,
                 String reviewReason,
                 Long ledgerId) {
+            return adjustment(adjustmentNo, userId, asset, direction, amount, "OPS_USER_ADJUSTMENT", reason, maker, status, checker, reviewReason, ledgerId);
+        }
+
+        private UserAssetAdjustmentView adjustment(
+                String adjustmentNo,
+                Long userId,
+                String asset,
+                String direction,
+                BigDecimal amount,
+                String reasonCode,
+                String reason,
+                String maker,
+                String status,
+                String checker,
+                String reviewReason,
+                Long ledgerId) {
             return new UserAssetAdjustmentView(
                     adjustmentNo,
                     userId,
@@ -1566,7 +1612,7 @@ class OpsUserServiceTest {
                     direction,
                     amount,
                     ("CREDIT".equals(direction) ? "+" : "-") + amount + ("USDT".equals(asset) ? " USDT" : " NEX"),
-                    "OPS_USER_ADJUSTMENT",
+                    reasonCode,
                     reason,
                     maker,
                     checker,

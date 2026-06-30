@@ -38,6 +38,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -352,6 +354,7 @@ public class OpsEmergencyControlService {
         return sopOverview();
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> executePlaybook(String code, String idempotencyKey, SopPlaybookRunRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -365,6 +368,12 @@ public class OpsEmergencyControlService {
         String idemConfigKey = playbookConfigKey(seed.code(), "idem." + sanitizeConfigPart(idempotencyKey));
         Optional<String> existingExecId = activeValue(idemConfigKey).filter(StringUtils::hasText);
         if (existingExecId.isPresent()) {
+            audit("J4_SOP_PLAYBOOK_EXECUTED", "SOP_PLAYBOOK_EXECUTION", existingExecId.get(), request.operator(), emergency ? "CRITICAL" : "HIGH", map(
+                    "code", seed.code(),
+                    "emergency", emergency,
+                    "idempotentReplay", true,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = sopOverview().getData();
             response.put("updated", map(
                     "executionId", existingExecId.get(),
@@ -373,11 +382,12 @@ public class OpsEmergencyControlService {
             return ApiResult.ok(response);
         }
         String execId = seed.code() + "-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        List<Map<String, Object>> domainActions = executeDomainActions(seed, execId, request);
         Map<String, Object> notificationDispatch = notificationDispatch(seed, execId, request);
         if (notificationDispatch == null) {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_NOTIFY_CAMPAIGN_NOT_FOUND");
         }
-        List<Map<String, Object>> domainActions = executeDomainActions(seed, execId, request);
         configFacade.upsertAdminValue(playbookConfigKey(seed.code(), "lastExecution"), execId, "STRING", GROUP_SOP, request.reason().trim());
         configFacade.upsertAdminValue(idemConfigKey, execId, "STRING", GROUP_SOP, "J4 SOP idempotency replay marker");
         appendExecution(seed, execId, emergency, request, notificationDispatch, domainActions);
@@ -398,6 +408,55 @@ public class OpsEmergencyControlService {
                 "domainActions", domainActions,
                 "notificationDispatch", notificationDispatch,
                 "rollback", seed.rollback()));
+        return ApiResult.ok(response);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> rollbackPlaybookExecution(
+            String code,
+            String executionId,
+            String idempotencyKey,
+            SopPlaybookRunRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        PlaybookSeed seed = playbookSeed(code);
+        String execId = stringValue(executionId, "").trim();
+        if (!StringUtils.hasText(execId)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_EXECUTION_ID_REQUIRED");
+        }
+        List<Map<String, Object>> rows = new ArrayList<>(executionSeeds());
+        Optional<Map<String, Object>> found = rows.stream()
+                .filter(row -> execId.equals(stringValue(row.get("executionId"), "")))
+                .findFirst();
+        if (found.isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_EXECUTION_NOT_FOUND");
+        }
+        Map<String, Object> execution = found.get();
+        if ("ROLLED_BACK".equals(stringValue(execution.get("rollbackStatus"), ""))) {
+            Map<String, Object> response = sopOverview().getData();
+            response.put("updated", map("executionId", execId, "code", seed.code(), "idempotentReplay", true, "rollbackStatus", "ROLLED_BACK"));
+            return ApiResult.ok(response);
+        }
+        List<Map<String, Object>> rollbackWrites = rollbackDomainActions(execId, mapList(execution.get("domainActions")), request);
+        execution.put("rollbackStatus", "ROLLED_BACK");
+        execution.put("rollbackAt", LocalDateTime.now().format(TS));
+        execution.put("rollbackReason", request.reason().trim());
+        execution.put("rollbackActions", rollbackWrites);
+        configFacade.upsertAdminValue(SOP_EXECUTIONS, toJson(rows), "JSON", GROUP_SOP, request.reason().trim());
+        configFacade.upsertAdminValue(playbookConfigKey(seed.code(), "rollback." + sanitizeConfigPart(execId)), "ROLLED_BACK", "STRING", GROUP_SOP, request.reason().trim());
+        audit("J4_SOP_PLAYBOOK_ROLLED_BACK", "SOP_PLAYBOOK_EXECUTION", execId, request.operator(), "HIGH", map(
+                "code", seed.code(),
+                "domainActions", rollbackWrites,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = sopOverview().getData();
+        response.put("updated", map(
+                "executionId", execId,
+                "code", seed.code(),
+                "rollbackStatus", "ROLLED_BACK",
+                "domainActions", rollbackWrites));
         return ApiResult.ok(response);
     }
 
@@ -528,6 +587,77 @@ public class OpsEmergencyControlService {
                 "valueType", valueType,
                 "group", group,
                 "operator", stringValue(request.operator(), "system")));
+    }
+
+    private List<Map<String, Object>> rollbackDomainActions(
+            String execId,
+            List<Map<String, Object>> domainActions,
+            SopPlaybookRunRequest request) {
+        List<Map<String, Object>> writes = new ArrayList<>();
+        for (Map<String, Object> action : domainActions) {
+            String configKey = stringValue(action.get("configKey"), "");
+            Optional<String> restoreValue = rollbackValueFor(configKey, execId);
+            if (restoreValue.isEmpty()) {
+                continue;
+            }
+            String valueType = stringValue(action.get("valueType"), "STRING");
+            String group = stringValue(action.get("group"), GROUP_SOP);
+            configFacade.upsertAdminValue(
+                    configKey,
+                    restoreValue.get(),
+                    valueType,
+                    group,
+                    "J4 rollback | execId=" + execId);
+            writes.add(map(
+                    "domain", stringValue(action.get("domain"), ""),
+                    "step", action.get("step"),
+                    "configKey", configKey,
+                    "value", restoreValue.get(),
+                    "valueType", valueType,
+                    "group", group,
+                    "operator", stringValue(request.operator(), "system")));
+        }
+        configFacade.upsertAdminValue(
+                "notification.j4.rollback.requested",
+                execId,
+                "STRING",
+                "content",
+                "J4 rollback requires I3 correction/cancel follow-up");
+        writes.add(map(
+                "domain", "I3",
+                "configKey", "notification.j4.rollback.requested",
+                "value", execId,
+                "valueType", "STRING",
+                "group", "content",
+                "operator", stringValue(request.operator(), "system")));
+        return writes;
+    }
+
+    private Optional<String> rollbackValueFor(String configKey, String execId) {
+        if (!StringUtils.hasText(configKey)) {
+            return Optional.empty();
+        }
+        if (Set.of("killswitch.withdraw", "killswitch.exchange", "killswitch.genesis").contains(configKey)) {
+            return Optional.of("enabled");
+        }
+        if ("killswitch.maintenance".equals(configKey)) {
+            return Optional.of("disabled");
+        }
+        if ("withdrawal.j4.rate_limit_pct".equals(configKey)) {
+            return Optional.of("100");
+        }
+        if ("withdrawal.j4.batch_release.mode".equals(configKey)) {
+            return Optional.of("OFF");
+        }
+        if ("treasury.j4.coverage_check.execution".equals(configKey)) {
+            return Optional.of("rolled_back:" + execId);
+        }
+        if (configKey.startsWith("disclosure.gate.")
+                || configKey.endsWith(".required")
+                || configKey.endsWith(".pending_b1")) {
+            return Optional.of("false");
+        }
+        return Optional.empty();
     }
 
     private boolean containsAny(String value, String... candidates) {

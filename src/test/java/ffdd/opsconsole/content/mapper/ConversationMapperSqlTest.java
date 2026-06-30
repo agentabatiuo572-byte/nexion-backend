@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 class ConversationMapperSqlTest {
     @Test
-    void overdueTransferQueryOnlySelectsPendingNonStandbyRows() throws Exception {
+    void overdueTransferQueryUsesXmlSafeOperators() throws Exception {
         String sql = String.join("\n", ConversationMapper.class
                 .getMethod("overdueTransferredConversations", LocalDateTime.class, int.class)
                 .getAnnotation(Select.class)
@@ -25,7 +25,7 @@ class ConversationMapperSqlTest {
     }
 
     @Test
-    void fallbackClaimUpdateIsIdempotentAndXmlSafe() throws Exception {
+    void fallbackClaimUpdateUsesXmlSafeOperator() throws Exception {
         String sql = String.join("\n", ConversationMapper.class
                 .getMethod(
                         "markTransferFallback",

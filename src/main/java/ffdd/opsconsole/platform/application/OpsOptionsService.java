@@ -63,21 +63,17 @@ public class OpsOptionsService {
             case "order-terminal-state", "order-terminal-states" -> ApiResult.ok(options("支付失败", "payment_failed", "订单过期", "expired", "已退款", "refunded", "开通失败", "provisioning_failed"));
             case "review-rating", "review-ratings" -> ApiResult.ok(options("5 星", "5", "4 星", "4", "3 星", "3", "2 星", "2", "1 星", "1"));
             case "review-status", "review-statuses" -> ApiResult.ok(options("展示", "published", "隐藏", "hidden"));
-            case "transfer-targets" -> ApiResult.ok(options("一线客服", "agent-tier-1", "二线客服", "agent-tier-2", "风控专员", "risk-agent"));
-            case "support-agents" -> ApiResult.ok(options("一线客服", "1001", "二线客服", "1002", "风控专员", "1003"));
+            case "transfer-targets" -> ApiResult.ok(optionRows(optionsMapper::transferTargets));
+            case "support-agents" -> ApiResult.ok(optionRows(optionsMapper::supportAgents));
             case "support-ticket-category", "support-ticket-categories" -> ApiResult.ok(options("账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "KYC 认证", "kyc", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
             case "support-ticket-status", "support-ticket-statuses" -> ApiResult.ok(options("待处理", "OPEN", "处理中", "IN_PROGRESS", "待用户回复", "PENDING_USER", "已解决", "RESOLVED", "已关闭", "CLOSED"));
             case "support-ticket-priority", "support-ticket-priorities" -> ApiResult.ok(options("低", "LOW", "普通", "NORMAL", "高", "HIGH", "紧急", "URGENT"));
             case "support-faq-category", "support-faq-categories" -> ApiResult.ok(options("通用", "general", "账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "KYC 认证", "kyc", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
             case "support-faq-surface", "support-faq-surfaces" -> ApiResult.ok(options("帮助中心", "Help Center", "创建工单页", "Ticket Create", "Nova AI", "Nova"));
             case "support-faq-status", "support-faq-statuses" -> ApiResult.ok(options("已发布", "PUBLISHED", "草稿", "DRAFT"));
-            case "support-sla-queue", "support-sla-queues" -> ApiResult.ok(options("支付台", "支付台", "充值台", "充值台", "合规台", "合规台", "设备运维台", "设备运维台", "账户台", "账户台", "收益台", "收益台", "创世节点台", "创世节点台", "技术支持台", "技术支持台", "一线客服", "一线客服"));
-            case "support-sla-escalation", "support-sla-escalations" -> ApiResult.ok(options("D2 withdrawal review", "D2 withdrawal review", "D1 deposit reconciliation", "D1 deposit reconciliation", "C4 KYC ledger", "C4 KYC ledger", "E5 device ops", "E5 device ops", "C5 security", "C5 security", "F2 earnings ledger", "F2 earnings ledger", "G4 Genesis economy", "G4 Genesis economy", "A3 system config", "A3 system config", "M2 support lead", "M2 support lead"));
-            case "support-reply-template", "support-reply-templates" -> ApiResult.ok(options(
-                    "核对后台状态", "已确认工单信息，我会先核对后台状态并在本线程同步处理进度。",
-                    "链上确认队列", "支付台账已核对，当前卡在链上确认队列；我会保留人工复核并继续跟进。",
-                    "补充材料", "请补充截图、设备 LED pattern 或交易 hash，这样我们能把工单转给对应队列。",
-                    "处理完成", "问题已处理并关闭；如果状态未更新，回复本工单会自动重新打开。"));
+            case "support-sla-queue", "support-sla-queues" -> ApiResult.ok(optionRows(optionsMapper::supportSlaQueues));
+            case "support-sla-escalation", "support-sla-escalations" -> ApiResult.ok(optionRows(optionsMapper::supportSlaEscalations));
+            case "support-reply-template", "support-reply-templates" -> ApiResult.ok(optionRows(optionsMapper::sessionReplyTemplates));
             case "support-sla", "support-sla-categories" -> ApiResult.ok(supportSlaOptions());
             case "nova-channel-status", "nova-channel-statuses" -> ApiResult.ok(options("开启", "true", "停推", "false"));
             case "nova-template-status", "nova-template-statuses" -> ApiResult.ok(options("草稿", "DRAFT", "已发布", "PUBLISHED", "已归档", "ARCHIVED"));
@@ -137,24 +133,22 @@ public class OpsOptionsService {
     }
 
     private List<AdminOption> datacenterOptions() {
-        List<AdminOption> databaseDcs = queryDistinctOptions(optionsMapper::datacenters);
-        if (!databaseDcs.isEmpty()) {
-            return databaseDcs;
-        }
-        return options("未分配", "UNASSIGNED", "香港 1 区", "HK-1", "新加坡 1 区", "SG-1", "美国 1 区", "US-1");
+        return queryDistinctOptions(optionsMapper::datacenters);
     }
 
     private List<AdminOption> supportSlaOptions() {
-        return List.of(
-                AdminOption.of("提现", "withdrawal", Map.of("firstResponseMins", 15, "resolutionHours", 12, "queue", "支付台")),
-                AdminOption.of("充值", "deposit", Map.of("firstResponseMins", 20, "resolutionHours", 12, "queue", "充值台")),
-                AdminOption.of("实名", "kyc", Map.of("firstResponseMins", 30, "resolutionHours", 24, "queue", "合规台")),
-                AdminOption.of("硬件", "hardware", Map.of("firstResponseMins", 45, "resolutionHours", 48, "queue", "设备运维台")),
-                AdminOption.of("节点", "genesis", Map.of("firstResponseMins", 20, "resolutionHours", 18, "queue", "创世节点台")),
-                AdminOption.of("账户", "account", Map.of("firstResponseMins", 30, "resolutionHours", 24, "queue", "账户台")),
-                AdminOption.of("收益", "earnings", Map.of("firstResponseMins", 45, "resolutionHours", 48, "queue", "收益台")),
-                AdminOption.of("技术", "technical", Map.of("firstResponseMins", 60, "resolutionHours", 72, "queue", "技术支持台")),
-                AdminOption.of("其他", "other", Map.of("firstResponseMins", 60, "resolutionHours", 72, "queue", "一线客服")));
+        try {
+            return optionsMapper.supportSlaRules().stream()
+                    .filter(row -> row != null && StringUtils.hasText(row.category()))
+                    .map(row -> AdminOption.of(row.category().trim(), row.category().trim(), Map.of(
+                            "firstResponseMins", row.firstResponseMins() == null ? 0 : row.firstResponseMins(),
+                            "resolutionHours", row.resolutionHours() == null ? 0 : row.resolutionHours(),
+                            "queue", safeString(row.queue()),
+                            "escalation", safeString(row.escalation()))))
+                    .toList();
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
     }
 
     private List<AdminOption> reportStatusOptions() {
@@ -177,6 +171,21 @@ public class OpsOptionsService {
         }
     }
 
+    private List<AdminOption> optionRows(OptionRowSupplier supplier) {
+        try {
+            return supplier.get().stream()
+                    .filter(row -> row != null && StringUtils.hasText(row.label()) && StringUtils.hasText(row.value()))
+                    .map(row -> AdminOption.of(row.label().trim(), row.value().trim()))
+                    .toList();
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
+    }
+
+    private String safeString(String value) {
+        return StringUtils.hasText(value) ? value.trim() : "";
+    }
+
     private List<AdminOption> options(String... labelValuePairs) {
         List<AdminOption> options = new ArrayList<>();
         for (int i = 0; i + 1 < labelValuePairs.length; i += 2) {
@@ -192,5 +201,10 @@ public class OpsOptionsService {
     @FunctionalInterface
     private interface OptionSupplier {
         List<String> get();
+    }
+
+    @FunctionalInterface
+    private interface OptionRowSupplier {
+        List<OpsOptionsMapper.OptionRow> get();
     }
 }

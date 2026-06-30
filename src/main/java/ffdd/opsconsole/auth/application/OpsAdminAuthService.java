@@ -6,6 +6,7 @@ import ffdd.opsconsole.auth.dto.AdminLoginResponse;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
+import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -56,6 +57,7 @@ public class OpsAdminAuthService {
 
     private final AdminMapper adminMapper;
     private final AdminRolePermissionMapper permissionMapper;
+    private final AdminRoleRelationMapper roleRelationMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider tokenProvider;
     private final AdminSessionRegistry adminSessionRegistry;
@@ -147,16 +149,31 @@ public class OpsAdminAuthService {
         if (superAdmin(admin)) {
             return "superadmin";
         }
-        String role = adminMapper.selectA1Role(admin.getId());
-        if (!StringUtils.hasText(role)) {
+        String roleCode = roleRelationMapper.activeRoleCode(admin.getId());
+        if (!StringUtils.hasText(roleCode)) {
             return "auditor";
         }
-        String normalized = role.trim().toLowerCase(Locale.ROOT);
-        if ("audit".equals(normalized)) {
+        String normalized = roleCode.trim().toUpperCase(Locale.ROOT);
+        if ("FINANCE".equals(normalized)) {
+            return "finance";
+        }
+        if ("RISK".equals(normalized)) {
+            return "risk";
+        }
+        if ("CONTENT".equals(normalized)) {
+            return "content";
+        }
+        if ("GROWTH".equals(normalized)) {
+            return "growth";
+        }
+        if ("SUPPORT".equals(normalized)) {
+            return "support";
+        }
+        if ("AUDITOR".equals(normalized) || "AUDIT".equals(normalized)) {
             return "auditor";
         }
-        if (List.of("finance", "risk", "content", "growth", "support", "auditor").contains(normalized)) {
-            return normalized;
+        if ("CONFIG_ADMIN".equals(normalized)) {
+            return "config";
         }
         return "auditor";
     }

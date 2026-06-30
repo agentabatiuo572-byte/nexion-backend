@@ -9,8 +9,10 @@ import ffdd.opsconsole.platform.application.OpsEventCenterService;
 import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
 import ffdd.opsconsole.shared.api.ApiResult;
+import java.lang.reflect.Method;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsEventCenterControllerTest {
     private final OpsEventCenterService eventCenterService = mock(OpsEventCenterService.class);
@@ -48,5 +50,20 @@ class OpsEventCenterControllerTest {
         assertThat(controller.updateParam("idem-1", "day0", request).getData()).isSameAs(param);
         assertThat(controller.registerSchema("idem-2", request).getData()).isSameAs(overview);
         assertThat(controller.registerDomainExtension("idem-3", request).getData()).isSameAs(batch);
+    }
+
+    @Test
+    void mutationEndpointsRequireSystemWriteAuthority() throws Exception {
+        assertThat(preAuthorize("updateParam", String.class, String.class, EventCenterMutationRequest.class))
+                .isEqualTo("hasAuthority('PERM_SYSTEM_WRITE')");
+        assertThat(preAuthorize("registerSchema", String.class, EventCenterMutationRequest.class))
+                .isEqualTo("hasAuthority('PERM_SYSTEM_WRITE')");
+        assertThat(preAuthorize("registerDomainExtension", String.class, EventCenterMutationRequest.class))
+                .isEqualTo("hasAuthority('PERM_SYSTEM_WRITE')");
+    }
+
+    private String preAuthorize(String methodName, Class<?>... parameterTypes) throws Exception {
+        Method method = OpsEventCenterController.class.getMethod(methodName, parameterTypes);
+        return method.getAnnotation(PreAuthorize.class).value();
     }
 }

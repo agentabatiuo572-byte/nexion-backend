@@ -216,7 +216,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         entity.setCategory(category);
         entity.setLevel(request.difficulty().trim().toLowerCase(Locale.ROOT));
         entity.setFormat(toDbFormat(request.format()));
-        entity.setSurface("/learn/" + courseId);
+        entity.setSurface("learn");
         entity.setDurationMin(parseDuration(request.duration()));
         entity.setRewardNex(request.rewardNex());
         entity.setProgressPct(0);
@@ -343,7 +343,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         entity.setCategory(category);
         entity.setLevel(seed.level().toLowerCase(Locale.ROOT));
         entity.setFormat(toDbFormat(seed.format()));
-        entity.setSurface("/learn/" + seed.id());
+        entity.setSurface("learn");
         entity.setDurationMin(parseDuration(seed.duration()));
         entity.setRewardNex(new BigDecimal(seed.rewardNex()));
         entity.setProgressPct(0);

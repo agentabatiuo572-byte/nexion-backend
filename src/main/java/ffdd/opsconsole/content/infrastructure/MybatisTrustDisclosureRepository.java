@@ -242,6 +242,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         } else {
             disclosureDraftMapper.updateById(draft);
         }
+        ensureJurisdictionForDraft(request, status, now);
     }
 
     @Override
@@ -249,6 +250,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         DisclosureJurisdictionEntity current = findJurisdictionEntity(jurisdiction);
         String previousVersion = current == null ? null : current.getVersionLabel();
         saveDisclosureDraft(request, "PUBLISHED", now);
+        current = findJurisdictionEntity(jurisdiction);
         if (current != null) {
             current.setVersionLabel(normalize(request.version()));
             current.setStatus("PUBLISHED");
@@ -259,6 +261,27 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
             disclosureJurisdictionMapper.updateById(current);
         }
         ensureChapters(normalizeUpper(jurisdiction), previousVersion, request, now);
+    }
+
+    private void ensureJurisdictionForDraft(DisclosureDraftRequest request, String status, LocalDateTime now) {
+        DisclosureJurisdictionEntity current = findJurisdictionEntity(request.jurisdiction());
+        if (current != null) {
+            return;
+        }
+        DisclosureJurisdictionEntity entity = new DisclosureJurisdictionEntity();
+        entity.setJurisdictionCode(normalizeUpper(request.jurisdiction()));
+        entity.setJurisdictionName(normalizeUpper(request.jurisdiction()));
+        entity.setVersionLabel(normalize(request.version()));
+        entity.setStatus(normalizeUpper(status));
+        entity.setPublishedAtLabel("PUBLISHED".equalsIgnoreCase(status) ? DAY_LABEL.format(now) : "");
+        entity.setAffectedCount(0L);
+        entity.setAckProgressPct(Boolean.TRUE.equals(request.requiresReack()) ? BigDecimal.ZERO : BigDecimal.valueOf(100));
+        entity.setBlockedCount(0L);
+        entity.setLastOperator(operator(request.operator()));
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        disclosureJurisdictionMapper.insert(entity);
     }
 
     @Override

@@ -18,6 +18,7 @@ import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
 import ffdd.opsconsole.risk.domain.RiskCaseView;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.domain.RiskRouteCountView;
+import ffdd.opsconsole.risk.domain.RiskRuleDimensionView;
 import ffdd.opsconsole.risk.domain.RiskRuleHitView;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.risk.domain.RiskScoreConfigView;
@@ -207,6 +208,26 @@ class OpsRiskServiceTest {
         assertThat(hits.getPageNum()).isEqualTo(2);
         assertThat(hits.getPageSize()).isEqualTo(1);
         assertThat(hits.getRecords()).hasSize(1);
+    }
+
+    @Test
+    void withdrawRuleOverviewDoesNotInventDefaultDimensionsWithoutDbRules() {
+        riskRepository.rules.clear();
+
+        ApiResult<Map<String, Object>> result = service.withdrawRuleOverview();
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        List<RiskRuleDimensionView> dimensions = (List<RiskRuleDimensionView>) result.getData().get("dimensions");
+        assertThat(dimensions).isEmpty();
+    }
+
+    @Test
+    void arbitrageOverviewDoesNotInventMinHoldingMonthsWithoutDbConfig() {
+        ApiResult<Map<String, Object>> result = service.arbitrageOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("minHoldingMonths")).isEqualTo("");
     }
 
     @Test

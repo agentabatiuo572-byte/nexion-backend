@@ -45,7 +45,7 @@ class OpsKillSwitchServiceTest {
     }
 
     @Test
-    void disabledReadTimeSeedsDoNotExposeJ1SeededGateMatrix() {
+    void disabledReadTimeSeedsExposeJ1EnumMatrixWithoutWritingConfig() {
         OpsKillSwitchService realOnlyService = new OpsKillSwitchService(
                 configFacade,
                 coverageFacade,
@@ -55,10 +55,14 @@ class OpsKillSwitchServiceTest {
         var result = realOnlyService.matrix();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("activeGateCount", 0);
-        assertThat(result.getData().get("activeGates")).asList().isEmpty();
+        assertThat(result.getData()).containsEntry("activeGateCount", 5);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> activeGates = (List<Map<String, Object>>) result.getData().get("activeGates");
+        assertThat(activeGates)
+                .extracting(gate -> String.valueOf(gate.get("key")))
+                .containsExactly("withdraw", "staking", "genesis", "exchange", "trial");
         assertThat(detailMap(result.getData().get("stats")))
-                .containsEntry("liveGateCount", 0L)
+                .containsEntry("liveGateCount", 5L)
                 .containsEntry("killedGateCount", 0L);
         assertThat(configFacade.values).isEmpty();
     }

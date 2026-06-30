@@ -760,6 +760,21 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void rerunGenesisDividendBatchRejectsWhenNoPositiveLedgerAmountExists() {
+        OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> result = realOnlyService.rerunGenesisDividendBatch(
+                "idem-g4-rerun-empty",
+                "GD-EMPTY",
+                new NexMarketValueUpdateRequest("rerun", "retry failed payout rows", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("G4_GENESIS_DIVIDEND_RERUN_AMOUNT_UNAVAILABLE");
+        assertThat(configFacade.values).doesNotContainKey("G.genesis.rerun.GD-EMPTY");
+        assertThat(ledgerPostingFacade.entries).isEmpty();
+    }
+
+    @Test
     void stakingOverviewExposesServerCanonicalPoolsPositionsAndJ1Switch() {
         configFacade.values.put("J.killswitch.staking", "off");
         configFacade.values.put("G.staking.usdt180d.killed", "true");

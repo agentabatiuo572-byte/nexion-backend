@@ -108,19 +108,15 @@ public class OpsRiskService {
             new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/佣金增速异常的冲榜账户",
                     List.of("账户", "本期累计佣金", "增速(对基线)", "直推增长", "关联簇", "判定", "动作"),
                     "这里只标记并发信号给 F8 和风险雷达；取消参榜资格、从奖池剔除由 F8 执行。"));
-    private static final List<DimensionSpec> K3_DIMENSIONS = List.of(
-            new DimensionSpec("largeAmountUsdt", "WR-01", "金额", "单笔 >= $1,000 -> 转人工",
-                    "和提现队列(D2)自己的大额操作确认线、大额 KYC 复审线(K5)是三个独立参数,现在碰巧都是 $1,000,可以分别调",
-                    "manual", "范围 $100-$50,000；锚定超过 $1,000 进增强审核的合规口径", "card"),
-            new DimensionSpec("velocity24h", "WR-02", "速度", "24h > 3 笔 或 > $5,000 -> 延迟",
-                    "防化整为零快速搬钱；笔数和提现队列里的 24h 第几笔字段对齐",
-                    "delay", "笔数 1-20；金额 $500-$50,000", "wave"),
-            new DimensionSpec("newAccountProtectDays", "WR-03", "新账户", "注册 < 7 天 -> 延迟",
-                    "新号秒提是套现典型动作；和 K1 注册侧信号联动",
-                    "delay", "范围 0-30 天", "user"),
-            new DimensionSpec("addressReputationSource", "WR-04", "地址信誉", "内部黑名单 + 链上信誉",
-                    "信誉源 = 内部黑名单 + 链上信誉服务；换源只对新地址生效",
-                    "freeze", "可选内部 / 第三方 / 组合", "shield"));
+    private static final Map<String, DimensionMeta> K3_DIMENSION_META = Map.of(
+            "largeAmountUsdt", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0),
+            "金额", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0),
+            "velocity24h", new DimensionMeta("velocity24h", "速度", "由 nx_admin_risk_withdraw_rule 配置", "wave", 1),
+            "速度", new DimensionMeta("velocity24h", "速度", "由 nx_admin_risk_withdraw_rule 配置", "wave", 1),
+            "newAccountProtectDays", new DimensionMeta("newAccountProtectDays", "新账户", "由 nx_admin_risk_withdraw_rule 配置", "user", 2),
+            "新账户", new DimensionMeta("newAccountProtectDays", "新账户", "由 nx_admin_risk_withdraw_rule 配置", "user", 2),
+            "addressReputationSource", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3),
+            "地址信誉", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3));
 
     private final RiskOpsRepository riskRepository;
     private final UserKycStatusFacade userKycStatusFacade;
@@ -501,10 +497,11 @@ public class OpsRiskService {
                         byView.getOrDefault(spec.key(), List.of())))
                 .toList();
         Map<String, Object> response = new LinkedHashMap<>();
+        List<RiskArbitrageParamView> params = riskRepository.arbitrageParams();
         response.put("stats", riskRepository.arbitrageStats());
-        response.put("params", riskRepository.arbitrageParams());
+        response.put("params", params);
         response.put("views", views);
-        response.put("minHoldingMonths", "6");
+        response.put("minHoldingMonths", configuredParamValue(params, "minHoldingMonths"));
         response.put("redlines", List.of("K2 only marks and emits signals", "account freezing is linked to K1 action chain", "welcome gift blocking never touches settled assets"));
         return ApiResult.ok(response);
     }
@@ -1220,30 +1217,43 @@ public class OpsRiskService {
     }
 
     private List<RiskRuleDimensionView> dimensions(List<RiskRuleView> rules) {
-        Map<String, RiskRuleView> byId = new LinkedHashMap<>();
-        rules.forEach(rule -> byId.put(rule.ruleId(), rule));
-        return K3_DIMENSIONS.stream()
-                .map(spec -> {
-                    RiskRuleView rule = byId.get(spec.ruleId());
+        return rules.stream()
+                .map(rule -> {
+                    DimensionMeta meta = dimensionMeta(rule.dimension());
                     return new RiskRuleDimensionView(
-                            spec.ruleKey(),
-                            spec.ruleId(),
-                            spec.name(),
-                            rule == null ? spec.conditionDefault() : rule.conditionText(),
-                            spec.conditionDefault(),
-                            spec.why(),
-                            rule == null ? spec.action() : rule.action(),
-                            spec.note(),
-                            spec.icon());
+                            meta.ruleKey(),
+                            rule.ruleId(),
+                            meta.name(),
+                            rule.conditionText(),
+                            "",
+                            meta.note(),
+                            rule.action(),
+                            meta.note(),
+                            meta.icon());
                 })
-                .sorted(Comparator.comparingInt(v -> switch (v.ruleKey()) {
-                    case "largeAmountUsdt" -> 0;
-                    case "velocity24h" -> 1;
-                    case "newAccountProtectDays" -> 2;
-                    case "addressReputationSource" -> 3;
-                    default -> 9;
-                }))
+                .sorted(Comparator
+                        .comparingInt((RiskRuleDimensionView v) -> dimensionMeta(v.ruleKey()).sortOrder())
+                        .thenComparing(RiskRuleDimensionView::ruleId))
                 .toList();
+    }
+
+    private DimensionMeta dimensionMeta(String dimension) {
+        String normalized = trimmed(dimension);
+        return K3_DIMENSION_META.getOrDefault(normalized, new DimensionMeta(
+                normalized,
+                StringUtils.hasText(normalized) ? normalized : "自定义规则",
+                "由 nx_admin_risk_withdraw_rule 配置",
+                "card",
+                9));
+    }
+
+    private String configuredParamValue(List<RiskArbitrageParamView> params, String key) {
+        return params.stream()
+                .filter(param -> key.equals(param.key()))
+                .map(RiskArbitrageParamView::value)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse("");
     }
 
     private String nextRuleId() {
@@ -1265,15 +1275,12 @@ public class OpsRiskService {
                 .build());
     }
 
-    private record DimensionSpec(
+    private record DimensionMeta(
             String ruleKey,
-            String ruleId,
             String name,
-            String conditionDefault,
-            String why,
-            String action,
             String note,
-            String icon
+            String icon,
+            int sortOrder
     ) {
     }
 

@@ -39,7 +39,9 @@ class OpsGrowthServiceTest {
                     ledgerPostingFacade,
                     auditLogService,
                     new ObjectMapper(),
-                    ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+                    ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    Optional.empty(),
+                    Optional.empty());
 
     @Test
     void checkInUsesNexAndKeepsPointsSunset() {
@@ -250,6 +252,50 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void questEventsReturnsEmptyRuntimeModelWhenReadTimeSeedsAreDisabled() {
+        FakePlatformConfigFacade emptyConfig = new FakePlatformConfigFacade();
+        OpsGrowthService noSeedService = serviceWithConfig(emptyConfig, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> result = noSeedService.questEvents();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("h3Stats")).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP).isEmpty();
+        assertThat(result.getData().get("h4Stats"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("ongoing", 0L)
+                .containsEntry("featuredEv", "--")
+                .doesNotContainEntry("wheelToday", "$642 / ");
+        assertThat(result.getData().get("dayOneTasks")).asList().isEmpty();
+        assertThat(result.getData().get("weeklyTier1")).asList().isEmpty();
+        assertThat(result.getData().get("weeklyTier2")).asList().isEmpty();
+        assertThat(result.getData().get("weeklyMultipliers")).asList().isEmpty();
+        assertThat(result.getData().get("monthlyMissions")).asList().isEmpty();
+        assertThat(result.getData().get("events")).asList().isEmpty();
+        assertThat(result.getData().get("wheelTiers")).asList().isEmpty();
+        assertThat(emptyConfig.values).isEmpty();
+    }
+
+    @Test
+    void updateQuestWindowCanCreateConfigWithoutSeedingBusinessRows() {
+        FakePlatformConfigFacade emptyConfig = new FakePlatformConfigFacade();
+        OpsGrowthService noSeedService = serviceWithConfig(emptyConfig, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        ApiResult<Map<String, Object>> result = noSeedService.updateQuestConfig(
+                "idem-h3-empty-window",
+                "dayOne.windowMs",
+                new GrowthConfigUpdateRequest("dayOne.windowMs", "48h 全额 / 96h 宽限", "initialize empty H3 config", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(emptyConfig.values)
+                .containsEntry("growth.quest.day_one.window_ms", "48h 全额 / 96h 宽限")
+                .doesNotContainKey("growth.quest.day_one.tasks")
+                .doesNotContainKey("growth.event.rows")
+                .doesNotContainKey("growth.wheel.tiers");
+        assertThat(result.getData()).containsEntry("dayOneWindow", "48h 全额 / 96h 宽限");
+        assertThat(result.getData().get("dayOneTasks")).asList().isEmpty();
+    }
+
+    @Test
     void questEventsReadsH3H4RowsFromConfigItems() {
         configFacade.values.put("growth.quest.day_one.tasks",
                 "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\"}]");
@@ -365,6 +411,20 @@ class OpsGrowthServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H4_EVENT_STATUS_CHANGED");
+    }
+
+    @Test
+    void trialKillSwitchBlocksH4EventMutations() {
+        configFacade.values.put("killswitch.trial", "disabled");
+
+        ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
+                "idem-h4-status-killed",
+                "regional-pk",
+                new GrowthConfigUpdateRequest("status", "ongoing", "launch event", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("J1_TRIAL_KILLSWITCH_DISABLED");
+        assertThat(configFacade.values).doesNotContainKey("growth.event.regional-pk.status");
     }
 
     @Test
@@ -582,7 +642,9 @@ class OpsGrowthServiceTest {
                 ledgerPostingFacade,
                 mock(AuditLogService.class),
                 new ObjectMapper(),
-                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
+                Optional.empty(),
+                Optional.empty());
 
         ApiResult<Map<String, Object>> rhythm = realOnlyService.rhythm();
         ApiResult<Map<String, Object>> phases = realOnlyService.phases();
@@ -611,7 +673,9 @@ class OpsGrowthServiceTest {
                 ledgerPostingFacade,
                 mock(AuditLogService.class),
                 new ObjectMapper(),
-                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
+                Optional.empty(),
+                Optional.empty());
 
         ApiResult<Map<String, Object>> trials = realOnlyService.trials();
         ApiResult<Map<String, Object>> checkIn = realOnlyService.checkIn();
@@ -758,6 +822,18 @@ class OpsGrowthServiceTest {
                 new GrowthConfigUpdateRequest("delete", "delete", "delete voucher", "superadmin"));
         assertThat(deleted.getCode()).isZero();
         assertThat(configFacade.values.get("growth.voucher.rows")).doesNotContain("vc-test-25");
+    }
+
+    private OpsGrowthService serviceWithConfig(FakePlatformConfigFacade config, OpsReadTimeSeedPolicy seedPolicy) {
+        return new OpsGrowthService(
+                config,
+                coverageFacade,
+                ledgerPostingFacade,
+                auditLogService,
+                new ObjectMapper(),
+                seedPolicy,
+                Optional.empty(),
+                Optional.empty());
     }
 
     @SuppressWarnings("unchecked")

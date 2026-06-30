@@ -10,9 +10,14 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceSkuView;
+import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
+import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -21,6 +26,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -126,6 +132,8 @@ public class OpsGrowthService {
     private final AuditLogService auditLogService;
     private final ObjectMapper objectMapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final Optional<DeviceCatalogRepository> deviceCatalogRepository;
+    private final Optional<GrowthQuestEventMapper> questEventMapper;
 
     public ApiResult<Map<String, Object>> phases() {
         ensurePhaseSeedData();
@@ -535,6 +543,72 @@ public class OpsGrowthService {
         return ApiResult.ok(response);
     }
 
+    public ApiResult<Map<String, Object>> createQuestEvent(
+            String idempotencyKey,
+            GrowthQuestEventRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
+        if (trialGate != null) {
+            return trialGate;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("QUEST_EVENT_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            String id = normalizeNewEventId(request.id());
+            if (questEventMapper.get().countById(id) > 0) {
+                return validation("EVENT_ALREADY_EXISTS");
+            }
+            String name = normalizePlainText(request.name(), 128);
+            String kind = normalizePlainText(StringUtils.hasText(request.kind()) ? request.kind() : "EVENT_ACTIONS", 64).toUpperCase(Locale.ROOT);
+            String state = normalizeEventState(request.state());
+            String reward = normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 NEX", 128);
+            boolean featured = Boolean.TRUE.equals(request.featured());
+            if (featured && !"ongoing".equals(state)) {
+                return validation("EVENT_FEATURED_REQUIRES_ONGOING");
+            }
+            if (featured && questEventsList().stream()
+                    .filter(row -> Boolean.TRUE.equals(row.get("featured")))
+                    .filter(row -> "ongoing".equals(row.get("state")))
+                    .anyMatch(row -> !id.equals(row.get("id")))) {
+                return validation("EVENT_FEATURED_UNIQUE_VIOLATION");
+            }
+            if (rewardFlow(reward).compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, questEventRows().size() * 10L + 10L));
+            questEventMapper.get().insertEvent(
+                    id,
+                    name,
+                    normalizeEventCondition(request.condition()),
+                    kind,
+                    1,
+                    reward.toUpperCase(Locale.ROOT).contains("USDT") ? "USDT" : "NEX",
+                    rewardFlow(reward),
+                    reward,
+                    featured ? "FEATURED" : null,
+                    sortOrder,
+                    eventStatusCode(state),
+                    LocalDateTime.now());
+            audit("H4_EVENT_CREATED", "GROWTH_EVENT", id, request.operator(), Map.of(
+                    "eventId", id,
+                    "name", name,
+                    "state", state,
+                    "reward", reward,
+                    "featured", featured,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEvents().getData();
+            response.put("updated", Map.of("eventId", id, "action", "created"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
     public ApiResult<Map<String, Object>> updateQuestConfig(
             String idempotencyKey,
             String configKey,
@@ -542,6 +616,10 @@ public class OpsGrowthService {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
+        if (trialGate != null) {
+            return trialGate;
         }
         ensureQuestEventSeedData();
         String normalizedKey;
@@ -581,6 +659,10 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
+        if (trialGate != null) {
+            return trialGate;
+        }
         ensureQuestEventSeedData();
         String id = normalizeEventId(eventId);
         String value;
@@ -589,12 +671,14 @@ public class OpsGrowthService {
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
-        String configKey = EVENT_PREFIX + id + ".reward";
         String oldValue = eventReward(id);
         if (rewardFlow(value).compareTo(rewardFlow(oldValue)) > 0 && coverageBelowRedline()) {
             return coverageRedline();
         }
-        configFacade.upsertAdminValue(configKey, value, "STRING", "growth", "H4 event reward");
+        String configKey = EVENT_PREFIX + id + ".reward";
+        if (!updateBusinessEventReward(id, value)) {
+            configFacade.upsertAdminValue(configKey, value, "STRING", "growth", "H4 event reward");
+        }
         audit("H4_EVENT_REWARD_CHANGED", "GROWTH_EVENT", id, request.operator(), Map.of(
                 "eventId", id,
                 "oldValue", oldValue,
@@ -614,17 +698,25 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
+        if (trialGate != null) {
+            return trialGate;
+        }
         ensureQuestEventSeedData();
         String id = normalizeEventId(eventId);
         String status = requireText(request.value(), "Event status is required").toLowerCase(Locale.ROOT);
         if (!EVENT_STATES.contains(status)) {
             return validation("EVENT_STATUS_INVALID");
         }
-        String configKey = EVENT_PREFIX + id + ".status";
         String oldStatus = eventStatus(id);
-        configFacade.upsertAdminValue(configKey, status, "STRING", "growth", "H4 event status");
+        String configKey = EVENT_PREFIX + id + ".status";
+        if (!updateBusinessEventStatus(id, status)) {
+            configFacade.upsertAdminValue(configKey, status, "STRING", "growth", "H4 event status");
+        }
         if ("ended".equals(status) && eventFeatured(id)) {
-            configFacade.upsertAdminValue(EVENT_PREFIX + id + ".featured", "false", "BOOLEAN", "growth", "H4 event featured");
+            if (!updateBusinessEventFeatured(id, false)) {
+                configFacade.upsertAdminValue(EVENT_PREFIX + id + ".featured", "false", "BOOLEAN", "growth", "H4 event featured");
+            }
         }
         audit("H4_EVENT_STATUS_CHANGED", "GROWTH_EVENT", id, request.operator(), Map.of(
                 "eventId", id,
@@ -644,6 +736,10 @@ public class OpsGrowthService {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
+        if (trialGate != null) {
+            return trialGate;
         }
         ensureQuestEventSeedData();
         String id = normalizeEventId(eventId);
@@ -665,7 +761,9 @@ public class OpsGrowthService {
             }
         }
         String configKey = EVENT_PREFIX + id + ".featured";
-        configFacade.upsertAdminValue(configKey, featured.toString(), "BOOLEAN", "growth", "H4 event featured");
+        if (!updateBusinessEventFeatured(id, featured)) {
+            configFacade.upsertAdminValue(configKey, featured.toString(), "BOOLEAN", "growth", "H4 event featured");
+        }
         audit("H4_EVENT_FEATURED_CHANGED", "GROWTH_EVENT", id, request.operator(), Map.of(
                 "eventId", id,
                 "featured", featured,
@@ -1079,15 +1177,21 @@ public class OpsGrowthService {
                 .findFirst()
                 .orElse("--");
         Object wheelTodaySpend = stats.remove("wheelTodaySpend");
-        if (wheelTodaySpend == null) {
-            String existingWheelToday = String.valueOf(stats.getOrDefault("wheelToday", "$642"));
-            wheelTodaySpend = existingWheelToday.contains("/")
-                    ? existingWheelToday.substring(0, existingWheelToday.indexOf('/')).trim()
-                    : existingWheelToday;
+        String wheelBudget = questConfig("wheel.guards.budget");
+        if (wheelTodaySpend == null && stats.containsKey("wheelToday")) {
+            String existingWheelToday = String.valueOf(stats.get("wheelToday"));
+            if (StringUtils.hasText(existingWheelToday)) {
+                wheelTodaySpend = existingWheelToday.contains("/")
+                        ? existingWheelToday.substring(0, existingWheelToday.indexOf('/')).trim()
+                        : existingWheelToday;
+            }
         }
         stats.put("ongoing", ongoing);
         stats.put("featuredEv", featured);
-        stats.put("wheelToday", wheelTodaySpend + " / " + questConfig("wheel.guards.budget"));
+        if (wheelTodaySpend != null || StringUtils.hasText(wheelBudget)) {
+            stats.put("wheelToday", (wheelTodaySpend == null ? "" : wheelTodaySpend) +
+                    (StringUtils.hasText(wheelBudget) ? " / " + wheelBudget : ""));
+        }
         return stats;
     }
 
@@ -1186,13 +1290,18 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> weeklyMultipliers() {
-        return List.of(
+        List<Map<String, Object>> rows = List.of(
                 row("p", "P1", "mult", weeklyMultiplier("P1")),
                 row("p", "P2", "mult", weeklyMultiplier("P2")),
                 row("p", "P3 当前", "mult", weeklyMultiplier("P3")),
                 row("p", "P4", "mult", weeklyMultiplier("P4")),
                 row("p", "P5", "mult", weeklyMultiplier("P5")),
                 row("p", "P6", "mult", weeklyMultiplier("P6")));
+        boolean hasRuntimeMultiplier = rows.stream()
+                .map(row -> row.get("mult"))
+                .map(value -> value == null ? "" : value.toString())
+                .anyMatch(StringUtils::hasText);
+        return hasRuntimeMultiplier || readTimeSeedPolicy.enabled() ? rows : List.of();
     }
 
     private List<Map<String, Object>> monthlyMissions() {
@@ -1287,7 +1396,33 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> questEventRows() {
+        List<Map<String, Object>> businessRows = businessQuestEventRows();
+        if (!businessRows.isEmpty()) {
+            return businessRows;
+        }
         return readJsonRows(EVENT_ROWS_KEY, defaultQuestEvents());
+    }
+
+    private List<Map<String, Object>> businessQuestEventRows() {
+        if (questEventMapper.isEmpty()) {
+            return List.of();
+        }
+        return questEventMapper.get().listEvents().stream()
+                .map(row -> {
+                    Map<String, Object> event = new LinkedHashMap<>();
+                    event.put("id", stringValue(row.get("id"), ""));
+                    event.put("name", stringValue(row.get("name"), ""));
+                    event.put("kind", stringValue(row.get("kind"), "EVENT_ACTIONS"));
+                    event.put("state", stringValue(row.get("state"), "ongoing"));
+                    event.put("reward", stringValue(row.get("reward"), "0 NEX"));
+                    event.put("featured", truthy(row.get("featured")));
+                    event.put("trackable", truthy(row.get("trackable")));
+                    event.put("condition", stringValue(row.get("condition"), ""));
+                    event.put("geo", stringValue(row.get("geo"), "全区"));
+                    return event;
+                })
+                .filter(row -> StringUtils.hasText(String.valueOf(row.get("id"))))
+                .toList();
     }
 
     private List<Map<String, Object>> defaultQuestEvents() {
@@ -1548,7 +1683,14 @@ public class OpsGrowthService {
                             || "true".equals(normalized)
                             || "1".equals(normalized);
                 })
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(true);
+    }
+
+    private ApiResult<Map<String, Object>> requireTrialGateForH4Mutation() {
+        if (!trialKillSwitchEnabled()) {
+            return validation("J1_TRIAL_KILLSWITCH_DISABLED");
+        }
+        return null;
     }
 
     private String normalizeTrialParamKey(String key) {
@@ -1917,6 +2059,9 @@ public class OpsGrowthService {
     }
 
     private void ensureQuestEventSeedData() {
+        if (!readTimeSeedPolicy.enabled()) {
+            return;
+        }
         seedJsonIfMissing(QUEST_H3_STATS_KEY, defaultQuestStats(), "growth", "H3 stats seed");
         seedJsonIfMissing(EVENT_H4_STATS_KEY, defaultEventStats(), "growth", "H4 stats seed");
         seedJsonIfMissing(QUEST_DAY_ONE_TASKS_KEY, defaultDayOneTasks(), "growth", "H3 day-one task rows seed");
@@ -2460,7 +2605,25 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> voucherSkuOptions() {
+        if (deviceCatalogRepository.isPresent()) {
+            List<Map<String, Object>> skus = deviceCatalogRepository.get()
+                    .pageSkus(new DeviceSkuQueryRequest(null, null, 1L, 500L))
+                    .getRecords()
+                    .stream()
+                    .map(this::voucherSkuOption)
+                    .toList();
+            if (!skus.isEmpty()) {
+                return skus;
+            }
+        }
         return readJsonRows(VOUCHER_SKUS_KEY, defaultVoucherSkuOptions());
+    }
+
+    private Map<String, Object> voucherSkuOption(DeviceSkuView sku) {
+        return row(
+                "id", sku.skuId(),
+                "name", sku.name(),
+                "status", "ACTIVE".equalsIgnoreCase(sku.status()) || "ON".equalsIgnoreCase(sku.status()) ? "on" : "off");
     }
 
     private List<Map<String, Object>> readJsonRows(String key, List<Map<String, Object>> fallback) {
@@ -3166,23 +3329,100 @@ public class OpsGrowthService {
         return id;
     }
 
+    private String normalizeNewEventId(String raw) {
+        String id = requireText(raw, "EVENT_ID_REQUIRED").trim();
+        if (!id.matches("[a-zA-Z0-9][a-zA-Z0-9_-]{1,62}")) {
+            throw new IllegalArgumentException("EVENT_ID_INVALID");
+        }
+        return id;
+    }
+
+    private String normalizeEventState(String raw) {
+        String state = StringUtils.hasText(raw) ? raw.trim().toLowerCase(Locale.ROOT) : "upcoming";
+        if (!EVENT_STATES.contains(state)) {
+            throw new IllegalArgumentException("EVENT_STATUS_INVALID");
+        }
+        return state;
+    }
+
+    private int eventStatusCode(String state) {
+        return switch (state) {
+            case "upcoming" -> 0;
+            case "ended" -> 2;
+            default -> 1;
+        };
+    }
+
+    private String normalizeEventCondition(String raw) {
+        return StringUtils.hasText(raw) ? normalizePlainText(raw, 512) : "";
+    }
+
+    private boolean updateBusinessEventReward(String eventId, String reward) {
+        return questEventMapper.isPresent()
+                && questEventMapper.get().updateReward(eventId, reward, rewardFlow(reward), LocalDateTime.now()) > 0;
+    }
+
+    private boolean updateBusinessEventStatus(String eventId, String status) {
+        return questEventMapper.isPresent()
+                && questEventMapper.get().updateStatus(eventId, eventStatusCode(status), LocalDateTime.now()) > 0;
+    }
+
+    private boolean updateBusinessEventFeatured(String eventId, boolean featured) {
+        return questEventMapper.isPresent()
+                && questEventMapper.get().updateFeatured(eventId, featured ? "FEATURED" : null, LocalDateTime.now()) > 0;
+    }
+
+    private String stringValue(Object raw, String fallback) {
+        if (raw == null) {
+            return fallback;
+        }
+        String value = raw.toString();
+        return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private boolean truthy(Object raw) {
+        if (raw instanceof Boolean value) {
+            return value;
+        }
+        if (raw instanceof Number number) {
+            return number.intValue() != 0;
+        }
+        return Boolean.TRUE.equals(parseBooleanValue(raw == null ? null : raw.toString()));
+    }
+
     private String eventStatus(String eventId) {
         Map<String, Object> row = eventRow(eventId);
+        if (isBusinessEventRow(row)) {
+            return row.get("state").toString();
+        }
         return configFacade.activeValue(EVENT_PREFIX + eventId + ".status")
                 .orElse(row.get("state").toString());
     }
 
     private String eventReward(String eventId) {
         Map<String, Object> row = eventRow(eventId);
+        if (isBusinessEventRow(row)) {
+            return row.get("reward").toString();
+        }
         return configFacade.activeValue(EVENT_PREFIX + eventId + ".reward")
                 .orElse(row.get("reward").toString());
     }
 
     private boolean eventFeatured(String eventId) {
         Map<String, Object> row = eventRow(eventId);
+        if (isBusinessEventRow(row)) {
+            return truthy(row.get("featured"));
+        }
         return configFacade.activeValue(EVENT_PREFIX + eventId + ".featured")
                 .map(value -> Boolean.TRUE.equals(parseBooleanValue(value)))
                 .orElse(Boolean.TRUE.equals(row.get("featured")));
+    }
+
+    private boolean isBusinessEventRow(Map<String, Object> row) {
+        return questEventMapper.isPresent()
+                && row != null
+                && row.get("id") != null
+                && questEventMapper.get().countById(row.get("id").toString()) > 0;
     }
 
     private Map<String, Object> eventRow(String eventId) {

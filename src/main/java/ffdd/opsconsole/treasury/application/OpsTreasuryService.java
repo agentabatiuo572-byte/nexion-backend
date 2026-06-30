@@ -143,9 +143,9 @@ public class OpsTreasuryService {
         LocalDateTime prev24hStart = now.minusHours(48);
         BigDecimal reserveUsd = configDecimal(RESERVE_CONFIG_KEY, dualLedgerProperties.getReserveUsd());
         BigDecimal nexUsdRate = configDecimal(NEX_USD_RATE_CONFIG_KEY, dualLedgerProperties.getNexUsdRate());
-        BigDecimal redlinePct = configDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
-        BigDecimal healthyPct = configDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
-        BigDecimal runRiskPct = configDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
+        BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
+        BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
+        BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
         String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
 
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
@@ -345,13 +345,13 @@ public class OpsTreasuryService {
 
         BigDecimal redline = hasRedline
                 ? threshold(request.redlinePct(), "redlinePct", BigDecimal.ZERO, BigDecimal.valueOf(200))
-                : configDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
+                : safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
         BigDecimal healthy = hasHealthy
                 ? threshold(request.healthyPct(), "healthyPct", BigDecimal.ZERO, BigDecimal.valueOf(250))
-                : configDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
+                : safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
         BigDecimal runRisk = hasRunRisk
                 ? threshold(request.runRiskPct(), "runRiskPct", BigDecimal.ZERO, BigDecimal.valueOf(100))
-                : configDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
+                : safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
         if (redline.compareTo(healthy) >= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_BE_BELOW_HEALTHY");
         }
@@ -449,6 +449,9 @@ public class OpsTreasuryService {
         if (operator == null) {
             return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
         }
+        if (isCreditDirection(direction) && coverageBelowRedline()) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "B1_COVERAGE_REDLINE_BREACHED");
+        }
         ledgerRepository.createLedgerAdjustment(
                 adjustmentNo,
                 request.userId(),
@@ -475,6 +478,12 @@ public class OpsTreasuryService {
                 "status", "PENDING_REVIEW",
                 "ledgerPosting", "deferred-to-review",
                 "relatedBizNo", relatedBizNo));
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean coverageBelowRedline() {
+        Map<String, Object> snapshot = (Map<String, Object>) dualLedgerSnapshot().getOrDefault("snapshot", Map.of());
+        return decimal(snapshot.get("coverageRatio")).compareTo(decimal(snapshot.get("redlinePct"))) < 0;
     }
 
     @SuppressWarnings("unchecked")
@@ -1061,6 +1070,12 @@ public class OpsTreasuryService {
                 .orElseGet(() -> readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO);
     }
 
+    private BigDecimal safetyThresholdDecimal(String key, BigDecimal fallback) {
+        return configFacade.activeValue(key)
+                .map(value -> parseDecimalWithFallback(value, fallback))
+                .orElseGet(() -> safe(fallback));
+    }
+
     private String configValue(String key, String fallback) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
@@ -1072,6 +1087,14 @@ public class OpsTreasuryService {
             return new BigDecimal(value.trim());
         } catch (RuntimeException ex) {
             return readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO;
+        }
+    }
+
+    private BigDecimal parseDecimalWithFallback(String value, BigDecimal fallback) {
+        try {
+            return new BigDecimal(value.trim());
+        } catch (RuntimeException ex) {
+            return safe(fallback);
         }
     }
 

@@ -23,7 +23,9 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
 
     @Override
     public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
-        PlatformConfigItem existing = configRepository.findActiveByKey(configKey).orElseGet(() -> new PlatformConfigItem(
+        PlatformConfigItem existing = configRepository.findActiveByKey(configKey)
+                .or(() -> configRepository.findAnyByKey(configKey))
+                .orElseGet(() -> new PlatformConfigItem(
                 null,
                 configKey,
                 configValue,

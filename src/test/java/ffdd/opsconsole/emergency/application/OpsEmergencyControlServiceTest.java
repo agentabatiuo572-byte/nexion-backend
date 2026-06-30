@@ -2,6 +2,7 @@ package ffdd.opsconsole.emergency.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -238,6 +239,11 @@ class OpsEmergencyControlServiceTest {
         assertThat(updated)
                 .containsEntry("idempotentReplay", true)
                 .containsEntry("code", "SOP-DRAFT-1");
+        verify(auditLogService, times(2)).record(org.mockito.ArgumentMatchers.argThat(request ->
+                "J4_SOP_PLAYBOOK_EXECUTED".equals(request.getAction())));
+        verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
+                "J4_SOP_PLAYBOOK_EXECUTED".equals(request.getAction())
+                        && String.valueOf(request.getDetail()).contains("idempotentReplay=true")));
     }
 
     @Test

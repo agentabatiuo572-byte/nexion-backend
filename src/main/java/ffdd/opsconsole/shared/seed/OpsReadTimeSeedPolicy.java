@@ -8,17 +8,19 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class OpsReadTimeSeedPolicy {
     @Value("${nexion.ops.seed.read-time-enabled:false}")
-    private final boolean enabled;
+    private final boolean configuredEnabled;
+    @Value("false")
+    private final boolean directConstructionEnabled;
 
     public static OpsReadTimeSeedPolicy enabledForDirectConstruction() {
-        return new OpsReadTimeSeedPolicy(true);
+        return new OpsReadTimeSeedPolicy(true, true);
     }
 
     public static OpsReadTimeSeedPolicy disabledForDirectConstruction() {
-        return new OpsReadTimeSeedPolicy(false);
+        return new OpsReadTimeSeedPolicy(false, true);
     }
 
     public boolean enabled() {
-        return enabled;
+        return directConstructionEnabled && configuredEnabled;
     }
 }

@@ -101,6 +101,7 @@ public interface UserOpsRepository extends UserSeedRepository {
             String asset,
             String direction,
             BigDecimal amount,
+            String reasonCode,
             String reason,
             String operator);
 

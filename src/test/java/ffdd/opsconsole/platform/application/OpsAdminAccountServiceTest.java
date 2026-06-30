@@ -23,6 +23,8 @@ import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.infrastructure.AdminRoleOptionEntity;
+import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -48,12 +50,14 @@ class OpsAdminAccountServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminMapper adminMapper = mock(AdminMapper.class);
     private final AdminRoleRelationMapper roleRelationMapper = mock(AdminRoleRelationMapper.class);
+    private final OpsOptionsMapper roleMapper = mock(OpsOptionsMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
     private final List<AdminEntity> admins = new ArrayList<>();
+    private final Map<Long, String> roleRelations = new LinkedHashMap<>();
     private final OpsAdminAccountService service =
-            new OpsAdminAccountService(repository, auditLogService, adminMapper, roleRelationMapper, passwordEncoder,
+            new OpsAdminAccountService(repository, auditLogService, adminMapper, roleRelationMapper, roleMapper, passwordEncoder,
                     adminSessionRegistry, auditCenterService);
 
     @BeforeEach
@@ -69,8 +73,20 @@ class OpsAdminAccountServiceTest {
         admins.add(admin(2L, "finance.lead", "财务主管", "finance@nexion.io", 1, 1));
         admins.add(admin(3L, "ops.owner", "运营负责人", "ops-owner@nexion.io", 1, 1));
         admins.add(admin(4L, "risk.lead", "风控主管", "risk@nexion.io", 0, 1));
-        repository.put("a1.account.4.role", "risk", "admin_a1_account");
+        roleRelations.clear();
+        roleRelations.put(1L, "SUPER_ADMIN");
+        roleRelations.put(2L, "SUPER_ADMIN");
+        roleRelations.put(3L, "SUPER_ADMIN");
+        roleRelations.put(4L, "RISK");
 
+        when(roleMapper.selectList(any())).thenReturn(testRoleRows());
+        when(roleRelationMapper.activeRoleCode(any(Long.class)))
+                .thenAnswer(invocation -> roleRelations.get(invocation.getArgument(0)));
+        when(roleRelationMapper.disableOtherPrimaryRoles(any(Long.class), any(String.class))).thenReturn(1);
+        when(roleRelationMapper.ensurePrimaryRole(any(Long.class), any(String.class))).thenAnswer(invocation -> {
+            roleRelations.put(invocation.getArgument(0), invocation.getArgument(1));
+            return 1;
+        });
         when(adminMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(admins));
         when(adminMapper.selectOne(any())).thenReturn(null);
         when(adminSessionRegistry.countActiveSessions(any(Long.class))).thenReturn(0);
@@ -132,7 +148,7 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().stats().totalAccounts()).isEqualTo(4);
         assertThat(result.getData().stats().effectiveSupers()).isEqualTo(3);
-        assertThat(result.getData().roles()).hasSize(7);
+        assertThat(result.getData().roles()).hasSize(8);
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::id)
                 .contains("1", "4");
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::email)
@@ -140,6 +156,22 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getData().rbacMatrix()).extracting(AdminAccountOverview.RbacAction::id)
                 .contains("operator_governance", "audit_export")
                 .doesNotContain("premium", "nex-v2", "points");
+    }
+
+    @Test
+    void overviewDoesNotInventA1RoleRbacOrSecurityConfigWhenDbHasNoConfigRows() {
+        repository.clear();
+
+        ApiResult<AdminAccountOverview> result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().roles()).extracting(AdminAccountOverview.RoleDefinition::key)
+                .containsExactly("super", "config", "finance", "risk", "content", "growth", "support", "audit");
+        assertThat(result.getData().rbacMatrix()).isEmpty();
+        assertThat(result.getData().securityBaselines()).isEmpty();
+        assertThat(result.getData().operators()).filteredOn(operator -> "1".equals(operator.id()))
+                .extracting(AdminAccountOverview.OperatorRecord::role)
+                .containsExactly("super");
     }
 
     @Test
@@ -196,11 +228,11 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getData().name()).isEqualTo("新风控成员");
         assertThat(result.getData().credentialDeliveryStatus()).isEqualTo("MAIL_DISPATCHED");
         assertThat(result.getData().role()).isEqualTo("risk");
-        assertThat(repository.items).containsKey("a1.account.5.role");
+        assertThat(repository.items).doesNotContainKey("a1.account.5.role");
         assertThat(repository.items).doesNotContainKey("a1.account.5.registered");
         assertThat(admins).extracting(AdminEntity::getEmail).contains("risk-new@nexion.io");
         assertThat(result.getData().toString()).doesNotContain("NX-");
-        verify(roleRelationMapper).ensurePrimaryRole(5L, "OPS_ADMIN");
+        verify(roleRelationMapper).ensurePrimaryRole(5L, "RISK");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -276,7 +308,7 @@ class OpsAdminAccountServiceTest {
     @Test
     void updateRbacRejectsAuditWriteAndProtectsOperatorGovernanceSuperGrant() {
         AdminRbacGrantUpdateRequest auditWriteRequest = new AdminRbacGrantUpdateRequest(
-                List.of("C", "C", "-", "-", "-", "M", "M"),
+                List.of("C", "C", "-", "-", "-", "-", "M", "M"),
                 "bad audit grant",
                 "superadmin");
 
@@ -287,7 +319,7 @@ class OpsAdminAccountServiceTest {
         assertThat(auditResult.getMessage()).isEqualTo("AUDIT_ROLE_WRITE_FORBIDDEN");
 
         AdminRbacGrantUpdateRequest superRemovedRequest = new AdminRbacGrantUpdateRequest(
-                List.of("-", "-", "-", "-", "-", "-", "R"),
+                List.of("-", "-", "-", "-", "-", "-", "-", "R"),
                 "remove super",
                 "superadmin");
 
@@ -390,17 +422,18 @@ class OpsAdminAccountServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().id()).isEqualTo("e3");
-        assertThat(result.getData().grants()).containsExactly("-", "-", "-", "-", "-", "-", "R");
+        assertThat(result.getData().grants()).containsExactly("-", "-", "-", "-", "-", "-", "-", "R");
         assertThat(repository.items).containsKey("a1.rbac.action.e3");
         verify(auditLogService).record(any(AuditLogWriteRequest.class));
     }
 
     private void registerTestRoles() {
         registerTestRole("super", "超级管理员", "SA", "red", "平台 Owner，保留所有危急操作。", "全域：资金、风控、内容、配置、审计", 10);
-        registerTestRole("finance", "资金运营", "FI", "green", "资金、账务、提现与覆盖率。", "D/C/B 资金域", 20);
-        registerTestRole("risk", "风控运营", "RK", "orange", "风控模型、KYC、账户限制与熔断。", "C/K/J 风控域", 30);
-        registerTestRole("growth", "增长运营", "GR", "blue", "活动、Phase dial、权益与触达。", "H/权益/触达", 40);
+        registerTestRole("config", "配置运营", "OA", "blue", "运营配置、平台参数与跨域配置变更。", "A/C/E/F/G/H/I/J/M 配置", 20);
+        registerTestRole("finance", "资金运营", "FI", "green", "资金、账务、提现与覆盖率。", "D/C/B 资金域", 30);
+        registerTestRole("risk", "风控运营", "RK", "orange", "风控模型、KYC、账户限制与熔断。", "C/K/J 风控域", 40);
         registerTestRole("content", "内容运营", "CT", "purple", "文案、课程、风险披露与公告。", "I/公告/课程", 50);
+        registerTestRole("growth", "增长运营", "GR", "blue", "活动、Phase dial、权益与触达。", "H/权益/触达", 60);
         registerTestRole("support", "客服运营", "CS", "cyan", "用户查询、工单协同与只读辅助。", "C/D 只读与协助", 60);
         registerTestRole("audit", "审计只读", "AU", "gray", "审计与合规观察，禁止写操作。", "A2/审计/报表", 70);
     }
@@ -418,19 +451,41 @@ class OpsAdminAccountServiceTest {
     }
 
     private void registerTestRbacActions() {
-        registerTestAction("balance_adjust", "余额/资产调整(C3)", "用户/风控", 10, List.of("C", "C", "-", "-", "-", "M", "R"));
-        registerTestAction("operator_governance", "运营账号治理(A1)", "基座/应急", 20, List.of("M", "-", "-", "-", "-", "-", "R"));
-        registerTestAction("audit_export", "审计全量导出(A2)", "基座/应急", 30, List.of("M", "-", "-", "-", "-", "-", "M"));
+        registerTestAction("balance_adjust", "余额/资产调整(C3)", "用户/风控", 10, List.of("C", "-", "C", "-", "-", "-", "M", "R"));
+        registerTestAction("operator_governance", "运营账号治理(A1)", "基座/应急", 20, List.of("M", "-", "-", "-", "-", "-", "-", "R"));
+        registerTestAction("audit_export", "审计全量导出(A2)", "基座/应急", 30, List.of("M", "-", "-", "-", "-", "-", "-", "M"));
     }
 
     private void registerTestAction(String id, String action, String domainGroup, int sort, List<String> grants) {
         repository.put("a1.rbac.action." + id, action, "admin_a1_rbac");
         repository.put("a1.rbac.action." + id + ".domainGroup", domainGroup, "admin_a1_rbac");
         repository.put("a1.rbac.action." + id + ".sort", String.valueOf(sort), "admin_a1_rbac");
-        List<String> roles = List.of("super", "finance", "risk", "growth", "content", "support", "audit");
+        List<String> roles = List.of("super", "config", "finance", "risk", "content", "growth", "support", "audit");
         for (int i = 0; i < roles.size(); i++) {
             repository.put("a1.rbac." + roles.get(i) + "." + id, grants.get(i), "admin_a1_rbac");
         }
+    }
+
+    private List<AdminRoleOptionEntity> testRoleRows() {
+        return List.of(
+                roleRow(1L, "SUPER_ADMIN", "Super Administrator"),
+                roleRow(2L, "CONFIG_ADMIN", "Operations Administrator"),
+                roleRow(4L, "FINANCE", "财务"),
+                roleRow(5L, "RISK", "风控"),
+                roleRow(6L, "CONTENT", "内容"),
+                roleRow(7L, "GROWTH", "增长"),
+                roleRow(8L, "SUPPORT", "客服"),
+                roleRow(9L, "AUDITOR", "只读审计"));
+    }
+
+    private AdminRoleOptionEntity roleRow(Long id, String roleCode, String roleName) {
+        AdminRoleOptionEntity row = new AdminRoleOptionEntity();
+        row.setId(id);
+        row.setRoleCode(roleCode);
+        row.setRoleName(roleName);
+        row.setStatus(1);
+        row.setIsDeleted(0);
+        return row;
     }
 
     private void registerTestSecurityBaselines() {

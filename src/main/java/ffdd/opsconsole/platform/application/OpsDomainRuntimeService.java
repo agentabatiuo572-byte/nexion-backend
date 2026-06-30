@@ -183,7 +183,7 @@ public class OpsDomainRuntimeService {
                 api("Architecture", "/api/admin/platform/architecture", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
                 api("A2Audit", "/api/admin/platform/audit", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT", false),
                 api("A3Config", "/api/admin/platform/config", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
-                api("A4EventCenter", "/api/admin/platform/events", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT", false),
+                api("A4EventCenter", "/api/admin/platform/events", "PERM_AUDIT_READ", "PERM_SYSTEM_WRITE", false),
                 api("AdminCommand", "/api/admin/commands", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
                 api("DynamicOptions", "/api/admin/options/{domain}/{name}", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),
                 api("GlobalSearch", "/api/admin/platform/search", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", false),

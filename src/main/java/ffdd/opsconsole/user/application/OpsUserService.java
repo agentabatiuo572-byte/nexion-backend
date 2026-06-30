@@ -65,6 +65,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -568,7 +569,10 @@ public class OpsUserService {
         ensureSecuritySessionSeeds();
         Long selectedUserId = resolveSecurityUserId(userKey, userId);
         if (selectedUserId == null) {
-            return ApiResult.fail(404, "USER_NOT_FOUND");
+            if (StringUtils.hasText(userKey) || userId != null) {
+                return ApiResult.fail(404, "USER_NOT_FOUND");
+            }
+            return ApiResult.ok(emptySecurityOverview(pageNum, pageSize, limit));
         }
         UserSecurityOverview overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
         if (securityOverviewSeedsMissing(overview) && readTimeSeedPolicy.enabled()) {
@@ -596,8 +600,30 @@ public class OpsUserService {
         if (userId != null) {
             return userId;
         }
-        String lookupKey = StringUtils.hasText(userKey) ? userKey.trim() : DEFAULT_SECURITY_LOOKUP_KEY;
+        if (!StringUtils.hasText(userKey)) {
+            return userRepository.search(null, null, null, 1).stream()
+                    .map(UserAccountView::id)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+        }
+        String lookupKey = userKey.trim();
         return userRepository.findUserIdByLookupKey(lookupKey).orElse(null);
+    }
+
+    private UserSecurityOverview emptySecurityOverview(Integer pageNum, Integer pageSize, Integer limit) {
+        int normalizedPageNum = normalizePageNum(pageNum);
+        int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 10, 100) : normalizeLimit(pageSize, 10, 100);
+        return new UserSecurityOverview(
+                securityStats(List.of(), List.of()),
+                CREDENTIAL_PARAM_DEFINITIONS.stream().map(this::credentialParamView).toList(),
+                null,
+                new PageResult<>(0L, normalizedPageNum, normalizedPageSize, List.of()),
+                List.of(),
+                List.of("nx_user", "nx_user_security", "nx_user_session", "nx_config_item:auth.session.*"),
+                List.of("C5 writes require Idempotency-Key and Confirm-with-Reason",
+                        "2FA disable and password reset require secondary identity verification",
+                        "Passwords are never visible to operators; reset only invalidates the old hash"));
     }
 
     private boolean securityOverviewSeedsMissing(UserSecurityOverview overview) {
@@ -1294,21 +1320,32 @@ public class OpsUserService {
         }
         String adjustmentNo = "ADJ-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
         String operator = operator(request.operator());
-        userRepository.createAssetAdjustment(adjustmentNo, userId, asset, direction, amount, request.reason().trim(), operator);
+        String reasonCode = adjustmentReasonCode(request.referenceType(), request.referenceId());
+        userRepository.createAssetAdjustment(adjustmentNo, userId, asset, direction, amount, reasonCode, request.reason().trim(), operator);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("adjustmentNo", adjustmentNo);
         response.put("userId", userId);
         response.put("asset", asset);
         response.put("direction", direction);
         response.put("amount", amount);
+        response.put("reasonCode", reasonCode);
         response.put("status", "PENDING_REVIEW");
         response.put("ledgerPosting", "deferred-to-D-domain-review");
-        audit("C3_MANUAL_ASSET_ADJUSTMENT_CREATED", "WALLET_ASSET_ADJUSTMENT", adjustmentNo, userId, operator, Map.of(
-                "asset", asset,
-                "direction", direction,
-                "amount", amount,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> auditDetail = new LinkedHashMap<>();
+        auditDetail.put("asset", asset);
+        auditDetail.put("direction", direction);
+        auditDetail.put("amount", amount);
+        auditDetail.put("reasonCode", reasonCode);
+        if (StringUtils.hasText(request.referenceType())) {
+            auditDetail.put("referenceType", request.referenceType().trim());
+        }
+        if (StringUtils.hasText(request.referenceId())) {
+            auditDetail.put("referenceId", request.referenceId().trim());
+        }
+        auditDetail.put("reason", request.reason().trim());
+        auditDetail.put("idempotencyKey", idempotencyKey.trim());
+        auditDetail.put("ledgerPosting", "deferred-to-D-domain-review");
+        audit("C3_MANUAL_ASSET_ADJUSTMENT_CREATED", "WALLET_ASSET_ADJUSTMENT", adjustmentNo, userId, operator, auditDetail);
         return ApiResult.ok(response);
     }
 
@@ -1536,6 +1573,21 @@ public class OpsUserService {
             throw new IllegalArgumentException("Unsupported adjustment direction");
         }
         return normalized;
+    }
+
+    private String adjustmentReasonCode(String referenceType, String referenceId) {
+        if (!StringUtils.hasText(referenceType) && !StringUtils.hasText(referenceId)) {
+            return "OPS_USER_ADJUSTMENT";
+        }
+        if (!StringUtils.hasText(referenceType) || !StringUtils.hasText(referenceId)) {
+            throw new IllegalArgumentException("ADJUSTMENT_REFERENCE_REQUIRED");
+        }
+        String type = referenceType.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+        String id = referenceId.trim();
+        if (!type.matches("[A-Z0-9_]{1,24}") || !id.matches("[A-Za-z0-9._:-]{1,64}")) {
+            throw new IllegalArgumentException("ADJUSTMENT_REFERENCE_INVALID");
+        }
+        return type + ":" + id;
     }
 
     private BigDecimal positiveAmount(String raw) {

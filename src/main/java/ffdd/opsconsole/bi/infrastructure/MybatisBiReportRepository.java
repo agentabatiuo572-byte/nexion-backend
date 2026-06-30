@@ -1,16 +1,12 @@
 package ffdd.opsconsole.bi.infrastructure;
 
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
-import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import jakarta.annotation.PostConstruct;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,27 +18,11 @@ import org.springframework.util.StringUtils;
 @Repository
 @RequiredArgsConstructor
 public class MybatisBiReportRepository implements BiReportRepository {
-    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
-    };
-
     private final BiReportMapper mapper;
-    private final ObjectMapper objectMapper;
-    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     @PostConstruct
     void ensureSchema() {
         mapper.createReportTable();
-        mapper.createDashboardPayloadTable();
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        ensureDashboardSeed("L1");
-        ensureDashboardSeed("L2");
-        ensureDashboardSeed("L3");
-        ensureDashboardSeed("L4");
-        ensureDashboardSeed("L5");
-        ensureDashboardSeed("L6");
-        ensureReportSeeds();
     }
 
     @Override
@@ -57,31 +37,7 @@ public class MybatisBiReportRepository implements BiReportRepository {
 
     @Override
     public Map<String, Object> dashboard(String moduleCode) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return Map.of();
-        }
-        String normalized = normalizeModule(moduleCode);
-        ensureDashboardSeed(normalized);
-        List<BiReportMapper.DashboardPayloadRow> rows = mapper.dashboardPayloads(normalized);
-        Map<String, Object> dashboard = new LinkedHashMap<>();
-        for (BiReportMapper.DashboardPayloadRow row : rows) {
-            Object payload = readPayload(row.payloadJson());
-            if ("root".equals(row.sectionKey()) && payload instanceof Map<?, ?> map) {
-                map.forEach((key, value) -> dashboard.put(String.valueOf(key), value));
-            } else {
-                dashboard.put(row.sectionKey(), payload);
-            }
-        }
-        return dashboard;
-    }
-
-    @Override
-    public void saveDashboard(String moduleCode, Map<String, Object> dashboard) {
-        if (!readTimeSeedPolicy.enabled()) {
-            throw new IllegalStateException("BI_DASHBOARD_PAYLOAD_DISABLED");
-        }
-        String normalized = normalizeModule(moduleCode);
-        mapper.upsertDashboardPayload(normalized, "root", toJson(dashboard == null ? Map.of() : dashboard), 0);
+        return Map.of();
     }
 
     @Override
@@ -123,47 +79,4 @@ public class MybatisBiReportRepository implements BiReportRepository {
         mapper.updateAction(reportId, action, nextStatus, reason);
     }
 
-    private void ensureDashboardSeed(String moduleCode) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        String normalized = normalizeModule(moduleCode);
-        if (mapper.countDashboardPayloads(normalized) > 0) {
-            return;
-        }
-        mapper.upsertDashboardPayload(normalized, "root", toJson(BiDashboardSeeds.dashboard(normalized)), 0);
-    }
-
-    private void ensureReportSeeds() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (mapper.countTotalReports() > 0) {
-            return;
-        }
-        BiDashboardSeeds.reports().forEach(mapper::upsertReportSeed);
-    }
-
-    private String normalizeModule(String moduleCode) {
-        return StringUtils.hasText(moduleCode) ? moduleCode.trim().toUpperCase() : "L1";
-    }
-
-    private Object readPayload(String payloadJson) {
-        if (!StringUtils.hasText(payloadJson)) {
-            return Map.of();
-        }
-        try {
-            return objectMapper.readValue(payloadJson, MAP_TYPE);
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("BI_DASHBOARD_PAYLOAD_PARSE_FAILED", ex);
-        }
-    }
-
-    private String toJson(Object payload) {
-        try {
-            return objectMapper.writeValueAsString(payload);
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("BI_DASHBOARD_PAYLOAD_WRITE_FAILED", ex);
-        }
-    }
 }

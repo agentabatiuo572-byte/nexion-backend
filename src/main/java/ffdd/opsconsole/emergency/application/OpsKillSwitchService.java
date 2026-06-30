@@ -222,13 +222,7 @@ public class OpsKillSwitchService {
     }
 
     private List<String> activeGateKeys() {
-        if (readTimeSeedPolicy.enabled()) {
-            return ACTIVE_GATES;
-        }
-        return ACTIVE_GATES.stream()
-                .filter(key -> activeValue(configKey(key)).filter(StringUtils::hasText).isPresent()
-                        || activeValue(legacyConfigKey(key)).filter(StringUtils::hasText).isPresent())
-                .toList();
+        return ACTIVE_GATES;
     }
 
     private List<Map<String, Object>> retiredGates() {
@@ -302,7 +296,7 @@ public class OpsKillSwitchService {
                     String normalized = raw.trim().toLowerCase(Locale.ROOT);
                     return "enabled".equals(normalized) || "enable".equals(normalized) || "on".equals(normalized) || "true".equals(normalized) || "1".equals(normalized);
                 })
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(true);
     }
 
     private void writeGate(String key, boolean enabled) {

@@ -132,7 +132,7 @@ class OpsUser360ServiceTest {
 
     @Test
     void detailByLookupKeyDoesNotSeedWhenReadTimeSeedsAreDisabled() {
-        OpsUser360Service disabledService = service(new OpsReadTimeSeedPolicy(false));
+        OpsUser360Service disabledService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         when(userRepository.findUserIdByLookupKey("usr_84F2")).thenReturn(Optional.empty());
         when(userRepository.findUserIdByLookupKey("NX-8821")).thenReturn(Optional.empty());
 

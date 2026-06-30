@@ -124,9 +124,6 @@ public class OpsTrustDisclosureService {
         if (guard != null) {
             return fail(guard);
         }
-        if (findJurisdiction(jurisdiction) == null) {
-            return ApiResult.fail(404, "DISCLOSURE_JURISDICTION_NOT_FOUND");
-        }
         DisclosureDraftRequest normalized = normalizeDisclosureRequest(jurisdiction, request);
         trustDisclosureRepository.saveDisclosureDraft(normalized, "DRAFT", now());
         DisclosureDraftView draft = trustDisclosureRepository.findDraft(normalized.jurisdiction()).orElse(null);
@@ -142,17 +139,15 @@ public class OpsTrustDisclosureService {
             return fail(guard);
         }
         DisclosureJurisdictionView current = findJurisdiction(jurisdiction);
-        if (current == null) {
-            return ApiResult.fail(404, "DISCLOSURE_JURISDICTION_NOT_FOUND");
-        }
         DisclosureDraftRequest normalized = normalizeDisclosureRequest(jurisdiction, request);
-        if (normalized.version().equals(current.version())) {
+        if (current != null && normalized.version().equals(current.version())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        trustDisclosureRepository.publishDisclosure(current.code(), normalized, now());
-        DisclosureJurisdictionView updated = findJurisdiction(current.code());
-        audit("I5_DISCLOSURE_PUBLISHED", "DISCLOSURE_JURISDICTION", current.code(), normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
-                "from", current.version(),
+        String targetJurisdiction = current == null ? normalized.jurisdiction() : current.code();
+        trustDisclosureRepository.publishDisclosure(targetJurisdiction, normalized, now());
+        DisclosureJurisdictionView updated = findJurisdiction(targetJurisdiction);
+        audit("I5_DISCLOSURE_PUBLISHED", "DISCLOSURE_JURISDICTION", targetJurisdiction, normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
+                "from", current == null ? "" : current.version(),
                 "to", normalized.version(),
                 "requiresReack", String.valueOf(Boolean.TRUE.equals(normalized.requiresReack()))));
         return ApiResult.ok(updated);

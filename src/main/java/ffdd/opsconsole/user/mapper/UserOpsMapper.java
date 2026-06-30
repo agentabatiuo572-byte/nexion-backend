@@ -1023,11 +1023,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Insert("""
             INSERT INTO nx_wallet_asset_adjustment (
                 adjustment_no, user_id, asset, direction, amount, reason_code, reason, maker, status, created_at, updated_at, is_deleted
-            ) VALUES (#{adjustmentNo}, #{userId}, #{asset}, #{direction}, #{amount}, 'OPS_USER_ADJUSTMENT', #{reason}, #{operator}, 'PENDING_REVIEW', NOW(), NOW(), 0)
+            ) VALUES (#{adjustmentNo}, #{userId}, #{asset}, #{direction}, #{amount}, #{reasonCode}, #{reason}, #{operator}, 'PENDING_REVIEW', NOW(), NOW(), 0)
             """)
     int insertAssetAdjustment(@Param("adjustmentNo") String adjustmentNo, @Param("userId") Long userId,
                               @Param("asset") String asset, @Param("direction") String direction,
-                              @Param("amount") BigDecimal amount, @Param("reason") String reason,
+                              @Param("amount") BigDecimal amount, @Param("reasonCode") String reasonCode, @Param("reason") String reason,
                               @Param("operator") String operator);
 
     @Insert("""

@@ -44,7 +44,7 @@ class OpsDomainRuntimeServiceTest {
         assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
             assertThat(api.resource()).isEqualTo("A4EventCenter");
             assertThat(api.path()).isEqualTo("/api/admin/platform/events");
-            assertThat(api.writePermission()).isEqualTo("PERM_AUDIT_EXPORT");
+            assertThat(api.writePermission()).isEqualTo("PERM_SYSTEM_WRITE");
         });
     }
 

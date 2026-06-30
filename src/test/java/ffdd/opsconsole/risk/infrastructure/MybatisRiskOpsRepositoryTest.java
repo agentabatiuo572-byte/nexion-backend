@@ -15,7 +15,7 @@ class MybatisRiskOpsRepositoryTest {
     void ensureRiskSchemaDoesNotSeedDataWhenReadTimeSeedsAreDisabled() {
         MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
                 mapper,
-                new OpsReadTimeSeedPolicy(false));
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
 
         repository.ensureRiskSchema();
 

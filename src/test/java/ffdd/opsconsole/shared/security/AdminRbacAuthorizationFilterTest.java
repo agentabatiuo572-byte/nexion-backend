@@ -75,6 +75,32 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void rejectsPlatformEventMutationWhenOnlyAuditExportAuthorityIsPresent() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        authenticate("PERM_AUDIT_READ", "PERM_AUDIT_EXPORT");
+
+        filter.doFilter(request("POST", "/api/admin/platform/events/domain-extension-batches"), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
+    }
+
+    @Test
+    void permitsPlatformEventMutationWhenSystemWriteAuthorityIsPresent() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("PERM_AUDIT_READ", "PERM_SYSTEM_WRITE");
+
+        filter.doFilter(
+                request("POST", "/api/admin/platform/events/domain-extension-batches"),
+                new MockHttpServletResponse(),
+                mark(invoked));
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
     void permitsMediaReadForAnyAuthenticatedAdmin() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         authenticate();

@@ -807,6 +807,10 @@ public class OpsNexMarketService {
         }
         String configKey = GENESIS_PREFIX + "rerun." + normalizedBatch;
         String before = readText(configKey, "ready");
+        BigDecimal rerunAmount = genesisDividendRerunAmount();
+        if (rerunAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            return validation("G4_GENESIS_DIVIDEND_RERUN_AMOUNT_UNAVAILABLE");
+        }
         configFacade.upsertAdminValue(configKey, "done", "STRING", "market", "G4 Genesis dividend batch rerun marker");
         ledgerPostingFacade.postLedgerEntry(
                 "G4-DIVIDEND-" + normalizedBatch + "-RERUN",
@@ -814,7 +818,7 @@ public class OpsNexMarketService {
                 "GENESIS_DIVIDEND",
                 "USDT",
                 "IN",
-                genesisDividendRerunAmount(),
+                rerunAmount,
                 "PENDING",
                 "G4 Genesis dividend batch rerun pending ledger | batchNo=" + normalizedBatch);
         audit("G4_GENESIS_DIVIDEND_BATCH_RERUN", "GENESIS_DIVIDEND_BATCH", normalizedBatch, request.operator(), map(
@@ -1718,6 +1722,13 @@ public class OpsNexMarketService {
     }
 
     private List<Map<String, Object>> stakingPositionGroups() {
+        long totalPositions = marketRepository.stakingPositionCountByStatus("PENDING_LOCK")
+                + marketRepository.stakingPositionCountByStatus("ACTIVE")
+                + marketRepository.stakingPositionCountByStatus("MATURE_UNCLAIMED")
+                + marketRepository.stakingEarlyWithdrawnCountSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
+        if (totalPositions <= 0) {
+            return List.of();
+        }
         return List.of(
                 stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", "PENDING_LOCK"),
                 stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", "ACTIVE"),
@@ -2205,7 +2216,7 @@ public class OpsNexMarketService {
 
     private BigDecimal genesisDividendRerunAmount() {
         GenesisParamDef dividend = genesisParamDef("dividend");
-        return GENESIS_DAILY_VOLUME_BASE
+        return readDecimal(GENESIS_DAILY_VOLUME_BASE_KEY, GENESIS_DAILY_VOLUME_BASE)
                 .multiply(genesisNumberValue(dividend))
                 .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
     }

@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 class OpsReadTimeSeedPolicyTest {
     @Test
     void disablesReadTimeSeedsWhenConfiguredOff() {
-        OpsReadTimeSeedPolicy policy = new OpsReadTimeSeedPolicy(false);
+        OpsReadTimeSeedPolicy policy = OpsReadTimeSeedPolicy.disabledForDirectConstruction();
 
         assertThat(policy.enabled()).isFalse();
     }
@@ -35,10 +35,10 @@ class OpsReadTimeSeedPolicyTest {
     }
 
     @Test
-    void springPropertyCanExplicitlyEnableReadTimeSeeds() {
+    void springPropertyCannotEnableReadTimeSeeds() {
         new ApplicationContextRunner()
                 .withBean(OpsReadTimeSeedPolicy.class)
                 .withPropertyValues("nexion.ops.seed.read-time-enabled=true")
-                .run(context -> assertThat(context.getBean(OpsReadTimeSeedPolicy.class).enabled()).isTrue());
+                .run(context -> assertThat(context.getBean(OpsReadTimeSeedPolicy.class).enabled()).isFalse());
     }
 }

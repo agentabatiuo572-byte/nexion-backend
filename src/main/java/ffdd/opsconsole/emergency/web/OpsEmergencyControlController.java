@@ -123,4 +123,13 @@ public class OpsEmergencyControlController {
             @RequestBody SopPlaybookRunRequest request) {
         return emergencyControlService.executePlaybook(code, idempotencyKey, request);
     }
+
+    @PostMapping("/sop/playbooks/{code}/executions/{executionId}/rollback")
+    public ApiResult<Map<String, Object>> rollbackPlaybookExecution(
+            @PathVariable String code,
+            @PathVariable String executionId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody SopPlaybookRunRequest request) {
+        return emergencyControlService.rollbackPlaybookExecution(code, executionId, idempotencyKey, request);
+    }
 }

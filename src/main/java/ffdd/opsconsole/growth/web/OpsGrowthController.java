@@ -7,6 +7,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.util.Map;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -95,6 +96,13 @@ public class OpsGrowthController {
             @PathVariable String configKey,
             @RequestBody GrowthConfigUpdateRequest request) {
         return growthService.updateQuestConfig(idempotencyKey, configKey, request);
+    }
+
+    @PostMapping("/quest-events/events")
+    public ApiResult<Map<String, Object>> createQuestEvent(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthQuestEventRequest request) {
+        return growthService.createQuestEvent(idempotencyKey, request);
     }
 
     @PatchMapping("/quest-events/events/{eventId}/reward")

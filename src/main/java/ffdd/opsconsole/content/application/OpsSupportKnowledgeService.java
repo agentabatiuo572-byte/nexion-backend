@@ -40,14 +40,15 @@ public class OpsSupportKnowledgeService {
 
     public ApiResult<SupportKnowledgeOverview> overview() {
         ensureSeedData();
+        List<SupportSlaView> slaRules = knowledgeRepository.listSla();
         return ApiResult.ok(new SupportKnowledgeOverview(
                 knowledgeRepository.listFaqs(),
-                knowledgeRepository.listSla(),
+                slaRules,
                 List.copyOf(FAQ_CATEGORIES),
                 List.copyOf(SURFACES),
                 List.copyOf(STATUSES),
-                List.of("支付台", "合规台", "设备运维台", "账户台", "收益台", "创世节点台", "技术支持台", "一线客服"),
-                List.of("D2 withdrawal review", "C4 KYC ledger", "E5 device ops", "C5 security", "F2 earnings ledger", "G4 Genesis economy", "A3 system config"),
+                slaQueues(slaRules),
+                slaEscalations(slaRules),
                 List.of("nx_help_article", "nx_support_sla_rule")));
     }
 
@@ -191,6 +192,30 @@ public class OpsSupportKnowledgeService {
             return;
         }
         knowledgeRepository.ensureSeedData(LocalDateTime.now(clock));
+    }
+
+    private List<String> slaQueues(List<SupportSlaView> slaRules) {
+        if (slaRules == null) {
+            return List.of();
+        }
+        return slaRules.stream()
+                .map(SupportSlaView::queue)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+    }
+
+    private List<String> slaEscalations(List<SupportSlaView> slaRules) {
+        if (slaRules == null) {
+            return List.of();
+        }
+        return slaRules.stream()
+                .map(SupportSlaView::escalation)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     private ApiResult<SupportFaqView> requireFaqCommand(String idempotencyKey, SupportFaqUpsertRequest request) {

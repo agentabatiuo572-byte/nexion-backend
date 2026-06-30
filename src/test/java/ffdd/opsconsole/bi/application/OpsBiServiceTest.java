@@ -55,10 +55,10 @@ class OpsBiServiceTest {
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("sourceDomain", "H1")
                 .containsEntry("month", 7);
-        assertThat(result.getData().get("l1").toString()).contains("数据库 KPI");
-        assertThat(result.getData().get("l3").toString()).contains("reserveCoverDays");
-        assertThat(result.getData().get("l5").toString()).contains("数据库导出安全参数");
-        assertThat(result.getData().get("l6").toString()).contains("数据库行为热力");
+        assertThat(result.getData().get("l1")).isEqualTo(Map.of());
+        assertThat(result.getData().get("l3")).isEqualTo(Map.of());
+        assertThat(result.getData().get("l5").toString()).contains("nx_admin_fourth_batch_report");
+        assertThat(result.getData().get("l6").toString()).contains("window=7d");
     }
 
     @Test
@@ -76,7 +76,7 @@ class OpsBiServiceTest {
     }
 
     @Test
-    void moduleOverviewsReadDashboardPayloadsFromRepository() {
+    void moduleOverviewsDoNotFabricateDashboardPayloads() {
         ApiResult<Map<String, Object>> l1 = service.kpiOverview();
         ApiResult<Map<String, Object>> l2 = service.funnelOverview();
         ApiResult<Map<String, Object>> l3 = service.financeOverview();
@@ -84,13 +84,14 @@ class OpsBiServiceTest {
         ApiResult<Map<String, Object>> l5 = service.exportOverview();
         ApiResult<Map<String, Object>> l6 = service.behaviorHeatmapOverview("7d");
 
-        assertThat(l1.getData().toString()).contains("数据库 KPI");
-        assertThat(l2.getData().toString()).contains("数据库漏斗");
-        assertThat(l3.getData().toString()).contains("reserveCoverDays");
-        assertThat(l4.getData().toString()).contains("数据库设备");
-        assertThat(l5.getData().toString()).contains("数据库导出安全参数");
-        assertThat(l6.getData()).containsEntry("trackedCount", 1);
-        assertThat(l6.getData().get("activity").toString()).contains("pages/index/index");
+        assertThat(l1.getData()).isEmpty();
+        assertThat(l2.getData()).isEmpty();
+        assertThat(l3.getData()).containsKey("ledgerLive");
+        assertThat(l4.getData()).isEmpty();
+        assertThat(l5.getData()).containsKeys("summary", "ledgerLive", "reports", "sources");
+        assertThat(l5.getData().get("sources").toString()).doesNotContain("nx_admin_bi_dashboard_payload");
+        assertThat(l6.getData()).containsEntry("window", "7d");
+        assertThat(l6.getData()).containsEntry("sources", List.of());
     }
 
     @Test
@@ -152,7 +153,7 @@ class OpsBiServiceTest {
                 new BiReportActionRequest("approve masked export", "superadmin", true, false));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("status", "GENERATING");
+        assertThat(result.getData()).containsEntry("status", "READY");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("L_BI_REPORT_APPROVE");
@@ -182,13 +183,37 @@ class OpsBiServiceTest {
     }
 
     @Test
-    void regulatoryScheduleIsSavedToDashboardPayload() {
+    void nonSensitiveReportIsReadyForDownloadImmediately() {
+        ApiResult<Map<String, Object>> created = service.createReport(
+                "idem-create-l-non-pii",
+                new BiReportCreateRequest(
+                        "create aggregate report",
+                        "auditor",
+                        "运营汇总 CSV",
+                        "2026-06",
+                        "订单数/金额/状态",
+                        "NONE",
+                        "无敏感字段",
+                        "audit",
+                        "T-1002"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(reportRepository.report.status()).isEqualTo("READY");
+
+        ApiResult<Map<String, Object>> token = service.downloadToken(reportRepository.report.reportId());
+
+        assertThat(token.getCode()).isZero();
+        assertThat(token.getData()).containsEntry("reportId", reportRepository.report.reportId());
+    }
+
+    @Test
+    void regulatorySchedulePayloadMutationIsDisabled() {
         ApiResult<Map<String, Object>> result = service.updateRegulatorySchedule(
                 "idem-schedule-l",
                 new BiDashboardValueRequest("每月 10 日", "adjust monthly schedule", "superadmin"));
 
-        assertThat(result.getCode()).isZero();
-        assertThat(reportRepository.dashboard("L5")).containsEntry("scheduleDefault", "每月 10 日");
+        assertThat(result.getCode()).isEqualTo(501);
+        assertThat(result.getMessage()).isEqualTo("BI_DASHBOARD_PAYLOAD_DISABLED");
     }
 
     @Test
@@ -386,26 +411,7 @@ class OpsBiServiceTest {
                 null,
                 null,
                 null);
-        private final Map<String, Map<String, Object>> dashboards = new LinkedHashMap<>();
         private List<String> lastStatuses = List.of();
-
-        private FakeBiReportRepository() {
-            dashboards.put("L1", new LinkedHashMap<>(Map.of("kpis", List.of(Map.of("name", "数据库 KPI")))));
-            dashboards.put("L2", new LinkedHashMap<>(Map.of("funnel", List.of(Map.of("stage", "数据库漏斗")))));
-            dashboards.put("L3", new LinkedHashMap<>(Map.of("reserveCoverDays", 88)));
-            dashboards.put("L4", new LinkedHashMap<>(Map.of("deviceDistribution", List.of(Map.of("nm", "数据库设备")))));
-            dashboards.put("L5", new LinkedHashMap<>(Map.of(
-                    "exportParams", List.of(Map.of("k", "数据库导出安全参数", "fixed", false, "cur", "默认", "v", "默认")),
-                    "scheduleOptions", List.of("每月 5 日", "每月 10 日"),
-                    "scheduleDefault", "每月 5 日",
-                    "regulatoryTemplates", List.of(Map.of("key", "kyc", "nm", "KYC")))));
-            dashboards.put("L6", new LinkedHashMap<>(Map.of(
-                    "trackedCount", 1,
-                    "pageTree", List.of(Map.of("route", "pages/index/index", "titleZh", "数据库行为热力", "tracked", true)),
-                    "excludedPages", List.of(),
-                    "activityByWindow", Map.of("7d", List.of(Map.of("route", "pages/index/index", "pv", 120, "uv", 80, "clicks", 260, "dwellMs", 45000, "bounceRate", 0.22))),
-                    "clickHeatByRoute", Map.of("pages/index/index", Map.of("route", "pages/index/index", "titleZh", "数据库行为热力", "zones", List.of(), "points", List.of())))));
-        }
 
         @Override
         public Map<String, Object> overview() {
@@ -414,12 +420,7 @@ class OpsBiServiceTest {
 
         @Override
         public Map<String, Object> dashboard(String moduleCode) {
-            return new LinkedHashMap<>(dashboards.getOrDefault(moduleCode, Map.of()));
-        }
-
-        @Override
-        public void saveDashboard(String moduleCode, Map<String, Object> dashboard) {
-            dashboards.put(moduleCode, new LinkedHashMap<>(dashboard));
+            return Map.of();
         }
 
         @Override

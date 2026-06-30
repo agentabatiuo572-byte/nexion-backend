@@ -17,7 +17,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='TRANSFERRED'")
     long countIncomingPending();
 
-    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND unread_count>0 AND status<>'CLOSED'")
+    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND unread_count>0 AND status&lt;&gt;'CLOSED'")
     long countUnread();
 
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='RESOLVED'")

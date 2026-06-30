@@ -10,6 +10,7 @@ import ffdd.opsconsole.auth.dto.AdminLoginResponse;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
+import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
@@ -27,11 +28,18 @@ class OpsAdminAuthServiceTest {
 
     private final AdminMapper adminMapper = mock(AdminMapper.class);
     private final AdminRolePermissionMapper permissionMapper = mock(AdminRolePermissionMapper.class);
+    private final AdminRoleRelationMapper roleRelationMapper = mock(AdminRoleRelationMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final JwtTokenProvider tokenProvider = new JwtTokenProvider(jwtProperties());
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final OpsAdminAuthService service =
-            new OpsAdminAuthService(adminMapper, permissionMapper, passwordEncoder, tokenProvider, adminSessionRegistry);
+            new OpsAdminAuthService(
+                    adminMapper,
+                    permissionMapper,
+                    roleRelationMapper,
+                    passwordEncoder,
+                    tokenProvider,
+                    adminSessionRegistry);
 
     private JwtProperties jwtProperties() {
         JwtProperties properties = new JwtProperties();
@@ -66,10 +74,10 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
-    void loginUsesA1StoredRoleForNonSuperAdminSessions() {
+    void loginUsesRoleRelationForNonSuperAdminSessions() {
         AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
-        when(adminMapper.selectA1Role(4L)).thenReturn("risk");
+        when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
         when(permissionMapper.selectActivePermissionCodes(4L))
                 .thenReturn(List.of("PERM_RISK_READ", "PERM_RISK_WRITE"));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");

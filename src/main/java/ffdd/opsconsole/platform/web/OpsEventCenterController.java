@@ -29,7 +29,7 @@ public class OpsEventCenterController {
     }
 
     @PatchMapping("/params/{paramKey}")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
     public ApiResult<EventCenterOverview.EventDimensionParam> updateParam(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
@@ -38,7 +38,7 @@ public class OpsEventCenterController {
     }
 
     @PostMapping("/schema-registrations")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
     public ApiResult<EventCenterOverview> registerSchema(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) EventCenterMutationRequest request) {
@@ -46,7 +46,7 @@ public class OpsEventCenterController {
     }
 
     @PostMapping("/domain-extension-batches")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
     public ApiResult<EventCenterOverview.EventDomainExtensionBatch> registerDomainExtension(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) EventCenterMutationRequest request) {

@@ -87,7 +87,7 @@ class OpsOptionsServiceTest {
     }
 
     @Test
-    void datacentersFallbackWhenDatabaseReturnsNoRows() {
+    void datacentersReturnEmptyWhenDatabaseReturnsNoRows() {
         OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
         OpsOptionsService fallbackService = new OpsOptionsService(mapper);
         when(mapper.datacenters()).thenReturn(List.of());
@@ -96,7 +96,34 @@ class OpsOptionsServiceTest {
 
         assertThat(options)
                 .extracting(AdminOption::value)
-                .containsExactly("UNASSIGNED", "HK-1", "SG-1", "US-1");
+                .isEmpty();
+    }
+
+    @Test
+    void supportBusinessOptionsComeFromDatabaseRows() {
+        OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
+        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper);
+        when(mapper.supportAgents()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("alice", "101")));
+        when(mapper.transferTargets()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("alice · support", "101")));
+        when(mapper.sessionReplyTemplates()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("KYC · tpl-1", "reply body")));
+        when(mapper.supportSlaQueues()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("支付台", "支付台")));
+        when(mapper.supportSlaEscalations()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("D2 withdrawal review", "D2 withdrawal review")));
+
+        assertThat(databaseBackedService.options("support", "support-agents").getData())
+                .extracting(AdminOption::value)
+                .containsExactly("101");
+        assertThat(databaseBackedService.options("support", "transfer-targets").getData())
+                .extracting(AdminOption::label)
+                .containsExactly("alice · support");
+        assertThat(databaseBackedService.options("support", "support-reply-templates").getData())
+                .extracting(AdminOption::value)
+                .containsExactly("reply body");
+        assertThat(databaseBackedService.options("support", "support-sla-queues").getData())
+                .extracting(AdminOption::value)
+                .containsExactly("支付台");
+        assertThat(databaseBackedService.options("support", "support-sla-escalations").getData())
+                .extracting(AdminOption::value)
+                .containsExactly("D2 withdrawal review");
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.auth.infrastructure.AdminRoleRelationEntity;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEntity> {
@@ -32,4 +33,18 @@ public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEnt
             ON DUPLICATE KEY UPDATE is_deleted = 0, updated_at = NOW()
             """)
     int ensurePrimaryRole(@Param("adminId") Long adminId, @Param("roleCode") String roleCode);
+
+    @Select("""
+            SELECT r.role_code
+              FROM nx_admin_role_relation rr
+              JOIN nx_admin_role r
+                ON r.id = rr.role_id
+               AND r.status = 1
+               AND r.is_deleted = 0
+             WHERE rr.admin_id = #{adminId}
+               AND rr.is_deleted = 0
+             ORDER BY rr.updated_at DESC, rr.id DESC
+             LIMIT 1
+            """)
+    String activeRoleCode(@Param("adminId") Long adminId);
 }

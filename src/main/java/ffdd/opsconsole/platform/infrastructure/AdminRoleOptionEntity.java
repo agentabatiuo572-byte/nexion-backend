@@ -9,6 +9,8 @@ import lombok.Data;
 public class AdminRoleOptionEntity {
     @TableId
     private Long id;
+    private String roleCode;
     private String roleName;
     private Integer status;
+    private Integer isDeleted;
 }

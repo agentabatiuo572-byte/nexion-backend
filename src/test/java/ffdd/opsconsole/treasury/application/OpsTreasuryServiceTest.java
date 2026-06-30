@@ -168,6 +168,28 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void disabledReadTimeSeedsStillExposeSafetyThresholdDefaults() {
+        OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        ledgerRepository.usdtAvailable = new BigDecimal("100");
+
+        ApiResult<Map<String, Object>> result = realOnlyService.dualLedger();
+
+        assertThat(result.getCode()).isZero();
+        Map<String, Object> snapshot = (Map<String, Object>) result.getData().get("snapshot");
+        assertThat(snapshot)
+                .containsEntry("reserveUsd", new BigDecimal("0.00"))
+                .containsEntry("liabilitiesUsd", new BigDecimal("100.00"))
+                .containsEntry("coverageRatio", new BigDecimal("0.00"))
+                .containsEntry("redlinePct", new BigDecimal("85.00"))
+                .containsEntry("healthyPct", new BigDecimal("100.00"))
+                .containsEntry("runRiskPct", new BigDecimal("15.00"))
+                .containsEntry("redlineBreached", true);
+        assertThat(ledgerRepository.seedCalls).isZero();
+        assertThat(configFacade.upsertedKeys).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void dualLedgerSeedsFallbackTreasuryDataWhenDatabaseIsEmpty() {
         Map<String, Object> dualLedger = service.dualLedger().getData();
 
@@ -510,6 +532,29 @@ class OpsTreasuryServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.name());
         assertThat(ledgerRepository.adjustments).isEmpty();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void ledgerAdjustmentRejectsCreditWhenMissingSafetyConfigWouldBreachRedline() {
+        OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        ledgerRepository.usdtAvailable = new BigDecimal("100");
+        TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
+                10001L,
+                "USDT",
+                "credit",
+                new BigDecimal("12.345678"),
+                "WD-1",
+                "ledger repair after reconciliation",
+                "superadmin");
+
+        ApiResult<Map<String, Object>> result = realOnlyService.createLedgerAdjustment("idem-d4-redline", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("B1_COVERAGE_REDLINE_BREACHED");
+        assertThat(ledgerRepository.adjustments).isEmpty();
+        assertThat(ledgerRepository.seedCalls).isZero();
+        assertThat(configFacade.upsertedKeys).isEmpty();
         verifyNoInteractions(auditLogService);
     }
 

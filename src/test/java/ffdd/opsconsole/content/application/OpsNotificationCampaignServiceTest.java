@@ -89,6 +89,23 @@ class OpsNotificationCampaignServiceTest {
     }
 
     @Test
+    void createCampaignTruncatesGeneratedCampaignNoSlug() {
+        var result = service.createCampaign("idem-i3-create-long", new NotificationCampaignCreateRequest(
+                "e2e-support1-202606302116-212944516-with-extra-cross-domain-routing-proof",
+                "长名称通知",
+                "完整测试前缀保留在标题和正文中。",
+                "normal",
+                "全量",
+                BigDecimal.TEN,
+                "Marina K.",
+                "新增长名称通知草稿"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().id()).hasSizeLessThanOrEqualTo(64);
+        assertThat(result.getData().id()).startsWith("CMP-N-e2e-support1-202606302116");
+    }
+
+    @Test
     void scheduleDraftMovesItToScheduled() {
         var result = service.scheduleCampaign("CMP-2619", "idem-i3-schedule", action("06-20 10:00 排期"));
 

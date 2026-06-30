@@ -18,6 +18,8 @@ import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.infrastructure.AdminRoleOptionEntity;
+import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -61,66 +63,29 @@ public class OpsAdminAccountService {
             Pattern.compile("^a1\\.security\\.baseline\\.([a-z][a-z0-9_-]*)\\.registered$");
     private static final String RBAC_ACTION_PREFIX = "a1.rbac.action.";
     private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super", "risk");
-    private static final List<AdminAccountOverview.RoleDefinition> DEFAULT_ROLE_DEFINITIONS = List.of(
-            new AdminAccountOverview.RoleDefinition("super", "超管", "超", "var(--ink-2)",
-                    "全域读写 + 全域执行;账号治理与系统参数的唯一操作 / 留痕角色", "全部 12 域"),
-            new AdminAccountOverview.RoleDefinition("finance", "财务", "财", "var(--success)",
-                    "储备与应付对账、提现放行、覆盖率监控;资金类动作按 RBAC 授权执行", "B · D · L,资金类执行"),
-            new AdminAccountOverview.RoleDefinition("risk", "风控", "风", "var(--danger)",
-                    "反作弊、KYC 复审、风险披露、应急止血;合规审查 V1 由风控代行", "K · J · C4/C6 · I5"),
-            new AdminAccountOverview.RoleDefinition("growth", "增长", "增", "var(--warning)",
-                    "节奏 dial、试用、任务活动、增长类实验;不碰资金放行与安全配置", "H · B4,增长类 flag/实验"),
-            new AdminAccountOverview.RoleDefinition("content", "内容", "内", "var(--admin-cat-5, #9B89E0)",
-                    "全站文案、推送、通知、信任内容、课程;高敏合规内容只能草拟", "I 域全部"),
-            new AdminAccountOverview.RoleDefinition("support", "客服", "客", "var(--a-ac)",
-                    "单用户范围受限操作:小额调整发起、协助 KYC 标记;岗位在客服中心独立配置", "C 域单用户视图"),
-            new AdminAccountOverview.RoleDefinition("audit", "只读审计", "审", "var(--ink-3)",
-                    "零写权;全量查询与脱敏导出,取证专用", "全域只读"));
-    private static final Map<String, AdminAccountOverview.RoleDefinition> DEFAULT_ROLE_DEFINITION_BY_KEY =
-            DEFAULT_ROLE_DEFINITIONS.stream().collect(Collectors.toMap(
-                    AdminAccountOverview.RoleDefinition::key,
-                    role -> role,
-                    (left, right) -> left,
-                    LinkedHashMap::new));
-    private static final List<AdminAccountOverview.RbacAction> DEFAULT_RBAC_ACTIONS = List.of(
-            new AdminAccountOverview.RbacAction("balance_adjust", "余额/资产调整(C3)", "用户/风控", List.of("C", "C", "-", "-", "-", "M", "R")),
-            new AdminAccountOverview.RbacAction("user_freeze", "账户冻结/解冻(C2)", "用户/风控", List.of("C", "-", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("withdraw_approve", "提现放行/冻结(D2)", "资金", List.of("C", "M", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("bill_adjust", "账单手工调整(D4)", "资金", List.of("C", "M", "-", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("coverage_line", "覆盖率红黄线(B1)", "资金", List.of("C", "M", "-", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("withdraw_param", "提现参数(D5)", "资金", List.of("C", "M", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("risk_model", "风险模型权重(K4)", "用户/风控", List.of("C", "-", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("kyc_decide", "大额 KYC 裁决(K5)", "用户/风控", List.of("C", "-", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("phase_dial", "Phase dial(H1)", "增长/内容", List.of("C", "-", "C", "M", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("content_publish", "文案/课程发布(I)", "增长/内容", List.of("C", "-", "-", "-", "M", "-", "R")),
-            new AdminAccountOverview.RbacAction("disclosure_publish", "风险披露发布(I5)", "增长/内容", List.of("C", "-", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("killswitch_toggle", "功能闸熔断(J1)", "基座/应急", List.of("C", "M", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("geo_block", "地区屏蔽(J2)", "基座/应急", List.of("C", "-", "M", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("feature_flag", "feature flag(A3)", "基座/应急", List.of("C", "-", "-", "M", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("operator_governance", "运营账号治理(A1)", "基座/应急", List.of("M", "-", "-", "-", "-", "-", "R")),
-            new AdminAccountOverview.RbacAction("audit_export", "审计全量导出(A2)", "基座/应急", List.of("M", "-", "-", "-", "-", "-", "M")));
-    private static final List<AdminAccountOverview.SecurityBaseline> DEFAULT_SECURITY_BASELINES = List.of(
-            new AdminAccountOverview.SecurityBaseline("tfa_required", "强制双因子(全角色)",
-                    "没绑双因子完不成登录——安全基线,不开口子", "强制开启", true),
-            new AdminAccountOverview.SecurityBaseline("least_priv", "最小权限默认",
-                    "新账号默认无任何写权,角色要显式分配", "默认拒绝", true),
-            new AdminAccountOverview.SecurityBaseline("min_supers", "最少有效超管",
-                    "少于 2 个时账号治理类操作全部被服务器拒绝(防权限死锁)", ">= 2 个", true),
-            new AdminAccountOverview.SecurityBaseline("session", "session 时限",
-                    "滑动过期 + 绝对上限,对下一次登录签发生效", "30min / 8h", false),
-            new AdminAccountOverview.SecurityBaseline("lock", "登录失败短锁",
-                    "连错几次触发短锁及锁定时长", "5 次 / 15min", false));
-    private static final Map<String, AdminAccountOverview.SecurityBaseline> DEFAULT_SECURITY_BASELINE_BY_KEY =
-            DEFAULT_SECURITY_BASELINES.stream().collect(Collectors.toMap(
-                    AdminAccountOverview.SecurityBaseline::key,
-                    baseline -> baseline,
-                    (left, right) -> left,
-                    LinkedHashMap::new));
-
+    private static final Map<String, String> ROLE_CODE_TO_KEY = Map.of(
+            "SUPER_ADMIN", "super",
+            "CONFIG_ADMIN", "config",
+            "FINANCE", "finance",
+            "RISK", "risk",
+            "CONTENT", "content",
+            "GROWTH", "growth",
+            "SUPPORT", "support",
+            "AUDITOR", "audit");
+    private static final Map<String, String> ROLE_KEY_TO_CODE = Map.of(
+            "super", "SUPER_ADMIN",
+            "config", "CONFIG_ADMIN",
+            "finance", "FINANCE",
+            "risk", "RISK",
+            "content", "CONTENT",
+            "growth", "GROWTH",
+            "support", "SUPPORT",
+            "audit", "AUDITOR");
     private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
     private final AdminMapper adminMapper;
     private final AdminRoleRelationMapper roleRelationMapper;
+    private final OpsOptionsMapper roleMapper;
     private final PasswordEncoder passwordEncoder;
     private final AdminSessionRegistry adminSessionRegistry;
     private final OpsAuditCenterService auditCenterService;
@@ -203,7 +168,6 @@ public class OpsAdminAccountService {
         String accountId = String.valueOf(adminId);
         String prefix = "a1.account." + accountId;
         String credentialStatus = "mail".equals(deliver) ? "MAIL_DISPATCHED" : "HANDOFF_PENDING";
-        save(prefix + ".role", role, GROUP_ACCOUNT, "A1 account role");
         save(prefix + ".tfa", "true", GROUP_ACCOUNT, "A1 account 2FA");
         save(prefix + ".lastLogin", "", GROUP_ACCOUNT, "A1 account last login");
         save(prefix + ".credentialDeliveryStatus", credentialStatus, GROUP_ACCOUNT, "A1 credential delivery");
@@ -251,9 +215,6 @@ public class OpsAdminAccountService {
         patch.setSuperAdmin("super".equals(nextRole) ? 1 : 0);
         adminMapper.updateById(patch);
         syncPrimaryRoleRelation(adminId, nextRole);
-
-        String prefix = "a1.account." + current.id();
-        save(prefix + ".role", nextRole, GROUP_ACCOUNT, "A1 account role changed");
 
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromRole", current.role(), "toRole", nextRole));
@@ -560,30 +521,36 @@ public class OpsAdminAccountService {
     }
 
     private List<AdminAccountOverview.RoleDefinition> roleDefinitions(Map<String, PlatformConfigItem> configs) {
-        Map<String, AdminAccountOverview.RoleDefinition> roles = new LinkedHashMap<>(DEFAULT_ROLE_DEFINITION_BY_KEY);
-        configs.keySet().stream()
-                .map(ROLE_REGISTRATION_PATTERN::matcher)
-                .filter(Matcher::matches)
-                .map(matcher -> matcher.group(1))
-                .sorted(Comparator.comparingInt(role -> roleSort(role, configs)))
+        return roleRows().stream()
                 .map(role -> roleDefinition(role, configs))
-                .forEach(role -> roles.put(role.key(), role));
-        return new ArrayList<>(roles.values());
+                .toList();
     }
 
-    private AdminAccountOverview.RoleDefinition roleDefinition(String role, Map<String, PlatformConfigItem> configs) {
+    private AdminAccountOverview.RoleDefinition roleDefinition(
+            AdminRoleOptionEntity row,
+            Map<String, PlatformConfigItem> configs) {
+        String role = roleKey(row.getRoleCode());
         String prefix = "a1.role." + role + ".";
         return new AdminAccountOverview.RoleDefinition(
                 role,
-                text(configs, prefix + "name", role),
-                text(configs, prefix + "avatar", ""),
-                text(configs, prefix + "color", ""),
-                text(configs, prefix + "description", ""),
-                text(configs, prefix + "scope", ""));
+                text(configs, prefix + "name", firstText(row.getRoleName(), role)),
+                text(configs, prefix + "avatar", defaultRoleAvatar(role)),
+                text(configs, prefix + "color", defaultRoleColor(role)),
+                text(configs, prefix + "description", defaultRoleDescription(role)),
+                text(configs, prefix + "scope", defaultRoleScope(role)));
     }
 
-    private int roleSort(String role, Map<String, PlatformConfigItem> configs) {
-        return number(configs, "a1.role." + role + ".sort", 9999);
+    private List<AdminRoleOptionEntity> roleRows() {
+        List<AdminRoleOptionEntity> rows = roleMapper.selectList(new LambdaQueryWrapper<AdminRoleOptionEntity>()
+                .eq(AdminRoleOptionEntity::getStatus, 1)
+                .eq(AdminRoleOptionEntity::getIsDeleted, 0)
+                .orderByAsc(AdminRoleOptionEntity::getId));
+        if (rows == null) {
+            return List.of();
+        }
+        return rows.stream()
+                .filter(row -> row != null && StringUtils.hasText(row.getRoleCode()))
+                .toList();
     }
 
     private List<AdminAccountOverview.OperatorRecord> operators(Map<String, PlatformConfigItem> configs) {
@@ -598,8 +565,7 @@ public class OpsAdminAccountService {
         String id = String.valueOf(admin.getId());
         String prefix = "a1.account." + id + ".";
         boolean enabled = Integer.valueOf(1).equals(admin.getStatus());
-        String configuredRole = normalizeRole(text(configs, prefix + "role", null), configs);
-        String role = configuredRole == null ? defaultRole(admin, configs) : configuredRole;
+        String role = roleFromRelation(admin.getId()).orElseGet(() -> defaultRole(admin, configs));
         int sessions = enabled ? adminSessionRegistry.countActiveSessions(admin.getId()) : 0;
         return new AdminAccountOverview.OperatorRecord(
                 id,
@@ -616,7 +582,6 @@ public class OpsAdminAccountService {
 
     private List<AdminAccountOverview.RbacAction> rbacActions(Map<String, PlatformConfigItem> configs) {
         Map<String, AdminAccountOverview.RbacAction> actions = new LinkedHashMap<>();
-        DEFAULT_RBAC_ACTIONS.forEach(action -> actions.put(action.id(), withGrantOverrides(action, configs)));
         configs.entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(RBAC_ACTION_PREFIX))
                 .filter(entry -> !entry.getKey().substring(RBAC_ACTION_PREFIX.length()).contains("."))
@@ -655,7 +620,6 @@ public class OpsAdminAccountService {
 
     private List<AdminAccountOverview.SecurityBaseline> securityBaselines(Map<String, PlatformConfigItem> configs) {
         Map<String, AdminAccountOverview.SecurityBaseline> baselines = new LinkedHashMap<>();
-        DEFAULT_SECURITY_BASELINES.forEach(baseline -> baselines.put(baseline.key(), withSecurityValue(baseline, configs)));
         configs.keySet().stream()
                 .map(SECURITY_BASELINE_REGISTRATION_PATTERN::matcher)
                 .filter(Matcher::matches)
@@ -673,8 +637,7 @@ public class OpsAdminAccountService {
     private Optional<AdminAccountOverview.SecurityBaseline> securityBaseline(String key, Map<String, PlatformConfigItem> configs) {
         String prefix = "a1.security.baseline." + key + ".";
         if (!"true".equalsIgnoreCase(text(configs, prefix + "registered", "false"))) {
-            return Optional.ofNullable(DEFAULT_SECURITY_BASELINE_BY_KEY.get(key))
-                    .map(baseline -> withSecurityValue(baseline, configs));
+            return Optional.empty();
         }
         String configuredValue = text(configs, prefix + "value", "");
         return Optional.of(withSecurityValue(new AdminAccountOverview.SecurityBaseline(
@@ -872,7 +835,7 @@ public class OpsAdminAccountService {
     }
 
     private void syncPrimaryRoleRelation(Long adminId, String role) {
-        String roleCode = "super".equals(role) ? "SUPER_ADMIN" : "OPS_ADMIN";
+        String roleCode = roleCode(role);
         roleRelationMapper.disableOtherPrimaryRoles(adminId, roleCode);
         roleRelationMapper.ensurePrimaryRole(adminId, roleCode);
     }
@@ -894,10 +857,19 @@ public class OpsAdminAccountService {
                 .toList();
     }
 
+    private Optional<String> roleFromRelation(Long adminId) {
+        if (adminId == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(roleRelationMapper.activeRoleCode(adminId))
+                .map(this::roleKey)
+                .filter(role -> roleKeys(loadConfigMap(ACTIVE_GROUPS)).contains(role));
+    }
+
     private String defaultRole(AdminEntity admin, Map<String, PlatformConfigItem> configs) {
         List<String> keys = roleKeys(configs);
         if (Integer.valueOf(1).equals(admin.getSuperAdmin())) {
-            return keys.contains("super") ? "super" : keys.get(0);
+            return keys.contains("super") || keys.isEmpty() ? "super" : keys.get(0);
         }
         if (keys.contains("audit")) {
             return "audit";
@@ -905,7 +877,7 @@ public class OpsAdminAccountService {
         return keys.stream()
                 .filter(role -> !"super".equals(role))
                 .findFirst()
-                .orElse(keys.get(0));
+                .orElse("audit");
     }
 
     private String firstText(String... values) {
@@ -928,8 +900,84 @@ public class OpsAdminAccountService {
         if (!StringUtils.hasText(role)) {
             return null;
         }
-        String normalized = role.trim().toLowerCase(Locale.ROOT);
+        String normalized = roleKey(role);
         return roleKeys(configs).contains(normalized) ? normalized : null;
+    }
+
+    private String roleKey(String roleOrCode) {
+        if (!StringUtils.hasText(roleOrCode)) {
+            return "";
+        }
+        String normalized = roleOrCode.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+        String mapped = ROLE_CODE_TO_KEY.get(normalized);
+        if (StringUtils.hasText(mapped)) {
+            return mapped;
+        }
+        return roleOrCode.trim()
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "_")
+                .replaceAll("^_+|_+$", "");
+    }
+
+    private String roleCode(String roleKey) {
+        String normalized = roleKey(roleKey);
+        return ROLE_KEY_TO_CODE.getOrDefault(normalized, normalized.toUpperCase(Locale.ROOT).replace('-', '_'));
+    }
+
+    private String defaultRoleAvatar(String role) {
+        return switch (role) {
+            case "super" -> "SA";
+            case "config" -> "OA";
+            case "finance" -> "FI";
+            case "risk" -> "RK";
+            case "content" -> "CT";
+            case "growth" -> "GR";
+            case "support" -> "CS";
+            case "audit" -> "AU";
+            default -> role.length() <= 2 ? role.toUpperCase(Locale.ROOT) : role.substring(0, 2).toUpperCase(Locale.ROOT);
+        };
+    }
+
+    private String defaultRoleColor(String role) {
+        return switch (role) {
+            case "super" -> "red";
+            case "config" -> "blue";
+            case "finance" -> "green";
+            case "risk" -> "orange";
+            case "content" -> "purple";
+            case "growth" -> "cyan";
+            case "support" -> "indigo";
+            case "audit" -> "gray";
+            default -> "";
+        };
+    }
+
+    private String defaultRoleDescription(String role) {
+        return switch (role) {
+            case "super" -> "平台 Owner，保留所有危急操作。";
+            case "config" -> "运营配置、平台参数与跨域配置变更。";
+            case "finance" -> "资金、账务、提现与覆盖率。";
+            case "risk" -> "风控模型、KYC、账户限制与熔断。";
+            case "content" -> "文案、课程、风险披露与公告。";
+            case "growth" -> "活动、节奏、权益与触达。";
+            case "support" -> "用户查询、工单协同与客服处置。";
+            case "audit" -> "审计与合规观察，禁止写操作。";
+            default -> "";
+        };
+    }
+
+    private String defaultRoleScope(String role) {
+        return switch (role) {
+            case "super" -> "全域：资金、风控、内容、配置、审计";
+            case "config" -> "A/C/E/F/G/H/I/J/M 配置";
+            case "finance" -> "B/D/C 资金域";
+            case "risk" -> "C/K/J 风控域";
+            case "content" -> "I/公告/课程";
+            case "growth" -> "E/F/G/H 增长与收益";
+            case "support" -> "M/C/D/K 客服协同";
+            case "audit" -> "A2/L 报表与审计";
+            default -> "";
+        };
     }
 
     private String normalizeStatus(String status) {

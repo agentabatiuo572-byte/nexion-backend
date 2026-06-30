@@ -63,10 +63,13 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
     }
 
     private boolean requiresReview(String userNo, BigDecimal amountUsdt, int threshold) {
-        return StringUtils.hasText(userNo)
-                && amountUsdt != null
-                && threshold > 0
-                && amountUsdt.compareTo(BigDecimal.valueOf(threshold)) >= 0;
+        if (!StringUtils.hasText(userNo) || amountUsdt == null || amountUsdt.compareTo(BigDecimal.ZERO) <= 0) {
+            return false;
+        }
+        if (threshold <= 0) {
+            return true;
+        }
+        return amountUsdt.compareTo(BigDecimal.valueOf(threshold)) >= 0;
     }
 
     private void audit(String action, String ticketId, String userNo, String sourceDomain, String sourceNo,

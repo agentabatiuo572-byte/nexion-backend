@@ -477,8 +477,8 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
-    public void createAssetAdjustment(String adjustmentNo, Long userId, String asset, String direction, BigDecimal amount, String reason, String operator) {
-        mapper.insertAssetAdjustment(adjustmentNo, userId, asset, direction, amount, reason, operator);
+    public void createAssetAdjustment(String adjustmentNo, Long userId, String asset, String direction, BigDecimal amount, String reasonCode, String reason, String operator) {
+        mapper.insertAssetAdjustment(adjustmentNo, userId, asset, direction, amount, reasonCode, reason, operator);
     }
 
     @Override

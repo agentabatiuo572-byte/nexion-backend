@@ -341,7 +341,10 @@ public class OpsNotificationCampaignService {
     private String slug(String text) {
         String normalized = text.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-");
         normalized = normalized.replaceAll("^-+|-+$", "");
-        return StringUtils.hasText(normalized) ? normalized : "campaign";
+        if (!StringUtils.hasText(normalized)) {
+            return "campaign";
+        }
+        return normalized.length() <= 40 ? normalized : normalized.substring(0, 40).replaceAll("-+$", "");
     }
 
     private String normalizeTier(String tier) {

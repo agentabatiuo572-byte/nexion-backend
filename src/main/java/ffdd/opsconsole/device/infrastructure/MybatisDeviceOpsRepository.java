@@ -140,7 +140,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public Map<String, String> e3Config() {
-        Map<String, String> config = readTimeSeedPolicy.enabled() ? defaultE3Config() : new LinkedHashMap<>();
+        Map<String, String> config = new LinkedHashMap<>();
         mapper.defaultLifecycleRules().forEach(row -> {
             int startMonth = row.startMonth() == null ? 0 : row.startMonth();
             if (startMonth == 1) {
@@ -256,31 +256,6 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
                 row.resumedAt(),
                 row.createdAt(),
                 row.updatedAt());
-    }
-
-    private Map<String, String> defaultE3Config() {
-        Map<String, String> config = new LinkedHashMap<>();
-        config.put("degradeEarly", "-4");
-        config.put("degradeMid", "-6");
-        config.put("degradeLate", "-23.7");
-        config.put("stageEarlyEnd", "3");
-        config.put("stageMidEnd", "8");
-        config.put("cycleMonths", "12");
-        config.put("minEfficiency", "22");
-        config.put("taskLockS1", "40");
-        config.put("taskLockPro", "140");
-        config.put("taskLockRack", "450");
-        config.put("salvagePct", "30");
-        config.put("eligibility", "L4+ 持有者");
-        config.put("minHoldingMonths", "6");
-        config.put("promoMult", "1.0");
-        config.put("promoCooldownDays", "14");
-        config.put("promoMaxPerSession", "1");
-        config.put("promoDelaySeconds", "6");
-        config.put("promoMinAgeDays", "30");
-        config.put("promoRoutes", "/me/devices");
-        config.put("inventorySoftMax", "0");
-        return config;
     }
 
     private String decayToPercent(BigDecimal value) {
