@@ -660,12 +660,30 @@ public class OpsRiskService {
         if (!before.actions().contains(spec.requiredRowAction())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        boolean linkedClusterFrozen = false;
+        if ("freeze-cluster".equals(normalizedAction)) {
+            String clusterId = trimmed(before.clusterId());
+            if (!StringUtils.hasText(clusterId)) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_CLUSTER_ID_REQUIRED");
+            }
+            if (!riskRepository.updateMultiAccountClusterStatus(clusterId, "frozen", request.reason().trim(), operator(request.operator()))) {
+                return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
+            }
+            linkedClusterFrozen = true;
+            audit("K1_CLUSTER_STATUS_CHANGED_BY_K2", "RISK_MULTI_ACCOUNT_CLUSTER", clusterId, null, operator(request.operator()), Map.of(
+                    "clusterId", clusterId,
+                    "status", "frozen",
+                    "sourceRowId", normalizedRowId,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+        }
         RiskArbitrageRowView updated = riskRepository.updateArbitrageDisposition(normalizedRowId, spec.disposition()).orElse(before);
         audit(spec.auditAction(), "RISK_ARBITRAGE_ROW", normalizedRowId, null, operator(request.operator()), Map.of(
                 "rowId", normalizedRowId,
                 "viewKey", before.viewKey(),
                 "action", normalizedAction,
                 "clusterId", before.clusterId() == null ? "" : before.clusterId(),
+                "linkedClusterFrozen", linkedClusterFrozen,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);

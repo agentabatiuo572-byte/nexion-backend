@@ -25,6 +25,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -69,6 +70,10 @@ public class OpsEmergencyControlService {
     private static final String SOP_EXECUTIONS = "emergency.sop.executions";
     private static final String SOP_ACTION_OPTIONS = "emergency.sop.actionOptions";
     private static final String SOP_ROLLBACK_OPTIONS = "emergency.sop.rollbackOptions";
+    private static final int SOP_EXECUTION_HISTORY_MAX_ROWS = 20;
+    private static final int SOP_EXECUTION_HISTORY_MAX_BYTES = 60_000;
+    private static final int SOP_EXECUTION_SEQUENCE_MAX_STEPS = 40;
+    private static final int SOP_EXECUTION_TEXT_MAX_CHARS = 500;
 
     private final PlatformConfigFacade configFacade;
     private final ContentNotificationDispatchFacade notificationDispatchFacade;
@@ -365,6 +370,10 @@ public class OpsEmergencyControlService {
         if (emergency && !seed.emergency()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PLAYBOOK_NOT_EMERGENCY_TRACK");
         }
+        ApiResult<Map<String, Object>> validation = validateExecutablePlaybook(seed);
+        if (validation != null) {
+            return validation;
+        }
         String idemConfigKey = playbookConfigKey(seed.code(), "idem." + sanitizeConfigPart(idempotencyKey));
         Optional<String> existingExecId = activeValue(idemConfigKey).filter(StringUtils::hasText);
         if (existingExecId.isPresent()) {
@@ -452,7 +461,7 @@ public class OpsEmergencyControlService {
         execution.put("rollbackAt", LocalDateTime.now().format(TS));
         execution.put("rollbackReason", request.reason().trim());
         execution.put("rollbackActions", rollbackWrites);
-        configFacade.upsertAdminValue(SOP_EXECUTIONS, toJson(rows), "JSON", GROUP_SOP, request.reason().trim());
+        saveExecutionRows(rows, execId, request.reason().trim());
         configFacade.upsertAdminValue(playbookConfigKey(effectiveCode, "rollback." + sanitizeConfigPart(execId)), "ROLLED_BACK", "STRING", GROUP_SOP, request.reason().trim());
         audit("J4_SOP_PLAYBOOK_ROLLED_BACK", "SOP_PLAYBOOK_EXECUTION", execId, request.operator(), "HIGH", map(
                 "code", effectiveCode,
@@ -704,10 +713,138 @@ public class OpsEmergencyControlService {
         row.put("domainActions", domainActions);
         row.put("rollback", seed.rollback());
         rows.add(0, row);
-        if (rows.size() > 50) {
-            rows = new ArrayList<>(rows.subList(0, 50));
+        saveExecutionRows(rows, execId, request.reason().trim());
+    }
+
+    private ApiResult<Map<String, Object>> validateExecutablePlaybook(PlaybookSeed seed) {
+        if (requiresI3Dispatch(seed) && !StringUtils.hasText(seed.notifyCampaignNo())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_NOTIFY_CAMPAIGN_NO_REQUIRED");
         }
-        configFacade.upsertAdminValue(SOP_EXECUTIONS, toJson(rows), "JSON", GROUP_SOP, request.reason().trim());
+        if (seed.seq().size() > SOP_EXECUTION_SEQUENCE_MAX_STEPS) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_ACTION_SEQUENCE_TOO_LONG");
+        }
+        boolean actionTooLong = seed.seq().stream()
+                .map(step -> stringValue(step.get("action"), ""))
+                .anyMatch(action -> action.length() > SOP_EXECUTION_TEXT_MAX_CHARS);
+        if (actionTooLong) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_ACTION_TEXT_TOO_LONG");
+        }
+        if (stringValue(seed.rollback(), "").length() > SOP_EXECUTION_TEXT_MAX_CHARS) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_ROLLBACK_PLAN_TOO_LONG");
+        }
+        return null;
+    }
+
+    private boolean requiresI3Dispatch(PlaybookSeed seed) {
+        return seed.seq().stream()
+                .anyMatch(step -> "I3".equals(stringValue(step.get("domain"), "").toUpperCase(Locale.ROOT)));
+    }
+
+    private void saveExecutionRows(List<Map<String, Object>> rows, String preserveExecutionId, String reason) {
+        List<Map<String, Object>> bounded = new ArrayList<>(rows);
+        while (bounded.size() > SOP_EXECUTION_HISTORY_MAX_ROWS) {
+            removeOldestNonPreservedExecution(bounded, preserveExecutionId);
+        }
+        String json = toJson(bounded);
+        while (json.getBytes(StandardCharsets.UTF_8).length > SOP_EXECUTION_HISTORY_MAX_BYTES && bounded.size() > 1) {
+            if (!removeOldestNonPreservedExecution(bounded, preserveExecutionId)) {
+                break;
+            }
+            json = toJson(bounded);
+        }
+        if (json.getBytes(StandardCharsets.UTF_8).length > SOP_EXECUTION_HISTORY_MAX_BYTES) {
+            compactPreservedExecution(bounded, preserveExecutionId);
+            json = toJson(bounded);
+        }
+        configFacade.upsertAdminValue(SOP_EXECUTIONS, json, "JSON", GROUP_SOP, reason);
+    }
+
+    private boolean removeOldestNonPreservedExecution(List<Map<String, Object>> rows, String preserveExecutionId) {
+        for (int i = rows.size() - 1; i >= 0; i--) {
+            String executionId = stringValue(rows.get(i).get("executionId"), "");
+            if (!StringUtils.hasText(preserveExecutionId) || !preserveExecutionId.equals(executionId)) {
+                rows.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void compactPreservedExecution(List<Map<String, Object>> rows, String preserveExecutionId) {
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> row = rows.get(i);
+            String executionId = stringValue(row.get("executionId"), "");
+            if (StringUtils.hasText(preserveExecutionId) && !preserveExecutionId.equals(executionId)) {
+                continue;
+            }
+            rows.set(i, compactExecutionRow(row));
+            return;
+        }
+    }
+
+    private Map<String, Object> compactExecutionRow(Map<String, Object> row) {
+        Map<String, Object> compact = new LinkedHashMap<>();
+        copyIfPresent(row, compact, "timestamp");
+        copyIfPresent(row, compact, "executionId");
+        copyIfPresent(row, compact, "code");
+        copyIfPresent(row, compact, "name");
+        copyIfPresent(row, compact, "mode");
+        copyIfPresent(row, compact, "operator");
+        copyIfPresent(row, compact, "roleGate");
+        copyIfPresent(row, compact, "rollbackStatus");
+        copyIfPresent(row, compact, "rollbackAt");
+        compact.put("trigger", truncateText(stringValue(row.get("trigger"), "")));
+        compact.put("steps", row.getOrDefault("steps", List.of()));
+        compact.put("notificationDispatch", compactNotification(row.get("notificationDispatch")));
+        compact.put("domainActions", compactConfigActions(row.get("domainActions")));
+        compact.put("rollbackActions", compactConfigActions(row.get("rollbackActions")));
+        compact.put("rollback", truncateText(stringValue(row.get("rollback"), "")));
+        compact.put("compacted", true);
+        return compact;
+    }
+
+    private void copyIfPresent(Map<String, Object> source, Map<String, Object> target, String key) {
+        if (source.containsKey(key)) {
+            target.put(key, source.get(key));
+        }
+    }
+
+    private Map<String, Object> compactNotification(Object value) {
+        Map<String, Object> source = value instanceof Map<?, ?> raw
+                ? raw.entrySet().stream().collect(Collectors.toMap(
+                entry -> String.valueOf(entry.getKey()),
+                Map.Entry::getValue,
+                (left, right) -> right,
+                LinkedHashMap::new))
+                : Map.of();
+        Map<String, Object> compact = new LinkedHashMap<>();
+        for (String key : List.of("required", "status", "campaignNo", "notificationCount")) {
+            if (source.containsKey(key)) {
+                compact.put(key, source.get(key));
+            }
+        }
+        return compact;
+    }
+
+    private List<Map<String, Object>> compactConfigActions(Object value) {
+        return mapList(value).stream()
+                .map(action -> {
+                    Map<String, Object> compact = new LinkedHashMap<>();
+                    for (String key : List.of("domain", "step", "configKey", "valueType", "group", "value")) {
+                        if (action.containsKey(key)) {
+                            compact.put(key, action.get(key));
+                        }
+                    }
+                    return compact;
+                })
+                .toList();
+    }
+
+    private String truncateText(String value) {
+        if (!StringUtils.hasText(value) || value.length() <= SOP_EXECUTION_TEXT_MAX_CHARS) {
+            return value;
+        }
+        return value.substring(0, SOP_EXECUTION_TEXT_MAX_CHARS);
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {

@@ -66,6 +66,7 @@ public class AdminRbacBaselineInitializer {
                     "PERM_RISK_READ", "PERM_RISK_WRITE",
                     "PERM_USER_READ", "PERM_USER_WRITE",
                     "PERM_WITHDRAWAL_READ", "PERM_WITHDRAWAL_REVIEW",
+                    "PERM_MARKET_READ", "PERM_MARKET_WRITE",
                     "PERM_TREASURY_READ", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE",
                     "PERM_AUDIT_READ", "PERM_BI_READ", "PERM_BI_EXPORT"),
             grant(CONTENT,

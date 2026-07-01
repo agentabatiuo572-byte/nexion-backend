@@ -668,7 +668,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     private int intFallback(int fallback) {
-        return 0;
+        return fallback;
     }
 
     private void insertK5Param(String key, String value) {

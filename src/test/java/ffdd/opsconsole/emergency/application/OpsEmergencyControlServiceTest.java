@@ -234,6 +234,108 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
+    void executePlaybookRejectsI3StepWithoutNotificationCampaignBeforeDomainWrites() {
+        service.createPlaybook(
+                "idem-j4-create-missing-notify",
+                new SopPlaybookCreateRequest(
+                        "监管点名缺通知",
+                        "监管点名",
+                        "合规审计",
+                        "15 分钟",
+                        true,
+                        "J1·熔断 withdraw\nI3·通知法务",
+                        "",
+                        "",
+                        "根因消除后常规轨恢复",
+                        false,
+                        "wire I3 campaign",
+                        "superadmin"));
+
+        var result = service.executePlaybook(
+                "SOP-DRAFT-1",
+                "idem-j4-missing-notify-execute",
+                new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("J4_NOTIFY_CAMPAIGN_NO_REQUIRED");
+        assertThat(configFacade.values)
+                .doesNotContainKey("killswitch.withdraw")
+                .doesNotContainKey("emergency.sop.executions");
+    }
+
+    @Test
+    void executePlaybookRejectsOversizedActionTextBeforeDomainWrites() {
+        service.createPlaybook(
+                "idem-j4-create-long-action",
+                new SopPlaybookCreateRequest(
+                        "监管点名动作过长",
+                        "监管点名",
+                        "合规审计",
+                        "15 分钟",
+                        true,
+                        "J1·" + "withdraw ".repeat(80),
+                        "",
+                        "",
+                        "根因消除后常规轨恢复",
+                        false,
+                        "wire long action",
+                        "superadmin"));
+
+        var result = service.executePlaybook(
+                "SOP-DRAFT-1",
+                "idem-j4-long-action-execute",
+                new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("J4_ACTION_TEXT_TOO_LONG");
+        assertThat(configFacade.values)
+                .doesNotContainKey("killswitch.withdraw")
+                .doesNotContainKey("emergency.sop.executions");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void executePlaybookTrimsOversizedExecutionHistoryAndKeepsCurrentExecution() throws Exception {
+        List<Map<String, Object>> oldRows = new ArrayList<>();
+        for (int i = 0; i < 30; i++) {
+            oldRows.add(Map.of(
+                    "executionId", "OLD-" + i,
+                    "code", "SOP-OLD",
+                    "trigger", "x".repeat(4_000),
+                    "domainActions", List.of(Map.of("configKey", "killswitch.withdraw", "valueType", "STRING", "group", "admin_killswitch"))));
+        }
+        configFacade.values.put("emergency.sop.executions", new ObjectMapper().writeValueAsString(oldRows));
+        service.createPlaybook(
+                "idem-j4-create-trim-history",
+                new SopPlaybookCreateRequest(
+                        "资金对账缺口",
+                        "资金异常",
+                        "财务主管",
+                        "15 分钟",
+                        true,
+                        "J1·熔断 withdraw 提现\nB1·核验备付金覆盖率",
+                        "",
+                        "",
+                        "B1 覆盖率恢复后回滚",
+                        false,
+                        "wire real domain actions",
+                        "superadmin"));
+
+        var result = service.executePlaybook(
+                "SOP-DRAFT-1",
+                "idem-j4-trim-history",
+                new SopPlaybookRunRequest(true, "ledger gap containment", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        String executions = configFacade.values.get("emergency.sop.executions");
+        assertThat(executions.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).isLessThanOrEqualTo(60_000);
+        String execId = String.valueOf(((Map<String, Object>) result.getData().get("updated")).get("executionId"));
+        assertThat(executions)
+                .contains(execId)
+                .contains("killswitch.withdraw");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void executePlaybookReplaysSameIdempotencyKeyWithoutDuplicateSideEffects() {
         service.createPlaybook(
