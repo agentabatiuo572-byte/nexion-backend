@@ -1,7 +1,11 @@
 package ffdd.opsconsole.shared.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
+import ffdd.opsconsole.shared.audit.AuditLogService;
 import jakarta.servlet.FilterChain;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -14,7 +18,8 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class AdminRbacAuthorizationFilterTest {
-    private final AdminRbacAuthorizationFilter filter = new AdminRbacAuthorizationFilter();
+    private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AdminRbacAuthorizationFilter filter = new AdminRbacAuthorizationFilter(auditLogService);
 
     @AfterEach
     void tearDown() {
@@ -72,6 +77,11 @@ class AdminRbacAuthorizationFilterTest {
         assertThat(invoked).isFalse();
         assertThat(response.getStatus()).isEqualTo(403);
         assertThat(response.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
+        verify(auditLogService).record(argThat(request ->
+                "A1_RBAC_ACCESS_DENIED".equals(request.getAction())
+                        && "ADMIN_RBAC".equals(request.getResourceType())
+                        && "/api/admin/users/profiles".equals(request.getResourceId())
+                        && "DENIED".equals(request.getResult())));
     }
 
     @Test

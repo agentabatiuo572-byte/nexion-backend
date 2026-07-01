@@ -286,17 +286,18 @@ public class OpsFinanceService {
         ensureD5ConfigDefaults();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
-        BigDecimal maxBalanceRatio = configDecimal("withdrawal.max_balance_pct", new BigDecimal("0.80"));
-        BigDecimal feeRate = configDecimal("withdrawal.fee_rate", new BigDecimal("0.02"));
+        BigDecimal dailyLimitCount = requiredConfigDecimal("withdrawal.daily_count_limit");
+        BigDecimal maxBalanceRatio = requiredConfigDecimal("withdrawal.max_balance_pct");
+        BigDecimal feeRate = requiredConfigDecimal("withdrawal.fee_rate");
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("dailyLimitCount", configDecimal("withdrawal.daily_count_limit", BigDecimal.ONE).intValue());
+        response.put("dailyLimitCount", dailyLimitCount.intValue());
         response.put("maxBalancePct", percent(maxBalanceRatio));
         response.put("maxBalanceRatio", maxBalanceRatio);
         response.put("feeRatePct", percent(feeRate));
         response.put("feeRate", feeRate);
-        response.put("minUsdt", configDecimal("withdrawal.min_usdt", new BigDecimal("20")));
-        response.put("trc20Enabled", configBoolean("withdrawal.trc20.enabled", true));
-        response.put("erc20Enabled", configBoolean("withdrawal.erc20.enabled", true));
+        response.put("minUsdt", requiredConfigDecimal("withdrawal.min_usdt"));
+        response.put("trc20Enabled", requiredConfigBoolean("withdrawal.trc20.enabled"));
+        response.put("erc20Enabled", requiredConfigBoolean("withdrawal.erc20.enabled"));
         response.put("h1Rhythm", rhythm.summary());
         response.put("withdrawNexGate", Map.of(
                 "sourceDomain", "H1",
@@ -422,13 +423,10 @@ public class OpsFinanceService {
         String failureReason = "REJECTED".equals(newStatus) ? request.reason().trim() : null;
         withdrawalRepository.updateStatus(order.withdrawalNo(), newStatus, failureReason);
         WithdrawalOrderView updated = withdrawalRepository.findByWithdrawalNo(order.withdrawalNo())
-                .orElse(new WithdrawalOrderView(
-                        order.id(), order.userId(), order.withdrawalNo(), order.asset(), order.chain(), order.amount(), order.fee(),
-                        order.targetAddress(), order.riskDecisionId(), order.chainTxHash(), newStatus, order.chainSubmittedAt(),
-                        order.completedAt(), order.failedAt(), failureReason, order.chainBroadcastAttempts(), order.nextBroadcastAt(),
-                        order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(),
-                        order.userNo(), order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(),
-                        order.riskScore(), order.hitRules(), order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail()));
+                .orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "WITHDRAWAL_RELOAD_FAILED");
+        }
         Map<String, Object> detail = withdrawalReviewAuditDetail(
                 order, newStatus, dailyLimitCount, request.reason().trim(), idempotencyKey.trim());
         audit("D2_WITHDRAWAL_REVIEW_" + action, "WITHDRAWAL", order.withdrawalNo(), request.operator(), detail);
@@ -799,7 +797,7 @@ public class OpsFinanceService {
 
     private int withdrawalDailyLimitCount() {
         ensureD5ConfigDefaults();
-        int count = configDecimal("withdrawal.daily_count_limit", BigDecimal.ONE)
+        int count = requiredConfigDecimal("withdrawal.daily_count_limit")
                 .setScale(0, RoundingMode.DOWN)
                 .intValue();
         if (count <= 0) {
@@ -1056,6 +1054,26 @@ public class OpsFinanceService {
                     }
                 })
                 .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO);
+    }
+
+    private BigDecimal requiredConfigDecimal(String key) {
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .map(value -> {
+                    try {
+                        return new BigDecimal(value.trim());
+                    } catch (RuntimeException ex) {
+                        throw new IllegalStateException("INVALID_CONFIG:" + key, ex);
+                    }
+                })
+                .orElseThrow(() -> new IllegalStateException("CONFIG_NOT_FOUND:" + key));
+    }
+
+    private boolean requiredConfigBoolean(String key) {
+        String value = configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .orElseThrow(() -> new IllegalStateException("CONFIG_NOT_FOUND:" + key));
+        return "true".equalsIgnoreCase(value) || "1".equals(value);
     }
 
     private boolean configBoolean(String key, boolean fallback) {

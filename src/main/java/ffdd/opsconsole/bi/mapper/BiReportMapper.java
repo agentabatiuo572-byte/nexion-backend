@@ -87,6 +87,9 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0")
     long countUsers();
 
+    @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countUsersSince(@Param("days") int days);
+
     @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND status = #{status}")
     long countUsersByStatus(@Param("status") String status);
 
@@ -102,8 +105,14 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_order WHERE is_deleted = 0")
     long countOrders();
 
+    @Select("SELECT COUNT(*) FROM nx_order WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countOrdersSince(@Param("days") int days);
+
     @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0")
     long countAdminDeviceOrders();
+
+    @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countAdminDeviceOrdersSince(@Param("days") int days);
 
     @Select("SELECT COUNT(*) FROM nx_device WHERE deleted = 0")
     long countDevices();
@@ -111,11 +120,17 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE is_deleted = 0")
     long countWithdrawals();
 
+    @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countWithdrawalsSince(@Param("days") int days);
+
     @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE is_deleted = 0 AND status = #{status}")
     long countWithdrawalsByStatus(@Param("status") String status);
 
     @Select("SELECT COUNT(*) FROM nx_exchange_order WHERE is_deleted = 0")
     long countExchanges();
+
+    @Select("SELECT COUNT(*) FROM nx_exchange_order WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countExchangesSince(@Param("days") int days);
 
     @Select("SELECT COUNT(*) FROM nx_staking_position WHERE is_deleted = 0")
     long countStakingPositions();
@@ -123,11 +138,17 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_wallet_ledger WHERE is_deleted = 0")
     long countWalletLedgers();
 
+    @Select("SELECT COUNT(*) FROM nx_wallet_ledger WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countWalletLedgersSince(@Param("days") int days);
+
     @Select("SELECT COUNT(*) FROM nx_wallet_bill WHERE deleted = 0")
     long countWalletBills();
 
     @Select("SELECT COUNT(*) FROM nx_support_ticket WHERE is_deleted = 0")
     long countSupportTickets();
+
+    @Select("SELECT COUNT(*) FROM nx_support_ticket WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countSupportTicketsSince(@Param("days") int days);
 
     @Select("SELECT COUNT(*) FROM nx_support_ticket WHERE is_deleted = 0 AND status = #{status}")
     long countSupportTicketsByStatus(@Param("status") String status);
@@ -135,8 +156,14 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted = 0")
     long countConversations();
 
+    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countConversationsSince(@Param("days") int days);
+
     @Select("SELECT COUNT(*) FROM nx_audit_log WHERE is_deleted = 0")
     long countAuditLogs();
+
+    @Select("SELECT COUNT(*) FROM nx_audit_log WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    long countAuditLogsSince(@Param("days") int days);
 
     @Select("""
             <script>

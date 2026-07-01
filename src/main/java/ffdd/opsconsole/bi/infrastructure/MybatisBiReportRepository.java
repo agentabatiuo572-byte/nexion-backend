@@ -151,18 +151,12 @@ public class MybatisBiReportRepository implements BiReportRepository {
     }
 
     private Map<String, Object> behaviorDashboard() {
-        List<Map<String, Object>> activity = List.of(
-                activity("account", mapper.countUsers(), "nx_user"),
-                activity("funds", mapper.countWithdrawals() + mapper.countExchanges() + mapper.countWalletLedgers(), "nx_withdrawal_order/nx_exchange_order/nx_wallet_ledger"),
-                activity("commerce", mapper.countOrders() + mapper.countAdminDeviceOrders(), "nx_order/nx_admin_device_order"),
-                activity("support", mapper.countSupportTickets() + mapper.countConversations(), "nx_support_ticket/nx_conversation"),
-                activity("audit", mapper.countAuditLogs(), "nx_audit_log"));
         return linked(
                 "module", "L6",
                 "activityByWindow", linked(
-                        "24h", activity,
-                        "7d", activity,
-                        "30d", activity),
+                        "24h", behaviorActivity(1),
+                        "7d", behaviorActivity(7),
+                        "30d", behaviorActivity(30)),
                 "sources", List.of(
                         "nx_user",
                         "nx_withdrawal_order",
@@ -173,6 +167,15 @@ public class MybatisBiReportRepository implements BiReportRepository {
                         "nx_support_ticket",
                         "nx_conversation",
                         "nx_audit_log"));
+    }
+
+    private List<Map<String, Object>> behaviorActivity(int days) {
+        return List.of(
+                activity("account", mapper.countUsersSince(days), "nx_user"),
+                activity("funds", mapper.countWithdrawalsSince(days) + mapper.countExchangesSince(days) + mapper.countWalletLedgersSince(days), "nx_withdrawal_order/nx_exchange_order/nx_wallet_ledger"),
+                activity("commerce", mapper.countOrdersSince(days) + mapper.countAdminDeviceOrdersSince(days), "nx_order/nx_admin_device_order"),
+                activity("support", mapper.countSupportTicketsSince(days) + mapper.countConversationsSince(days), "nx_support_ticket/nx_conversation"),
+                activity("audit", mapper.countAuditLogsSince(days), "nx_audit_log"));
     }
 
     private Map<String, Object> exportDashboard() {

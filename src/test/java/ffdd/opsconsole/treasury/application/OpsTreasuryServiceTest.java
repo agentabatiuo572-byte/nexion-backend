@@ -168,7 +168,7 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void disabledReadTimeSeedsStillExposeSafetyThresholdDefaults() {
+    void disabledReadTimeSeedsReadSafetyThresholdsFromBaseConfig() {
         OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         ledgerRepository.usdtAvailable = new BigDecimal("100");
 
@@ -177,13 +177,13 @@ class OpsTreasuryServiceTest {
         assertThat(result.getCode()).isZero();
         Map<String, Object> snapshot = (Map<String, Object>) result.getData().get("snapshot");
         assertThat(snapshot)
-                .containsEntry("reserveUsd", new BigDecimal("0.00"))
+                .containsEntry("reserveUsd", new BigDecimal("5000.00"))
                 .containsEntry("liabilitiesUsd", new BigDecimal("100.00"))
-                .containsEntry("coverageRatio", new BigDecimal("0.00"))
+                .containsEntry("coverageRatio", new BigDecimal("5000.00"))
                 .containsEntry("redlinePct", new BigDecimal("85.00"))
                 .containsEntry("healthyPct", new BigDecimal("100.00"))
                 .containsEntry("runRiskPct", new BigDecimal("15.00"))
-                .containsEntry("redlineBreached", true);
+                .containsEntry("redlineBreached", false);
         assertThat(ledgerRepository.seedCalls).isZero();
         assertThat(configFacade.upsertedKeys).isEmpty();
     }
@@ -439,8 +439,8 @@ class OpsTreasuryServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("REDLINE_MUST_BE_BELOW_HEALTHY");
-        assertThat(configFacade.values)
-                .doesNotContainKeys("wallet.dual-ledger.redline-pct", "wallet.dual-ledger.healthy-pct");
+        assertThat(configFacade.upsertedKeys)
+                .doesNotContain("wallet.dual-ledger.redline-pct", "wallet.dual-ledger.healthy-pct");
         verifyNoInteractions(auditLogService);
     }
 
@@ -536,8 +536,9 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
-    void ledgerAdjustmentRejectsCreditWhenMissingSafetyConfigWouldBreachRedline() {
+    void ledgerAdjustmentRejectsCreditWhenBaseConfigWouldBreachRedline() {
         OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        configFacade.values.put("wallet.dual-ledger.reserve-usd", "0");
         ledgerRepository.usdtAvailable = new BigDecimal("100");
         TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
                 10001L,
@@ -566,6 +567,15 @@ class OpsTreasuryServiceTest {
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
         private final Map<String, String> values = new LinkedHashMap<>();
         private final List<String> upsertedKeys = new ArrayList<>();
+
+        private FakePlatformConfigFacade() {
+            values.put("wallet.dual-ledger.reserve-usd", "5000");
+            values.put("wallet.dual-ledger.nex-usd-rate", "0.17");
+            values.put("wallet.dual-ledger.redline-pct", "85");
+            values.put("wallet.dual-ledger.healthy-pct", "100");
+            values.put("wallet.dual-ledger.run-risk-pct", "15");
+            values.put("wallet.dual-ledger.scope", "all active liabilities");
+        }
 
         @Override
         public Optional<String> activeValue(String configKey) {

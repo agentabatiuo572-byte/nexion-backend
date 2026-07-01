@@ -141,12 +141,12 @@ public class OpsTreasuryService {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
-        BigDecimal reserveUsd = configDecimal(RESERVE_CONFIG_KEY, dualLedgerProperties.getReserveUsd());
-        BigDecimal nexUsdRate = configDecimal(NEX_USD_RATE_CONFIG_KEY, dualLedgerProperties.getNexUsdRate());
-        BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
-        BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
-        BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
-        String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
+        BigDecimal reserveUsd = requiredConfigDecimal(RESERVE_CONFIG_KEY);
+        BigDecimal nexUsdRate = requiredConfigDecimal(NEX_USD_RATE_CONFIG_KEY);
+        BigDecimal redlinePct = requiredConfigDecimal(REDLINE_CONFIG_KEY);
+        BigDecimal healthyPct = requiredConfigDecimal(HEALTHY_CONFIG_KEY);
+        BigDecimal runRiskPct = requiredConfigDecimal(RUN_RISK_CONFIG_KEY);
+        String scope = requiredConfigValue(SCOPE_CONFIG_KEY);
 
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
         BigDecimal userBalanceUsd = safe(ledgerRepository.sumUsdtAvailable());
@@ -1068,6 +1068,25 @@ public class OpsTreasuryService {
         return configFacade.activeValue(key)
                 .map(value -> parseDecimal(value, fallback))
                 .orElseGet(() -> readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO);
+    }
+
+    private BigDecimal requiredConfigDecimal(String key) {
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .map(value -> {
+                    try {
+                        return new BigDecimal(value.trim());
+                    } catch (RuntimeException ex) {
+                        throw new IllegalStateException("INVALID_CONFIG:" + key, ex);
+                    }
+                })
+                .orElseThrow(() -> new IllegalStateException("CONFIG_NOT_FOUND:" + key));
+    }
+
+    private String requiredConfigValue(String key) {
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .orElseThrow(() -> new IllegalStateException("CONFIG_NOT_FOUND:" + key));
     }
 
     private BigDecimal safetyThresholdDecimal(String key, BigDecimal fallback) {

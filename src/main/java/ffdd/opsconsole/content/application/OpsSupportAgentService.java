@@ -326,9 +326,6 @@ public class OpsSupportAgentService {
 
     private List<Map<String, Object>> transferTargets(List<SupportAgentProfileView> agents) {
         List<Map<String, Object>> targets = new ArrayList<>();
-        targets.add(target("queue", "support", "客服队列", "客服队列", List.of("support")));
-        targets.add(target("queue", "advisor", "专属顾问队列", "专属顾问队列", List.of("advisor")));
-        targets.add(target("standby", "standby-pool", "备勤池", "备勤池", SERVICE_TYPES));
         agents.stream()
                 .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
                 .filter(agent -> Boolean.TRUE.equals(agent.transferable()))

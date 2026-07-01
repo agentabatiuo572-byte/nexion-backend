@@ -1,17 +1,23 @@
 package ffdd.opsconsole.shared.exception;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 class GlobalExceptionHandlerTest {
-    private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+    private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final GlobalExceptionHandler handler = new GlobalExceptionHandler(auditLogService);
 
     @Test
     void bizExceptionKeepsDomainErrorCodeAndMessage() {
@@ -42,10 +48,17 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void accessDeniedReturns403() {
-        ApiResult<Void> result = handler.handleAccessDenied(new AccessDeniedException("denied"));
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/admin/users/freeze");
+
+        ApiResult<Void> result = handler.handleAccessDenied(new AccessDeniedException("denied"), request);
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
         assertThat(result.getMessage()).isEqualTo("无权限访问");
+        verify(auditLogService).record(argThat(audit ->
+                "A1_ACCESS_DENIED".equals(audit.getAction())
+                        && "ADMIN_PERMISSION".equals(audit.getResourceType())
+                        && "/api/admin/users/freeze".equals(audit.getResourceId())
+                        && "DENIED".equals(audit.getResult())));
     }
 
     @Test

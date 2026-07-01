@@ -1453,7 +1453,10 @@ public class OpsUserService {
         } else {
             userRepository.reviewAssetAdjustment(normalizedNo, nextStatus, operator, reason);
         }
-        UserAssetAdjustmentView updated = userRepository.findAssetAdjustment(normalizedNo).orElse(before);
+        UserAssetAdjustmentView updated = userRepository.findAssetAdjustment(normalizedNo).orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "ASSET_ADJUSTMENT_RELOAD_FAILED");
+        }
         Map<String, Object> auditDetail = new LinkedHashMap<>();
         auditDetail.put("fromStatus", currentStatus);
         auditDetail.put("toStatus", nextStatus);

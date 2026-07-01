@@ -165,10 +165,10 @@ public class OpsRiskService {
         String decision = normalizeDecision(request.decision());
         riskRepository.updateDecision(caseNo.trim(), decision, request.reason().trim(), operator(request.operator()));
         RiskCaseView updated = riskRepository.findByCaseNo(caseNo.trim())
-                .orElse(new RiskCaseView(
-                        before.caseNo(), before.userId(), before.bizType(), before.bizNo(), before.region(), before.userLevel(),
-                        decision, request.reason().trim(), before.riskScore(), before.ruleCodes(), "FINALIZED", operator(request.operator()),
-                        LocalDateTime.now(), before.createdAt()));
+                .orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "RISK_CASE_RELOAD_FAILED");
+        }
         audit("K_RISK_CASE_DECIDED", "RISK_CASE", before.caseNo(), before.userId(), operator(request.operator()), Map.of(
                 "fromDecision", before.decision(),
                 "toDecision", decision,
@@ -417,7 +417,10 @@ public class OpsRiskService {
         if (state.equals(before.state())) {
             return ApiResult.ok(before);
         }
-        RiskRuleView updated = riskRepository.updateWithdrawRuleState(normalized, state).orElse(before);
+        RiskRuleView updated = riskRepository.updateWithdrawRuleState(normalized, state).orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "WITHDRAW_RULE_RELOAD_FAILED");
+        }
         audit("K3_WITHDRAW_RULE_STATE_CHANGED", "WITHDRAW_RULE", normalized, null, operator(request.operator()), Map.of(
                 "ruleId", normalized,
                 "fromState", before.state(),
@@ -454,7 +457,10 @@ public class OpsRiskService {
         if (!StringUtils.hasText(condition)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_INVALID");
         }
-        RiskRuleView updated = riskRepository.updateWithdrawRuleCondition(normalized, condition).orElse(before);
+        RiskRuleView updated = riskRepository.updateWithdrawRuleCondition(normalized, condition).orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "WITHDRAW_RULE_RELOAD_FAILED");
+        }
         audit("K3_WITHDRAW_RULE_CONDITION_CHANGED", "WITHDRAW_RULE", normalized, null, operator(request.operator()), Map.of(
                 "ruleId", normalized,
                 "fromCondition", before.conditionText(),

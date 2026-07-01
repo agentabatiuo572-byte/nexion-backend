@@ -4,9 +4,12 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpMethod;
@@ -67,6 +70,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/bi/**", "PERM_BI_READ", "PERM_BI_EXPORT"));
 
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
+    private final AuditLogService auditLogService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -83,6 +87,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
 
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated()) {
+            auditDenial(request, null, "ADMIN_AUTH_REQUIRED", null);
             reject(response, HttpServletResponse.SC_UNAUTHORIZED, "ADMIN_AUTH_REQUIRED");
             return;
         }
@@ -97,10 +102,12 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 .collect(java.util.stream.Collectors.toSet());
         RequiredAuthority required = requiredAuthority(path, request.getMethod());
         if (required == null) {
+            auditDenial(request, authentication, "ADMIN_RBAC_RULE_MISSING", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_RBAC_RULE_MISSING");
             return;
         }
         if (!required.matches(authorities)) {
+            auditDenial(request, authentication, "ADMIN_PERMISSION_DENIED", required.authority());
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PERMISSION_DENIED");
             return;
         }
@@ -129,6 +136,29 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         response.setStatus(status);
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"code\":" + status + ",\"message\":\"" + message + "\",\"data\":null}");
+    }
+
+    private void auditDenial(
+            HttpServletRequest request, Authentication authentication, String reason, String requiredAuthority) {
+        if (auditLogService == null) {
+            return;
+        }
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("A1_RBAC_ACCESS_DENIED")
+                .resourceType("ADMIN_RBAC")
+                .resourceId(request.getRequestURI())
+                .actorType("ADMIN")
+                .actorUsername(authentication == null ? null : authentication.getName())
+                .method(request.getMethod())
+                .path(request.getRequestURI())
+                .result("DENIED")
+                .riskLevel("MEDIUM")
+                .detail(Map.of(
+                        "reason", reason,
+                        "requiredAuthority", requiredAuthority == null ? "" : requiredAuthority,
+                        "method", request.getMethod(),
+                        "path", request.getRequestURI()))
+                .build());
     }
 
     private static Rule rule(String pattern, String readAuthority, String writeAuthority) {
