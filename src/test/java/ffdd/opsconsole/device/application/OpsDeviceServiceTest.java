@@ -476,18 +476,14 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void skusSeedDefaultsWhenCatalogIsEmpty() {
+    void skusReturnEmptyWhenCatalogIsEmpty() {
         ApiResult<PageResult<DeviceSkuView>> result =
                 service.skus(new DeviceSkuQueryRequest(null, null, 1L, 100L));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().getTotal()).isEqualTo(6);
-        assertThat(result.getData().getRecords())
-                .extracting(DeviceSkuView::skuId)
-                .contains("stellarbox-s1", "stellarbox-pro", "stellarbox-pro-v2", "stellarrack-p1", "stellarrack-p2", "cloud-share");
-        assertThat(catalogRepository.phases.values())
-                .extracting(DevicePhaseView::label)
-                .containsExactly("P1", "P2", "P3");
+        assertThat(result.getData().getTotal()).isZero();
+        assertThat(result.getData().getRecords()).isEmpty();
+        assertThat(catalogRepository.phases).isEmpty();
         verify(auditLogService, never()).record(any());
     }
 
@@ -502,16 +498,14 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void reviewsSeedDefaultsAfterEnsuringCatalogSkus() {
+    void reviewsReturnEmptyWhenCatalogIsEmpty() {
         ApiResult<PageResult<DeviceReviewView>> result =
                 service.reviews(new DeviceReviewQueryRequest(null, null, null, null, 1L, 100L));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().getTotal()).isEqualTo(4);
-        assertThat(catalogRepository.skus).containsKeys("stellarbox-s1", "stellarbox-pro", "stellarrack-p1", "cloud-share");
-        assertThat(result.getData().getRecords())
-                .extracting(DeviceReviewView::skuId)
-                .contains("stellarbox-s1", "stellarbox-pro", "stellarrack-p1", "cloud-share");
+        assertThat(result.getData().getTotal()).isZero();
+        assertThat(catalogRepository.skus).isEmpty();
+        assertThat(result.getData().getRecords()).isEmpty();
         verify(auditLogService, never()).record(any());
     }
 
@@ -653,39 +647,32 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void tasksSeedDefaultRowsWhenPrimaryListIsEmpty() {
+    void tasksReturnEmptyWhenPrimaryListIsEmpty() {
         ApiResult<PageResult<DeviceTaskView>> result = service.tasks(new DeviceTaskQueryRequest(null, null, 1L, 20L));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().getTotal()).isEqualTo(6);
-        assertThat(result.getData().getRecords())
-                .extracting(DeviceTaskView::taskId)
-                .containsExactly("TK-6", "TK-5", "TK-4", "TK-3", "TK-2", "TK-1");
-        assertThat(result.getData().getRecords())
-                .extracting(DeviceTaskView::name)
-                .contains("LLM 推理 405B", "Embedding 批处理");
-        assertThat(result.getData().getRecords().get(0).taskClass()).isNotBlank();
-        assertThat(result.getData().getRecords().get(0).model()).isNotBlank();
-        assertThat(result.getData().getRecords().get(0).minVram()).isNotBlank();
+        assertThat(result.getData().getTotal()).isZero();
+        assertThat(result.getData().getRecords()).isEmpty();
     }
 
     @Test
-    void phoneTierRewardsSeedDefaultRowsWhenPrimaryListIsEmpty() {
+    void phoneTierRewardsReturnEmptyWhenPrimaryListIsEmpty() {
         ApiResult<List<DevicePhoneTierRewardView>> result = service.phoneTierRewards();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).hasSize(5);
-        assertThat(result.getData())
-                .extracting(DevicePhoneTierRewardView::tier)
-                .containsExactly(1, 2, 3, 4, 5);
-        assertThat(result.getData())
-                .extracting(DevicePhoneTierRewardView::dailyUsdt)
-                .anySatisfy(value -> assertThat(value).isEqualByComparingTo("0.06"));
+        assertThat(result.getData()).isEmpty();
     }
 
     @Test
     void phoneTierRewardUpdatePersistsAndAudits() {
-        service.phoneTierRewards();
+        catalogRepository.createPhoneTierReward(
+                3,
+                "主流档",
+                "真实配置",
+                new BigDecimal("0.06"),
+                new BigDecimal("10"),
+                "active",
+                LocalDateTime.now());
 
         ApiResult<DevicePhoneTierRewardView> result = service.updatePhoneTierReward(
                 3,

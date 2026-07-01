@@ -19,7 +19,6 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
-import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -28,7 +27,6 @@ import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
 import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.domain.UserTeamMemberView;
-import ffdd.opsconsole.user.domain.User360Seed;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -63,7 +61,6 @@ public class OpsUser360Service {
     private final OpsRiskService riskService;
     private final AuditLogService auditLogService;
     private final UserOpsRepository userRepository;
-    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     @Transactional
     public ApiResult<Map<String, Object>> detail(String userKey) {
@@ -75,30 +72,7 @@ public class OpsUser360Service {
         if (existingUserId != null) {
             return detail(existingUserId);
         }
-        User360Seed seed = C1_SEEDS.get(seedIndexKey(lookupKey));
-        if (seed == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_NOT_FOUND");
-        }
-        Long seededUserId = userRepository.findUserIdByLookupKey(seed.referralCode()).orElse(null);
-        if (seededUserId != null && !seedNeedsRepair(seededUserId, seed)) {
-            return detail(seededUserId);
-        }
-        if (!readTimeSeedPolicy.enabled()) {
-            return seededUserId == null
-                    ? ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_NOT_FOUND")
-                    : detail(seededUserId);
-        }
-        userRepository.upsertUser360Seed(seed);
-        seededUserId = userRepository.findUserIdByLookupKey(seed.referralCode()).orElse(null);
-        if (seededUserId == null) {
-            return ApiResult.fail(OpsErrorCode.INTERNAL_ERROR.httpStatus(), "USER_SEED_FAILED");
-        }
-        return detail(seededUserId);
-    }
-
-    private boolean seedNeedsRepair(Long userId, User360Seed seed) {
-        int expectedTeamSize = Math.max(0, Math.min(seed.teamSize() == null ? 0 : seed.teamSize(), 50));
-        return userRepository.countTeamMembers(userId) != expectedTeamSize;
+        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_NOT_FOUND");
     }
 
     public ApiResult<Map<String, Object>> detail(Long userId) {
@@ -574,95 +548,6 @@ public class OpsUser360Service {
         return value.trim();
     }
 
-    private static String seedIndexKey(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT).replace("-", "");
-    }
-
-    private static Map<String, User360Seed> c1Seeds() {
-        Map<String, User360Seed> seeds = new LinkedHashMap<>();
-        registerSeed(seeds, seed("usr_84F2", "NX-8821", "Marcus Lee", "4150008821", "marcus.lee.seed@nexion.local",
-                "VERIFIED", "L4", "V3", "ACTIVE", "US",
-                "8420.00", "12400.00", "1120.00", "4980.00", "12400.00", "3980.00", "26.00", "160.00", 2, 8, 72, true));
-        registerSeed(seeds, seed("usr_19C7", "NX-1190", "Aisha Khan", "4150001190", "aisha.khan.seed@nexion.local",
-                "VERIFIED", "L5", "V6", "ACTIVE", "AE",
-                "24100.00", "86300.00", "800.00", "18120.00", "42000.00", "9800.00", "54.00", "520.00", 5, 31, 18, true));
-        registerSeed(seeds, seed("usr_55B1", "NX-5512", "Diego Torres", "4150005512", "diego.torres.seed@nexion.local",
-                "PENDING", "L3", "V1", "FROZEN", "MX",
-                "1240.00", "2150.00", "420.00", "760.00", "5000.00", "2400.00", "8.00", "55.00", 1, 2, 91, false));
-        registerSeed(seeds, seed("usr_02A9", "NX-0029", "Yuki Tanaka", "4150000029", "yuki.tanaka.seed@nexion.local",
-                "VERIFIED", "L4", "V2", "ACTIVE", "JP",
-                "5630.00", "9800.00", "300.00", "3260.00", "15000.00", "6100.00", "22.00", "140.00", 2, 12, 54, true));
-        registerSeed(seeds, seed("usr_77D4", "NX-7741", "Omar Farouk", "4150007741", "omar.farouk.seed@nexion.local",
-                "VERIFIED", "L2", "V0", "ACTIVE", "EG",
-                "310.00", "540.00", "0.00", "120.00", "900.00", "240.00", "4.00", "20.00", 1, 1, 11, false));
-        registerSeed(seeds, seed("usr_31E8", "NX-3188", "Lena Brandt", "4150003188", "lena.brandt.seed@nexion.local",
-                "VERIFIED", "L5", "V8", "ACTIVE", "DE",
-                "51200.00", "154000.00", "2400.00", "33600.00", "86000.00", "34800.00", "72.00", "760.00", 6, 42, 68, true));
-        registerSeed(seeds, seed("usr_90F0", "NX-9001", "Sara Lindqvist", "4150009001", "sara.lindqvist.seed@nexion.local",
-                "VERIFIED", "L3", "V1", "ACTIVE", "SE",
-                "890.00", "1320.00", "0.00", "420.00", "2400.00", "900.00", "6.00", "35.00", 1, 3, 9, false));
-        return Map.copyOf(seeds);
-    }
-
-    private static void registerSeed(Map<String, User360Seed> seeds, User360Seed seed) {
-        seeds.put(seedIndexKey(seed.lookupKey()), seed);
-        seeds.put(seedIndexKey(seed.referralCode()), seed);
-    }
-
-    private static User360Seed seed(
-            String lookupKey,
-            String referralCode,
-            String nickname,
-            String phone,
-            String email,
-            String kycStatus,
-            String userLevel,
-            String vRank,
-            String accountStatus,
-            String region,
-            String walletUsdt,
-            String walletNex,
-            String pendingWithdraw,
-            String lifetimeEarned,
-            String depositedUsd,
-            String withdrawnUsd,
-            String dailyUsdt,
-            String dailyNex,
-            int deviceCount,
-            int teamSize,
-            int riskScore,
-            boolean twoFactorEnabled) {
-        return new User360Seed(
-                lookupKey,
-                referralCode,
-                nickname,
-                "+1",
-                phone,
-                email,
-                kycStatus,
-                userLevel,
-                vRank,
-                accountStatus,
-                "en-US",
-                region,
-                decimal(walletUsdt),
-                decimal(walletNex),
-                decimal(pendingWithdraw),
-                decimal(lifetimeEarned),
-                decimal(depositedUsd),
-                decimal(withdrawnUsd),
-                decimal(dailyUsdt),
-                decimal(dailyNex),
-                deviceCount,
-                teamSize,
-                riskScore,
-                twoFactorEnabled);
-    }
-
-    private static BigDecimal decimal(String value) {
-        return new BigDecimal(value);
-    }
-
     private Map<String, Object> section(Object... pairs) {
         Map<String, Object> detail = new LinkedHashMap<>();
         for (int i = 0; i + 1 < pairs.length; i += 2) {
@@ -670,6 +555,4 @@ public class OpsUser360Service {
         }
         return detail;
     }
-
-    private static final Map<String, User360Seed> C1_SEEDS = c1Seeds();
 }

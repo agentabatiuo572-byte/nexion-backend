@@ -402,9 +402,6 @@ class OpsBiServiceTest {
                                     BigDecimal amount, String status, String remark) {
         }
 
-        @Override
-        public void seedD4FallbackData(Map<String, Long> userIds) {
-        }
     }
 
     private static final class FakeBiReportRepository implements BiReportRepository {

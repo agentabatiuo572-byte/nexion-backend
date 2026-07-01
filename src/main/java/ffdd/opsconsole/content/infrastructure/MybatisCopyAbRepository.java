@@ -85,21 +85,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
-        for (CopySeed seed : COPY_SEEDS) {
-            ensureCopy(seed, now);
-            if (!"home.conversionBanner".equals(seed.key())) {
-                ensureCurrentVersion(seed, now);
-            }
-        }
-        for (VersionSeed seed : HCB_VERSIONS) {
-            ensureVersion(seed, now);
-        }
-        for (FrameworkSeed seed : FRAMEWORK_SEEDS) {
-            ensureFramework(seed, now);
-        }
-        for (ExperimentSeed seed : EXPERIMENT_SEEDS) {
-            ensureExperiment(seed, now);
-        }
+        // Business rows must come from MySQL writes, not read-time demo seeds.
     }
 
     @Override

@@ -22,17 +22,13 @@ class MybatisRiskOpsRepositoryTest {
         verify(mapper).createRiskDecisionTable();
         verify(mapper).createKycAlertTable();
         verify(mapper, never()).countRiskCases();
-        verify(mapper, never()).insertSeedRiskDecision(
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyLong(),
+        verify(mapper, never()).insertWithdrawRule(
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyInt(),
-                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyBoolean(),
                 org.mockito.ArgumentMatchers.anyString());
     }
 }

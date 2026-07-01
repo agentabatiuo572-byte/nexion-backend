@@ -83,29 +83,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
-        for (TrustSectionSeed seed : TRUST_SECTION_SEEDS) {
-            ensureTrustSection(seed, now);
-        }
-        for (FieldSeed seed : FIELD_SEEDS) {
-            ensureField(seed, now);
-        }
-        for (JurisdictionSeed seed : JURISDICTION_SEEDS) {
-            ensureJurisdiction(seed, now);
-        }
-        for (ChapterSeed seed : CHAPTER_SEEDS) {
-            ensureChapter("SFC", "v12", seed, now);
-        }
-        for (GateSeed seed : GATE_SEEDS) {
-            ensureGate(seed, now);
-        }
-        ensureDisclosureDraft(now);
-    }
-
-    @Override
-    public void ensureBaseGateActions(LocalDateTime now) {
-        for (GateSeed seed : GATE_SEEDS) {
-            ensureGate(seed, now);
-        }
+        // Business rows must come from MySQL writes, not read-time demo seeds.
     }
 
     @Override

@@ -61,7 +61,6 @@ public class OpsTrustDisclosureService {
         if (readTimeSeedPolicy.enabled()) {
             trustDisclosureRepository.ensureSeedData(now());
         }
-        trustDisclosureRepository.ensureBaseGateActions(now());
         syncDisclosureGateConfigFromRepository("I4 overview gate sync");
         return ApiResult.ok(currentOverview());
     }
@@ -172,7 +171,6 @@ public class OpsTrustDisclosureService {
         if (guard != null) {
             return fail(guard);
         }
-        trustDisclosureRepository.ensureBaseGateActions(now());
         Set<String> activeKeys = resolveGateKeys(request.scope());
         if (activeKeys.isEmpty()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_GATE_SCOPE_EMPTY");

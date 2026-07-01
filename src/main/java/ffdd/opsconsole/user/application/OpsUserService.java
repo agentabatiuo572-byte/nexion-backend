@@ -91,16 +91,7 @@ public class OpsUserService {
     private static final String CAPTCHA_OFF_WINDOW_KEY = "auth.risk.captcha_off_window";
     private static final String K1_REJECT_CODE = "MULTI_ACCOUNT_PARAM_BELONGS_TO_K1";
     private static final String K1_PATH = "/risk/multi-account";
-    private static final List<String> ACCOUNT_ACTION_SEED_LOOKUP_KEYS = List.of(
-            "usr_8807", "usr_6201", "usr_2231", "usr_55B1",
-            "usr_31E8", "usr_4410", "usr_0099", "usr_90F0");
-    private static final List<String> KYC_LEDGER_SEED_LOOKUP_KEYS = List.of(
-            "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_90F0");
-    private static final List<String> ASSET_ADJUSTMENT_SEED_NOS = List.of(
-            "ADJ-7741", "ADJ-3188", "ADJ-0029", "ADJ-1182",
-            "ADJ-1183", "ADJ-1179", "ADJ-1175");
     private static final String DEFAULT_SECURITY_LOOKUP_KEY = "usr_2231";
-    private static final List<String> SECURITY_SESSION_SEED_LOOKUP_KEYS = List.of("usr_2231", "usr_8807", "usr_3315");
     private static final String RESET_REQUIRED_PREFIX = "RESET_REQUIRED$";
     private static final Pattern NUMBER_PATTERN = Pattern.compile("\\d+");
     private static final DateTimeFormatter KYC_PAIRED_DATE_FORMATTER = DateTimeFormatter.ofPattern("M/d");
@@ -249,7 +240,6 @@ public class OpsUserService {
     }
 
     public ApiResult<List<UserAccountView>> profiles(UserQueryRequest request) {
-        ensureC1ProfileSeeds();
         int limit = normalizeLimit(request == null ? null : request.limit(), 50, 100);
         return ApiResult.ok(userRepository.search(
                 request == null ? null : request.keyword(),
@@ -259,12 +249,10 @@ public class OpsUserService {
     }
 
     public ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request) {
-        ensureC1ProfileSeeds();
         return ApiResult.ok(userRepository.pageProfiles(request));
     }
 
     public UserProfileExportFile exportProfileExcel(String idempotencyKey, UserProfileExportRequest request) {
-        ensureC1ProfileSeeds();
         String normalizedKey = requireText(idempotencyKey, "IDEMPOTENCY_KEY_REQUIRED");
         String reason = requireText(request == null ? null : request.reason(), "REASON_REQUIRED");
         String operator = operator(request == null ? null : request.operator());
@@ -313,17 +301,6 @@ public class OpsUserService {
                 jobNo + ".xls",
                 profileExportWorkbook(jobNo, normalizedKey, createdAt, reason, rows),
                 rows.size());
-    }
-
-    private void ensureC1ProfileSeeds() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        boolean seedUsersMissing = ACCOUNT_ACTION_SEED_LOOKUP_KEYS.stream()
-                .anyMatch(key -> userRepository.findUserIdByLookupKey(key).isEmpty());
-        if (seedUsersMissing) {
-            userRepository.upsertAccountActionSeeds();
-        }
     }
 
     private byte[] profileExportWorkbook(
@@ -550,10 +527,6 @@ public class OpsUserService {
     public ApiResult<PageResult<UserSessionView>> sessionPage(Long userId, Integer pageNum, Integer pageSize, Integer limit) {
         int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 20, 200) : normalizeLimit(pageSize, 20, 200);
         PageResult<UserSessionView> page = userRepository.pageSessions(userId, normalizePageNum(pageNum), normalizedPageSize);
-        if (page.getTotal() == 0 && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
-            page = userRepository.pageSessions(userId, normalizePageNum(pageNum), normalizedPageSize);
-        }
         return ApiResult.ok(page);
     }
 
@@ -566,7 +539,6 @@ public class OpsUserService {
         if (userId != null && userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
-        ensureSecuritySessionSeeds();
         Long selectedUserId = resolveSecurityUserId(userKey, userId);
         if (selectedUserId == null) {
             if (StringUtils.hasText(userKey) || userId != null) {
@@ -575,25 +547,7 @@ public class OpsUserService {
             return ApiResult.ok(emptySecurityOverview(pageNum, pageSize, limit));
         }
         UserSecurityOverview overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
-        if (securityOverviewSeedsMissing(overview) && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
-            overview = loadSecurityOverview(selectedUserId, pageNum, pageSize, limit);
-        }
         return ApiResult.ok(overview);
-    }
-
-    private void ensureSecuritySessionSeeds() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (securitySeedUsersMissing()) {
-            userRepository.upsertSecuritySessionSeeds();
-        }
-    }
-
-    private boolean securitySeedUsersMissing() {
-        return SECURITY_SESSION_SEED_LOOKUP_KEYS.stream()
-                .anyMatch(lookupKey -> userRepository.findUserIdByLookupKey(lookupKey).isEmpty());
     }
 
     private Long resolveSecurityUserId(String userKey, Long userId) {
@@ -624,13 +578,6 @@ public class OpsUserService {
                 List.of("C5 writes require Idempotency-Key and Confirm-with-Reason",
                         "2FA disable and password reset require secondary identity verification",
                         "Passwords are never visible to operators; reset only invalidates the old hash"));
-    }
-
-    private boolean securityOverviewSeedsMissing(UserSecurityOverview overview) {
-        return overview.selectedUser() == null
-                || overview.sessions().getRecords().isEmpty()
-                || overview.lockedUsers().isEmpty()
-                || securitySeedUsersMissing();
     }
 
     private UserSecurityOverview loadSecurityOverview(Long selectedUserId, Integer pageNum, Integer pageSize, Integer limit) {
@@ -717,21 +664,7 @@ public class OpsUserService {
     }
 
     public ApiResult<UserAccountActionOverview> accountActionOverview() {
-        UserAccountActionOverview overview = loadAccountActionOverview();
-        if (accountActionSeedsMissing(overview) && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertAccountActionSeeds();
-            overview = loadAccountActionOverview();
-        }
-        return ApiResult.ok(overview);
-    }
-
-    private boolean accountActionSeedsMissing(UserAccountActionOverview overview) {
-        boolean seedUsersMissing = ACCOUNT_ACTION_SEED_LOOKUP_KEYS.stream()
-                .anyMatch(key -> userRepository.findUserIdByLookupKey(key).isEmpty());
-        return seedUsersMissing
-                || overview.sessions().isEmpty()
-                || overview.accountLists().isEmpty()
-                || overview.impersonations().isEmpty();
+        return ApiResult.ok(loadAccountActionOverview());
     }
 
     private UserAccountActionOverview loadAccountActionOverview() {
@@ -922,9 +855,6 @@ public class OpsUserService {
         if (reasonGuard != null) {
             return reasonGuard;
         }
-        if (userRepository.findById(userId).isEmpty() && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
-        }
         if (userRepository.findById(userId).isEmpty()) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
@@ -950,10 +880,6 @@ public class OpsUserService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
         UserSecurityStatusView status = loadSecurityStatus(userId);
-        if (status == null && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
-            status = loadSecurityStatus(userId);
-        }
         return status == null ? ApiResult.fail(404, "USER_NOT_FOUND") : ApiResult.ok(status);
     }
 
@@ -1133,10 +1059,6 @@ public class OpsUserService {
             return guard;
         }
         UserSecurityStatusView before = loadSecurityStatus(userId);
-        if (before == null && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
-            before = loadSecurityStatus(userId);
-        }
         if (before == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
@@ -1154,9 +1076,6 @@ public class OpsUserService {
         ApiResult<UserSecurityStatusView> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
-        }
-        if (loadSecurityStatus(userId) == null && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
         }
         if (loadSecurityStatus(userId) == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -1179,10 +1098,6 @@ public class OpsUserService {
             return guard;
         }
         UserSecurityStatusView before = loadSecurityStatus(userId);
-        if (before == null && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
-            before = loadSecurityStatus(userId);
-        }
         if (before == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
@@ -1249,10 +1164,6 @@ public class OpsUserService {
             return guard;
         }
         UserSessionView session = userRepository.findSession(refreshTokenId.trim()).orElse(null);
-        if (session == null && readTimeSeedPolicy.enabled()) {
-            userRepository.upsertSecuritySessionSeeds();
-            session = userRepository.findSession(refreshTokenId.trim()).orElse(null);
-        }
         if (session == null) {
             return ApiResult.fail(404, "SESSION_NOT_FOUND");
         }
@@ -1628,25 +1539,11 @@ public class OpsUserService {
     }
 
     private void ensureAssetAdjustmentSeeds() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        boolean missingSeed = ASSET_ADJUSTMENT_SEED_NOS.stream()
-                .anyMatch(adjustmentNo -> userRepository.findAssetAdjustment(adjustmentNo).isEmpty());
-        if (missingSeed) {
-            userRepository.upsertAssetAdjustmentSeeds();
-        }
+        // Business authority is MySQL business tables; empty tables stay empty until an operator creates data.
     }
 
     private void ensureKycLedgerSeeds() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        boolean missingSeed = KYC_LEDGER_SEED_LOOKUP_KEYS.stream()
-                .anyMatch(lookupKey -> userRepository.findUserIdByLookupKey(lookupKey).isEmpty());
-        if (missingSeed) {
-            userRepository.upsertKycLedgerSeeds();
-        }
+        // Business authority is MySQL business tables; empty tables stay empty until an operator creates data.
     }
 
     private UserAssetAdjustmentDetail assetAdjustmentDetail(UserAssetAdjustmentView adjustment) {

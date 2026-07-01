@@ -33,7 +33,6 @@ import ffdd.opsconsole.user.domain.UserSecurityStatusView;
 import ffdd.opsconsole.user.domain.UserSecurityUserRow;
 import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.domain.UserTeamMemberView;
-import ffdd.opsconsole.user.domain.User360Seed;
 import ffdd.opsconsole.user.dto.UserAccountListRemoveRequest;
 import ffdd.opsconsole.user.dto.UserAccountListUpsertRequest;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentRequest;
@@ -157,14 +156,13 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void profilePageSeedsC1AccountsWhenMissingThenQueriesAgain() {
-        userRepository.c2SeedPresent = false;
+    void profilePageReadsExistingBusinessRowsWithoutCreatingFallbackData() {
+        userRepository.loadAccountActionFixtures();
 
         ApiResult<PageResult<UserAccountView>> result = service.profilePage(
                 new UserQueryRequest("Marcus", null, null, null, 1, 10, null));
 
         assertThat(result.getCode()).isZero();
-        assertThat(userRepository.accountActionSeedWrites).isEqualTo(1);
         assertThat(result.getData().getRecords())
                 .extracting(UserAccountView::userNo)
                 .contains("U00008807");
@@ -216,13 +214,12 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void accountActionOverviewSeedsC2RowsWhenActionRowsAreMissing() {
-        userRepository.c2SeedPresent = true;
+    void accountActionOverviewReadsExistingC2BusinessRows() {
+        userRepository.loadAccountActionFixtures();
 
         ApiResult<UserAccountActionOverview> result = service.accountActionOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(userRepository.accountActionSeedWrites).isEqualTo(1);
         assertThat(result.getData().accounts()).extracting(UserAccountView::userNo).contains("U00008807");
         assertThat(result.getData().sessions()).extracting(UserSessionView::userId).contains(8807L);
         assertThat(result.getData().accountLists()).extracting(UserAccountListEntryView::kind).contains("ALLOW");
@@ -230,17 +227,15 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void accountActionOverviewSeedsC2RowsWhenSeedUsersAreMissing() {
+    void accountActionOverviewDoesNotCreateRowsWhenBusinessRowsAreMissing() {
         userRepository.c2SeedPresent = false;
 
         ApiResult<UserAccountActionOverview> result = service.accountActionOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(userRepository.accountActionSeedWrites).isEqualTo(1);
-        assertThat(result.getData().accounts()).extracting(UserAccountView::userNo).contains("U00008807");
-        assertThat(result.getData().sessions()).extracting(UserSessionView::userId).contains(8807L);
-        assertThat(result.getData().accountLists()).extracting(UserAccountListEntryView::kind).contains("ALLOW");
-        assertThat(result.getData().impersonations()).extracting(UserImpersonationSessionView::sessionNo).contains("IMP-204");
+        assertThat(result.getData().accounts()).extracting(UserAccountView::userNo).doesNotContain("U00008807");
+        assertThat(result.getData().accountLists()).isEmpty();
+        assertThat(result.getData().impersonations()).isEmpty();
     }
 
     @Test
@@ -372,13 +367,12 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void kycOverviewSeedsC4RowsWhenLedgerDataIsMissing() {
-        userRepository.kycSeedPresent = false;
+    void kycOverviewReadsExistingC4BusinessRows() {
+        userRepository.loadKycFixtures();
 
         ApiResult<UserKycOverview> result = service.kycOverview(null, 1, 10, null);
 
         assertThat(result.getCode()).isZero();
-        assertThat(userRepository.kycSeedWrites).isEqualTo(1);
         assertThat(result.getData().rows())
                 .extracting(UserKycLedgerRow::displayId)
                 .contains("U00007704", "U00003188", "U00005501");
@@ -497,11 +491,12 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void assetAdjustmentOverviewSeedsC3RowsWhenMissing() {
+    void assetAdjustmentOverviewReadsExistingBusinessRows() {
+        userRepository.loadAssetAdjustmentFixtures();
+
         ApiResult<Map<String, Object>> result = service.assetAdjustmentOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(userRepository.assetAdjustmentSeedWrites).isEqualTo(1);
         assertThat(result.getData())
                 .containsEntry("pending", 3L)
                 .containsEntry("approved", 3L)
@@ -848,14 +843,13 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void securityOverviewSeedsC5RowsWhenSecurityRowsAreMissing() {
+    void securityOverviewReadsExistingC5BusinessRows() {
         userRepository.sessions.clear();
-        userRepository.c5SeedPresent = false;
+        userRepository.loadSecuritySessionFixtures();
 
         ApiResult<UserSecurityOverview> result = service.securityOverview("usr_2231", null, 1, 10, null);
 
         assertThat(result.getCode()).isZero();
-        assertThat(userRepository.securitySessionSeedWrites).isEqualTo(1);
         assertThat(result.getData().selectedUser().userNo()).isEqualTo("U00002231");
         assertThat(result.getData().sessions().getRecords()).extracting(UserSessionView::refreshTokenId)
                 .contains("C5-SESSION-usr_2231-IOS");
@@ -866,7 +860,7 @@ class OpsUserServiceTest {
 
     @Test
     void securityOverviewReadsLockedUsersFromUserSecurityTable() {
-        userRepository.upsertSecuritySessionSeeds();
+        userRepository.loadSecuritySessionFixtures();
         userRepository.omitC5UsersFromGenericSearch = true;
 
         ApiResult<UserSecurityOverview> result = service.securityOverview("U00002231", null, 1, 10, null);
@@ -941,11 +935,7 @@ class OpsUserServiceTest {
         private boolean c5SeedPresent = true;
         private boolean omitC5UsersFromGenericSearch = false;
         private boolean kycSeedPresent = true;
-        private int accountActionSeedWrites = 0;
-        private int securitySessionSeedWrites = 0;
         private int lockedSecurityUsersCalls = 0;
-        private int assetAdjustmentSeedWrites = 0;
-        private int kycSeedWrites = 0;
         private boolean twoFactorEnabled = false;
         private int loginFailCount = 0;
         private String passwordResetMarker;
@@ -1033,14 +1023,7 @@ class OpsUserServiceTest {
                     : Optional.empty();
         }
 
-        @Override
-        public void upsertUser360Seed(User360Seed seed) {
-            // Not used by OpsUserService tests.
-        }
-
-        @Override
-        public void upsertAccountActionSeeds() {
-            accountActionSeedWrites++;
+        private void loadAccountActionFixtures() {
             c2SeedPresent = true;
             c2SeedUser = new UserAccountView(
                     8807L,
@@ -1073,9 +1056,7 @@ class OpsUserServiceTest {
                     null, null, null, 14L));
         }
 
-        @Override
-        public void upsertKycLedgerSeeds() {
-            kycSeedWrites++;
+        private void loadKycFixtures() {
             kycSeedPresent = true;
             kycSeedUsers.put(7704L, kycSeedUser(7704L, "U00007704", "Harper Stone", "202****7704", "US", "ACTIVE", "PENDING", 48));
             kycSeedUsers.put(3188L, kycSeedUser(3188L, "U00003188", "Ava Miller", "202****3188", "US", "ACTIVE", "APPROVED", 24));
@@ -1089,9 +1070,7 @@ class OpsUserServiceTest {
             walletAddresses.put(9000L, "TQxmSeedKycAddress000000000000000009c");
         }
 
-        @Override
-        public void upsertAssetAdjustmentSeeds() {
-            assetAdjustmentSeedWrites++;
+        private void loadAssetAdjustmentFixtures() {
             adjustments.putIfAbsent("ADJ-7741", adjustment(
                     "ADJ-7741", 1L, "USDT", "CREDIT", new BigDecimal("1200.00"),
                     "客服补偿 · 工单 #88213", "support_zhang", "PENDING_REVIEW", null, null));
@@ -1115,9 +1094,7 @@ class OpsUserServiceTest {
                     "活动补发 · NEX 奖励补发", "growth_lee", "APPROVED", "finance_wu", "活动名单复核通过"));
         }
 
-        @Override
-        public void upsertSecuritySessionSeeds() {
-            securitySessionSeedWrites++;
+        private void loadSecuritySessionFixtures() {
             c5SeedPresent = true;
             c5SeedUsers.put(2231L, c5SeedUser(2231L, "U00002231", "Sofia Park", "010****2231", "82", "ACTIVE", true, 35));
             c5SeedUsers.put(8807L, c5SeedUser(8807L, "U00008807", "Marcus Ray", "202****8807", "1", "RESTRICTED", true, 82));

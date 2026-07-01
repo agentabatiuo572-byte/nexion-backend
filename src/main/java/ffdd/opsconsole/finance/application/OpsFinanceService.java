@@ -31,7 +31,6 @@ import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
-import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -78,14 +77,10 @@ public class OpsFinanceService {
     private static final Pattern FIRST_DECIMAL = Pattern.compile("(\\d+(?:\\.\\d+)?)");
     private static final Pattern K3_VELOCITY_RULE = Pattern.compile("^24h\\s*(>=|>)\\s*(\\d+)\\s*笔\\s*或\\s*(>=|>)\\s*\\$?([\\d,]+)$", Pattern.CASE_INSENSITIVE);
     private static final int HIGH_RISK_SCORE = 70;
-    private static final List<String> D_SEED_USER_KEYS = List.of(
-            "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
-
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
     private final WithdrawalOrderRepository withdrawalRepository;
     private final DepositOpsRepository depositOpsRepository;
-    private final UserSeedRepository userSeedRepository;
     private final RiskKycReviewFacade riskKycReviewFacade;
     private final RiskOpsRepository riskOpsRepository;
     private final AuditLogService auditLogService;
@@ -596,45 +591,10 @@ public class OpsFinanceService {
             return;
         }
         ensureD1ConfigDefaults();
-        if (hasD1LiveData()) {
-            return;
-        }
-        depositOpsRepository.seedD1FallbackData(seedUserIds());
-    }
-
-    private boolean hasD1LiveData() {
-        return !depositOpsRepository.aggregateToday().isEmpty()
-                || depositOpsRepository.cardPaidCountToday() > 0
-                || !depositOpsRepository.chargebacks().isEmpty()
-                || !depositOpsRepository.failedPaymentRiskRows(1).isEmpty();
     }
 
     private void ensureD2FallbackSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        PageResult<WithdrawalOrderView> firstPage = withdrawalRepository.page(null, null, null, null, null, null, 1, 1);
-        if (firstPage.getTotal() == 0) {
-            withdrawalRepository.seedD2FallbackData(seedUserIds());
-            return;
-        }
-        if (withdrawalRepository.countD2ActionableWithdrawals() == 0 && withdrawalRepository.countD2SeedWithdrawals() > 0) {
-            withdrawalRepository.seedD2FallbackData(seedUserIds());
-        }
-    }
-
-    private Map<String, Long> seedUserIds() {
-        boolean missing = D_SEED_USER_KEYS.stream()
-                .anyMatch(key -> userSeedRepository.findUserIdByLookupKey(key).isEmpty());
-        if (missing) {
-            userSeedRepository.upsertAccountActionSeeds();
-            userSeedRepository.upsertKycLedgerSeeds();
-        }
-        Map<String, Long> ids = new LinkedHashMap<>();
-        for (String key : D_SEED_USER_KEYS) {
-            userSeedRepository.findUserIdByLookupKey(key).ifPresent(id -> ids.put(key, id));
-        }
-        return ids;
+        // D2 withdrawals are business orders. Empty tables must remain empty until real orders are created.
     }
 
     private void ensureD1ConfigDefaults() {

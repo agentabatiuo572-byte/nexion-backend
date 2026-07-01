@@ -28,19 +28,7 @@ public class MybatisSessionTemplateRepository implements SessionTemplateReposito
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
-        if (listScripts().isEmpty()) {
-            createScript("AS-M-SEED-001", script("开场", "你好,我是你的专属顾问。有明显的机会我会第一时间提醒你。", "—", "全量", "published"), now);
-            createScript("AS-M-SEED-002", script("升级", "你的设备近期有不少时段闲置,升级后能减少空窗。", "/store", "全量", "published"), now);
-            createScript("AS-M-SEED-003", script("锁仓", "180 天锁仓适合短期不动用的余额,我可以帮你看下额度。", "/staking", "P3 阶段活跃", "published"), now);
-            createScript("AS-M-SEED-004", script("复投", "你这个月的收益到账了,需要我帮你看看复投方案吗?", "/staking", "近 30 天提现偏高", "published"), now);
-            createScript("AS-M-SEED-005", script("开场", "最近设备运行还顺利吗? 有任何问题我都在。", "—", "注册 ≤14 天", "draft"), now);
-        }
-        if (listReplyTemplates().isEmpty()) {
-            createReplyTemplate("RT-M-SEED-A1", replyTemplate("advisor", "好,我挑几个适合你当前配置的方案给你。", "published"), now);
-            createReplyTemplate("RT-M-SEED-A2", replyTemplate("advisor", "按你的算力,升一档会减少设备闲置时段。", "published"), now);
-            createReplyTemplate("RT-M-SEED-S1", replyTemplate("support", "收到,我先调出你的账户核对。", "published"), now);
-            createReplyTemplate("RT-M-SEED-S2", replyTemplate("support", "方便发一下订单号或交易 ID 吗? 我好查具体情况。", "published"), now);
-        }
+        // Business rows must come from MySQL writes, not read-time demo seeds.
     }
 
     @Override

@@ -1,10 +1,7 @@
 package ffdd.opsconsole.user.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -27,7 +24,6 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
-import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -36,7 +32,6 @@ import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
 import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.domain.UserTeamMemberView;
-import ffdd.opsconsole.user.domain.User360Seed;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -52,9 +47,9 @@ class OpsUser360ServiceTest {
     private final OpsRiskService riskService = mock(OpsRiskService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final UserOpsRepository userRepository = mock(UserOpsRepository.class);
-    private final OpsUser360Service service = service(OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+    private final OpsUser360Service service = service();
 
-    private OpsUser360Service service(OpsReadTimeSeedPolicy readTimeSeedPolicy) {
+    private OpsUser360Service service() {
         return new OpsUser360Service(
                 userService,
                 financeService,
@@ -62,8 +57,7 @@ class OpsUser360ServiceTest {
                 deviceService,
                 riskService,
                 auditLogService,
-                userRepository,
-                readTimeSeedPolicy);
+                userRepository);
     }
 
     @Test
@@ -75,77 +69,18 @@ class OpsUser360ServiceTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void detailByLookupKeySeedsMissingC1UserThenAggregatesByDatabaseId() {
-        LocalDateTime now = LocalDateTime.of(2026, 6, 24, 12, 0);
-        UserAccountView profile = new UserAccountView(
-                88421L,
-                "U00088421",
-                "Marcus Lee",
-                "415****8821",
-                "+1",
-                "ACTIVE",
-                "VERIFIED",
-                "L4",
-                "V3",
-                true,
-                new BigDecimal("8420.00"),
-                new BigDecimal("12400.00"),
-                72,
-                "高风险",
-                2L,
-                2L,
-                now.minusDays(104),
-                now.minusMinutes(15));
-
+    void detailByLookupKeyReturnsNotFoundWhenBusinessUserIsMissing() {
         when(userRepository.findUserIdByLookupKey("usr_84F2")).thenReturn(Optional.empty());
-        when(userRepository.findUserIdByLookupKey("NX-8821")).thenReturn(Optional.empty(), Optional.of(88421L));
-        when(userService.profile(88421L)).thenReturn(ApiResult.ok(profile));
-        when(riskService.scoreUser("U00088421")).thenReturn(ApiResult.ok(new RiskScoreUserView(
-                "U00088421",
-                72,
-                72,
-                false,
-                "高风险",
-                "danger",
-                "c1-seed",
-                "刚刚",
-                List.of())));
-        when(userRepository.teamMembers(88421L, 20)).thenReturn(List.of());
-        when(userRepository.notifications(88421L, 20)).thenReturn(List.of());
-        when(auditLogService.list(org.mockito.ArgumentMatchers.any(AuditLogQueryRequest.class))).thenReturn(List.of());
 
         ApiResult<Map<String, Object>> result = service.detail("usr_84F2");
 
-        assertThat(result.getCode()).isZero();
-        Map<String, Object> summary = (Map<String, Object>) result.getData().get("summary");
-        assertThat(summary)
-                .containsEntry("userId", 88421L)
-                .containsEntry("userNo", "U00088421")
-                .containsEntry("riskScore", 72);
-        verify(userRepository).upsertUser360Seed(argThat((User360Seed seed) ->
-                "usr_84F2".equals(seed.lookupKey())
-                        && "NX-8821".equals(seed.referralCode())
-                        && "Marcus Lee".equals(seed.nickname())));
-        verify(userService).profile(88421L);
-    }
-
-    @Test
-    void detailByLookupKeyDoesNotSeedWhenReadTimeSeedsAreDisabled() {
-        OpsUser360Service disabledService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        when(userRepository.findUserIdByLookupKey("usr_84F2")).thenReturn(Optional.empty());
-        when(userRepository.findUserIdByLookupKey("NX-8821")).thenReturn(Optional.empty());
-
-        ApiResult<Map<String, Object>> result = disabledService.detail("usr_84F2");
-
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("USER_NOT_FOUND");
-        verify(userRepository, never()).upsertUser360Seed(any(User360Seed.class));
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void detailByLookupKeyReusesExistingSeedUserWithoutReinserting() {
+    void detailByLookupKeyAggregatesExistingBusinessUser() {
         LocalDateTime now = LocalDateTime.of(2026, 6, 24, 12, 0);
         UserAccountView profile = new UserAccountView(
                 88421L,
@@ -167,8 +102,7 @@ class OpsUser360ServiceTest {
                 now.minusDays(104),
                 now.minusMinutes(15));
 
-        when(userRepository.findUserIdByLookupKey("usr_84F2")).thenReturn(Optional.empty());
-        when(userRepository.findUserIdByLookupKey("NX-8821")).thenReturn(Optional.of(88421L));
+        when(userRepository.findUserIdByLookupKey("usr_84F2")).thenReturn(Optional.of(88421L));
         when(userRepository.countTeamMembers(88421L)).thenReturn(8L);
         when(userService.profile(88421L)).thenReturn(ApiResult.ok(profile));
         when(riskService.scoreUser("U00088421")).thenReturn(ApiResult.ok(new RiskScoreUserView(
@@ -192,7 +126,6 @@ class OpsUser360ServiceTest {
         assertThat(summary)
                 .containsEntry("userId", 88421L)
                 .containsEntry("teamSize", 8L);
-        verify(userRepository, never()).upsertUser360Seed(any(User360Seed.class));
     }
 
     @Test

@@ -10,7 +10,6 @@ import ffdd.opsconsole.market.infrastructure.StakingProductEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
-import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -43,88 +42,6 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
             </script>
             """)
     long countPositionsByProductCodes(@Param("productCodes") List<String> productCodes);
-
-    @Insert("""
-            INSERT INTO nx_staking_product
-              (product_code, name, asset, term_days, apy_bps, early_penalty_bps, min_amount, sort_order, status, is_deleted)
-            VALUES
-              (#{productCode}, #{name}, #{asset}, #{termDays}, #{apyBps}, #{earlyPenaltyBps}, #{minAmount}, #{sortOrder}, #{status}, 0)
-            ON DUPLICATE KEY UPDATE
-              name = VALUES(name),
-              asset = VALUES(asset),
-              term_days = VALUES(term_days),
-              apy_bps = VALUES(apy_bps),
-              early_penalty_bps = VALUES(early_penalty_bps),
-              min_amount = VALUES(min_amount),
-              sort_order = VALUES(sort_order),
-              status = VALUES(status),
-              is_deleted = 0,
-              updated_at = CURRENT_TIMESTAMP
-            """)
-    int upsertSeedProduct(
-            @Param("productCode") String productCode,
-            @Param("name") String name,
-            @Param("asset") String asset,
-            @Param("termDays") int termDays,
-            @Param("apyBps") BigDecimal apyBps,
-            @Param("earlyPenaltyBps") BigDecimal earlyPenaltyBps,
-            @Param("minAmount") BigDecimal minAmount,
-            @Param("sortOrder") int sortOrder,
-            @Param("status") String status);
-
-    @Insert("""
-            INSERT INTO nx_staking_position
-              (user_id, position_no, product_id, product_code, product_name, amount_usdt, apy_bps,
-               early_penalty_bps, term_days, locked_at, unlock_at, estimated_interest_usdt, status,
-               claimed_at, early_withdrawn_at, is_deleted)
-            SELECT #{userId},
-                   #{positionNo},
-                   product.id,
-                   product.product_code,
-                   product.name,
-                   #{amountUsdt},
-                   product.apy_bps,
-                   product.early_penalty_bps,
-                   product.term_days,
-                   #{lockedAt},
-                   #{unlockAt},
-                   #{estimatedInterestUsdt},
-                   #{status},
-                   #{claimedAt},
-                   #{earlyWithdrawnAt},
-                   0
-              FROM nx_staking_product product
-             WHERE product.product_code = #{productCode}
-               AND product.is_deleted = 0
-             LIMIT 1
-            ON DUPLICATE KEY UPDATE
-              product_id = VALUES(product_id),
-              product_code = VALUES(product_code),
-              product_name = VALUES(product_name),
-              amount_usdt = VALUES(amount_usdt),
-              apy_bps = VALUES(apy_bps),
-              early_penalty_bps = VALUES(early_penalty_bps),
-              term_days = VALUES(term_days),
-              locked_at = VALUES(locked_at),
-              unlock_at = VALUES(unlock_at),
-              estimated_interest_usdt = VALUES(estimated_interest_usdt),
-              status = VALUES(status),
-              claimed_at = VALUES(claimed_at),
-              early_withdrawn_at = VALUES(early_withdrawn_at),
-              is_deleted = 0,
-              updated_at = CURRENT_TIMESTAMP
-            """)
-    int upsertSeedPosition(
-            @Param("userId") long userId,
-            @Param("positionNo") String positionNo,
-            @Param("productCode") String productCode,
-            @Param("amountUsdt") BigDecimal amountUsdt,
-            @Param("estimatedInterestUsdt") BigDecimal estimatedInterestUsdt,
-            @Param("status") String status,
-            @Param("lockedAt") LocalDateTime lockedAt,
-            @Param("unlockAt") LocalDateTime unlockAt,
-            @Param("claimedAt") LocalDateTime claimedAt,
-            @Param("earlyWithdrawnAt") LocalDateTime earlyWithdrawnAt);
 
     @Select("""
             <script>

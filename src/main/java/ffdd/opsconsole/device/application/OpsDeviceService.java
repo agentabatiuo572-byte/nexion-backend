@@ -377,10 +377,6 @@ public class OpsDeviceService {
     @Transactional
     public ApiResult<PageResult<DeviceSkuView>> skus(DeviceSkuQueryRequest request) {
         PageResult<DeviceSkuView> page = catalogRepository.pageSkus(request);
-        if (readTimeSeedPolicy.enabled() && shouldSeedDefaultSkus(request, page)) {
-            seedDefaultE1SkusIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP), LocalDateTime.now(clock));
-            page = catalogRepository.pageSkus(request);
-        }
         return ApiResult.ok(page);
     }
 
@@ -489,10 +485,6 @@ public class OpsDeviceService {
     @Transactional
     public ApiResult<PageResult<DeviceReviewView>> reviews(DeviceReviewQueryRequest request) {
         PageResult<DeviceReviewView> page = catalogRepository.pageReviews(request);
-        if (readTimeSeedPolicy.enabled() && shouldSeedDefaultReviews(request, page)) {
-            seedDefaultE1ReviewsIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP), LocalDateTime.now(clock));
-            page = catalogRepository.pageReviews(request);
-        }
         return ApiResult.ok(page);
     }
 
@@ -582,20 +574,12 @@ public class OpsDeviceService {
     @Transactional
     public ApiResult<PageResult<DeviceTaskView>> tasks(DeviceTaskQueryRequest request) {
         PageResult<DeviceTaskView> page = catalogRepository.pageTasks(request);
-        if (readTimeSeedPolicy.enabled() && shouldSeedDefaultTasks(request, page)) {
-            seedDefaultTasks(LocalDateTime.now(clock));
-            page = catalogRepository.pageTasks(request);
-        }
         return ApiResult.ok(page);
     }
 
     @Transactional
     public ApiResult<List<DevicePhoneTierRewardView>> phoneTierRewards() {
         List<DevicePhoneTierRewardView> rewards = catalogRepository.listPhoneTierRewards();
-        if (rewards.isEmpty() && readTimeSeedPolicy.enabled()) {
-            seedDefaultPhoneTierRewards(LocalDateTime.now(clock));
-            rewards = catalogRepository.listPhoneTierRewards();
-        }
         return ApiResult.ok(rewards);
     }
 
@@ -620,9 +604,6 @@ public class OpsDeviceService {
         }
         if (request.dailyNex() != null && request.dailyNex().compareTo(BigDecimal.ZERO) <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_NEX_INVALID");
-        }
-        if (catalogRepository.listPhoneTierRewards().isEmpty() && readTimeSeedPolicy.enabled()) {
-            seedDefaultPhoneTierRewards(LocalDateTime.now(clock));
         }
         DevicePhoneTierRewardView before = catalogRepository.findPhoneTierReward(tier).orElse(null);
         if (before == null) {
@@ -1563,68 +1544,6 @@ public class OpsDeviceService {
         return null;
     }
 
-    private boolean shouldSeedDefaultTasks(DeviceTaskQueryRequest request, PageResult<DeviceTaskView> page) {
-        if (page == null || page.getTotal() > 0) {
-            return false;
-        }
-        return request == null
-                || (!StringUtils.hasText(request.status()) && !StringUtils.hasText(request.keyword()));
-    }
-
-    private boolean shouldSeedDefaultSkus(DeviceSkuQueryRequest request, PageResult<DeviceSkuView> page) {
-        if (page == null || page.getTotal() > 0) {
-            return false;
-        }
-        return request == null
-                || (!StringUtils.hasText(request.status()) && !StringUtils.hasText(request.keyword()));
-    }
-
-    private boolean shouldSeedDefaultReviews(DeviceReviewQueryRequest request, PageResult<DeviceReviewView> page) {
-        if (page == null || page.getTotal() > 0) {
-            return false;
-        }
-        return request == null
-                || (!StringUtils.hasText(request.skuId())
-                && !StringUtils.hasText(request.status())
-                && request.rating() == null
-                && !StringUtils.hasText(request.keyword()));
-    }
-
-    private void seedDefaultE1SkusIfEmpty(Map<String, String> e1Configs, LocalDateTime now) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        PageResult<DeviceSkuView> existing = catalogRepository.pageSkus(new DeviceSkuQueryRequest(null, null, 1L, 1L));
-        if (existing.getTotal() > 0) {
-            return;
-        }
-        seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
-        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, now);
-        for (DefaultSkuSeed seed : DEFAULT_E1_SKUS) {
-            if (catalogRepository.findSku(seed.skuId()).isPresent()) {
-                continue;
-            }
-            catalogRepository.createSku(seed.skuId(), seed.toRequest(phaseIdForSeed(seed.unlockPhaseLabel())), now);
-        }
-    }
-
-    private void seedDefaultE1ReviewsIfEmpty(Map<String, String> e1Configs, LocalDateTime now) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        PageResult<DeviceReviewView> existing = catalogRepository.pageReviews(new DeviceReviewQueryRequest(null, null, null, null, 1L, 1L));
-        if (existing.getTotal() > 0) {
-            return;
-        }
-        seedDefaultE1SkusIfEmpty(e1Configs, now);
-        for (DefaultReviewSeed seed : DEFAULT_E1_REVIEWS) {
-            if (catalogRepository.findReview(seed.reviewId()).isPresent() || catalogRepository.findSku(seed.skuId()).isEmpty()) {
-                continue;
-            }
-            catalogRepository.createReview(seed.reviewId(), seed.toRequest(), now);
-        }
-    }
-
     private String phaseIdForSeed(String phaseLabel) {
         if (!StringUtils.hasText(phaseLabel)) {
             return "";
@@ -1637,37 +1556,6 @@ public class OpsDeviceService {
                 .findFirst()
                 .map(DevicePhaseView::p)
                 .orElse("");
-    }
-
-    private void seedDefaultTasks(LocalDateTime now) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        for (DefaultTaskSeed seed : DEFAULT_E2_TASKS) {
-            if (catalogRepository.findTask(seed.taskId()).isPresent()) {
-                continue;
-            }
-            catalogRepository.createTask(seed.taskId(), seed.toRequest(), now);
-        }
-    }
-
-    private void seedDefaultPhoneTierRewards(LocalDateTime now) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        for (DefaultPhoneTierRewardSeed seed : DEFAULT_PHONE_TIER_REWARDS) {
-            if (catalogRepository.findPhoneTierReward(seed.tier()).isPresent()) {
-                continue;
-            }
-            catalogRepository.createPhoneTierReward(
-                    seed.tier(),
-                    seed.name(),
-                    seed.note(),
-                    new BigDecimal(seed.dailyUsdt()),
-                    new BigDecimal(seed.dailyNex()),
-                    "active",
-                    now);
-        }
     }
 
     private ApiResult<DeviceOrderView> transitionOrder(

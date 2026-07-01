@@ -22,7 +22,6 @@ import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
-import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -84,16 +83,12 @@ public class OpsTreasuryService {
             new GateSeed("staking", "算力质押闸"),
             new GateSeed("genesis", "Genesis 闸"),
             new GateSeed("trial", "试用闸"));
-    private static final List<String> D_SEED_USER_KEYS = List.of(
-            "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
-
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
     private final Clock clock;
     private final TreasuryDualLedgerProperties dualLedgerProperties;
-    private final UserSeedRepository userSeedRepository;
     private final ObjectMapper objectMapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
@@ -965,21 +960,10 @@ public class OpsTreasuryService {
             return;
         }
         ensureD3ConfigDefaults();
-        if (treasuryLiabilitiesPresent()) {
-            return;
-        }
-        ledgerRepository.seedD4FallbackData(seedUserIds());
     }
 
     private void ensureD4FallbackSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        ensureD3ConfigDefaults();
-        if (ledgerRepository.countLedgerBills(null, null, null) > 0) {
-            return;
-        }
-        ledgerRepository.seedD4FallbackData(seedUserIds());
+        // D4 ledger bills are business records. Empty tables must remain empty until real posting flows create rows.
     }
 
     private boolean treasuryLiabilitiesPresent() {
@@ -990,20 +974,6 @@ public class OpsTreasuryService {
                 || ledgerRepository.countActiveWithdrawalQueue() > 0
                 || safe(ledgerRepository.sumPendingCommissionUsdt()).compareTo(BigDecimal.ZERO) > 0
                 || ledgerRepository.countLedgerBills(null, null, null) > 0;
-    }
-
-    private Map<String, Long> seedUserIds() {
-        boolean missing = D_SEED_USER_KEYS.stream()
-                .anyMatch(key -> userSeedRepository.findUserIdByLookupKey(key).isEmpty());
-        if (missing) {
-            userSeedRepository.upsertAccountActionSeeds();
-            userSeedRepository.upsertKycLedgerSeeds();
-        }
-        Map<String, Long> ids = new LinkedHashMap<>();
-        for (String key : D_SEED_USER_KEYS) {
-            userSeedRepository.findUserIdByLookupKey(key).ifPresent(id -> ids.put(key, id));
-        }
-        return ids;
     }
 
     private void ensureD3ConfigDefaults() {

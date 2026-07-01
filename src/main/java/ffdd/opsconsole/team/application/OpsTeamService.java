@@ -1138,17 +1138,11 @@ public class OpsTeamService {
         String configKey = uiConfigKey(key);
         Optional<String> value = configFacade.activeValue(configKey);
         if (value.isEmpty()) {
-            if (readTimeSeedPolicy.enabled()) {
-                throw new IllegalStateException(label + " config is missing");
-            }
             return List.of();
         }
         try {
             List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
             if (parsed == null || parsed.isEmpty()) {
-                if (readTimeSeedPolicy.enabled()) {
-                    throw new IllegalStateException(label + " config is empty");
-                }
                 return List.of();
             }
             return parsed.stream().map(normalizer).toList();
@@ -1412,23 +1406,7 @@ public class OpsTeamService {
     }
 
     private void seedF5CommissionAuditIfMissing() {
-        seedText("F5.commission.monthlySpendLabel", "$8.42M", "F5 monthly commission spend label");
-        seedText("F5.commission.coolingBalanceLabel", "$2.46M", "F5 cooling commission balance label");
-        seedText("F5.commission.withdrawableThisMonthLabel", "$5.96M", "F5 withdrawable commission label");
-        seedJson("F5.commission.kinds", mapRowsJson(F5_COMMISSION_KIND_SEEDS, "F5 commission kinds"),
-                "F5 commission kind cards");
-        seedJson("F5.commission.filters", mapRowsJson(F5_COMMISSION_FILTER_SEEDS, "F5 commission filters"),
-                "F5 commission status filters");
-        seedJson("F5.commission.events", mapRowsJson(F5_COMMISSION_EVENT_SEEDS, "F5 commission events"),
-                "F5 commission audit rows");
-        seedJson("F5.commission.auditFeed", mapRowsJson(F5_COMMISSION_AUDIT_FEED_SEEDS, "F5 commission audit feed"),
-                "F5 commission audit feed");
-        for (Map<String, Object> event : F5_COMMISSION_EVENT_SEEDS) {
-            seedText(
-                    "F.commission." + event.get("id") + ".status",
-                    String.valueOf(event.get("state")),
-                    "F5 commission event status");
-        }
+        // F5 commission rows are business events and must come from MySQL-backed writes.
     }
 
     private void seedText(String key, String value, String remark) {

@@ -20,7 +20,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
@@ -50,7 +49,6 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             "inventorySoftMax");
     private final DeviceOpsMapper mapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
-    private final AtomicBoolean datacenterCatalogReady = new AtomicBoolean(false);
 
     @Override
     public Map<String, Object> overviewCounters() {
@@ -170,7 +168,6 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public List<DeviceDatacenterView> datacenterSummaries() {
-        ensureDatacenterCatalogReady();
         return mapper.datacenterSummaries().stream()
                 .map(this::toDatacenterView)
                 .toList();
@@ -178,21 +175,18 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public Optional<DeviceDatacenterView> findDatacenter(String dcLocation) {
-        ensureDatacenterCatalogReady();
         return Optional.ofNullable(mapper.findDatacenter(dcLocation))
                 .map(this::toDatacenterView);
     }
 
     @Override
     public DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-        ensureDatacenterCatalogReady();
         mapper.insertDatacenter(request.dcLocation(), request.regionLabel(), request.status(), request.sortOrder(), operator);
         return findDatacenter(request.dcLocation()).orElseThrow();
     }
 
     @Override
     public Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-        ensureDatacenterCatalogReady();
         int updated = mapper.updateDatacenter(dcLocation, request.regionLabel(), request.status(), request.sortOrder(), operator);
         if (updated == 0) {
             return Optional.empty();
@@ -202,7 +196,6 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now) {
-        ensureDatacenterCatalogReady();
         return mapper.softDeleteDatacenter(dcLocation, operator, now) > 0;
     }
 
@@ -224,17 +217,6 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         if (updated == 0) {
             mapper.insertDatacenterState(dcLocation, pausedValue, reason, paused ? now : null, paused ? null : now, operator);
         }
-    }
-
-    private void ensureDatacenterCatalogReady() {
-        if (datacenterCatalogReady.get()) {
-            return;
-        }
-        mapper.ensureDatacenterCatalogTable();
-        if (readTimeSeedPolicy.enabled() && mapper.countDatacenterCatalogRows() == 0) {
-            mapper.seedDefaultDatacenters();
-        }
-        datacenterCatalogReady.set(true);
     }
 
     private DeviceDatacenterView toDatacenterView(DeviceOpsMapper.DatacenterSummaryRow row) {

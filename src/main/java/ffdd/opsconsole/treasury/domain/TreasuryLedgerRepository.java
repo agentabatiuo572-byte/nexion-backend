@@ -3,7 +3,6 @@ package ffdd.opsconsole.treasury.domain;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 public interface TreasuryLedgerRepository {
@@ -52,6 +51,4 @@ public interface TreasuryLedgerRepository {
 
     void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                          BigDecimal amount, String status, String remark);
-
-    void seedD4FallbackData(Map<String, Long> userIds);
 }

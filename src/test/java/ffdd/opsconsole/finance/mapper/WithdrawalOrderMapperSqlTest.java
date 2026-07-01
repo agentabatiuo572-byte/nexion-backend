@@ -3,7 +3,6 @@ package ffdd.opsconsole.finance.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
-import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
@@ -24,34 +23,6 @@ class WithdrawalOrderMapperSqlTest {
         assertThat(runtimeSql)
                 .contains("LENGTH(u.phone) < 7")
                 .contains("w2.created_at <= w.created_at");
-    }
-
-    @Test
-    void seedWithdrawalInsertDoesNotEmitExtraClosingParenthesisBeforeValues() throws Exception {
-        String sql = String.join("\n", WithdrawalOrderMapper.class
-                .getMethod(
-                        "insertD2SeedWithdrawal",
-                        String.class,
-                        Long.class,
-                        String.class,
-                        String.class,
-                        BigDecimal.class,
-                        BigDecimal.class,
-                        String.class,
-                        String.class,
-                        String.class,
-                        boolean.class,
-                        boolean.class,
-                        boolean.class,
-                        String.class,
-                        int.class,
-                        Integer.class,
-                        String.class,
-                        int.class)
-                .getAnnotation(Insert.class)
-                .value());
-
-        assertThat(sql).doesNotContain(")\n            ) VALUES");
     }
 
     @Test
@@ -109,14 +80,18 @@ class WithdrawalOrderMapperSqlTest {
                 .contains("AS riskReason")
                 .contains("rd2.reason")
                 .contains("hit.hit_reasons")
-                .contains("REPLACE(w.withdrawal_no, 'D2-SEED-', '')")
-                .contains("hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', '')");
+                .contains("rd2.biz_no = w.withdrawal_no")
+                .contains("hit.withdrawal_no = w.withdrawal_no")
+                .doesNotContain("SEED")
+                .doesNotContain("REPLACE(w.withdrawal_no");
         assertThat(detailSql)
                 .contains("AS riskReason")
                 .contains("rd2.reason")
                 .contains("hit.hit_reasons")
-                .contains("REPLACE(w.withdrawal_no, 'D2-SEED-', '')")
-                .contains("hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', '')");
+                .contains("rd2.biz_no = w.withdrawal_no")
+                .contains("hit.withdrawal_no = w.withdrawal_no")
+                .doesNotContain("SEED")
+                .doesNotContain("REPLACE(w.withdrawal_no");
     }
 
     @Test

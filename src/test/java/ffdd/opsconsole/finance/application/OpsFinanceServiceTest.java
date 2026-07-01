@@ -29,7 +29,6 @@ import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
-import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Collection;
@@ -46,7 +45,6 @@ class OpsFinanceServiceTest {
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeWithdrawalOrderRepository withdrawalRepository = new FakeWithdrawalOrderRepository();
     private final FakeDepositOpsRepository depositOpsRepository = new FakeDepositOpsRepository();
-    private final FakeUserSeedRepository userSeedRepository = new FakeUserSeedRepository();
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final RiskOpsRepository riskOpsRepository = mock(RiskOpsRepository.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
@@ -56,7 +54,6 @@ class OpsFinanceServiceTest {
                     coverageFacade,
                     withdrawalRepository,
                     depositOpsRepository,
-                    userSeedRepository,
                     riskKycReviewFacade,
                     riskOpsRepository,
                     auditLogService,
@@ -73,7 +70,6 @@ class OpsFinanceServiceTest {
                 coverageFacade,
                 withdrawalRepository,
                 depositOpsRepository,
-                userSeedRepository,
                 riskKycReviewFacade,
                 riskOpsRepository,
                 auditLogService,
@@ -543,13 +539,11 @@ class OpsFinanceServiceTest {
     }
 
     @Test
-    void topupOverviewSeedsFallbackDataWhenDatabaseIsEmpty() {
+    void topupOverviewDoesNotCreateFallbackBusinessRowsWhenDatabaseIsEmpty() {
         ApiResult<Map<String, Object>> result = service.topupOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(depositOpsRepository.seedCalls).isEqualTo(1);
-        assertThat(userSeedRepository.accountSeedCalls).isEqualTo(1);
-        assertThat(result.getData()).containsEntry("ledgerCount", 1L);
+        assertThat(result.getData()).containsEntry("ledgerCount", 0L);
     }
 
     @Test
@@ -559,8 +553,6 @@ class OpsFinanceServiceTest {
         ApiResult<Map<String, Object>> result = realOnlyService.topupOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(depositOpsRepository.seedCalls).isZero();
-        assertThat(userSeedRepository.accountSeedCalls).isZero();
         assertThat(result.getData()).containsEntry("ledgerCount", 0L);
         assertThat(result.getData().get("reconciliation")).asList().isEmpty();
     }
@@ -622,14 +614,13 @@ class OpsFinanceServiceTest {
     }
 
     @Test
-    void withdrawalsSeedsFallbackDataWhenDatabaseIsEmpty() {
+    void withdrawalsDoesNotCreateFallbackBusinessRowsWhenDatabaseIsEmpty() {
         ApiResult<PageResult<WithdrawalOrderView>> result = service.withdrawals(
                 new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
 
         assertThat(result.getCode()).isZero();
-        assertThat(withdrawalRepository.seedCalls).isEqualTo(1);
-        assertThat(result.getData().getTotal()).isEqualTo(1);
-        assertThat(result.getData().getRecords()).extracting(WithdrawalOrderView::withdrawalNo).containsExactly("D2-SEED-WD-1");
+        assertThat(result.getData().getTotal()).isZero();
+        assertThat(result.getData().getRecords()).isEmpty();
     }
 
     @Test
@@ -640,23 +631,21 @@ class OpsFinanceServiceTest {
                 new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
 
         assertThat(result.getCode()).isZero();
-        assertThat(withdrawalRepository.seedCalls).isZero();
         assertThat(result.getData().getTotal()).isZero();
         assertThat(result.getData().getRecords()).isEmpty();
     }
 
     @Test
-    void withdrawalsReseedsD2FallbackWhenSeedRowsHaveNoActionableState() {
-        withdrawalRepository.order = withdrawal("D2-SEED-WD-1", "SUCCESS");
+    void withdrawalsKeepsExistingFinalRowsWithoutCreatingActionableFallbackRows() {
+        withdrawalRepository.order = withdrawal("WD-FINAL-1", "SUCCESS");
 
         ApiResult<PageResult<WithdrawalOrderView>> result = service.withdrawals(
                 new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
 
         assertThat(result.getCode()).isZero();
-        assertThat(withdrawalRepository.seedCalls).isEqualTo(1);
         assertThat(result.getData().getRecords())
                 .extracting(WithdrawalOrderView::status)
-                .containsExactly("REVIEWING");
+                .containsExactly("SUCCESS");
     }
 
     @Test
@@ -667,7 +656,6 @@ class OpsFinanceServiceTest {
                 new WithdrawalQueryRequest(null, null, null, 1, 20, null, null, null));
 
         assertThat(result.getCode()).isZero();
-        assertThat(withdrawalRepository.seedCalls).isZero();
         assertThat(result.getData().getRecords())
                 .extracting(WithdrawalOrderView::withdrawalNo)
                 .containsExactly("WD-REAL-1");
@@ -809,32 +797,6 @@ class OpsFinanceServiceTest {
         }
     }
 
-    private static final class FakeUserSeedRepository implements UserSeedRepository {
-        private final Map<String, Long> ids = new LinkedHashMap<>();
-        private int accountSeedCalls;
-        private int kycSeedCalls;
-
-        @Override
-        public Optional<Long> findUserIdByLookupKey(String lookupKey) {
-            return Optional.ofNullable(ids.get(lookupKey));
-        }
-
-        @Override
-        public void upsertAccountActionSeeds() {
-            accountSeedCalls++;
-            ids.put("usr_31E8", 1001L);
-            ids.put("usr_2231", 1002L);
-            ids.put("usr_55B1", 1003L);
-            ids.put("usr_8807", 1004L);
-        }
-
-        @Override
-        public void upsertKycLedgerSeeds() {
-            kycSeedCalls++;
-            ids.put("usr_77D4", 1005L);
-        }
-    }
-
     private static final class FakeWithdrawalOrderRepository implements WithdrawalOrderRepository {
         private WithdrawalOrderView order;
         private String lastStatus;
@@ -845,7 +807,6 @@ class OpsFinanceServiceTest {
         private BigDecimal lastMaxAmountFilter;
         private Integer lastMinRiskScoreFilter;
         private String lastFailureReason;
-        private int seedCalls;
 
         @Override
         public PageResult<WithdrawalOrderView> page(String status, Long userId, String keyword, BigDecimal minAmount,
@@ -895,19 +856,8 @@ class OpsFinanceServiceTest {
         }
 
         @Override
-        public long countD2SeedWithdrawals() {
-            return order != null && order.withdrawalNo().startsWith("D2-SEED-") ? 1 : 0;
-        }
-
-        @Override
         public long countD2ActionableWithdrawals() {
             return order != null && isActionableStatus(order.status()) ? 1 : 0;
-        }
-
-        @Override
-        public void seedD2FallbackData(Map<String, Long> userIds) {
-            seedCalls++;
-            order = withdrawal("D2-SEED-WD-1", "REVIEWING");
         }
 
         private boolean isActionableStatus(String status) {
@@ -950,7 +900,6 @@ class OpsFinanceServiceTest {
 
     private static final class FakeDepositOpsRepository implements DepositOpsRepository {
         private List<DepositAggregateView> aggregates = List.of();
-        private int seedCalls;
 
         @Override
         public List<DepositAggregateView> aggregateToday() {
@@ -992,15 +941,5 @@ class OpsFinanceServiceTest {
             return 0;
         }
 
-        @Override
-        public void seedD1FallbackData(Map<String, Long> userIds) {
-            seedCalls++;
-            aggregates = List.of(new DepositAggregateView(
-                    "USDT-TRC20",
-                    1L,
-                    new BigDecimal("50.00"),
-                    1L,
-                    new BigDecimal("50.00")));
-        }
     }
 }

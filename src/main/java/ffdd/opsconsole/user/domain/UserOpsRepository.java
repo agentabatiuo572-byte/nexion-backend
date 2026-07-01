@@ -9,7 +9,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentQueryRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 
-public interface UserOpsRepository extends UserSeedRepository {
+public interface UserOpsRepository {
     Map<String, Object> overview();
 
     List<UserAccountView> search(String keyword, String status, String kycStatus, int limit);
@@ -21,16 +21,6 @@ public interface UserOpsRepository extends UserSeedRepository {
     Optional<UserAccountView> findById(Long userId);
 
     Optional<Long> findUserIdByLookupKey(String lookupKey);
-
-    void upsertUser360Seed(User360Seed seed);
-
-    void upsertAccountActionSeeds();
-
-    void upsertKycLedgerSeeds();
-
-    void upsertAssetAdjustmentSeeds();
-
-    void upsertSecuritySessionSeeds();
 
     Optional<String> findWalletAddressByUserId(Long userId);
 

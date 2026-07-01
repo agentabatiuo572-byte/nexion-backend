@@ -2,7 +2,6 @@ package ffdd.opsconsole.finance.domain;
 
 import ffdd.opsconsole.shared.api.PageResult;
 import java.math.BigDecimal;
-import java.util.Map;
 import java.util.Optional;
 
 public interface WithdrawalOrderRepository {
@@ -24,9 +23,5 @@ public interface WithdrawalOrderRepository {
 
     int freezePendingByUserId(Long userId, String reason);
 
-    long countD2SeedWithdrawals();
-
     long countD2ActionableWithdrawals();
-
-    void seedD2FallbackData(Map<String, Long> userIds);
 }

@@ -369,36 +369,6 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                        @Param("valueType") String valueType, @Param("operator") String operator,
                        @Param("sortOrder") int sortOrder);
 
-    @Update("""
-            CREATE TABLE IF NOT EXISTS nx_compute_datacenter (
-              id BIGINT AUTO_INCREMENT PRIMARY KEY,
-              dc_location VARCHAR(128) NOT NULL,
-              region_label VARCHAR(128) NOT NULL,
-              status VARCHAR(24) NOT NULL DEFAULT 'active',
-              sort_order INT NOT NULL DEFAULT 100,
-              updated_by VARCHAR(96) NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              is_deleted TINYINT NOT NULL DEFAULT 0,
-              UNIQUE KEY uk_compute_datacenter_location (dc_location),
-              KEY idx_compute_datacenter_status_sort (is_deleted, status, sort_order)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-    void ensureDatacenterCatalogTable();
-
-    @Select("SELECT COUNT(*) FROM nx_compute_datacenter")
-    long countDatacenterCatalogRows();
-
-    @Insert("""
-            INSERT INTO nx_compute_datacenter(dc_location, region_label, status, sort_order, updated_by, is_deleted)
-            VALUES
-              ('us-east-2', '美国 · 弗吉尼亚', 'active', 10, 'seed', 0),
-              ('eu-west-1', '欧洲 · 都柏林', 'active', 20, 'seed', 0),
-              ('ap-southeast-1', '亚太 · 新加坡', 'active', 30, 'seed', 0)
-            ON DUPLICATE KEY UPDATE dc_location = VALUES(dc_location)
-            """)
-    int seedDefaultDatacenters();
-
     @Select("""
             SELECT dc.dc_location AS dcLocation,
                    dc.region_label AS regionLabel,

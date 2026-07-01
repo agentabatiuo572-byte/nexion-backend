@@ -5,19 +5,11 @@ import ffdd.opsconsole.finance.domain.WithdrawalOrderView;
 import ffdd.opsconsole.finance.infrastructure.WithdrawalOrderEntity;
 import java.math.BigDecimal;
 import java.util.List;
-import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity> {
-    @Select("""
-            SELECT COUNT(1)
-              FROM nx_withdrawal_order
-             WHERE is_deleted = 0
-               AND withdrawal_no LIKE 'D2-SEED-%'
-            """)
-    long countD2SeedWithdrawals();
 
     @Select("""
             SELECT COUNT(1)
@@ -26,62 +18,6 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                AND status IN ('REVIEWING', 'DELAYED', 'FROZEN', 'PENDING_CHAIN', 'CHAIN_SUBMITTED', 'DEAD')
             """)
     long countD2ActionableWithdrawals();
-
-    @Insert("""
-            INSERT INTO nx_withdrawal_order (
-                withdrawal_no, user_id, asset, chain, amount, fee, target_address, risk_decision_id,
-                chain_tx_hash, status, chain_submitted_at, completed_at, failed_at, failure_reason,
-                chain_broadcast_attempts, next_broadcast_at, last_broadcast_error, broadcast_dead_at,
-                created_at, updated_at, is_deleted
-            )
-            VALUES (
-                #{withdrawalNo}, #{userId}, #{asset}, #{chain}, #{amount}, #{fee}, #{targetAddress}, NULL,
-                #{chainTxHash}, #{status},
-                CASE WHEN #{chainSubmitted} THEN DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE) ELSE NULL END,
-                CASE WHEN #{completed} THEN DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE) ELSE NULL END,
-                CASE WHEN #{failed} THEN DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE) ELSE NULL END,
-                #{failureReason}, #{broadcastAttempts},
-                CASE WHEN #{nextBroadcastMinutes} IS NULL THEN NULL ELSE DATE_ADD(NOW(), INTERVAL #{nextBroadcastMinutes} MINUTE) END,
-                #{lastBroadcastError}, NULL,
-                DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE), DATE_SUB(NOW(), INTERVAL #{minutesAgo} MINUTE), 0
-            )
-            ON DUPLICATE KEY UPDATE
-                user_id = VALUES(user_id),
-                asset = VALUES(asset),
-                chain = VALUES(chain),
-                amount = VALUES(amount),
-                fee = VALUES(fee),
-                target_address = VALUES(target_address),
-                chain_tx_hash = VALUES(chain_tx_hash),
-                status = VALUES(status),
-                chain_submitted_at = VALUES(chain_submitted_at),
-                completed_at = VALUES(completed_at),
-                failed_at = VALUES(failed_at),
-                failure_reason = VALUES(failure_reason),
-                chain_broadcast_attempts = VALUES(chain_broadcast_attempts),
-                next_broadcast_at = VALUES(next_broadcast_at),
-                last_broadcast_error = VALUES(last_broadcast_error),
-                created_at = VALUES(created_at),
-                updated_at = VALUES(updated_at),
-                is_deleted = 0
-            """)
-    int insertD2SeedWithdrawal(@Param("withdrawalNo") String withdrawalNo,
-                               @Param("userId") Long userId,
-                               @Param("asset") String asset,
-                               @Param("chain") String chain,
-                               @Param("amount") BigDecimal amount,
-                               @Param("fee") BigDecimal fee,
-                               @Param("targetAddress") String targetAddress,
-                               @Param("chainTxHash") String chainTxHash,
-                               @Param("status") String status,
-                               @Param("chainSubmitted") boolean chainSubmitted,
-                               @Param("completed") boolean completed,
-                               @Param("failed") boolean failed,
-                               @Param("failureReason") String failureReason,
-                               @Param("broadcastAttempts") int broadcastAttempts,
-                               @Param("nextBroadcastMinutes") Integer nextBroadcastMinutes,
-                               @Param("lastBroadcastError") String lastBroadcastError,
-                               @Param("minutesAgo") int minutesAgo);
 
     @Select("""
             <script>
@@ -98,7 +34,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                       FROM nx_admin_risk_withdraw_hit
                      WHERE is_deleted = 0
                      GROUP BY withdrawal_no
-              ) hit ON (hit.withdrawal_no = w.withdrawal_no OR hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+              ) hit ON (hit.withdrawal_no = w.withdrawal_no)
              WHERE w.is_deleted = 0
              <if test='status != null and status != ""'>AND w.status = #{status}</if>
              <if test='userId != null'>AND w.user_id = #{userId}</if>
@@ -114,7 +50,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                          FROM nx_risk_decision rd2
                         WHERE rd2.is_deleted = 0
                           AND rd2.biz_type = 'WITHDRAW_RULE'
-                          AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                          AND (rd2.biz_no = w.withdrawal_no)
                         ORDER BY rd2.id DESC
                         LIMIT 1
                    ),
@@ -155,7 +91,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        )
@@ -189,7 +125,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        ),
@@ -203,7 +139,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        )
@@ -215,7 +151,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        ),
@@ -258,7 +194,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                         ON r.rule_id = h.rule_id AND r.is_deleted = 0
                      WHERE h.is_deleted = 0
                      GROUP BY h.withdrawal_no
-              ) hit ON (hit.withdrawal_no = w.withdrawal_no OR hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+              ) hit ON (hit.withdrawal_no = w.withdrawal_no)
               LEFT JOIN (
                     SELECT resource_id,
                            GROUP_CONCAT(CONCAT(action, '@', DATE_FORMAT(created_at, '%m-%d %H:%i')) ORDER BY created_at DESC SEPARATOR ' | ') AS audit_trail
@@ -281,7 +217,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                          FROM nx_risk_decision rd2
                         WHERE rd2.is_deleted = 0
                           AND rd2.biz_type = 'WITHDRAW_RULE'
-                          AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                          AND (rd2.biz_no = w.withdrawal_no)
                         ORDER BY rd2.id DESC
                         LIMIT 1
                    ),
@@ -325,7 +261,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        )
@@ -359,7 +295,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        ),
@@ -373,7 +309,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        )
@@ -385,7 +321,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                              FROM nx_risk_decision rd2
                             WHERE rd2.is_deleted = 0
                               AND rd2.biz_type = 'WITHDRAW_RULE'
-                              AND (rd2.biz_no = w.withdrawal_no OR rd2.biz_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+                              AND (rd2.biz_no = w.withdrawal_no)
                             ORDER BY rd2.id DESC
                             LIMIT 1
                        ),
@@ -428,7 +364,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                         ON r.rule_id = h.rule_id AND r.is_deleted = 0
                      WHERE h.is_deleted = 0
                      GROUP BY h.withdrawal_no
-              ) hit ON (hit.withdrawal_no = w.withdrawal_no OR hit.withdrawal_no = REPLACE(w.withdrawal_no, 'D2-SEED-', ''))
+              ) hit ON (hit.withdrawal_no = w.withdrawal_no)
               LEFT JOIN (
                     SELECT resource_id,
                            GROUP_CONCAT(CONCAT(action, '@', DATE_FORMAT(created_at, '%m-%d %H:%i')) ORDER BY created_at DESC SEPARATOR ' | ') AS audit_trail

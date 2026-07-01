@@ -439,6 +439,12 @@ class OpsTeamServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void commissionsExposeF5AuditRowsAndReflectBackendStatusOverrides() {
+        configFacade.values.put(
+                "team.ui.F5.commission.events",
+                """
+                        [{"id":"CM-7781","kind":"network","user":"usr_19C7","amount":420,"currency":"USDT","cooldownPercent":60,"cooldownLabel":"冷却 18d","state":"计提"}]
+                        """);
+
         service.updateConfig(
                 "idem-f-commission-status",
                 new TeamCommissionConfigUpdateRequest("F.commission.CM-7781.status", "frozen", "freeze abnormal commission", "risk-ops"));
@@ -461,16 +467,10 @@ class OpsTeamServiceTest {
         assertThat(result.getData().get("pagination").toString()).contains("server-pageable");
         assertThat(configFacade.values)
                 .containsKeys(
-                        "team.ui.F5.commission.kinds",
-                        "team.ui.F5.commission.filters",
                         "team.ui.F5.commission.events",
-                        "team.ui.F5.commission.auditFeed",
-                        "team.ui.F5.commission.monthlySpendLabel",
-                        "team.ui.F5.commission.coolingBalanceLabel",
-                        "team.ui.F5.commission.withdrawableThisMonthLabel",
                         "team.ui.F.commission.CM-7781.status");
         var events = (java.util.List<Map<String, Object>>) result.getData().get("commissionEvents");
-        assertThat(events).hasSizeGreaterThanOrEqualTo(12);
+        assertThat(events).hasSize(1);
         assertThat(events)
                 .filteredOn(event -> "CM-7781".equals(event.get("id")))
                 .singleElement()

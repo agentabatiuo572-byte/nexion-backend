@@ -8,7 +8,6 @@ import ffdd.opsconsole.market.infrastructure.GenesisSeriesEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
-import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -100,81 +99,4 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
             """)
     List<GenesisNodeView> listNodes(@Param("offset") int offset, @Param("limit") int limit);
 
-    @Insert("""
-            INSERT INTO nx_genesis_series
-              (series_code, name, total_supply, sold_supply, price_usdt, status, royalty_bps, created_at, updated_at, is_deleted)
-            VALUES
-              (#{seriesCode}, #{name}, #{totalSupply}, #{soldSupply}, #{priceUsdt}, 'ACTIVE', #{royaltyBps}, #{now}, #{now}, 0)
-            ON DUPLICATE KEY UPDATE
-              name = VALUES(name),
-              total_supply = VALUES(total_supply),
-              sold_supply = VALUES(sold_supply),
-              price_usdt = VALUES(price_usdt),
-              status = VALUES(status),
-              royalty_bps = VALUES(royalty_bps),
-              updated_at = VALUES(updated_at),
-              is_deleted = 0
-            """)
-    int upsertSeedSeries(
-            @Param("seriesCode") String seriesCode,
-            @Param("name") String name,
-            @Param("totalSupply") int totalSupply,
-            @Param("soldSupply") int soldSupply,
-            @Param("priceUsdt") BigDecimal priceUsdt,
-            @Param("royaltyBps") int royaltyBps,
-            @Param("now") LocalDateTime now);
-
-    @Insert("""
-            INSERT INTO nx_genesis_order
-              (order_no, client_request_no, user_id, series_code, quantity, unit_price_usdt, amount_usdt,
-               payment_asset, status, paid_at, completed_at, created_at, updated_at, is_deleted)
-            VALUES
-              (#{orderNo}, #{clientRequestNo}, #{userId}, #{seriesCode}, #{quantity}, #{unitPriceUsdt}, #{amountUsdt},
-               'USDT', 'COMPLETED', #{completedAt}, #{completedAt}, #{completedAt}, #{completedAt}, 0)
-            ON DUPLICATE KEY UPDATE
-              user_id = VALUES(user_id),
-              series_code = VALUES(series_code),
-              quantity = VALUES(quantity),
-              unit_price_usdt = VALUES(unit_price_usdt),
-              amount_usdt = VALUES(amount_usdt),
-              payment_asset = VALUES(payment_asset),
-              status = VALUES(status),
-              paid_at = VALUES(paid_at),
-              completed_at = VALUES(completed_at),
-              updated_at = VALUES(updated_at),
-              is_deleted = 0
-            """)
-    int upsertSeedOrder(
-            @Param("orderNo") String orderNo,
-            @Param("clientRequestNo") String clientRequestNo,
-            @Param("userId") Long userId,
-            @Param("seriesCode") String seriesCode,
-            @Param("quantity") int quantity,
-            @Param("unitPriceUsdt") BigDecimal unitPriceUsdt,
-            @Param("amountUsdt") BigDecimal amountUsdt,
-            @Param("completedAt") LocalDateTime completedAt);
-
-    @Insert("""
-            INSERT INTO nx_genesis_holding
-              (holding_no, user_id, order_no, series_code, acquired_price_usdt, status, acquired_at, created_at, updated_at, is_deleted)
-            VALUES
-              (#{holdingNo}, #{userId}, #{orderNo}, #{seriesCode}, #{acquiredPriceUsdt}, #{status}, #{acquiredAt}, #{acquiredAt}, #{acquiredAt}, 0)
-            ON DUPLICATE KEY UPDATE
-              user_id = VALUES(user_id),
-              order_no = VALUES(order_no),
-              series_code = VALUES(series_code),
-              acquired_price_usdt = VALUES(acquired_price_usdt),
-              status = VALUES(status),
-              acquired_at = VALUES(acquired_at),
-              updated_at = VALUES(updated_at),
-              is_deleted = 0
-            """)
-    int upsertSeedHolding(
-            @Param("holdingNo") String holdingNo,
-            @Param("userId") Long userId,
-            @Param("orderNo") String orderNo,
-            @Param("seriesCode") String seriesCode,
-            @Param("acquiredPriceUsdt") BigDecimal acquiredPriceUsdt,
-            @Param("status") String status,
-            @Param("acquiredAt") LocalDateTime acquiredAt);
 }

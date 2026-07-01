@@ -543,20 +543,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                @Param("bizNo") String bizNo, @Param("reason") String reason, @Param("riskScore") int riskScore,
                                @Param("ruleCodes") String ruleCodes, @Param("ruleSnapshot") String ruleSnapshot, @Param("operator") String operator);
 
-    @Insert("""
-            INSERT INTO nx_risk_decision (
-                decision_no, user_id, biz_type, biz_no, region, user_level, decision, reason, risk_score, rule_codes, rule_snapshot,
-                created_at, updated_at, is_deleted
-            ) VALUES (
-                #{caseNo}, #{userId}, #{bizType}, #{bizNo}, #{region}, #{userLevel}, #{decision}, #{reason}, #{riskScore}, #{ruleCodes}, #{ruleSnapshot},
-                NOW(), NOW(), 0
-            )
-            """)
-    int insertSeedRiskDecision(@Param("caseNo") String caseNo, @Param("userId") long userId, @Param("bizType") String bizType,
-                               @Param("bizNo") String bizNo, @Param("region") String region, @Param("userLevel") String userLevel,
-                               @Param("decision") String decision, @Param("reason") String reason, @Param("riskScore") int riskScore,
-                               @Param("ruleCodes") String ruleCodes, @Param("ruleSnapshot") String ruleSnapshot);
-
     @Select("SELECT COUNT(*) FROM nx_admin_risk_withdraw_rule WHERE is_deleted = 0")
     long countWithdrawRules();
 

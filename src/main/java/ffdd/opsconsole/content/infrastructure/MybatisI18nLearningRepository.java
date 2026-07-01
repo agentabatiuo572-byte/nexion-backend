@@ -82,26 +82,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
-        for (NamespaceSeed seed : NAMESPACE_SEEDS) {
-            ensureNamespace(seed, now);
-        }
-        if (findMessagePair("milestones.earnCross").isEmpty()) {
-            saveMessagePair(
-                    "milestones.earnCross",
-                    "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                    "Reinvest {amount} USDT and earn {nex} NEX",
-                    "published",
-                    now);
-        }
-        for (IssueSeed seed : ISSUE_SEEDS) {
-            ensureIssue(seed, now);
-        }
-        for (FindingSeed seed : FINDING_SEEDS) {
-            ensureFinding(seed, now);
-        }
-        for (CourseSeed seed : COURSE_SEEDS) {
-            ensureCourse(seed, now);
-        }
+        // Business rows must come from MySQL writes, not read-time demo seeds.
     }
 
     @Override

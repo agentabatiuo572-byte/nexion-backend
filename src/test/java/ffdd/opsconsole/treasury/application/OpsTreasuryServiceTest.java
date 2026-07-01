@@ -28,7 +28,6 @@ import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
-import ffdd.opsconsole.user.domain.UserSeedRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -51,7 +50,6 @@ class OpsTreasuryServiceTest {
 
     private final FakeTreasuryLedgerRepository ledgerRepository = new FakeTreasuryLedgerRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
-    private final FakeUserSeedRepository userSeedRepository = new FakeUserSeedRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final Map<String, String> idempotencyHashes = new LinkedHashMap<>();
@@ -70,7 +68,6 @@ class OpsTreasuryServiceTest {
                 idempotencyService,
                 CLOCK,
                 new TreasuryDualLedgerProperties(),
-                userSeedRepository,
                 new ObjectMapper(),
                 seedPolicy);
         return service;
@@ -184,19 +181,16 @@ class OpsTreasuryServiceTest {
                 .containsEntry("healthyPct", new BigDecimal("100.00"))
                 .containsEntry("runRiskPct", new BigDecimal("15.00"))
                 .containsEntry("redlineBreached", false);
-        assertThat(ledgerRepository.seedCalls).isZero();
         assertThat(configFacade.upsertedKeys).isEmpty();
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void dualLedgerSeedsFallbackTreasuryDataWhenDatabaseIsEmpty() {
+    void dualLedgerDoesNotCreateFallbackTreasuryRowsWhenDatabaseIsEmpty() {
         Map<String, Object> dualLedger = service.dualLedger().getData();
 
-        assertThat(ledgerRepository.seedCalls).isEqualTo(1);
-        assertThat(userSeedRepository.accountSeedCalls).isEqualTo(1);
         assertThat((Map<String, Object>) dualLedger.get("snapshot"))
-                .containsEntry("liabilitiesUsd", new BigDecimal("250.00"));
+                .containsEntry("liabilitiesUsd", new BigDecimal("0.00"));
         assertThat(configFacade.values).containsKeys(
                 "wallet.dual-ledger.reserve-usd",
                 "wallet.dual-ledger.redline-pct",
@@ -208,9 +202,6 @@ class OpsTreasuryServiceTest {
         Map<String, Object> dashboard = service.bDomainDashboard().getData();
 
         assertThat(dashboard).containsEntry("domain", "B");
-        assertThat(ledgerRepository.seedCalls).isZero();
-        assertThat(userSeedRepository.accountSeedCalls).isZero();
-        assertThat(userSeedRepository.kycSeedCalls).isZero();
         assertThat(configFacade.upsertedKeys)
                 .isNotEmpty()
                 .allMatch(key -> key.startsWith("treasury.b."))
@@ -514,13 +505,12 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
-    void ledgerBillsSeedsFallbackRowsWhenDatabaseIsEmpty() {
+    void ledgerBillsDoesNotCreateFallbackRowsWhenDatabaseIsEmpty() {
         var result = service.ledgerBills(new TreasuryLedgerQueryRequest(null, null, null, 1, 20));
 
         assertThat(result.getCode()).isZero();
-        assertThat(ledgerRepository.seedCalls).isEqualTo(1);
-        assertThat(result.getData().getTotal()).isEqualTo(1);
-        assertThat(result.getData().getRecords()).extracting(TreasuryLedgerBillView::bizNo).containsExactly("D4-SEED-BILL-1");
+        assertThat(result.getData().getTotal()).isZero();
+        assertThat(result.getData().getRecords()).isEmpty();
     }
 
     @Test
@@ -594,7 +584,6 @@ class OpsTreasuryServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo("B1_COVERAGE_REDLINE_BREACHED");
         assertThat(ledgerRepository.adjustments).isEmpty();
-        assertThat(ledgerRepository.seedCalls).isZero();
         assertThat(configFacade.upsertedKeys).isEmpty();
         verifyNoInteractions(auditLogService);
     }
@@ -629,32 +618,6 @@ class OpsTreasuryServiceTest {
         }
     }
 
-    private static final class FakeUserSeedRepository implements UserSeedRepository {
-        private final Map<String, Long> ids = new LinkedHashMap<>();
-        private int accountSeedCalls;
-        private int kycSeedCalls;
-
-        @Override
-        public Optional<Long> findUserIdByLookupKey(String lookupKey) {
-            return Optional.ofNullable(ids.get(lookupKey));
-        }
-
-        @Override
-        public void upsertAccountActionSeeds() {
-            accountSeedCalls++;
-            ids.put("usr_31E8", 1001L);
-            ids.put("usr_2231", 1002L);
-            ids.put("usr_55B1", 1003L);
-            ids.put("usr_8807", 1004L);
-        }
-
-        @Override
-        public void upsertKycLedgerSeeds() {
-            kycSeedCalls++;
-            ids.put("usr_77D4", 1005L);
-        }
-    }
-
     private static final class FakeTreasuryLedgerRepository implements TreasuryLedgerRepository {
         private long countValue;
         private long activeQueueCount;
@@ -674,7 +637,6 @@ class OpsTreasuryServiceTest {
         private String lastBillType;
         private Long lastBillUserId;
         private String lastBillKeyword;
-        private int seedCalls;
 
         @Override
         public long countDeposits(LocalDateTime since, String status) {
@@ -819,25 +781,5 @@ class OpsTreasuryServiceTest {
                     LocalDateTime.now(CLOCK)));
         }
 
-        @Override
-        public void seedD4FallbackData(Map<String, Long> userIds) {
-            seedCalls++;
-            usdtAvailable = new BigDecimal("250.00");
-            bills.add(new TreasuryLedgerBillView(
-                    1L,
-                    1001L,
-                    "U00001001",
-                    "种子用户",
-                    "D4-SEED-BILL-1",
-                    "DEPOSIT",
-                    "USDT",
-                    "IN",
-                    new BigDecimal("250.00"),
-                    new BigDecimal("250.00"),
-                    "SUCCESS",
-                    "fallback treasury bill",
-                    LocalDateTime.now(CLOCK),
-                    LocalDateTime.now(CLOCK)));
-        }
     }
 }

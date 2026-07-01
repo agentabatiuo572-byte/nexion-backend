@@ -205,14 +205,6 @@ class OpsTrustDisclosureServiceTest {
         }
 
         @Override
-        public void ensureBaseGateActions(LocalDateTime now) {
-            gates.putIfAbsent("withdraw", new DisclosureGateActionView("withdraw", "提现", "提交提现前服务器先验披露确认", "已实装", "ok", true));
-            gates.putIfAbsent("staking", new DisclosureGateActionView("staking", "质押锁仓", "确认状态过期时拦截质押入口", "已实装", "warn", false));
-            gates.putIfAbsent("exchange", new DisclosureGateActionView("exchange", "NEX 兑换", "兑换提交前服务器先验披露确认", "已实装", "warn", false));
-            gates.putIfAbsent("nexv2", new DisclosureGateActionView("nexv2", "NEX v2 历史锁仓", "已下线历史兼容项，只读展示，不允许重新启用", "已下线 · 历史兼容", "dim", false));
-        }
-
-        @Override
         public List<TrustSectionView> listTrustSections() {
             return new ArrayList<>(sections.values());
         }
