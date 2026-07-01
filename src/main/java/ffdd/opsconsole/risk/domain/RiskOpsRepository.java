@@ -40,6 +40,8 @@ public interface RiskOpsRepository {
 
     PageResult<RiskRuleHitView> pageWithdrawRuleHits(String action, int pageNum, int pageSize);
 
+    void recordWithdrawRuleHit(String withdrawalNo, String userNo, BigDecimal amount, RiskRuleView rule);
+
     List<RiskArbitrageStatView> arbitrageStats();
 
     List<RiskArbitrageParamView> arbitrageParams();

@@ -46,6 +46,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         mapper.createWithdrawRuleTable();
         mapper.createRouteCountTable();
         mapper.createWithdrawHitTable();
+        ensureWithdrawHitUniqueKey();
         mapper.createArbitrageStatTable();
         mapper.createArbitrageParamTable();
         mapper.createArbitrageRowTable();
@@ -62,6 +63,15 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         mapper.createKycAlertTable();
         if (readTimeSeedPolicy.enabled()) {
             seedRiskDataIfEmpty();
+        }
+    }
+
+    private void ensureWithdrawHitUniqueKey() {
+        mapper.deleteDuplicateWithdrawHits();
+        try {
+            mapper.addWithdrawHitUniqueKey();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this index.
         }
     }
 
@@ -422,6 +432,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public Map<String, Object> kycReviewOverview(Integer ticketPageNum, Integer ticketPageSize, String ticketFilter) {
+        ensureK5BaseParams();
         int pageNum = normalizePageNum(ticketPageNum);
         int pageSize = normalizePageSize(ticketPageSize, 5, 50);
         int offset = (pageNum - 1) * pageSize;
@@ -448,7 +459,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public Map<String, Object> updateKycReviewParam(String key, String value) {
-        mapper.updateRiskParam("k5", key, value);
+        ensureK5BaseParams();
+        if (mapper.updateRiskParam("k5", key, value) == 0) {
+            insertK5BaseParam(key, value);
+        }
         return kycReviewOverview();
     }
 
@@ -481,17 +495,35 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public int kycReviewTriggerScore() {
+        ensureK5BaseParams();
         return kycParamInt("reviewTriggerScore", 85);
     }
 
     @Override
     public int kycLargeWithdrawReviewUsdt() {
+        ensureK5BaseParams();
         return kycParamInt("largeWithdrawReviewUsdt", 1_000);
     }
 
     @Override
     public int kycLargeExchangeReviewUsdt() {
+        ensureK5BaseParams();
         return kycParamInt("largeExchangeReviewUsdt", kycLargeWithdrawReviewUsdt());
+    }
+
+    @Override
+    public void recordWithdrawRuleHit(String withdrawalNo, String userNo, BigDecimal amount, RiskRuleView rule) {
+        if (!StringUtils.hasText(withdrawalNo) || rule == null || !StringUtils.hasText(rule.ruleId())) {
+            return;
+        }
+        mapper.insertWithdrawHit(
+                withdrawalNo.trim(),
+                StringUtils.hasText(userNo) ? userNo.trim() : "",
+                money(amount),
+                rule.ruleId(),
+                StringUtils.hasText(rule.dimension()) ? rule.dimension() : "提现规则",
+                StringUtils.hasText(rule.action()) ? rule.action() : "manual",
+                "刚刚");
     }
 
     @Override
@@ -639,6 +671,35 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     private int intFallback(int fallback) {
         return readTimeSeedPolicy.enabled() ? fallback : 0;
+    }
+
+    private void ensureK5BaseParams() {
+        ensureK5ParamExists("reviewTriggerScore");
+        ensureK5ParamExists("largeWithdrawReviewUsdt");
+        ensureK5ParamExists("largeExchangeReviewUsdt");
+    }
+
+    private void ensureK5ParamExists(String key) {
+        boolean exists = mapper.riskParams("k5").stream().anyMatch(param -> key.equals(param.key()));
+        if (!exists) {
+            insertK5BaseParam(key, switch (key) {
+                case "largeExchangeReviewUsdt", "largeWithdrawReviewUsdt" -> ">= $1,000";
+                default -> ">= 85";
+            });
+        }
+    }
+
+    private void insertK5BaseParam(String key, String value) {
+        switch (key) {
+            case "reviewTriggerScore" -> mapper.insertRiskParam("k5", key, "风险分复审线", value, null,
+                    "K4 有效风险分达到该值时进入 KYC 复审", "基础风控配置；来自 nx_admin_risk_param", 0);
+            case "largeWithdrawReviewUsdt" -> mapper.insertRiskParam("k5", key, "大额提现复审线", value, null,
+                    "命中 -> 生成复审工单 + 提现单冻结", "范围 $100-$50,000。与 K3/D2 是独立参数", 1);
+            case "largeExchangeReviewUsdt" -> mapper.insertRiskParam("k5", key, "大额兑换复审线", value, null,
+                    "命中 -> 生成复审工单 + 兑换单人工处理", "范围 $100-$50,000。由 G2 兑换读取", 2);
+            default -> {
+            }
+        }
     }
 
     private String money(BigDecimal amount) {

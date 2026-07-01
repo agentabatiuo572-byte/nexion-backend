@@ -442,6 +442,14 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             """)
     WithdrawalOrderView findByWithdrawalNo(@Param("withdrawalNo") String withdrawalNo);
 
+    @Select("""
+            SELECT COALESCE(NULLIF(country_code, ''), NULLIF(region, ''))
+              FROM nx_user
+             WHERE id = #{userId} AND is_deleted = 0
+             LIMIT 1
+            """)
+    String findUserCountryCode(@Param("userId") Long userId);
+
     @Update("""
             UPDATE nx_withdrawal_order
                SET status = #{status},

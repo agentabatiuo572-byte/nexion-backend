@@ -78,7 +78,8 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     private static final List<GateSeed> GATE_SEEDS = List.of(
             gate("withdraw", "提现", "提交提现前服务器先验披露确认", "已实装", "ok", true, 10),
             gate("staking", "质押锁仓", "App 侧排期接入披露确认", "规划集成 · 待接线", "warn", false, 20),
-            gate(NEX_V2, "NEX v2 历史锁仓", "历史功能只读保留,不再扩展受限动作", "已下线 · 历史兼容", "dim", false, 30));
+            gate("exchange", "兑换", "提交兑换前服务器先验披露确认", "已实装", "ok", false, 30),
+            gate(NEX_V2, "NEX v2 历史锁仓", "历史功能只读保留,不再扩展受限动作", "已下线 · 历史兼容", "dim", false, 40));
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
@@ -98,6 +99,13 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
             ensureGate(seed, now);
         }
         ensureDisclosureDraft(now);
+    }
+
+    @Override
+    public void ensureBaseGateActions(LocalDateTime now) {
+        for (GateSeed seed : GATE_SEEDS) {
+            ensureGate(seed, now);
+        }
     }
 
     @Override

@@ -61,6 +61,8 @@ public class OpsTrustDisclosureService {
         if (readTimeSeedPolicy.enabled()) {
             trustDisclosureRepository.ensureSeedData(now());
         }
+        trustDisclosureRepository.ensureBaseGateActions(now());
+        syncDisclosureGateConfigFromRepository("I4 overview gate sync");
         return ApiResult.ok(currentOverview());
     }
 
@@ -170,6 +172,7 @@ public class OpsTrustDisclosureService {
         if (guard != null) {
             return fail(guard);
         }
+        trustDisclosureRepository.ensureBaseGateActions(now());
         Set<String> activeKeys = resolveGateKeys(request.scope());
         if (activeKeys.isEmpty()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_GATE_SCOPE_EMPTY");
@@ -254,6 +257,14 @@ public class OpsTrustDisclosureService {
                     "content",
                     StringUtils.hasText(reason) ? reason.trim() : "I4 disclosure gate scope");
         }
+    }
+
+    private void syncDisclosureGateConfigFromRepository(String reason) {
+        Set<String> activeKeys = trustDisclosureRepository.listGateActions().stream()
+                .filter(DisclosureGateActionView::active)
+                .map(DisclosureGateActionView::key)
+                .collect(Collectors.toCollection(TreeSet::new));
+        syncDisclosureGateConfig(activeKeys, reason);
     }
 
     private ApiResult<Void> requirePublishSection(String sectionKey, String idempotencyKey, TrustSectionPublishRequest request) {

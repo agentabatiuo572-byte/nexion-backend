@@ -111,7 +111,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0")
     long countAdminDeviceOrders();
 
-    @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0 AND ordered_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
     long countAdminDeviceOrdersSince(@Param("days") int days);
 
     @Select("SELECT COUNT(*) FROM nx_device WHERE deleted = 0")

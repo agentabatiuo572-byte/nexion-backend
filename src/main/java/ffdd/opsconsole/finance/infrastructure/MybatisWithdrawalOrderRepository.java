@@ -39,6 +39,11 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public Optional<String> findUserCountryCode(Long userId) {
+        return Optional.ofNullable(mapper.findUserCountryCode(userId));
+    }
+
+    @Override
     public void updateStatus(String withdrawalNo, String status, String failureReason) {
         mapper.updateStatus(withdrawalNo, status, failureReason);
     }

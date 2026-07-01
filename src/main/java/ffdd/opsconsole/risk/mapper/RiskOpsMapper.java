@@ -112,10 +112,27 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,
               KEY idx_admin_risk_withdraw_hit_action (action,is_deleted),
-              KEY idx_admin_risk_withdraw_hit_rule (rule_id,is_deleted)
+              KEY idx_admin_risk_withdraw_hit_rule (rule_id,is_deleted),
+              UNIQUE KEY uk_admin_risk_withdraw_hit_once (withdrawal_no,rule_id,is_deleted)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createWithdrawHitTable();
+
+    @Update("""
+            DELETE h1 FROM nx_admin_risk_withdraw_hit h1
+            JOIN nx_admin_risk_withdraw_hit h2
+              ON h1.withdrawal_no = h2.withdrawal_no
+             AND h1.rule_id = h2.rule_id
+             AND h1.is_deleted = h2.is_deleted
+             AND h1.id < h2.id
+            """)
+    void deleteDuplicateWithdrawHits();
+
+    @Update("""
+            ALTER TABLE nx_admin_risk_withdraw_hit
+            ADD UNIQUE KEY uk_admin_risk_withdraw_hit_once (withdrawal_no,rule_id,is_deleted)
+            """)
+    void addWithdrawHitUniqueKey();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_admin_risk_arbitrage_stat (
@@ -675,7 +692,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     List<RiskRuleHitView> withdrawHitsPage(@Param("action") String action, @Param("offset") int offset, @Param("limit") int limit);
 
-    @Insert("INSERT INTO nx_admin_risk_withdraw_hit (withdrawal_no,user_no,amount_text,rule_id,dimension,action,time_text,is_deleted) VALUES (#{withdrawalNo},#{userNo},#{amountText},#{ruleId},#{dimension},#{action},#{timeText},0)")
+    @Insert("INSERT INTO nx_admin_risk_withdraw_hit (withdrawal_no,user_no,amount_text,rule_id,dimension,action,time_text,is_deleted) VALUES (#{withdrawalNo},#{userNo},#{amountText},#{ruleId},#{dimension},#{action},#{timeText},0) ON DUPLICATE KEY UPDATE user_no=VALUES(user_no),amount_text=VALUES(amount_text),dimension=VALUES(dimension),action=VALUES(action),time_text=VALUES(time_text),created_at=CURRENT_TIMESTAMP")
     int insertWithdrawHit(@Param("withdrawalNo") String withdrawalNo, @Param("userNo") String userNo,
                           @Param("amountText") String amountText, @Param("ruleId") String ruleId,
                           @Param("dimension") String dimension, @Param("action") String action,

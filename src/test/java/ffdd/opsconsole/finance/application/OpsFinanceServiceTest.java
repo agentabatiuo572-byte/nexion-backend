@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -21,6 +22,8 @@ import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.domain.RiskOpsRepository;
+import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -34,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -44,6 +48,7 @@ class OpsFinanceServiceTest {
     private final FakeDepositOpsRepository depositOpsRepository = new FakeDepositOpsRepository();
     private final FakeUserSeedRepository userSeedRepository = new FakeUserSeedRepository();
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
+    private final RiskOpsRepository riskOpsRepository = mock(RiskOpsRepository.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsFinanceService service =
             new OpsFinanceService(
@@ -53,8 +58,14 @@ class OpsFinanceServiceTest {
                     depositOpsRepository,
                     userSeedRepository,
                     riskKycReviewFacade,
+                    riskOpsRepository,
                     auditLogService,
                     ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+
+    @BeforeEach
+    void setUpRiskDefaults() {
+        when(riskOpsRepository.withdrawRules()).thenReturn(List.of());
+    }
 
     private OpsFinanceService service(OpsReadTimeSeedPolicy seedPolicy) {
         return new OpsFinanceService(
@@ -64,6 +75,7 @@ class OpsFinanceServiceTest {
                 depositOpsRepository,
                 userSeedRepository,
                 riskKycReviewFacade,
+                riskOpsRepository,
                 auditLogService,
                 seedPolicy);
     }
@@ -104,7 +116,34 @@ class OpsFinanceServiceTest {
         assertThat(configFacade.values)
                 .containsEntry("withdrawal.daily_count_limit", "1")
                 .containsEntry("withdrawal.max_balance_pct", "0.80")
-                .containsEntry("withdrawal.fee_rate", "0.02");
+                .containsEntry("withdrawal.fee_rate", "0.02")
+                .containsEntry("withdrawal.min_usdt", "20")
+                .containsEntry("withdrawal.trc20.enabled", "true")
+                .containsEntry("withdrawal.erc20.enabled", "true")
+                .containsEntry("wallet.withdrawal.daily_count_limit", "1")
+                .containsEntry("wallet.withdrawal.max_balance_pct", "0.80")
+                .containsEntry("wallet.withdrawal.fee_rate", "0.02")
+                .containsEntry("wallet.withdrawal.min_usdt", "20")
+                .containsEntry("wallet.withdrawal.trc20.enabled", "true")
+                .containsEntry("wallet.withdrawal.erc20.enabled", "true");
+    }
+
+    @Test
+    void withdrawalParamsCorrectsStaleWalletMirrorsFromCanonicalKeys() {
+        configFacade.values.put("withdrawal.min_usdt", "30");
+        configFacade.values.put("withdrawal.trc20.enabled", "false");
+        configFacade.values.put("withdrawal.erc20.enabled", "true");
+        configFacade.values.put("wallet.withdrawal.min_usdt", "10");
+        configFacade.values.put("wallet.withdrawal.trc20.enabled", "true");
+        configFacade.values.put("wallet.withdrawal.erc20.enabled", "false");
+
+        ApiResult<Map<String, Object>> result = service.withdrawalParams();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("wallet.withdrawal.min_usdt", "30")
+                .containsEntry("wallet.withdrawal.trc20.enabled", "false")
+                .containsEntry("wallet.withdrawal.erc20.enabled", "true");
     }
 
     @Test
@@ -130,7 +169,9 @@ class OpsFinanceServiceTest {
         ApiResult<Map<String, Object>> result = service.updateWithdrawalParam("idem-d5", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("withdrawal.max_balance_pct", "0.7");
+        assertThat(configFacade.values)
+                .containsEntry("withdrawal.max_balance_pct", "0.7")
+                .containsEntry("wallet.withdrawal.max_balance_pct", "0.7");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -192,6 +233,92 @@ class OpsFinanceServiceTest {
                 .containsEntry("blockedReason", "WITHDRAWAL_K5_REVIEW_REQUIRED")
                 .containsEntry("k5TicketId", "KR-D2-TEST")
                 .containsEntry("k5Created", true);
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenK3ActiveRuleMatches() {
+        withdrawalRepository.order = withdrawal("WD-K3-1", "REVIEWING", new BigDecimal("150.00"));
+        RiskRuleView rule = new RiskRuleView(
+                "WR-K3-1",
+                "amount",
+                "single >= 100",
+                "freeze",
+                "active",
+                false,
+                LocalDateTime.now().minusDays(1),
+                LocalDateTime.now());
+        when(riskOpsRepository.withdrawRules()).thenReturn(List.of(rule));
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "k3 active rule review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-K3-1", "idem-k3-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_RISK_HIT_BLOCKED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        assertThat(riskKycReviewFacade.lastWithdrawalNo).isNull();
+        verify(riskOpsRepository).recordWithdrawRuleHit("WD-K3-1", "U00001001", new BigDecimal("150.00"), rule);
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_REVIEW_BLOCKED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("blockedReason", "WITHDRAWAL_RISK_HIT_BLOCKED")
+                .containsEntry("statusUnchanged", true);
+    }
+
+    @Test
+    void reviewWithdrawalHonorsK3ComparisonOperator() {
+        withdrawalRepository.order = withdrawal("WD-K3-LOW-1", "REVIEWING", new BigDecimal("80.00"));
+        RiskRuleView rule = new RiskRuleView(
+                "WR-K3-LOW-1",
+                "amount",
+                "single <= 100",
+                "freeze",
+                "active",
+                false,
+                LocalDateTime.now().minusDays(1),
+                LocalDateTime.now());
+        when(riskOpsRepository.withdrawRules()).thenReturn(List.of(rule));
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "k3 low amount rule review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-K3-LOW-1", "idem-k3-low-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_RISK_HIT_BLOCKED");
+        verify(riskOpsRepository).recordWithdrawRuleHit("WD-K3-LOW-1", "U00001001", new BigDecimal("80.00"), rule);
+    }
+
+    @Test
+    void reviewWithdrawalContinuesK3RulesAfterNonBlockingMatch() {
+        withdrawalRepository.order = withdrawal("WD-K3-MULTI-1", "REVIEWING", new BigDecimal("150.00"));
+        RiskRuleView auditOnlyRule = new RiskRuleView(
+                "WR-K3-AUDIT-1",
+                "amount",
+                "single >= 100",
+                "observe",
+                "active",
+                false,
+                LocalDateTime.now().minusDays(1),
+                LocalDateTime.now());
+        RiskRuleView blockingRule = new RiskRuleView(
+                "WR-K3-BLOCK-1",
+                "amount",
+                "single >= 120",
+                "freeze",
+                "active",
+                false,
+                LocalDateTime.now().minusDays(1),
+                LocalDateTime.now());
+        when(riskOpsRepository.withdrawRules()).thenReturn(List.of(auditOnlyRule, blockingRule));
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "k3 multiple rules review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-K3-MULTI-1", "idem-k3-multi-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_RISK_HIT_BLOCKED");
+        verify(riskOpsRepository).recordWithdrawRuleHit("WD-K3-MULTI-1", "U00001001", new BigDecimal("150.00"), auditOnlyRule);
+        verify(riskOpsRepository).recordWithdrawRuleHit("WD-K3-MULTI-1", "U00001001", new BigDecimal("150.00"), blockingRule);
+        assertThat(withdrawalRepository.lastStatus).isNull();
     }
 
     @Test
@@ -738,6 +865,11 @@ class OpsFinanceServiceTest {
         @Override
         public Optional<WithdrawalOrderView> findByWithdrawalNo(String withdrawalNo) {
             return Optional.ofNullable(order);
+        }
+
+        @Override
+        public Optional<String> findUserCountryCode(Long userId) {
+            return Optional.of("US");
         }
 
         @Override

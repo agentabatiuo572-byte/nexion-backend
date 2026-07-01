@@ -25,6 +25,8 @@ public interface TrustDisclosureRepository {
 
     List<DisclosureGateActionView> listGateActions();
 
+    void ensureBaseGateActions(LocalDateTime now);
+
     Optional<DisclosureDraftView> findLatestDraft();
 
     Optional<DisclosureDraftView> findDraft(String jurisdiction);

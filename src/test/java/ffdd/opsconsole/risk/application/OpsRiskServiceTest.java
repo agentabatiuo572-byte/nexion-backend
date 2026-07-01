@@ -705,6 +705,19 @@ class OpsRiskServiceTest {
         }
 
         @Override
+        public void recordWithdrawRuleHit(String withdrawalNo, String userNo, BigDecimal amount, RiskRuleView rule) {
+            withdrawHits.add(new RiskRuleHitView(
+                    withdrawalNo,
+                    userNo,
+                    "$" + amount,
+                    rule.ruleId(),
+                    rule.dimension(),
+                    rule.action(),
+                    rule.conditionText(),
+                    "now"));
+        }
+
+        @Override
         public List<RiskArbitrageStatView> arbitrageStats() {
             return List.of(new RiskArbitrageStatView("loopConfirmed", "闭环判定", "1", "sub", "warn"));
         }

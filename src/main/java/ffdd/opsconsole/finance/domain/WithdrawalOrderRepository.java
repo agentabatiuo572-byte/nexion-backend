@@ -18,6 +18,8 @@ public interface WithdrawalOrderRepository {
 
     Optional<WithdrawalOrderView> findByWithdrawalNo(String withdrawalNo);
 
+    Optional<String> findUserCountryCode(Long userId);
+
     void updateStatus(String withdrawalNo, String status, String failureReason);
 
     int freezePendingByUserId(Long userId, String reason);

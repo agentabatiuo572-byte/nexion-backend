@@ -26,6 +26,8 @@ import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
+import ffdd.opsconsole.risk.domain.RiskOpsRepository;
+import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -40,6 +42,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -70,6 +74,8 @@ public class OpsFinanceService {
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
     private static final String WITHDRAW_DISCLOSURE_GATE_KEY = "disclosure.gate.withdraw";
     private static final String WITHDRAW_GEO_EMERGENCY_KEY = "emergency.geo.j4.block.required";
+    private static final String WITHDRAW_GEO_ENDPOINT_COUNTRIES_KEY = "emergency.geo.endpoint.withdraw.countries";
+    private static final Pattern FIRST_DECIMAL = Pattern.compile("(\\d+(?:\\.\\d+)?)");
     private static final int HIGH_RISK_SCORE = 70;
     private static final List<String> D_SEED_USER_KEYS = List.of(
             "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
@@ -80,6 +86,7 @@ public class OpsFinanceService {
     private final DepositOpsRepository depositOpsRepository;
     private final UserSeedRepository userSeedRepository;
     private final RiskKycReviewFacade riskKycReviewFacade;
+    private final RiskOpsRepository riskOpsRepository;
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
@@ -338,6 +345,7 @@ public class OpsFinanceService {
         if (guard != null) {
             return guard;
         }
+        ensureD5ConfigDefaults();
         String key = normalizeParamKey(request.key());
         BigDecimal oldValue = currentParamValue(key);
         BigDecimal newValue = normalizeParamValue(key, request.value());
@@ -351,6 +359,7 @@ public class OpsFinanceService {
         }
         String configKey = configKey(key);
         configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "wallet", "D5 withdrawal parameter");
+        mirrorWalletWithdrawalConfig(key, newValue);
         audit("D5_WITHDRAWAL_PARAM_CHANGED", "WITHDRAWAL_PARAM", configKey, request.operator(), Map.of(
                 "key", key,
                 "configKey", configKey,
@@ -396,6 +405,11 @@ public class OpsFinanceService {
         }
         int dailyLimitCount = withdrawalDailyLimitCount();
         if ("APPROVE".equals(action)) {
+            if (recordBlockingWithdrawRuleHit(order)) {
+                String blockedReason = "WITHDRAWAL_RISK_HIT_BLOCKED";
+                auditWithdrawalReviewBlocked(order, action, blockedReason, dailyLimitCount, idempotencyKey, request);
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), blockedReason);
+            }
             KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeWithdrawalReview(
                     order.userNo(),
                     order.amount(),
@@ -636,12 +650,41 @@ public class OpsFinanceService {
     }
 
     private void ensureD5ConfigDefaults() {
-        seedConfigIfAbsent("withdrawal.daily_count_limit", "1", "NUMBER", "wallet", "D5 withdrawal daily count");
-        seedConfigIfAbsent("withdrawal.max_balance_pct", "0.80", "NUMBER", "wallet", "D5 withdrawal balance cap");
-        seedConfigIfAbsent("withdrawal.fee_rate", "0.02", "NUMBER", "wallet", "D5 withdrawal fee rate");
-        seedConfigIfAbsent("withdrawal.min_usdt", "20", "NUMBER", "wallet", "D5 minimum withdrawal USDT");
-        seedConfigIfAbsent("withdrawal.trc20.enabled", "true", "BOOLEAN", "wallet", "D5 TRC20 withdrawal enabled");
-        seedConfigIfAbsent("withdrawal.erc20.enabled", "true", "BOOLEAN", "wallet", "D5 ERC20 withdrawal enabled");
+        ensureBaseConfigIfAbsent("withdrawal.daily_count_limit", "1", "NUMBER", "wallet", "D5 withdrawal daily count");
+        ensureBaseConfigIfAbsent("withdrawal.max_balance_pct", "0.80", "NUMBER", "wallet", "D5 withdrawal balance cap");
+        ensureBaseConfigIfAbsent("withdrawal.fee_rate", "0.02", "NUMBER", "wallet", "D5 withdrawal fee rate");
+        ensureBaseConfigIfAbsent("withdrawal.min_usdt", "20", "NUMBER", "wallet", "D5 minimum withdrawal USDT");
+        ensureBaseConfigIfAbsent("withdrawal.trc20.enabled", "true", "BOOLEAN", "wallet", "D5 TRC20 withdrawal enabled");
+        ensureBaseConfigIfAbsent("withdrawal.erc20.enabled", "true", "BOOLEAN", "wallet", "D5 ERC20 withdrawal enabled");
+        syncWalletWithdrawalMirrors();
+    }
+
+    private void syncWalletWithdrawalMirrors() {
+        configFacade.upsertAdminValue("wallet.withdrawal.daily_count_limit",
+                requiredConfigDecimal("withdrawal.daily_count_limit").toPlainString(),
+                "NUMBER", "wallet", "D5 withdrawal daily count mirror");
+        configFacade.upsertAdminValue("wallet.withdrawal.max_balance_pct",
+                requiredConfigDecimal("withdrawal.max_balance_pct").toPlainString(),
+                "NUMBER", "wallet", "D5 withdrawal balance cap mirror");
+        configFacade.upsertAdminValue("wallet.withdrawal.fee_rate",
+                requiredConfigDecimal("withdrawal.fee_rate").toPlainString(),
+                "NUMBER", "wallet", "D5 withdrawal fee rate mirror");
+        configFacade.upsertAdminValue("wallet.withdrawal.min_usdt",
+                requiredConfigDecimal("withdrawal.min_usdt").toPlainString(),
+                "NUMBER", "wallet", "D5 minimum withdrawal USDT mirror");
+        configFacade.upsertAdminValue("wallet.withdrawal.trc20.enabled",
+                String.valueOf(requiredConfigBoolean("withdrawal.trc20.enabled")),
+                "BOOLEAN", "wallet", "D5 TRC20 withdrawal enabled mirror");
+        configFacade.upsertAdminValue("wallet.withdrawal.erc20.enabled",
+                String.valueOf(requiredConfigBoolean("withdrawal.erc20.enabled")),
+                "BOOLEAN", "wallet", "D5 ERC20 withdrawal enabled mirror");
+    }
+
+    private void ensureBaseConfigIfAbsent(String key, String value, String type, String group, String remark) {
+        if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
+            return;
+        }
+        configFacade.upsertAdminValue(key, value, type, group, remark);
     }
 
     private void seedConfigIfAbsent(String key, String value, String type, String group, String remark) {
@@ -818,7 +861,7 @@ public class OpsFinanceService {
         if (withdrawDisclosureGateActive()) {
             return "WITHDRAWAL_DISCLOSURE_REACK_REQUIRED";
         }
-        if (withdrawGeoEmergencyBlocked()) {
+        if (withdrawGeoEmergencyBlocked() || withdrawGeoEndpointBlocked(order)) {
             return "WITHDRAWAL_GEO_BLOCKED";
         }
         if (coverageBelowRedline()) {
@@ -826,6 +869,9 @@ public class OpsFinanceService {
         }
         if (exceedsDailyLimit(order, dailyLimitCount)) {
             return "WITHDRAWAL_DAILY_LIMIT_EXCEEDED";
+        }
+        if (recordBlockingWithdrawRuleHit(order)) {
+            return "WITHDRAWAL_RISK_HIT_BLOCKED";
         }
         if (!isApprovedKyc(order.kycStatus())) {
             return "WITHDRAWAL_KYC_NOT_APPROVED";
@@ -876,6 +922,29 @@ public class OpsFinanceService {
         return configFacade.activeValue(WITHDRAW_GEO_EMERGENCY_KEY)
                 .map(this::parseDisclosureGateActive)
                 .orElse(false);
+    }
+
+    private boolean withdrawGeoEndpointBlocked(WithdrawalOrderView order) {
+        if (order == null || order.userId() == null) {
+            return false;
+        }
+        Set<String> blockedCountries = parseCountryCsv(configFacade.activeValue(WITHDRAW_GEO_ENDPOINT_COUNTRIES_KEY).orElse(""));
+        if (blockedCountries.isEmpty()) {
+            return false;
+        }
+        return withdrawalRepository.findUserCountryCode(order.userId())
+                .map(country -> blockedCountries.contains(country.trim().toUpperCase(Locale.ROOT)))
+                .orElse(false);
+    }
+
+    private Set<String> parseCountryCsv(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return Set.of();
+        }
+        return Set.copyOf(List.of(raw.split(",")).stream()
+                .map(country -> country.trim().toUpperCase(Locale.ROOT))
+                .filter(StringUtils::hasText)
+                .toList());
     }
 
     private boolean coverageBelowRedline() {
@@ -957,6 +1026,85 @@ public class OpsFinanceService {
                 || (StringUtils.hasText(riskReason) && !placeholders.contains(riskReason.toUpperCase(Locale.ROOT)));
     }
 
+    private boolean recordBlockingWithdrawRuleHit(WithdrawalOrderView order) {
+        boolean blocked = false;
+        for (RiskRuleView rule : riskOpsRepository.withdrawRules()) {
+            if (!"active".equalsIgnoreCase(trimToEmpty(rule.state()))) {
+                continue;
+            }
+            if (!withdrawRuleMatches(rule, order)) {
+                continue;
+            }
+            riskOpsRepository.recordWithdrawRuleHit(order.withdrawalNo(), order.userNo(), order.amount(), rule);
+            if (isBlockingRuleAction(rule.action())) {
+                blocked = true;
+            }
+        }
+        return blocked;
+    }
+
+    private boolean withdrawRuleMatches(RiskRuleView rule, WithdrawalOrderView order) {
+        String dimension = trimToEmpty(rule.dimension()).toLowerCase(Locale.ROOT);
+        String condition = trimToEmpty(rule.conditionText()).toLowerCase(Locale.ROOT);
+        boolean velocityRule = condition.contains("24h") || condition.contains("24小时") || dimension.contains("速度")
+                || dimension.contains("velocity") || dimension.contains("count");
+        boolean amountRule = condition.contains("$") || condition.contains("usdt") || condition.contains("单笔")
+                || condition.contains("single") || condition.contains("amount") || dimension.contains("金额")
+                || dimension.contains("amount");
+        boolean accountRule = condition.contains("注册") || condition.contains("account") || dimension.contains("新账户")
+                || dimension.contains("账户");
+        boolean addressRule = condition.contains("地址") || condition.contains("blacklist") || condition.contains("reputation")
+                || dimension.contains("地址") || dimension.contains("信誉");
+        if (velocityRule && !amountRule) {
+            Integer count24h = order.withdrawalCount24h();
+            BigDecimal threshold = firstDecimal(condition);
+            return threshold != null && count24h != null
+                    && compareRuleValue(BigDecimal.valueOf(count24h), threshold, condition);
+        }
+        if (amountRule) {
+            BigDecimal threshold = firstDecimal(condition);
+            if (threshold == null || order.amount() == null) {
+                return false;
+            }
+            return compareRuleValue(order.amount(), threshold, condition);
+        }
+        if (accountRule || addressRule) {
+            String existingSignals = (trimToEmpty(order.hitRules()) + " " + trimToEmpty(order.riskReason())).toLowerCase(Locale.ROOT);
+            return StringUtils.hasText(existingSignals)
+                    && ((StringUtils.hasText(dimension) && existingSignals.contains(dimension))
+                    || (StringUtils.hasText(condition) && existingSignals.contains(condition))
+                    || existingSignals.contains("account")
+                    || existingSignals.contains("address")
+                    || existingSignals.contains("账户")
+                    || existingSignals.contains("地址"));
+        }
+        return false;
+    }
+
+    private BigDecimal firstDecimal(String value) {
+        Matcher matcher = FIRST_DECIMAL.matcher(trimToEmpty(value));
+        return matcher.find() ? new BigDecimal(matcher.group(1)) : null;
+    }
+
+    private boolean compareRuleValue(BigDecimal actual, BigDecimal threshold, String condition) {
+        String text = trimToEmpty(condition);
+        if (text.contains("<=") || text.contains("≤")) {
+            return actual.compareTo(threshold) <= 0;
+        }
+        if (text.contains("<")) {
+            return actual.compareTo(threshold) < 0;
+        }
+        if (text.contains(">") || text.contains(">=") || text.contains("≥")) {
+            return actual.compareTo(threshold) >= 0;
+        }
+        return actual.compareTo(threshold) >= 0;
+    }
+
+    private boolean isBlockingRuleAction(String action) {
+        String normalized = trimToEmpty(action).toLowerCase(Locale.ROOT);
+        return Set.of("freeze", "delay", "reject", "manual", "block", "hold", "review").contains(normalized);
+    }
+
     private String trimToEmpty(String value) {
         return value == null ? "" : value.trim();
     }
@@ -976,6 +1124,16 @@ public class OpsFinanceService {
             case "networkFee" -> "withdrawal.fee_rate";
             default -> throw new IllegalArgumentException("Unsupported withdrawal parameter");
         };
+    }
+
+    private void mirrorWalletWithdrawalConfig(String key, BigDecimal value) {
+        String walletKey = switch (key) {
+            case "dailyLimitCount" -> "wallet.withdrawal.daily_count_limit";
+            case "balanceMaxRatio" -> "wallet.withdrawal.max_balance_pct";
+            case "networkFee" -> "wallet.withdrawal.fee_rate";
+            default -> throw new IllegalArgumentException("Unsupported withdrawal parameter");
+        };
+        configFacade.upsertAdminValue(walletKey, value.toPlainString(), "NUMBER", "wallet", "D5 withdrawal parameter mirror");
     }
 
     private BigDecimal currentParamValue(String key) {
