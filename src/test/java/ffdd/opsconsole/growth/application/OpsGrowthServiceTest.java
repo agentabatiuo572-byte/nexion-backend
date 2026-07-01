@@ -435,6 +435,20 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void trialKillSwitchDoesNotBlockH3ConfigUpdates() {
+        configFacade.values.put("killswitch.trial", "disabled");
+
+        ApiResult<Map<String, Object>> result = service.updateQuestConfig(
+                "idem-h3-config-killed-trial",
+                "dayOne.windowMs",
+                new GrowthConfigUpdateRequest("dayOne.windowMs", "48h 全额 / 96h 宽限", "adjust H3 task window", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("growth.quest.day_one.window_ms", "48h 全额 / 96h 宽限");
+    }
+
+    @Test
     void settingSecondFeaturedOngoingEventReturns422() {
         ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
                 "idem-h4-featured",

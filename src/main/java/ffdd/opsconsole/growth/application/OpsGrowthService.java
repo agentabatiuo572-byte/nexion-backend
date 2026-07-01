@@ -619,10 +619,6 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
-        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
-        if (trialGate != null) {
-            return trialGate;
-        }
         ensureQuestEventSeedData();
         String normalizedKey;
         try {

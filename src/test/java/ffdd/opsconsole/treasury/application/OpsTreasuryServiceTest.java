@@ -396,6 +396,46 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void injectionReplaysDuplicateIdempotencyWithoutIncreasingReserveAgain() {
+        configFacade.values.put("wallet.dual-ledger.reserve-usd", "5000");
+        TreasuryInjectionRequest request =
+                new TreasuryInjectionRequest(new BigDecimal("250.129"), "V-20260617", "reserve top-up", "superadmin");
+
+        ApiResult<Map<String, Object>> first = service.createInjection("idem-b1", request);
+        ApiResult<Map<String, Object>> second = service.createInjection("idem-b1", request);
+
+        assertThat(first.getCode()).isZero();
+        assertThat(second.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("wallet.dual-ledger.reserve-usd", "5250.13");
+        assertThat((Map<String, Object>) second.getData().get("injection"))
+                .containsEntry("voucherNo", "V-20260617")
+                .containsEntry("oldReserveUsd", new BigDecimal("5000"))
+                .containsEntry("newReserveUsd", new BigDecimal("5250.13"));
+        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
+        assertThat(configFacade.upsertedKeys.stream()
+                .filter("wallet.dual-ledger.reserve-usd"::equals)
+                .count()).isEqualTo(1);
+    }
+
+    @Test
+    void injectionRejectsIdempotencyPayloadMismatch() {
+        configFacade.values.put("wallet.dual-ledger.reserve-usd", "5000");
+        TreasuryInjectionRequest request =
+                new TreasuryInjectionRequest(new BigDecimal("250.129"), "V-20260617", "reserve top-up", "superadmin");
+        TreasuryInjectionRequest changed =
+                new TreasuryInjectionRequest(new BigDecimal("251.13"), "V-20260617", "reserve top-up", "superadmin");
+
+        service.createInjection("idem-b1", request);
+
+        assertThatThrownBy(() -> service.createInjection("idem-b1", changed))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        assertThat(configFacade.values).containsEntry("wallet.dual-ledger.reserve-usd", "5250.13");
+        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
     void scopeUpdateUsesPlatformFacadeAndAudits() {
         TreasuryScopeRequest request = new TreasuryScopeRequest("active liabilities only", "policy change", "superadmin");
 

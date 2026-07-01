@@ -9,6 +9,7 @@ import ffdd.opsconsole.risk.domain.RiskRuleHitView;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.risk.domain.RiskScoreDimensionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
+import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.infrastructure.RiskDecisionEntity;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -583,6 +584,34 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
              LIMIT 1
             """)
     RiskRuleView findWithdrawRule(@Param("ruleId") String ruleId);
+
+    @Select("""
+            SELECT w.withdrawal_no AS withdrawalNo,
+                   CONCAT('U', LPAD(w.user_id, 8, '0')) AS userNo,
+                   w.amount AS amount,
+                   (
+                       SELECT COUNT(1)
+                         FROM nx_withdrawal_order w2
+                        WHERE w2.user_id = w.user_id
+                          AND w2.is_deleted = 0
+                          AND w2.created_at >= DATE_SUB(w.created_at, INTERVAL 24 HOUR)
+                          AND w2.created_at <= w.created_at
+                   ) AS withdrawalCount24h,
+                   CONCAT_WS(' ',
+                       COALESCE(rd.rule_codes, ''),
+                       COALESCE(rd.reason, ''),
+                       COALESCE(u.status, ''),
+                       COALESCE(u.kyc_status, '')
+                   ) AS existingSignals
+              FROM nx_withdrawal_order w
+              LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
+              LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
+             WHERE w.is_deleted = 0
+               AND w.status IN ('PENDING','REVIEWING','FROZEN','REJECTED','PENDING_CHAIN')
+             ORDER BY w.id DESC
+             LIMIT #{limit}
+            """)
+    List<RiskWithdrawCandidateView> withdrawRuleCandidates(@Param("limit") int limit);
 
     @Insert("""
             INSERT INTO nx_admin_risk_withdraw_rule (

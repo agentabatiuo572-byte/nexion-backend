@@ -76,6 +76,7 @@ public class OpsFinanceService {
     private static final String WITHDRAW_GEO_EMERGENCY_KEY = "emergency.geo.j4.block.required";
     private static final String WITHDRAW_GEO_ENDPOINT_COUNTRIES_KEY = "emergency.geo.endpoint.withdraw.countries";
     private static final Pattern FIRST_DECIMAL = Pattern.compile("(\\d+(?:\\.\\d+)?)");
+    private static final Pattern K3_VELOCITY_RULE = Pattern.compile("^24h\\s*(>=|>)\\s*(\\d+)\\s*笔\\s*或\\s*(>=|>)\\s*\\$?([\\d,]+)$", Pattern.CASE_INSENSITIVE);
     private static final int HIGH_RISK_SCORE = 70;
     private static final List<String> D_SEED_USER_KEYS = List.of(
             "usr_77D4", "usr_31E8", "usr_2231", "usr_55B1", "usr_8807");
@@ -1055,11 +1056,13 @@ public class OpsFinanceService {
                 || dimension.contains("账户");
         boolean addressRule = condition.contains("地址") || condition.contains("blacklist") || condition.contains("reputation")
                 || dimension.contains("地址") || dimension.contains("信誉");
-        if (velocityRule && !amountRule) {
-            Integer count24h = order.withdrawalCount24h();
-            BigDecimal threshold = firstDecimal(condition);
-            return threshold != null && count24h != null
-                    && compareRuleValue(BigDecimal.valueOf(count24h), threshold, condition);
+        if (velocityRule) {
+            if (withdrawVelocityRuleMatches(condition, order.withdrawalCount24h(), order.amount())) {
+                return true;
+            }
+            if (condition.contains("或") || condition.contains(" or ")) {
+                return false;
+            }
         }
         if (amountRule) {
             BigDecimal threshold = firstDecimal(condition);
@@ -1081,8 +1084,22 @@ public class OpsFinanceService {
         return false;
     }
 
+    private boolean withdrawVelocityRuleMatches(String condition, Integer count24h, BigDecimal amount) {
+        Matcher matcher = K3_VELOCITY_RULE.matcher(trimToEmpty(condition).replace(",", ""));
+        if (matcher.matches()) {
+            boolean countMatched = count24h != null
+                    && compareRuleValue(BigDecimal.valueOf(count24h), new BigDecimal(matcher.group(2)), matcher.group(1));
+            boolean amountMatched = amount != null
+                    && compareRuleValue(amount, new BigDecimal(matcher.group(4)), matcher.group(3));
+            return countMatched || amountMatched;
+        }
+        BigDecimal threshold = firstDecimal(condition);
+        return threshold != null && count24h != null
+                && compareRuleValue(BigDecimal.valueOf(count24h), threshold, condition);
+    }
+
     private BigDecimal firstDecimal(String value) {
-        Matcher matcher = FIRST_DECIMAL.matcher(trimToEmpty(value));
+        Matcher matcher = FIRST_DECIMAL.matcher(trimToEmpty(value).replace(",", ""));
         return matcher.find() ? new BigDecimal(matcher.group(1)) : null;
     }
 

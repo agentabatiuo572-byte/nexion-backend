@@ -28,6 +28,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreDistributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
 import ffdd.opsconsole.risk.dto.RiskArbitrageParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
@@ -39,6 +40,7 @@ import ffdd.opsconsole.risk.dto.RiskKycReviewOverviewQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleCreateRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleOverviewQueryRequest;
+import ffdd.opsconsole.risk.dto.RiskRuleDryRunRequest;
 import ffdd.opsconsole.risk.dto.RiskScoreOverrideRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
@@ -190,6 +192,21 @@ class OpsRiskServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ruleId()).startsWith("WR-C");
         assertThat(result.getData().conditionText()).isEqualTo("24h >= 4 笔 或 >= $8,000");
+    }
+
+    @Test
+    void dryRunWithdrawRulesEvaluatesBusinessWithdrawalsAndRecordsHits() {
+        ApiResult<Map<String, Object>> result = service.dryRunWithdrawRules(
+                "idem-k3-dryrun",
+                new RiskRuleDryRunRequest("verify K3 to D2 hit propagation", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("evaluatedWithdrawals")).isEqualTo(2);
+        assertThat(result.getData().get("activeRules")).isEqualTo(4);
+        assertThat(result.getData().get("hitCount")).isEqualTo(2);
+        assertThat(riskRepository.withdrawHits)
+                .extracting(RiskRuleHitView::withdrawalNo)
+                .contains("WD-K3-1", "WD-K3-2");
     }
 
     @Test
@@ -559,6 +576,9 @@ class OpsRiskServiceTest {
                 new RiskRuleHitView("WD-1", "usr_1", "$1,200", "WR-01", "金额", "manual", "单笔大额提现转人工", "今天 10:00"),
                 new RiskRuleHitView("WD-2", "usr_2", "$400", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:05"),
                 new RiskRuleHitView("WD-3", "usr_3", "$500", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:10")));
+        private final List<RiskWithdrawCandidateView> withdrawCandidates = new ArrayList<>(List.of(
+                new RiskWithdrawCandidateView("WD-K3-1", "U00000001", BigDecimal.valueOf(1_500), 1, ""),
+                new RiskWithdrawCandidateView("WD-K3-2", "U00000002", BigDecimal.valueOf(80), 5, "")));
         private final List<RiskArbitrageParamView> arbitrageParams = new ArrayList<>(List.of(
                 new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "sub", "note"),
                 new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "sub", "note"),
@@ -654,6 +674,11 @@ class OpsRiskServiceTest {
         @Override
         public Optional<RiskRuleView> findWithdrawRule(String ruleId) {
             return rules.stream().filter(rule -> rule.ruleId().equals(ruleId)).findFirst();
+        }
+
+        @Override
+        public List<RiskWithdrawCandidateView> withdrawRuleCandidates(int limit) {
+            return withdrawCandidates.stream().limit(limit).toList();
         }
 
         @Override

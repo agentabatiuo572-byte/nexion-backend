@@ -18,6 +18,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreDistributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.risk.mapper.RiskOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -151,6 +152,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public Optional<RiskRuleView> findWithdrawRule(String ruleId) {
         return Optional.ofNullable(mapper.findWithdrawRule(ruleId));
+    }
+
+    @Override
+    public List<RiskWithdrawCandidateView> withdrawRuleCandidates(int limit) {
+        return mapper.withdrawRuleCandidates(Math.max(1, Math.min(limit, 500)));
     }
 
     @Override

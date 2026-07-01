@@ -28,6 +28,8 @@ public interface RiskOpsRepository {
 
     Optional<RiskRuleView> findWithdrawRule(String ruleId);
 
+    List<RiskWithdrawCandidateView> withdrawRuleCandidates(int limit);
+
     RiskRuleView createWithdrawRule(String ruleId, String dimension, String conditionText, String action, String state, String operator);
 
     Optional<RiskRuleView> updateWithdrawRuleState(String ruleId, String state);

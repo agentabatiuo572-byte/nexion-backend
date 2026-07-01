@@ -28,6 +28,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
 import ffdd.opsconsole.risk.domain.RiskScoringSourceCatalog;
+import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
 import ffdd.opsconsole.risk.dto.RiskArbitrageParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
@@ -53,6 +54,7 @@ import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
 import ffdd.opsconsole.user.facade.UserKycStatusFacade;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -476,17 +478,113 @@ public class OpsRiskService {
             return guard;
         }
         String batchNo = "K3-DRY-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase(Locale.ROOT);
+        List<RiskRuleView> activeRules = riskRepository.withdrawRules().stream()
+                .filter(rule -> "active".equalsIgnoreCase(trimmed(rule.state())))
+                .toList();
+        List<RiskWithdrawCandidateView> candidates = activeRules.isEmpty()
+                ? List.of()
+                : riskRepository.withdrawRuleCandidates(200);
+        int hitCount = 0;
+        Map<String, Integer> hitCountsByRule = new LinkedHashMap<>();
+        for (RiskWithdrawCandidateView candidate : candidates) {
+            for (RiskRuleView rule : activeRules) {
+                if (!withdrawRuleMatches(rule, candidate)) {
+                    continue;
+                }
+                riskRepository.recordWithdrawRuleHit(candidate.withdrawalNo(), candidate.userNo(), candidate.amount(), rule);
+                hitCount++;
+                hitCountsByRule.merge(rule.ruleId(), 1, Integer::sum);
+            }
+        }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("batchNo", batchNo);
         response.put("status", "STARTED");
         response.put("sampleWindowDays", 30);
+        response.put("evaluatedWithdrawals", candidates.size());
+        response.put("activeRules", activeRules.size());
+        response.put("hitCount", hitCount);
+        response.put("hitCountsByRule", hitCountsByRule);
         response.put("routeCounts", riskRepository.withdrawRouteCounts());
         response.put("startedAt", LocalDateTime.now());
         audit("K3_WITHDRAW_RULE_DRY_RUN_STARTED", "WITHDRAW_RULE_DRY_RUN", batchNo, null, operator(request.operator()), Map.of(
                 "batchNo", batchNo,
+                "evaluatedWithdrawals", candidates.size(),
+                "activeRules", activeRules.size(),
+                "hitCount", hitCount,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(response);
+    }
+
+    private boolean withdrawRuleMatches(RiskRuleView rule, RiskWithdrawCandidateView candidate) {
+        String dimension = trimmed(rule.dimension()).toLowerCase(Locale.ROOT);
+        String condition = trimmed(rule.conditionText()).toLowerCase(Locale.ROOT);
+        boolean velocityRule = condition.contains("24h") || condition.contains("24小时") || dimension.contains("速度")
+                || dimension.contains("velocity") || dimension.contains("count");
+        boolean amountRule = condition.contains("$") || condition.contains("usdt") || condition.contains("单笔")
+                || condition.contains("single") || condition.contains("amount") || dimension.contains("金额")
+                || dimension.contains("amount");
+        boolean accountRule = condition.contains("注册") || condition.contains("account") || dimension.contains("新账户")
+                || dimension.contains("账户");
+        boolean addressRule = condition.contains("地址") || condition.contains("blacklist") || condition.contains("reputation")
+                || dimension.contains("地址") || dimension.contains("信誉");
+        if (velocityRule) {
+            if (withdrawVelocityRuleMatches(condition, candidate.withdrawalCount24h(), candidate.amount())) {
+                return true;
+            }
+            if (condition.contains("或") || condition.contains(" or ")) {
+                return false;
+            }
+        }
+        if (amountRule) {
+            BigDecimal threshold = firstDecimal(condition);
+            return threshold != null && candidate.amount() != null
+                    && compareRuleValue(candidate.amount(), threshold, condition);
+        }
+        if (accountRule || addressRule) {
+            String signals = trimmed(candidate.existingSignals()).toLowerCase(Locale.ROOT);
+            return StringUtils.hasText(signals)
+                    && ((StringUtils.hasText(dimension) && signals.contains(dimension))
+                    || (StringUtils.hasText(condition) && signals.contains(condition))
+                    || signals.contains("account")
+                    || signals.contains("address")
+                    || signals.contains("账户")
+                    || signals.contains("地址"));
+        }
+        return false;
+    }
+
+    private boolean withdrawVelocityRuleMatches(String condition, Integer count24h, BigDecimal amount) {
+        Matcher matcher = K3_VELOCITY_RULE.matcher(trimmed(condition).replace(",", ""));
+        if (matcher.matches()) {
+            boolean countMatched = count24h != null
+                    && compareRuleValue(BigDecimal.valueOf(count24h), new BigDecimal(matcher.group(2)), matcher.group(1));
+            boolean amountMatched = amount != null
+                    && compareRuleValue(amount, new BigDecimal(matcher.group(4)), matcher.group(3));
+            return countMatched || amountMatched;
+        }
+        BigDecimal threshold = firstDecimal(condition);
+        return threshold != null && count24h != null
+                && compareRuleValue(BigDecimal.valueOf(count24h), threshold, condition);
+    }
+
+    private BigDecimal firstDecimal(String value) {
+        Matcher matcher = Pattern.compile("(\\d+(?:\\.\\d+)?)").matcher(trimmed(value).replace(",", ""));
+        return matcher.find() ? new BigDecimal(matcher.group(1)) : null;
+    }
+
+    private boolean compareRuleValue(BigDecimal actual, BigDecimal threshold, String condition) {
+        String text = trimmed(condition);
+        if (text.contains("<=") || text.contains("≤")) {
+            return actual.compareTo(threshold) <= 0;
+        }
+        if (text.contains("<")) {
+            return actual.compareTo(threshold) < 0;
+        }
+        if (text.contains(">") || text.contains(">=") || text.contains("≥")) {
+            return actual.compareTo(threshold) >= 0;
+        }
+        return actual.compareTo(threshold) >= 0;
     }
 
     public ApiResult<Map<String, Object>> arbitrageOverview() {

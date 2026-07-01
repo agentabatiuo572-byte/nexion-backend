@@ -77,6 +77,7 @@ public class OpsTreasuryService {
     private static final String B_ALERT_COVERAGE_ID = "coverage-redline";
     private static final String B_ALERT_COVERAGE_ACK_KEY = "treasury.b.alert.coverage-redline.ack";
     private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
+    private static final String B_RESERVE_INJECTION_IDEMPOTENCY_SCOPE = "TREASURY_B_RESERVE_INJECTION";
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现闸"),
             new GateSeed("exchange", "兑换闸"),
@@ -287,8 +288,25 @@ public class OpsTreasuryService {
         if (!StringUtils.hasText(request.voucherNo())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VOUCHER_NO_REQUIRED");
         }
-        BigDecimal oldReserve = configDecimal(RESERVE_CONFIG_KEY, dualLedgerProperties.getReserveUsd());
+        String voucherNo = request.voucherNo().trim();
         BigDecimal amount = request.amount().setScale(2, RoundingMode.HALF_UP);
+        String reason = request.reason().trim();
+        String operator = trimToNull(request.operator());
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+                B_RESERVE_INJECTION_IDEMPOTENCY_SCOPE,
+                idempotencyKey,
+                reserveInjectionRequestHash(amount, voucherNo, reason, operator),
+                ApiResult.class,
+                () -> createInjectionNew(idempotencyKey.trim(), amount, voucherNo, reason, operator));
+    }
+
+    private ApiResult<Map<String, Object>> createInjectionNew(
+            String idempotencyKey,
+            BigDecimal amount,
+            String voucherNo,
+            String reason,
+            String operator) {
+        BigDecimal oldReserve = configDecimal(RESERVE_CONFIG_KEY, dualLedgerProperties.getReserveUsd());
         BigDecimal newReserve = oldReserve.add(amount).setScale(2, RoundingMode.HALF_UP);
         configFacade.upsertAdminValue(
                 RESERVE_CONFIG_KEY,
@@ -296,16 +314,16 @@ public class OpsTreasuryService {
                 "NUMBER",
                 "wallet",
                 "B1 treasury reserve injection");
-        audit("B1_TREASURY_RESERVE_INJECTION", "TREASURY_RESERVE", request.voucherNo(), request.operator(), section(
-                "voucherNo", request.voucherNo().trim(),
+        audit("B1_TREASURY_RESERVE_INJECTION", "TREASURY_RESERVE", voucherNo, operator, section(
+                "voucherNo", voucherNo,
                 "amount", amount,
                 "oldReserveUsd", oldReserve,
                 "newReserveUsd", newReserve,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+                "reason", reason,
+                "idempotencyKey", idempotencyKey));
         Map<String, Object> response = dualLedger().getData();
         response.put("injection", section(
-                "voucherNo", request.voucherNo().trim(),
+                "voucherNo", voucherNo,
                 "amount", amount,
                 "oldReserveUsd", oldReserve,
                 "newReserveUsd", newReserve));
@@ -897,6 +915,22 @@ public class OpsTreasuryService {
             return HexFormat.of().formatHex(digest.digest());
         } catch (JsonProcessingException ex) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "B_ALERT_ACK_HASH_FAILED");
+        } catch (NoSuchAlgorithmException ex) {
+            throw new BizException(500, "SHA256_UNAVAILABLE");
+        }
+    }
+
+    private String reserveInjectionRequestHash(BigDecimal amount, String voucherNo, String reason, String operator) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(objectMapper.writeValueAsString(section(
+                    "amount", amount,
+                    "voucherNo", voucherNo,
+                    "reason", reason,
+                    "operator", operator)).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (JsonProcessingException ex) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "B_RESERVE_INJECTION_HASH_FAILED");
         } catch (NoSuchAlgorithmException ex) {
             throw new BizException(500, "SHA256_UNAVAILABLE");
         }
