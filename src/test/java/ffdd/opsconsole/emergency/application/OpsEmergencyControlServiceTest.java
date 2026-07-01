@@ -63,8 +63,24 @@ class OpsEmergencyControlServiceTest {
 
     @Test
     void nonEmergencyPlaybookRejectsEmergencyExecution() {
+        service.createPlaybook(
+                "idem-j4-create-non-emergency",
+                new SopPlaybookCreateRequest(
+                        "全站技术演练",
+                        "技术故障",
+                        "技术值班",
+                        "20 分钟",
+                        false,
+                        "J1·进入维护模式",
+                        "",
+                        "",
+                        "演练结束恢复",
+                        false,
+                        "create non emergency drill",
+                        "superadmin"));
+
         var result = service.executePlaybook(
-                "SOP-07",
+                "SOP-DRAFT-1",
                 "idem-j4",
                 new SopPlaybookRunRequest(true, "incident", "tech-on-call"));
 
@@ -86,12 +102,12 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
-    void sopOverviewContainsPlaybooksAndExecutions() {
+    void sopOverviewDoesNotSeedPlaybooksOrExecutionsWhenDatabaseIsEmpty() {
         var result = service.sopOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().get("playbooks").toString()).contains("SOP-01");
-        assertThat(result.getData().get("executions").toString()).contains("SOP-06");
+        assertThat(result.getData().get("playbooks").toString()).doesNotContain("SOP-01");
+        assertThat(result.getData().get("executions").toString()).doesNotContain("SOP-06");
         assertThat(result.getData().get("actionOptions").toString())
                 .contains("熔断提现通道")
                 .contains("发送通知模板")
@@ -99,8 +115,7 @@ class OpsEmergencyControlServiceTest {
         assertThat(result.getData().get("rollbackOptions").toString())
                 .contains("常规根因恢复")
                 .contains("提现限流恢复");
-        assertThat(configFacade.values)
-                .containsKeys("emergency.sop.playbooks", "emergency.sop.executions", "emergency.sop.actionOptions", "emergency.sop.rollbackOptions");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
@@ -182,8 +197,24 @@ class OpsEmergencyControlServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void executePlaybookRunsTargetDomainActionsAndPersistsSharedConfig() {
+        service.createPlaybook(
+                "idem-j4-create-domain-actions",
+                new SopPlaybookCreateRequest(
+                        "资金对账缺口",
+                        "资金异常",
+                        "财务主管",
+                        "15 分钟",
+                        true,
+                        "J1·熔断 withdraw 提现\nB1·核验备付金覆盖率\nD2·按 B1 容量分批放行",
+                        "",
+                        "",
+                        "B1 覆盖率恢复后回滚",
+                        false,
+                        "wire real domain actions",
+                        "superadmin"));
+
         var result = service.executePlaybook(
-                "SOP-02",
+                "SOP-DRAFT-1",
                 "idem-j4-domain-actions",
                 new SopPlaybookRunRequest(true, "ledger gap containment", "superadmin"));
 
@@ -291,21 +322,29 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
-    void geoAndTamperOverviewsSeedConfigWhenDatabaseIsEmpty() {
+    void geoAndTamperOverviewsDoNotSeedConfigWhenDatabaseIsEmpty() {
         var geo = service.geoBlockOverview();
         var tamper = service.tamperOverview();
 
         assertThat(geo.getCode()).isZero();
         assertThat(tamper.getCode()).isZero();
-        assertThat(configFacade.values)
-                .containsEntry("emergency.geo.country.KP", "blocked")
-                .containsEntry("emergency.geo.j4.block.required", "false")
-                .containsKeys("emergency.geo.hits", "emergency.geo.edge.metrics", "emergency.tamper.trend", "emergency.tamper.paths", "emergency.tamper.accounts");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
     @SuppressWarnings("unchecked")
     void tamperAccountsArePagedAndDoNotExposeUid() {
+        configFacade.values.put("emergency.tamper.accounts", "["
+                + "{\"uid\":\"u-10001\",\"count\":10,\"k4\":\"+10\",\"last\":\"14:00:01\",\"paths\":[\"p1\"],\"cluster\":\"CL-1\"},"
+                + "{\"uid\":\"u-10002\",\"count\":11,\"k4\":\"+11\",\"last\":\"14:00:02\",\"paths\":[\"p2\"],\"cluster\":\"CL-1\"},"
+                + "{\"uid\":\"u-10003\",\"count\":12,\"k4\":\"+12\",\"last\":\"14:00:03\",\"paths\":[\"p3\"],\"cluster\":\"CL-1\"},"
+                + "{\"uid\":\"u-10004\",\"count\":13,\"k4\":\"+13\",\"last\":\"14:00:04\",\"paths\":[\"p4\"],\"cluster\":\"CL-1\"},"
+                + "{\"uid\":\"u-10005\",\"count\":14,\"k4\":\"+14\",\"last\":\"14:00:05\",\"paths\":[\"p5\"],\"cluster\":\"CL-1\"},"
+                + "{\"uid\":\"u-10006\",\"count\":15,\"k4\":\"+15\",\"last\":\"14:00:06\",\"paths\":[\"p6\"],\"cluster\":\"CL-1\"},"
+                + "{\"uid\":\"u-10007\",\"count\":16,\"k4\":\"+16\",\"last\":\"14:00:07\",\"paths\":[\"p7\"],\"cluster\":\"CL-1\"},"
+                + "{\"uid\":\"u-10008\",\"count\":17,\"k4\":\"+17\",\"last\":\"14:00:08\",\"paths\":[\"p8\"],\"cluster\":\"CL-1\"}"
+                + "]");
+
         var result = service.tamperOverview(2, 3);
 
         assertThat(result.getCode()).isZero();

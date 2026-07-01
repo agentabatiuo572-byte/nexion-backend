@@ -23,10 +23,8 @@ import ffdd.opsconsole.platform.mapper.AuditOperationHistoryMapper;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
-import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
-import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import java.time.LocalDateTime;
@@ -70,13 +68,12 @@ class OpsAuditCenterServiceTest {
         entitySequence = 1L;
 
         AuditStatsSummaryResponse summary = new AuditStatsSummaryResponse();
-        summary.setTotal(3482L);
+        summary.setTotal(0L);
         summary.setByResult(List.of());
         summary.setByRiskLevel(List.of());
         when(auditLogService.summary(any(AuditStatsQueryRequest.class))).thenReturn(summary);
-        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(new AuditLogRecord()));
-        when(auditLogService.topActions(any(AuditStatsQueryRequest.class)))
-                .thenReturn(List.of(new AuditStatsBucket("A2_OPERATION_APPROVED", 2L)));
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of());
+        when(auditLogService.topActions(any(AuditStatsQueryRequest.class))).thenReturn(List.of());
 
         when(ticketMapper.selectCount(any())).thenAnswer(invocation -> ticketRows.values().stream().filter(OpsAuditCenterServiceTest::active).count());
         when(ticketMapper.insert(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
@@ -137,20 +134,23 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
-    void overviewReturnsServerCanonicalA2QueueAndStats() {
+    void overviewDoesNotCreateA2BusinessRowsWhenDatabaseIsEmpty() {
         ApiResult<AuditCenterOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().stats().pendingTickets()).isEqualTo(14);
-        assertThat(result.getData().stats().fundTickets()).isEqualTo(5);
-        assertThat(result.getData().stats().sosTickets()).isEqualTo(1);
-        assertThat(result.getData().stats().todayAuditEvents()).isEqualTo(3482L);
-        assertThat(result.getData().operationQueue()).extracting(AuditCenterOverview.AuditOperationTicket::id)
-                .contains("WO-8852", "WO-8838");
-        assertThat(result.getData().mechanismParams()).extracting(AuditCenterOverview.AuditMechanismParam::key)
-                .contains("ttl", "retention", "schema");
-        assertThat(result.getData().recentLogs()).hasSize(1);
-        assertThat(result.getData().topActions()).hasSize(1);
+        assertThat(result.getData().stats().pendingTickets()).isZero();
+        assertThat(result.getData().stats().fundTickets()).isZero();
+        assertThat(result.getData().stats().sosTickets()).isZero();
+        assertThat(result.getData().stats().todayAuditEvents()).isZero();
+        assertThat(result.getData().operationQueue()).isEmpty();
+        assertThat(result.getData().mechanismParams())
+                .extracting(AuditCenterOverview.AuditMechanismParam::key)
+                .contains("reason_required", "ttl", "retention", "confirm_list", "schema");
+        assertThat(result.getData().recentLogs()).isEmpty();
+        assertThat(result.getData().topActions()).isEmpty();
+        assertThat(ticketRows).isEmpty();
+        assertThat(historyRows).isEmpty();
+        assertThat(categoryRows).isEmpty();
     }
 
     @Test
@@ -167,6 +167,7 @@ class OpsAuditCenterServiceTest {
 
     @Test
     void approvePersistsTerminalStatusAndWritesA2Audit() {
+        putTicket("WO-8852", "提现放行(大额操作确认)", "pending", "fund", true, false);
         AuditOperationDecisionRequest request = new AuditOperationDecisionRequest("verified by treasury", "superadmin");
 
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve("idem-a2-1", "WO-8852", request);
@@ -187,6 +188,7 @@ class OpsAuditCenterServiceTest {
 
     @Test
     void terminalOperationCannotBeDecidedTwice() {
+        putTicket("WO-8851", "账单手工调整", "pending", "fund", false, false);
         AuditOperationDecisionRequest request = new AuditOperationDecisionRequest("verified", "superadmin");
 
         service.reject("idem-a2-1", "WO-8851", request);
@@ -294,6 +296,28 @@ class OpsAuditCenterServiceTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
+    }
+
+    private void putTicket(String operationId, String action, String status, String type, boolean amplifies, boolean sos) {
+        AuditOperationTicketEntity ticket = new AuditOperationTicketEntity();
+        ticket.setId(entitySequence++);
+        ticket.setOperationId(operationId);
+        ticket.setAction(action);
+        ticket.setObjectText("explicit-test-row");
+        ticket.setBeforeValue("-");
+        ticket.setAfterValue("+1");
+        ticket.setOperatorName("superadmin");
+        ticket.setOperatorRole("超管");
+        ticket.setOperationType(type);
+        ticket.setAmplifies(amplifies ? 1 : 0);
+        ticket.setSos(sos ? 1 : 0);
+        ticket.setTimeLabel("刚刚");
+        ticket.setMine(0);
+        ticket.setRoleGate("超管");
+        ticket.setReason("explicit test fixture");
+        ticket.setStatus(status);
+        ticket.setIsDeleted(0);
+        ticketRows.put(operationId, ticket);
     }
 
     private static final Set<String> TERMINAL_STATUSES = Set.of("approved", "rejected", "withdrawn", "expired");

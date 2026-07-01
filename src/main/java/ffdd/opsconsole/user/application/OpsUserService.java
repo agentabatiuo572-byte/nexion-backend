@@ -927,7 +927,6 @@ public class OpsUserService {
     }
 
     public ApiResult<UserRegistrationRiskOverview> registrationRiskOverview() {
-        ensureRegistrationRiskConfigSeeds();
         String captchaRestoreWindow = configFacade.activeValue(CAPTCHA_OFF_WINDOW_KEY)
                 .filter(StringUtils::hasText)
                 .orElse("");
@@ -957,23 +956,6 @@ public class OpsUserService {
     }
 
     private void ensureRegistrationRiskConfigSeeds() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        REGISTRATION_RISK_PARAM_DEFINITIONS.forEach(definition -> {
-            ensureAdminConfigSeed(definition.configKey(), String.valueOf(definition.fallback()), "NUMBER");
-            if (definition.composite()) {
-                ensureAdminConfigSeed(
-                        definition.secondaryConfigKey(),
-                        String.valueOf(definition.secondaryFallback()),
-                        "NUMBER");
-            }
-        });
-        ensureAdminConfigSeed("auth.risk.otp_sent_today", "31240", "NUMBER");
-        ensureAdminConfigSeed("auth.risk.captcha_triggered_today", "412", "NUMBER");
-        ensureAdminConfigSeed("auth.risk.locked_short_count", "198", "NUMBER");
-        ensureAdminConfigSeed("auth.risk.locked_long_count", "16", "NUMBER");
-        ensureAdminConfigSeed("auth.risk.stuffing_clusters_7d", "38", "NUMBER");
     }
 
     private void ensureAdminConfigSeed(String configKey, String configValue, String valueType) {
@@ -1906,7 +1888,7 @@ public class OpsUserService {
 
     private int boundedConfigInt(String configKey, int fallback, int min, int max) {
         int value = configInt(configKey, fallback);
-        return value < min || value > max ? (readTimeSeedPolicy.enabled() ? fallback : value) : value;
+        return value < min || value > max ? 0 : value;
     }
 
     private int configInt(String configKey, int fallback) {
@@ -1915,9 +1897,9 @@ public class OpsUserService {
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .map(Integer::parseInt)
-                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : 0);
+                    .orElse(0);
         } catch (NumberFormatException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : 0;
+            return 0;
         }
     }
 
@@ -1927,9 +1909,9 @@ public class OpsUserService {
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .map(Long::parseLong)
-                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : 0L);
+                    .orElse(0L);
         } catch (NumberFormatException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : 0L;
+            return 0L;
         }
     }
 

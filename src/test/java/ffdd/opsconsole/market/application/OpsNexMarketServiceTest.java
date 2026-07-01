@@ -79,6 +79,8 @@ class OpsNexMarketServiceTest {
 
     @Test
     void overviewExposesSevenFrameCurveAndSunsetExclusions() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.17100000"));
+
         ApiResult<Map<String, Object>> result = service.overview();
 
         assertThat(result.getCode()).isZero();
@@ -93,7 +95,7 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void overviewSeedsMissingDbAndConfigBeforeReadingMarketCurve() {
+    void overviewDoesNotSeedMissingDbOrConfigBeforeReadingMarketCurve() {
         configFacade.values.clear();
         marketRepository.latestPrice = Optional.empty();
         marketRepository.latestSparkline = Optional.empty();
@@ -101,23 +103,14 @@ class OpsNexMarketServiceTest {
         ApiResult<Map<String, Object>> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.marketSeeded).isTrue();
-        assertThat(configFacade.values)
-                .containsKeys(
-                        "wallet.nex_market.weekly_curve",
-                        "wallet.exchange.nex_usdt_price",
-                        "wallet.nex_market.control.schedule",
-                        "wallet.nex_market.control.pin",
-                        "wallet.nex_market.control.loop",
-                        "wallet.nex_market.paused");
-        assertThat((BigDecimal) result.getData().get("currentPrice")).isEqualByComparingTo("0.171");
-        assertThat((List<?>) result.getData().get("frames"))
-                .extracting("targetPrice")
-                .contains(new BigDecimal("0.17100000"));
+        assertThat(marketRepository.marketSeeded).isFalse();
+        assertThat(configFacade.values).isEmpty();
+        assertThat((BigDecimal) result.getData().get("currentPrice")).isEqualByComparingTo("0");
+        assertThat((List<?>) result.getData().get("frames")).isEmpty();
     }
 
     @Test
-    void curveHistorySeedsMissingDbBeforeReadingSparkline() {
+    void curveHistoryDoesNotSeedMissingDbBeforeReadingSparkline() {
         configFacade.values.clear();
         marketRepository.latestPrice = Optional.empty();
         marketRepository.latestSparkline = Optional.empty();
@@ -125,8 +118,11 @@ class OpsNexMarketServiceTest {
         ApiResult<Map<String, Object>> result = service.curveHistory();
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.marketSeeded).isTrue();
-        assertThat((List<?>) result.getData().get("points")).isNotEmpty();
+        assertThat(marketRepository.marketSeeded).isFalse();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> points = (List<Map<String, Object>>) result.getData().get("points");
+        assertThat(points).extracting(point -> ((BigDecimal) point.get("price")).stripTrailingZeros())
+                .containsExactly(BigDecimal.ZERO, BigDecimal.ZERO);
     }
 
     @Test
@@ -134,6 +130,7 @@ class OpsNexMarketServiceTest {
         marketRepository.orders = List.of(exchange("EX-Q-1", "QUEUED"), exchange("EX-KYC-1", "KYC_REQUIRED"));
         configFacade.values.put("wallet.exchange.platform_daily_cap_usdt", "20000");
         configFacade.values.put("emergency.killswitch.exchange", "off");
+        configFacade.values.put("emergency.geo.country.US", "blocked");
 
         ApiResult<Map<String, Object>> result = service.exchangeOverview();
 
@@ -159,34 +156,32 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void exchangeOverviewSeedsMissingDbBeforeReadingOrdersAndGates() {
+    void exchangeOverviewDoesNotSeedMissingDbBeforeReadingOrdersAndGates() {
         marketRepository.orders = List.of();
 
         ApiResult<Map<String, Object>> result = service.exchangeOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.exchangeSeeded).isTrue();
+        assertThat(marketRepository.exchangeSeeded).isFalse();
         assertThat((List<?>) result.getData().get("queue"))
-                .extracting("exchangeNo")
-                .containsExactly("DEMO-EX-QUEUE-1", "DEMO-EX-QUEUE-2");
+                .isEmpty();
         assertThat(detailMap(result.getData().get("stats")))
-                .containsEntry("queueDepth", 2L)
-                .containsEntry("gateKyc", 1L)
-                .containsEntry("gateUser", 1L)
-                .containsEntry("gatePlatform", 1L);
+                .containsEntry("queueDepth", 0L)
+                .containsEntry("gateKyc", 0L)
+                .containsEntry("gateUser", 0L)
+                .containsEntry("gatePlatform", 0L);
     }
 
     @Test
-    void exchangeOverviewSeedsWhenExistingOrdersDoNotProvideQueueOrGates() {
+    void exchangeOverviewDoesNotSeedWhenExistingOrdersDoNotProvideQueueOrGates() {
         marketRepository.orders = List.of(exchange("EX-DONE-1", "COMPLETED"));
 
         ApiResult<Map<String, Object>> result = service.exchangeOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.exchangeSeeded).isTrue();
+        assertThat(marketRepository.exchangeSeeded).isFalse();
         assertThat((List<?>) result.getData().get("queue"))
-                .extracting("exchangeNo")
-                .containsExactly("DEMO-EX-QUEUE-1", "DEMO-EX-QUEUE-2");
+                .isEmpty();
     }
 
     @Test
@@ -579,6 +574,9 @@ class OpsNexMarketServiceTest {
     @Test
     void repurchaseOverviewExposesServerCanonicalConfigAndB1Coverage() {
         configFacade.values.put("G.repurchase.apy", "35");
+        configFacade.values.put("G.repurchase.nurture", "1.5");
+        configFacade.values.put("G.repurchase.lottery", "1");
+        configFacade.values.put("G.repurchase.penalty", "15");
         configFacade.values.put("G.repurchase.presets", "$100 / 200 / 500 / 1,000");
 
         ApiResult<Map<String, Object>> result = service.repurchaseOverview();
@@ -596,21 +594,20 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void repurchaseOverviewSeedsMissingDbBeforeReadingPositionsAndBuckets() {
+    void repurchaseOverviewDoesNotSeedMissingDbBeforeReadingPositionsAndBuckets() {
         marketRepository.repurchasePositions = List.of();
 
         ApiResult<Map<String, Object>> result = service.repurchaseOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.repurchaseSeeded).isTrue();
+        assertThat(marketRepository.repurchaseSeeded).isFalse();
         assertThat(detailMap(result.getData().get("stats")))
-                .containsEntry("ordersMonth", 3L)
-                .containsEntry("principalUsd", new BigDecimal("6800"));
+                .containsEntry("ordersMonth", 0L)
+                .containsEntry("principalUsd", BigDecimal.ZERO);
         assertThat(result.getData().get("amountDistribution"))
-                .isEqualTo("$100 tier 20% / $200 tier 20% / $500 tier 20% / $1,000 tier 20% / $5,000 tier 20%");
+                .isEqualTo("-");
         assertThat((List<?>) result.getData().get("statusBreakdown"))
-                .extracting("status")
-                .containsExactly("pending_lock", "active", "mature_unclaimed", "early_withdrawn");
+                .isEmpty();
         assertThat((List<?>) result.getData().get("sources"))
                 .asList()
                 .contains("nx_staking_product:repurchase", "nx_staking_position:repurchase");
@@ -649,6 +646,11 @@ class OpsNexMarketServiceTest {
     @Test
     void genesisOverviewExposesServerCanonicalNodeLedgerAndJ1Switch() {
         configFacade.values.put("J.killswitch.genesis", "off");
+        configFacade.values.put("G.genesis.supply", "1000");
+        configFacade.values.put("G.genesis.price", "9999");
+        configFacade.values.put("G.genesis.dividend", "0.1");
+        configFacade.values.put("G.genesis.royalty", "2.5");
+        configFacade.values.put("G.genesis.divBase", "platform daily volume * 0.1% / 1000 slots");
 
         ApiResult<Map<String, Object>> result = service.genesisOverview();
 
@@ -723,7 +725,7 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void genesisOverviewSeedsMissingDbBeforeReadingSeriesAndNodeLedger() {
+    void genesisOverviewDoesNotSeedMissingDbBeforeReadingSeriesAndNodeLedger() {
         marketRepository.genesisSeries = Optional.empty();
         marketRepository.genesisNodes = List.of();
         marketRepository.genesisSecondaryStats = new GenesisSecondaryStatsView(
@@ -735,13 +737,12 @@ class OpsNexMarketServiceTest {
         ApiResult<Map<String, Object>> result = service.genesisOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.genesisSeeded).isTrue();
+        assertThat(marketRepository.genesisSeeded).isFalse();
         assertThat(detailMap(result.getData().get("stats")))
-                .containsEntry("totalSlots", new BigDecimal("1000"))
-                .containsEntry("sold", 847);
+                .containsEntry("totalSlots", BigDecimal.ZERO)
+                .containsEntry("sold", 0);
         assertThat((List<?>) result.getData().get("nodes"))
-                .extracting("id")
-                .containsExactly("#0042", "#0117", "#0233");
+                .isEmpty();
     }
 
     @Test
@@ -776,6 +777,10 @@ class OpsNexMarketServiceTest {
 
     @Test
     void rerunGenesisDividendBatchWritesMarkerAndAudits() {
+        configFacade.values.put("G.genesis.supply", "1000");
+        configFacade.values.put("G.genesis.dividend", "0.1");
+        configFacade.values.put("wallet.genesis.daily_volume_base_usdt", "100000");
+
         ApiResult<Map<String, Object>> result = service.rerunGenesisDividendBatch(
                 "idem-g4-rerun",
                 "GD-0611",
@@ -861,21 +866,20 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void stakingOverviewSeedsMissingDbBeforeReadingPoolsAndPositions() {
+    void stakingOverviewDoesNotSeedMissingDbBeforeReadingPoolsAndPositions() {
         marketRepository.stakingProducts = List.of();
         marketRepository.stakingPositions = List.of();
 
         ApiResult<Map<String, Object>> result = service.stakingOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.stakingSeeded).isTrue();
+        assertThat(marketRepository.stakingSeeded).isFalse();
         assertThat((List<?>) result.getData().get("pools"))
-                .extracting("tierKey")
-                .containsExactly("usdt30d", "usdt90d", "usdt180d", "usdt365d");
+                .isEmpty();
         assertThat(detailMap(result.getData().get("stats")))
-                .containsEntry("activeCount", 2L)
-                .containsEntry("matureCount", 2L)
-                .containsEntry("pendingCount", 1L);
+                .containsEntry("activeCount", 0L)
+                .containsEntry("matureCount", 0L)
+                .containsEntry("pendingCount", 0L);
         assertThat((List<?>) result.getData().get("positions"))
                 .extracting("rows")
                 .allSatisfy(rows -> assertThat((List<?>) rows).isNotEmpty());
@@ -962,6 +966,14 @@ class OpsNexMarketServiceTest {
                         new BigDecimal("0.08"),
                         new BigDecimal("3")))
                 .toList();
+    }
+
+    private static String curveJson(String price) {
+        return java.util.stream.IntStream.range(0, 7)
+                .mapToObj(index -> "{\"dayIndex\":" + index
+                        + ",\"targetPrice\":" + price
+                        + ",\"pumpProbability\":0.08,\"volatilityPct\":3}")
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
     }
 
     private static List<NexMarketCurveFrame> steppedFrames() {

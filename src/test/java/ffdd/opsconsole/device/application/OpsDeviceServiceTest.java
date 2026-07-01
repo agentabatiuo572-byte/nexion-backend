@@ -221,7 +221,7 @@ class OpsDeviceServiceTest {
                 .contains("E.gen.stellarbox-pro-v2.phaseOffset=2");
         assertThat(result.getData())
                 .containsEntry("platformMonth", 4)
-                .containsEntry("phaseCurrent", "2")
+                .containsEntry("phaseCurrent", "")
                 .containsKeys("phaseOrder", "phases", "releases");
         assertThat((List<?>) result.getData().get("releases"))
                 .anySatisfy(row -> {
@@ -239,6 +239,8 @@ class OpsDeviceServiceTest {
 
     @Test
     void e3TradeinOverviewReturnsAtomicTxStats() {
+        deviceRepository.config.put("stageMidEnd", "8");
+
         ApiResult<DeviceTradeinOverviewView> result = service.e3TradeinOverview();
 
         assertThat(result.getCode()).isZero();

@@ -33,13 +33,13 @@ class OpsNovaServiceTest {
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
-    void overviewListsServerDefaultsAndSources() {
+    void overviewReturnsEmptyWhenNoBackendConfigExists() {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().channels()).hasSize(10);
-        assertThat(result.getData().templates()).hasSize(7);
-        assertThat(result.getData().stats().onlineChannels()).isEqualTo(10);
+        assertThat(result.getData().channels()).isEmpty();
+        assertThat(result.getData().templates()).isEmpty();
+        assertThat(result.getData().stats().onlineChannels()).isZero();
         assertThat(result.getData().sources()).contains("nx_config_item");
     }
 
@@ -86,6 +86,8 @@ class OpsNovaServiceTest {
 
     @Test
     void updateChannelStatusRejectsSameStateWith409() {
+        service.createChannel("idem-i2-channel-before-same-state", channelRequest("welcome"));
+
         var result = service.updateChannelStatus("welcome", "idem-i2-toggle", new NovaChannelStatusRequest(
                 true,
                 "Marina K.",
@@ -96,6 +98,8 @@ class OpsNovaServiceTest {
 
     @Test
     void updateChannelStatusPersistsKillState() {
+        service.createChannel("idem-i2-channel-before-kill", channelRequest("welcome"));
+
         var result = service.updateChannelStatus("welcome", "idem-i2-toggle", new NovaChannelStatusRequest(
                 false,
                 "Marina K.",
@@ -108,6 +112,8 @@ class OpsNovaServiceTest {
 
     @Test
     void deleteChannelHidesItFromOverview() {
+        service.createChannel("idem-i2-channel-before-delete", channelRequest("welcome"));
+
         var result = service.deleteChannel("welcome", "idem-i2-delete", new NovaDeleteRequest(
                 "Marina K.",
                 "移除重复 welcome 通道"));
@@ -133,6 +139,14 @@ class OpsNovaServiceTest {
 
     @Test
     void updateTemplateStatusPersistsTransition() {
+        service.createTemplate("idem-i2-template-before-archive", new NovaTemplateCreateRequest(
+                "market",
+                "行情模板",
+                "-> /market",
+                "v1",
+                "Marina K.",
+                "新增行情模板"));
+
         var result = service.updateTemplateStatus("market", "idem-i2-publish", new NovaTemplateStatusRequest(
                 "ARCHIVED",
                 "Marina K.",

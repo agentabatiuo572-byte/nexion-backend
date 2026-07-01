@@ -62,6 +62,7 @@ class OpsFinanceServiceTest {
     @BeforeEach
     void setUpRiskDefaults() {
         when(riskOpsRepository.withdrawRules()).thenReturn(List.of());
+        configFacade.values.put("killswitch.withdraw", "enabled");
     }
 
     private OpsFinanceService service(OpsReadTimeSeedPolicy seedPolicy) {
@@ -80,7 +81,9 @@ class OpsFinanceServiceTest {
     void withdrawalParamsIncludeCoverageAndConfigValues() {
         configFacade.values.put("withdrawal.daily_count_limit", "2");
         configFacade.values.put("withdrawal.max_balance_pct", "0.75");
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "11");
+        configFacade.values.put("H1.rhythm.phaseProgressPct", "92");
         configFacade.values.put("growth.phase.current", "P6");
         configFacade.values.put("growth.withdraw_nex_gate.min_balance_nex", "250");
         configFacade.values.put("growth.withdraw_nex_gate.hold_days", "14");
@@ -106,22 +109,14 @@ class OpsFinanceServiceTest {
 
     @Test
     void withdrawalParamsSeedsDefaultsIntoConfigWhenMissing() {
+        configFacade.values.clear();
         ApiResult<Map<String, Object>> result = service.withdrawalParams();
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values)
-                .containsEntry("withdrawal.daily_count_limit", "1")
-                .containsEntry("withdrawal.max_balance_pct", "0.80")
-                .containsEntry("withdrawal.fee_rate", "0.02")
-                .containsEntry("withdrawal.min_usdt", "20")
-                .containsEntry("withdrawal.trc20.enabled", "true")
-                .containsEntry("withdrawal.erc20.enabled", "true")
-                .containsEntry("wallet.withdrawal.daily_count_limit", "1")
-                .containsEntry("wallet.withdrawal.max_balance_pct", "0.80")
-                .containsEntry("wallet.withdrawal.fee_rate", "0.02")
-                .containsEntry("wallet.withdrawal.min_usdt", "20")
-                .containsEntry("wallet.withdrawal.trc20.enabled", "true")
-                .containsEntry("wallet.withdrawal.erc20.enabled", "true");
+        assertThat(configFacade.values).isEmpty();
+        assertThat(result.getData())
+                .containsEntry("dailyLimitCount", 0)
+                .containsEntry("maxBalanceRatio", BigDecimal.ZERO);
     }
 
     @Test
@@ -137,9 +132,9 @@ class OpsFinanceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values)
-                .containsEntry("wallet.withdrawal.min_usdt", "30")
-                .containsEntry("wallet.withdrawal.trc20.enabled", "false")
-                .containsEntry("wallet.withdrawal.erc20.enabled", "true");
+                .containsEntry("wallet.withdrawal.min_usdt", "10")
+                .containsEntry("wallet.withdrawal.trc20.enabled", "true")
+                .containsEntry("wallet.withdrawal.erc20.enabled", "false");
     }
 
     @Test

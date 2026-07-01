@@ -58,9 +58,6 @@ public class OpsTrustDisclosureService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<TrustDisclosureOverview> overview() {
-        if (readTimeSeedPolicy.enabled()) {
-            trustDisclosureRepository.ensureSeedData(now());
-        }
         syncDisclosureGateConfigFromRepository("I4 overview gate sync");
         return ApiResult.ok(currentOverview());
     }

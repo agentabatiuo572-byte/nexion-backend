@@ -238,7 +238,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         Map<String, String> values = new LinkedHashMap<>();
         mapper.scoreConfigRows().forEach(row -> values.put(row.configKey(), row.valueText()));
         return new RiskScoreConfigView(
-                values.getOrDefault("inputSource", readTimeSeedPolicy.enabled() ? "全部启用" : ""),
+                values.getOrDefault("inputSource", ""),
                 intValue(values.get("bandLowMax"), 40),
                 intValue(values.get("bandHighMin"), 70),
                 intValue(values.get("autoEscalateScore"), 85));
@@ -668,7 +668,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     private int intFallback(int fallback) {
-        return readTimeSeedPolicy.enabled() ? fallback : 0;
+        return 0;
     }
 
     private void insertK5Param(String key, String value) {

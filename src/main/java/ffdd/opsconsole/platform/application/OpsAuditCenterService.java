@@ -494,7 +494,9 @@ public class OpsAuditCenterService {
     }
 
     private AuditMechanismParam paramView(MechanismConfig config, String value) {
-        String displayValue = "schema".equals(config.key()) ? "统一 schema · " + normalizeSchemaValue(value) : value;
+        String displayValue = "schema".equals(config.key())
+                ? (StringUtils.hasText(value) ? "统一 schema · " + normalizeSchemaValue(value) : "")
+                : value;
         return new AuditMechanismParam(config.key(), config.name(), config.sub(), displayValue, config.locked());
     }
 
@@ -567,7 +569,7 @@ public class OpsAuditCenterService {
         if (item != null && StringUtils.hasText(item.configValue())) {
             return item.configValue();
         }
-        return readTimeSeedPolicy.enabled() ? fallback : "";
+        return "";
     }
 
     private String status(String value) {
@@ -624,6 +626,9 @@ public class OpsAuditCenterService {
         ticketMapper.createTicketTable();
         historyMapper.createHistoryTable();
         confirmCategoryMapper.createConfirmCategoryTable();
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         if (!readTimeSeedPolicy.enabled()) {
             return;
         }
@@ -632,6 +637,10 @@ public class OpsAuditCenterService {
         seedConfirmCategoriesIfEmpty();
         seedMechanismConfigsIfMissing();
         seedAuditLogsIfEmpty();
+    }
+
+    private boolean readTimeBusinessSeedsDisabled() {
+        return true;
     }
 
     private void seedTicketsIfEmpty() {
@@ -711,42 +720,15 @@ public class OpsAuditCenterService {
     }
 
     private void seedMechanismConfigsIfMissing() {
-        seedConfigIfMissing("admin.a2.reason_min_chars", "8 字", "A2 seed: reason minimum length");
-        seedConfigIfMissing("admin.a2.retention_months", "13 个月", "A2 seed: audit retention");
-        seedConfigIfMissing("admin.a2.schema_version", "v3", "A2 seed: audit schema version");
+        // Intentionally empty: A2 reads existing configuration only.
     }
 
     private void seedConfigIfMissing(String key, String value, String remark) {
-        if (configRepository.findActiveByKey(key).isPresent()) {
-            return;
-        }
-        saveConfig(key, value, remark);
+        // Intentionally empty: A2 reads existing configuration only.
     }
 
     private void seedAuditLogsIfEmpty() {
-        AuditLogQueryRequest request = new AuditLogQueryRequest();
-        request.setLimit(1);
-        List<AuditLogRecord> existing = auditLogService.list(request);
-        if (existing != null && !existing.isEmpty()) {
-            return;
-        }
-        AUDIT_LOG_SEEDS.forEach(seed -> auditLogService.record(AuditLogWriteRequest.builder()
-                .action(seed.action())
-                .resourceType(seed.resourceType())
-                .resourceId(seed.resourceId())
-                .actorType("ADMIN")
-                .actorUsername(seed.actor())
-                .clientIp(seed.ip())
-                .result("SUCCESS")
-                .riskLevel(seed.riskLevel())
-                .detail(Map.of(
-                        "tsLabel", seed.ts(),
-                        "actor", seed.actor(),
-                        "role", seed.role(),
-                        "domain", seed.domain(),
-                        "obj", seed.obj(),
-                        "delta", seed.delta()))
-                .build()));
+        // Intentionally empty: A2 reads audit logs from the audit table only.
     }
 
     private Optional<AuditOperationTicketEntity> ticket(String operationId) {

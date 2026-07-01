@@ -40,16 +40,12 @@ class OpsPlatformConfigServiceTest {
         ApiResult<PlatformConfigOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().featureFlags()).extracting(flag -> flag.get("key"))
-                .contains("ab.newWithdrawFlow", "core.sse_v2");
-        assertThat(result.getData().killSwitches()).extracting(gate -> gate.get("key"))
-                .contains("withdraw", "geo-block")
-                .doesNotContain("premium", "nex-v2", "points");
+        assertThat(result.getData().featureFlags()).isEmpty();
+        assertThat(result.getData().killSwitches()).isEmpty();
         assertThat(result.getData().systemHealth()).extracting(row -> row.get("name"))
-                .contains("事件管道(采集 -> 事件库)", "后台接口可用性(24h)")
-                .doesNotContain("NTP 同步");
+                .doesNotContain("事件管道(采集 -> 事件库)", "后台接口可用性(24h)", "NTP 同步");
         assertThat(repository.items)
-                .containsKeys(
+                .doesNotContainKeys(
                         "feature.ab.newWithdrawFlow",
                         "killswitch.withdraw",
                         "admin.health.event_pipeline");

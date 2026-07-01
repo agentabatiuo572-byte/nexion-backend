@@ -52,28 +52,19 @@ class OpsTeamServiceTest {
         ApiResult<Map<String, Object>> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat((java.util.List<Map<String, Object>>) result.getData().get("vrankRows"))
-                .hasSize(13)
-                .extracting(row -> row.get("v"))
-                .contains("V0", "V12");
-        assertThat((java.util.List<Map<String, Object>>) result.getData().get("fulfillmentQueues"))
-                .extracting(row -> row.get("configKey"))
-                .contains("F.fulfillment.V3.queue.status");
-        assertThat((java.util.List<Map<String, Object>>) result.getData().get("unilevelRates"))
-                .hasSize(7)
-                .allSatisfy(row -> assertThat(row).containsKeys("level", "usdtPct", "nexReward", "configKey", "nexConfigKey"));
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("vrankRows")).isEmpty();
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("fulfillmentQueues")).isEmpty();
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("unilevelRates")).isEmpty();
         assertThat((java.util.List<Map<String, Object>>) result.getData().get("policyParams"))
                 .extracting(row -> row.get("key"))
                 .contains("F.influence.clampMin", "F.influence.clampMax", "F.binary.matchRate", "F.pool.ratio");
         assertThat(result.getData().get("rateTiers").toString())
                 .doesNotContain("Premium");
-        assertThat((java.util.List<Map<String, Object>>) result.getData().get("binarySettlements"))
-                .hasSizeGreaterThanOrEqualTo(4)
-                .allSatisfy(row -> assertThat(row).containsKeys("user", "trackA", "trackB", "matchAmount", "todayPaid", "state", "tone"));
+        assertThat((java.util.List<Map<String, Object>>) result.getData().get("binarySettlements")).isEmpty();
         Map<String, Object> leadershipPool = (Map<String, Object>) result.getData().get("leadershipPool");
         assertThat(leadershipPool)
                 .containsKeys("quotaRows", "ambassadorBands", "podium", "voteWeights")
-                .containsEntry("settlementWindow", "周日 23:59 UTC");
+                .containsEntry("settlementWindow", "");
     }
 
     @Test
@@ -129,54 +120,30 @@ class OpsTeamServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void ranksSeedsF1ReadModelIntoConfigWhenDatabaseIsEmpty() {
+    void ranksReturnEmptyReadModelWhenDatabaseIsEmpty() {
         ApiResult<Map<String, Object>> result = service.ranks();
 
         assertThat(result.getCode()).isZero();
         List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("vrankRows");
-        assertThat(rows).hasSize(13);
-        assertThat(rows)
-                .filteredOn(row -> "V3".equals(row.get("v")))
-                .singleElement()
-                .satisfies(row -> assertThat(row)
-                        .containsEntry("teamGv", "$20k")
-                        .containsEntry("legCount", "2")
-                        .containsEntry("legRank", "V1")
-                        .containsKey("rewards"));
+        assertThat(rows).isEmpty();
         assertThat(result.getData().get("sources").toString())
                 .contains("nx_config_item:team.ui.F.vrank.*")
                 .contains("nx_config_item:team.ui.F.vrank.rewards.*");
         assertThat(result.getData().toString())
                 .doesNotContain("Apple Watch")
                 .doesNotContain("Porsche");
-        assertThat(configFacade.values)
-                .containsEntry("team.ui.F.vrank.V3.teamGv", "$20k")
-                .containsEntry("team.ui.F.vrank.V3.legRank", "V1")
-                .containsKey("team.ui.F.vrank.rewards.V3");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void ratesSeedsF2ReadModelIntoConfigWhenDatabaseIsEmpty() {
+    void ratesReturnEmptyReadModelWhenDatabaseIsEmpty() {
         ApiResult<Map<String, Object>> result = service.rates();
 
         assertThat(result.getCode()).isZero();
-        assertThat((List<Map<String, Object>>) result.getData().get("metrics"))
-                .hasSize(4)
-                .extracting(row -> row.get("id"))
-                .contains("l1TriggerRate", "weeklyUsdtRoyalty");
-        assertThat((List<Map<String, Object>>) result.getData().get("unilevelRates"))
-                .hasSize(7)
-                .filteredOn(row -> "L1".equals(row.get("level")))
-                .singleElement()
-                .satisfies(row -> assertThat(row)
-                        .containsEntry("label", "直推 DIRECT")
-                        .containsEntry("configKey", "F.unilevel.L1")
-                        .containsEntry("nexConfigKey", "F.unilevel.nex.L1"));
-        assertThat((List<Map<String, Object>>) result.getData().get("rateTiers"))
-                .hasSize(4)
-                .extracting(row -> row.get("name"))
-                .containsExactly("Standard", "Verified", "Elite", "Diamond");
+        assertThat((List<Map<String, Object>>) result.getData().get("metrics")).isEmpty();
+        assertThat((List<Map<String, Object>>) result.getData().get("unilevelRates")).isEmpty();
+        assertThat((List<Map<String, Object>>) result.getData().get("rateTiers")).isEmpty();
         assertThat((List<Map<String, Object>>) result.getData().get("policyParams"))
                 .extracting(row -> row.get("key"))
                 .contains("F.influence.clampMin", "F.influence.clampMax", "F.promo.weekMultiplier", "F.peer.rate");
@@ -184,98 +151,54 @@ class OpsTeamServiceTest {
                 .contains("nx_config_item:team.ui.F.unilevel.*")
                 .contains("nx_config_item:team.ui.F.rateTier.*")
                 .contains("nx_config_item:team.ui.F2.metric.*");
-        assertThat(configFacade.values)
-                .containsEntry("team.ui.F.unilevel.L1", "10")
-                .containsEntry("team.ui.F.unilevel.nex.L1", "50")
-                .containsEntry("team.ui.F.influence.clampMin", "1.0")
-                .containsEntry("team.ui.F.rateTier.Elite.rate", "12%")
-                .containsEntry("team.ui.F2.metric.weeklyUsdtRoyalty.value", "$182k");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void binarySeedsF3ReadModelIntoConfigWhenDatabaseIsEmpty() {
+    void binaryReturnsEmptyReadModelWhenDatabaseIsEmpty() {
         ApiResult<Map<String, Object>> result = service.binary();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("domain", "F3");
-        assertThat((List<Map<String, Object>>) result.getData().get("metrics"))
-                .hasSize(4)
-                .extracting(row -> row.get("id"))
-                .contains("todayBalanceMatch", "residualPool");
-        assertThat((List<Map<String, Object>>) result.getData().get("settlements"))
-                .hasSize(30)
-                .filteredOn(row -> "usr_31E8".equals(row.get("user")))
-                .singleElement()
-                .satisfies(row -> assertThat(row)
-                        .containsEntry("trackA", 84000)
-                        .containsEntry("trackB", 62000)
-                        .containsEntry("matchAmount", 6200)
-                        .containsEntry("todayPaid", 1500));
+        assertThat((List<Map<String, Object>>) result.getData().get("metrics")).isEmpty();
+        assertThat((List<Map<String, Object>>) result.getData().get("settlements")).isEmpty();
         Map<String, Object> config = (Map<String, Object>) result.getData().get("config");
         assertThat(config)
-                .containsEntry("threshold", "$1,000 / 轨")
-                .containsEntry("matchRate", "10%")
-                .containsEntry("spillover", "已启用")
-                .containsEntry("settlePeriod", "每月")
-                .containsEntry("residualPolicy", "每月清零");
+                .containsEntry("threshold", "")
+                .containsEntry("matchRate", "")
+                .containsEntry("spillover", "")
+                .containsEntry("settlePeriod", "")
+                .containsEntry("residualPolicy", "");
         assertThat(result.getData().get("sources").toString())
                 .contains("nx_config_item:team.ui.F3.binary.rows")
                 .contains("nx_config_item:team.ui.F.binary.*")
                 .contains("B1 treasury coverage facade");
-        assertThat(configFacade.values)
-                .containsEntry("team.ui.F.binary.threshold", "$1,000 / 轨")
-                .containsEntry("team.ui.F.binary.matchRate", "10%")
-                .containsEntry("team.ui.F.binary.settlePeriod", "每月")
-                .containsEntry("team.ui.F.binary.residualPolicy", "每月清零")
-                .containsKey("team.ui.F3.binary.rows")
-                .containsEntry("team.ui.F3.metric.todayBalanceMatch.value", "$10,490");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void leadershipPoolSeedsF4ReadModelIntoConfigWhenDatabaseIsEmpty() {
+    void leadershipPoolReturnsEmptyReadModelWhenDatabaseIsEmpty() {
         ApiResult<Map<String, Object>> result = service.leadershipPool();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("domain", "F4");
-        assertThat((List<Map<String, Object>>) result.getData().get("metrics"))
-                .hasSize(4)
-                .extracting(row -> row.get("id"))
-                .contains("weeklyLeadershipPool", "hardwareQuotaRemaining", "ambassadorPending", "leaderboardFraudHits");
+        assertThat((List<Map<String, Object>>) result.getData().get("metrics")).isEmpty();
         assertThat(result.getData())
-                .containsEntry("poolRatio", "5%")
-                .containsEntry("weeklyGmvUsd", 9746420)
-                .containsEntry("weeklyInjectedUsd", 487321)
-                .containsEntry("participantCount", 496)
-                .containsEntry("settlementWindow", "周日 23:59 UTC");
-        assertThat((List<Map<String, Object>>) result.getData().get("quotaRows"))
-                .hasSize(2)
-                .filteredOn(row -> "Pro".equals(row.get("name")))
-                .singleElement()
-                .satisfies(row -> assertThat(row)
-                        .containsEntry("current", 48)
-                        .containsEntry("cap", 70));
-        assertThat((List<Map<String, Object>>) result.getData().get("ambassadorBands"))
-                .extracting(row -> row.get("name"))
-                .containsExactly("KOL", "EVENT", "AD", "LOCAL");
-        assertThat((List<Map<String, Object>>) result.getData().get("podium"))
-                .extracting(row -> row.get("userId"))
-                .contains("usr_31E8", "usr_55B1");
-        assertThat((List<Map<String, Object>>) result.getData().get("voteWeights"))
-                .filteredOn(row -> "V12".equals(row.get("v")))
-                .singleElement()
-                .satisfies(row -> assertThat(row.get("votes").toString()).isEqualTo("512"));
+                .containsEntry("poolRatio", "")
+                .containsEntry("weeklyGmvUsd", 0)
+                .containsEntry("weeklyInjectedUsd", 0)
+                .containsEntry("participantCount", 0)
+                .containsEntry("settlementWindow", "");
+        assertThat((List<Map<String, Object>>) result.getData().get("quotaRows")).isEmpty();
+        assertThat((List<Map<String, Object>>) result.getData().get("ambassadorBands")).isEmpty();
+        assertThat((List<Map<String, Object>>) result.getData().get("podium")).isEmpty();
+        assertThat((List<Map<String, Object>>) result.getData().get("voteWeights")).isEmpty();
         assertThat(result.getData().get("sources").toString())
                 .contains("nx_config_item:team.ui.F4.*")
                 .contains("nx_config_item:team.ui.F.pool.*");
-        assertThat(configFacade.values)
-                .containsEntry("team.ui.F.pool.ratio", "5%")
-                .containsEntry("team.ui.F.pool.monthlyCap", "$2,600,000")
-                .containsEntry("team.ui.F.leaderboard.poolUsd", "$48,000")
-                .containsKey("team.ui.F4.quota.rows")
-                .containsKey("team.ui.F4.ambassador.bands")
-                .containsKey("team.ui.F4.leaderboard.podium");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
@@ -418,7 +341,7 @@ class OpsTeamServiceTest {
         Map<String, Object> pool = service.leadershipPool().getData();
         assertThat(pool)
                 .containsEntry("poolRatio", "6%")
-                .containsEntry("weeklyInjectedUsd", 584785);
+                .containsEntry("weeklyInjectedUsd", 0);
         Map<String, Object> config = (Map<String, Object>) pool.get("config");
         assertThat(config).containsEntry("poolRatio", "6%");
     }

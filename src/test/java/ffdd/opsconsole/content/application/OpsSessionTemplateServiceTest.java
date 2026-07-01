@@ -53,7 +53,7 @@ class OpsSessionTemplateServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(templateRepository.seedCalls).isGreaterThan(0);
+        assertThat(templateRepository.seedCalls).isZero();
         assertThat(result.getData().categories()).anySatisfy(category -> {
             assertThat(category.type()).isEqualTo("support");
             assertThat(category.enabled()).isFalse();

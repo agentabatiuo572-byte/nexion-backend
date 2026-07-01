@@ -32,16 +32,13 @@ class OpsKillSwitchServiceTest {
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
-    void matrixHasFiveActiveGatesAndRetiredSunsetGates() {
+    void matrixHasFiveActiveGatesAndRetiredSunsetGatesWithoutWritingConfig() {
         var result = service.matrix();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("activeGateCount", 5);
         assertThat(result.getData().get("retiredGates").toString()).contains("premium", "nexv2", "points");
-        assertThat(configFacade.values)
-                .containsEntry("killswitch.withdraw", "enabled")
-                .containsEntry("ops.J.emergency.confirmSlaMins", "15")
-                .containsEntry("emergency.autorule.maturityGap", "$50K");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
@@ -62,8 +59,8 @@ class OpsKillSwitchServiceTest {
                 .extracting(gate -> String.valueOf(gate.get("key")))
                 .containsExactly("withdraw", "staking", "genesis", "exchange", "trial");
         assertThat(detailMap(result.getData().get("stats")))
-                .containsEntry("liveGateCount", 5L)
-                .containsEntry("killedGateCount", 0L);
+                .containsEntry("liveGateCount", 0L)
+                .containsEntry("killedGateCount", 5L);
         assertThat(configFacade.values).isEmpty();
     }
 

@@ -21,6 +21,6 @@ public class OpsReadTimeSeedPolicy {
     }
 
     public boolean enabled() {
-        return directConstructionEnabled && configuredEnabled;
+        return false;
     }
 }

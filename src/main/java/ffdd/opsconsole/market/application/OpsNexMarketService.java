@@ -119,9 +119,6 @@ public class OpsNexMarketService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<Map<String, Object>> exchangeOverview() {
-        if (readTimeSeedPolicy.enabled()) {
-            marketRepository.ensureExchangeSeedData();
-        }
         BigDecimal platformCap = readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000"));
         BigDecimal todayUsd = marketRepository.todayExchangeCompletedUsdt();
         long gateKyc = marketRepository.todayExchangeCountByStatus("KYC_REQUIRED");
@@ -543,9 +540,6 @@ public class OpsNexMarketService {
 
     public ApiResult<Map<String, Object>> repurchaseOverview() {
         ensureRepurchaseDefaults();
-        if (readTimeSeedPolicy.enabled()) {
-            marketRepository.ensureRepurchaseSeedData();
-        }
         RepurchaseStatsView repurchaseStats = marketRepository.repurchaseStatsSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
         BigDecimal principalUsd = safeBig(repurchaseStats.principalUsd());
         BigDecimal estimatedInterestUsd = safeBig(repurchaseStats.estimatedInterestUsd());
@@ -562,8 +556,11 @@ public class OpsNexMarketService {
                 "matureUsd", principalUsd.add(estimatedInterestUsd).setScale(2, RoundingMode.HALF_UP),
                 "ticketsMonth", lotteryPerOrder.multiply(BigDecimal.valueOf(ordersMonth)).setScale(0, RoundingMode.HALF_UP),
                 "reinvestRate", readDecimal(REPURCHASE_RATE_KEY, REPURCHASE_RATE),
-                "lockDays", readTimeSeedPolicy.enabled() ? REPURCHASE_LOCK_DAYS : 0));
-        response.put("params", repurchaseParamDefs().stream().map(this::repurchaseParamRow).toList());
+                "lockDays", 0));
+        response.put("params", repurchaseParamDefs().stream()
+                .filter(def -> configFacade.activeValue(def.configKey()).filter(StringUtils::hasText).isPresent())
+                .map(this::repurchaseParamRow)
+                .toList());
         response.put("phaseGate", map(
                 "key", "reinvestMultiplier",
                 "label", "H1 growth phase controls limited-time multiplier",
@@ -630,9 +627,6 @@ public class OpsNexMarketService {
     }
 
     public ApiResult<Map<String, Object>> genesisOverview(Integer page, Integer pageSize) {
-        if (readTimeSeedPolicy.enabled()) {
-            marketRepository.ensureGenesisSeedData();
-        }
         GenesisSeriesView series = genesisSeriesOrEmpty();
         ensureGenesisConfigDefaults(series);
         GenesisSecondaryStatsView secondaryStats = marketRepository.genesisSecondaryStats(LocalDateTime.now(clock).minusHours(24));
@@ -687,7 +681,10 @@ public class OpsNexMarketService {
                         "listed", secondaryStats.listedCount() == null ? 0L : secondaryStats.listedCount(),
                         "owners", secondaryStats.ownerCount() == null ? 0L : secondaryStats.ownerCount(),
                         "royaltyPct", royaltyPct)));
-        response.put("params", genesisParamDefs().stream().map(this::genesisParamRow).toList());
+        response.put("params", genesisParamDefs().stream()
+                .filter(def -> configFacade.activeValue(def.configKey()).filter(StringUtils::hasText).isPresent())
+                .map(this::genesisParamRow)
+                .toList());
         response.put("dividend", map(
                 "dailyVolumeBase", dailyVolumeBase,
                 "dividendPct", dividendPct,
@@ -1039,115 +1036,35 @@ public class OpsNexMarketService {
 
     NexMarketSchedule currentSchedule() {
         Optional<String> configured = configFacade.activeValue(SCHEDULE_CONTROL_KEY).filter(StringUtils::hasText);
-        if (configured.isEmpty() && !readTimeSeedPolicy.enabled()) {
+        if (configured.isEmpty()) {
             return NexMarketSchedule.unconfigured();
         }
-        return NexMarketSchedule.parse(configured.orElse(NexMarketSchedule.DEFAULT_DISPLAY));
+        return NexMarketSchedule.parse(configured.orElse(""));
     }
 
     private void ensureNexMarketSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        BigDecimal seedPrice = configFacade.activeValue(CURRENT_PRICE_KEY)
-                .flatMap(value -> Optional.ofNullable(parseDecimal(value, null)))
-                .or(() -> marketRepository.latestNexUsdtPrice())
-                .orElse(new BigDecimal("0.171"))
-                .setScale(8, RoundingMode.HALF_UP);
-        List<NexMarketCurveFrame> seedFrames = configFacade.activeValue(WEEKLY_CURVE_KEY)
-                .filter(StringUtils::hasText)
-                .map(this::readCurve)
-                .orElseGet(this::seedCurve);
-        NexMarketCurveFrame activeFrame = frameFor(seedFrames, effectiveActiveDayIndex());
-
-        upsertMissingConfig(WEEKLY_CURVE_KEY, writeCurve(seedFrames), "JSON", "wallet", "G3 weekly NEX market curve seed");
-        upsertMissingConfig(CURRENT_PRICE_KEY, seedPrice.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active NEX price seed");
-        upsertMissingConfig(PUMP_PROBABILITY_KEY, activeFrame.pumpProbability().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active pump probability seed");
-        upsertMissingConfig(VOLATILITY_KEY, activeFrame.volatilityPct().stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G3 active volatility seed");
-        upsertMissingConfig(ORACLE_KEY, "内部做市", "STRING", "wallet", "G3 oracle source seed");
-        upsertMissingConfig(DEVIATION_KEY, "5", "NUMBER", "wallet", "G3 oracle deviation alert seed");
-        upsertMissingConfig(COST_BASIS_KEY, "0.085", "NUMBER", "wallet", "G3 NEX cost basis seed");
-        upsertMissingConfig(PAUSED_KEY, "false", "BOOLEAN", "wallet", "G3 NEX market engine pause seed");
-        upsertMissingConfig(SCHEDULE_CONTROL_KEY, NexMarketSchedule.DEFAULT_DISPLAY, "STRING", "wallet", "G3 NEX market curve schedule seed");
-        upsertMissingConfig(PIN_CONTROL_KEY, "未钉住", "STRING", "wallet", "G3 NEX market curve pin seed");
-        upsertMissingConfig(LOOP_CONTROL_KEY, "循环", "STRING", "wallet", "G3 NEX market curve loop seed");
-        upsertMissingConfig(ACTIVE_DAY_INDEX_KEY, String.valueOf(activeFrame.dayIndex()), "NUMBER", "wallet", "G3 persisted active curve day seed");
-
-        marketRepository.ensureNexMarketSeedData(
-                seedPrice,
-                BigDecimal.ZERO,
-                sparklineJson(seedFrames),
-                LocalDateTime.now(clock));
+        // Intentionally empty: read paths must not seed NEX market business data.
     }
 
     private GenesisSeriesView genesisSeriesOrEmpty() {
-        return marketRepository.activeGenesisSeries().orElseGet(() -> readTimeSeedPolicy.enabled()
-                ? new GenesisSeriesView(
-                0L,
-                "GENESIS-2026",
-                "Genesis Node",
-                1000,
-                GENESIS_SOLD,
-                new BigDecimal("9999"),
-                250,
-                "ACTIVE")
-                : new GenesisSeriesView(null, "", "", 0, 0, BigDecimal.ZERO, 0, ""));
+        return marketRepository.activeGenesisSeries()
+                .orElseGet(() -> new GenesisSeriesView(null, "", "", 0, 0, BigDecimal.ZERO, 0, ""));
     }
 
     private void ensureGenesisConfigDefaults(GenesisSeriesView series) {
-        int totalSupply = series.totalSupply() == null || series.totalSupply() <= 0 ? 1000 : series.totalSupply();
-        BigDecimal price = safeBig(series.priceUsdt()).compareTo(BigDecimal.ZERO) > 0
-                ? series.priceUsdt()
-                : new BigDecimal("9999");
-        int royaltyBps = series.royaltyBps() == null || series.royaltyBps() < 0 ? 250 : series.royaltyBps();
-        BigDecimal royaltyPct = BigDecimal.valueOf(royaltyBps).divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+        // Intentionally empty: G4 configuration must come from MySQL-backed platform config rows.
+    }
 
-        String supplyKey = GENESIS_PREFIX + "supply";
-        upsertMissingConfig(supplyKey, String.valueOf(totalSupply), "NUMBER", "market", "G4 Genesis total supply seed");
-        int supplyFloor = Math.max(
-                Math.max(0, series.soldSupply() == null ? 0 : series.soldSupply()),
-                Math.toIntExact(Math.min(Integer.MAX_VALUE, marketRepository.genesisHoldingCount())));
-        BigDecimal configuredSupply = parseRepurchaseNumber(readText(supplyKey, String.valueOf(totalSupply)), BigDecimal.ZERO);
-        if (readTimeSeedPolicy.enabled() && configuredSupply.compareTo(BigDecimal.valueOf(supplyFloor)) < 0) {
-            configFacade.upsertAdminValue(
-                    supplyKey,
-                    String.valueOf(supplyFloor),
-                    "NUMBER",
-                    "market",
-                    "G4 Genesis total supply repaired to sold/holding floor");
-        }
-        upsertMissingConfig(GENESIS_PREFIX + "price", price.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(), "NUMBER", "market", "G4 Genesis primary price seed");
-        upsertMissingConfig(GENESIS_PREFIX + "dividend", "0.1", "NUMBER", "market", "G4 Genesis daily dividend rate seed");
-        upsertMissingConfig(GENESIS_PREFIX + "royalty", royaltyPct.stripTrailingZeros().toPlainString(), "NUMBER", "market", "G4 Genesis secondary royalty seed");
-        upsertMissingConfig(GENESIS_PREFIX + "divBase", "platform daily volume * 0.1% / 1000 slots", "STRING", "market", "G4 Genesis dividend base seed");
-        upsertMissingConfig(GENESIS_DAILY_VOLUME_BASE_KEY, GENESIS_DAILY_VOLUME_BASE.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G4 Genesis daily volume base seed");
-        upsertMissingConfig(GENESIS_SECONDARY_FLOOR_KEY, GENESIS_SECONDARY_FLOOR.stripTrailingZeros().toPlainString(), "NUMBER", "wallet", "G4 Genesis secondary floor fallback seed");
-        upsertMissingConfig(
-                GENESIS_KILLSWITCH_KEY,
-                GENESIS_LEGACY_KILLSWITCH_KEY,
-                "on",
-                "STRING",
-                "admin_killswitch",
-                "G4 Genesis market switch seed");
+    private boolean readTimeBusinessSeedsDisabled() {
+        return true;
     }
 
     private void upsertMissingConfig(String configKey, String configValue, String valueType, String configGroup, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isEmpty()) {
-            configFacade.upsertAdminValue(configKey, configValue, valueType, configGroup, remark);
-        }
+        // Intentionally empty: configuration initialization is handled outside read paths.
     }
 
     private void upsertMissingConfig(String configKey, String legacyConfigKey, String configValue, String valueType, String configGroup, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isEmpty()
-                && configFacade.activeValue(legacyConfigKey).filter(StringUtils::hasText).isEmpty()) {
-            configFacade.upsertAdminValue(configKey, configValue, valueType, configGroup, remark);
-        }
+        // Intentionally empty: configuration initialization is handled outside read paths.
     }
 
     private ApiResult<Map<String, Object>> updateCurrentPriceOverride(
@@ -1272,7 +1189,7 @@ public class OpsNexMarketService {
         return configFacade.activeValue(WEEKLY_CURVE_KEY)
                 .filter(StringUtils::hasText)
                 .map(this::readCurve)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? defaultCurve(currentPrice()) : List.of());
+                .orElseGet(List::of);
     }
 
     private List<NexMarketCurveFrame> readCurve(String json) {
@@ -1280,7 +1197,7 @@ public class OpsNexMarketService {
             return normalizeFrames(objectMapper.readValue(json, new TypeReference<List<NexMarketCurveFrame>>() {
             }));
         } catch (JsonProcessingException | IllegalArgumentException ex) {
-            return readTimeSeedPolicy.enabled() ? defaultCurve(currentPrice()) : List.of();
+            return List.of();
         }
     }
 
@@ -1423,7 +1340,7 @@ public class OpsNexMarketService {
         return configFacade.activeValue(CURRENT_PRICE_KEY)
                 .flatMap(value -> Optional.ofNullable(parseDecimal(value, null)))
                 .or(() -> marketRepository.latestNexUsdtPrice())
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? new BigDecimal("0.171") : BigDecimal.ZERO);
+                .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal deltaPercent(BigDecimal oldPrice, BigDecimal newPrice) {
@@ -1473,7 +1390,7 @@ public class OpsNexMarketService {
     private String readText(String configKey, String fallback) {
         return configFacade.activeValue(configKey)
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
+                .orElse("");
     }
 
     private List<Map<String, Object>> controls() {
@@ -1530,9 +1447,6 @@ public class OpsNexMarketService {
     }
 
     private List<StakingPoolDef> stakingPoolDefs() {
-        if (readTimeSeedPolicy.enabled()) {
-            marketRepository.ensureStakingSeedData();
-        }
         return marketRepository.stakingProducts().stream()
                 .map(product -> new StakingPoolDef(
                         product.asset(),
@@ -1671,13 +1585,13 @@ public class OpsNexMarketService {
         return !disclosureGateActive("staking") && configFacade.activeValue(STAKING_KILLSWITCH_KEY)
                 .or(() -> configFacade.activeValue(STAKING_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(false);
     }
 
     private boolean stakingPoolEnabled(StakingPoolDef pool) {
         return configFacade.activeValue(STAKING_PREFIX + "enabled." + pool.tierKey())
                 .map(this::parseSwitchEnabled)
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(false);
     }
 
     private boolean stakingPoolKilled(StakingPoolDef pool) {
@@ -1997,7 +1911,7 @@ public class OpsNexMarketService {
     }
 
     private BigDecimal repurchaseNumberValue(RepurchaseParamDef def) {
-        return parseRepurchaseNumber(readText(def.configKey(), def.defaultValue()), new BigDecimal(def.defaultValue()));
+        return parseRepurchaseNumber(readText(def.configKey(), ""), BigDecimal.ZERO);
     }
 
     private BigDecimal repurchaseMatureUsd(BigDecimal principalUsd, BigDecimal apyPct) {
@@ -2054,7 +1968,7 @@ public class OpsNexMarketService {
         if (fallback == null) {
             return null;
         }
-        return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
+        return BigDecimal.ZERO;
     }
 
     private boolean containsSunsetTerm(String value) {
@@ -2192,9 +2106,6 @@ public class OpsNexMarketService {
     }
 
     private int currentGenesisSoldSupply() {
-        if (readTimeSeedPolicy.enabled()) {
-            marketRepository.ensureGenesisSeedData();
-        }
         GenesisSeriesView series = genesisSeriesOrEmpty();
         return Math.max(
                 Math.max(0, series.soldSupply() == null ? 0 : series.soldSupply()),
@@ -2214,11 +2125,11 @@ public class OpsNexMarketService {
     }
 
     private BigDecimal genesisNumberValue(GenesisParamDef def) {
-        return parseRepurchaseNumber(readText(def.configKey(), def.defaultValue()), new BigDecimal(def.defaultValue()));
+        return parseRepurchaseNumber(readText(def.configKey(), ""), BigDecimal.ZERO);
     }
 
     private String genesisTodayBatch() {
-        return readText(GENESIS_PREFIX + "todayBatch", GENESIS_TODAY_BATCH);
+        return readText(GENESIS_PREFIX + "todayBatch", "");
     }
 
     private BigDecimal genesisDividendRerunAmount() {
@@ -2241,7 +2152,7 @@ public class OpsNexMarketService {
         return !disclosureGateActive("genesis") && configFacade.activeValue(GENESIS_KILLSWITCH_KEY)
                 .or(() -> configFacade.activeValue(GENESIS_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(false);
     }
 
     private Map<String, Object> genesisCoverage() {
@@ -2308,10 +2219,6 @@ public class OpsNexMarketService {
         dividends.add(map("label", "Lifetime dividend", "value", displayUsd(lifetime) + " (" + days + " days)"));
         dividends.add(map("label", "Current daily dividend", "value", perSlot));
         dividends.add(map("label", "Guaranteed accrual basis", "value", floor));
-        if (readTimeSeedPolicy.enabled()) {
-            dividends.add(map("label", "Last payout", "value", "today 00:00 batch"));
-        }
-
         List<Map<String, Object>> transfers = new ArrayList<>();
         String dateLabel = acquiredDate.toString();
         String source = StringUtils.hasText(node.sourceLabel()) ? node.sourceLabel() : "primary";
@@ -2461,7 +2368,7 @@ public class OpsNexMarketService {
         return !disclosureGateActive("exchange") && configFacade.activeValue(EXCHANGE_KILLSWITCH_KEY)
                 .or(() -> configFacade.activeValue(EXCHANGE_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(false);
     }
 
     private boolean disclosureGateActive(String domain) {
@@ -2498,7 +2405,7 @@ public class OpsNexMarketService {
         return switch (value) {
             case "enabled", "enable", "on", "true", "1" -> true;
             case "disabled", "disable", "off", "false", "0" -> false;
-            default -> readTimeSeedPolicy.enabled();
+            default -> false;
         };
     }
 
@@ -2507,10 +2414,10 @@ public class OpsNexMarketService {
                 .map(seed -> {
                     Optional<String> configuredStatus = configFacade.activeValue("emergency.geo.country." + seed.code())
                             .or(() -> configFacade.activeValue("emergency.geo." + seed.code()));
-                    String status = configuredStatus.orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.status() : "");
+                    String status = configuredStatus.orElse("");
                     String reason = configFacade.activeValue("emergency.geo.country." + seed.code() + ".reason")
                             .or(() -> configFacade.activeValue("emergency.geo." + seed.code() + ".reason"))
-                            .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.reason() : "");
+                            .orElse("");
                     return map("cc", seed.code(), "name", seed.name(), "status", status, "reason", reason);
                 })
                 .filter(row -> "blocked".equals(row.get("status")))
@@ -2531,12 +2438,12 @@ public class OpsNexMarketService {
     private BigDecimal readDecimal(String configKey, BigDecimal fallback) {
         return configFacade.activeValue(configKey)
                 .map(value -> parseDecimalLoose(value, fallback))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO);
+                .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal parseDecimalLoose(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
-            return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
+            return BigDecimal.ZERO;
         }
         String normalized = raw.trim()
                 .replace("$", "")
@@ -2548,7 +2455,7 @@ public class OpsNexMarketService {
         try {
             return new BigDecimal(normalized.trim());
         } catch (RuntimeException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
+            return BigDecimal.ZERO;
         }
     }
 

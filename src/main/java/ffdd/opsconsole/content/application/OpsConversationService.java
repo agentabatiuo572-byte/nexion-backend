@@ -498,12 +498,6 @@ public class OpsConversationService {
     }
 
     private void ensureSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        LocalDateTime now = LocalDateTime.now(clock);
-        conversationRepository.ensureSeedData(now);
-        ticketRepository.ensureSeedData(now);
     }
 
     private ApiResult<ContentConversationView> requireTransferCommand(

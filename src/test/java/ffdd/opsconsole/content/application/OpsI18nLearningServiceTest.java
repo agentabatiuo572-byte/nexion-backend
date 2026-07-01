@@ -51,7 +51,7 @@ class OpsI18nLearningServiceTest {
         assertThat(result.getData().namespaces()).extracting(I18nNamespaceView::ns).doesNotContain("premium");
         assertThat(result.getData().sources()).contains("nx_i18n_message", "nx_help_article");
         assertThat(result.getData().stats().integrityIssues()).isEqualTo(10);
-        assertThat(repository.seedCalls).isEqualTo(1);
+        assertThat(repository.seedCalls).isZero();
     }
 
     @Test

@@ -48,9 +48,6 @@ public class OpsCopyAbService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<CopyAbOverview> overview() {
-        if (readTimeSeedPolicy.enabled()) {
-            copyAbRepository.ensureSeedData(now());
-        }
         List<CopyContentRow> copies = copyAbRepository.listCopies();
         List<CopyExperimentRow> experiments = copyAbRepository.listExperiments();
         return ApiResult.ok(new CopyAbOverview(

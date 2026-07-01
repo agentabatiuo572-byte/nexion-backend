@@ -73,7 +73,6 @@ public class OpsSessionTemplateService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<SessionTemplateOverview> overview() {
-        ensureSeedData();
         return ApiResult.ok(new SessionTemplateOverview(
                 CATEGORY_SEEDS.stream().map(this::categoryView).toList(),
                 advisorPolicy(),
@@ -90,17 +89,14 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<PageResult<SessionScriptView>> scripts(SessionScriptQueryRequest request) {
-        ensureSeedData();
         return ApiResult.ok(templateRepository.pageScripts(request));
     }
 
     public ApiResult<PageResult<SessionReplyTemplateView>> replyTemplates(SessionReplyTemplateQueryRequest request) {
-        ensureSeedData();
         return ApiResult.ok(templateRepository.pageReplyTemplates(request));
     }
 
     public ApiResult<SessionCategoryView> updateCategory(String type, String idempotencyKey, SessionCategoryToggleRequest request) {
-        ensureSeedData();
         SessionCategorySeed seed = categorySeed(type);
         if (seed == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_CATEGORY_UNSUPPORTED");
@@ -130,7 +126,6 @@ public class OpsSessionTemplateService {
             String field,
             String idempotencyKey,
             SessionAdvisorPolicyUpdateRequest request) {
-        ensureSeedData();
         String normalizedField = normalizeField(field);
         if (!List.of("enabled", "delayMs", "cooldownHours", "maxPerSession", "audience").contains(normalizedField)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_POLICY_FIELD_UNSUPPORTED");
@@ -157,7 +152,6 @@ public class OpsSessionTemplateService {
             String field,
             String idempotencyKey,
             SessionAdvisorPolicyUpdateRequest request) {
-        ensureSeedData();
         String normalizedField = normalizeField(field);
         if (!"timeoutFallback".equals(normalizedField)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_WORKBENCH_POLICY_FIELD_UNSUPPORTED");
@@ -181,7 +175,6 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionScriptView> createScript(String idempotencyKey, SessionScriptCreateRequest request) {
-        ensureSeedData();
         ApiResult<SessionScriptView> guard = requireScriptCreate(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -199,7 +192,6 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionScriptView> updateScriptStatus(String scriptId, String idempotencyKey, SessionScriptStatusRequest request) {
-        ensureSeedData();
         if (!StringUtils.hasText(scriptId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_SCRIPT_ID_REQUIRED");
         }
@@ -229,7 +221,6 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionScriptView> updateScriptAudience(String scriptId, String idempotencyKey, SessionScriptAudienceRequest request) {
-        ensureSeedData();
         if (!StringUtils.hasText(scriptId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_SCRIPT_ID_REQUIRED");
         }
@@ -252,7 +243,6 @@ public class OpsSessionTemplateService {
     }
 
     public ApiResult<SessionReplyTemplateView> createReplyTemplate(String idempotencyKey, SessionReplyTemplateCreateRequest request) {
-        ensureSeedData();
         ApiResult<SessionReplyTemplateView> guard = requireReplyTemplateCreate(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -271,7 +261,6 @@ public class OpsSessionTemplateService {
             String templateId,
             String idempotencyKey,
             SessionReplyTemplateStatusRequest request) {
-        ensureSeedData();
         if (!StringUtils.hasText(templateId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_REPLY_TEMPLATE_ID_REQUIRED");
         }
@@ -300,46 +289,21 @@ public class OpsSessionTemplateService {
         return ApiResult.ok(updated);
     }
 
-    private void ensureSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        templateRepository.ensureSeedData(LocalDateTime.now(clock));
-        for (SessionCategorySeed seed : CATEGORY_SEEDS) {
-            seedConfigValue(categoryKey(seed.type()), seed.enabled() ? "on" : "off", "BOOLEAN");
-        }
-        seedConfigValue(policyKey("enabled"), "on", "BOOLEAN");
-        seedConfigValue(policyKey("delayMs"), "1500", "NUMBER");
-        seedConfigValue(policyKey("cooldownHours"), "24", "NUMBER");
-        seedConfigValue(policyKey("maxPerSession"), "1", "NUMBER");
-        seedConfigValue(policyKey("audience"), AUDIENCE_OPTIONS.get(0), "STRING");
-        seedConfigValue(workbenchKey("timeoutFallback"), "off", "BOOLEAN");
-    }
-
-    private void seedConfigValue(String key, String value, String valueType) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).isEmpty()) {
-            configFacade.upsertAdminValue(key, value, valueType, CONFIG_GROUP, "seed session template config");
-        }
-    }
-
     private SessionAdvisorPolicyView advisorPolicy() {
         return new SessionAdvisorPolicyView(
-                "on".equalsIgnoreCase(configValue(policyKey("enabled"), "on")),
-                intConfig(policyKey("delayMs"), 1500),
-                intConfig(policyKey("cooldownHours"), 24),
-                intConfig(policyKey("maxPerSession"), 1),
-                configValue(policyKey("audience"), AUDIENCE_OPTIONS.get(0)));
+                "on".equalsIgnoreCase(configValue(policyKey("enabled"), "")),
+                intConfig(policyKey("delayMs"), 0),
+                intConfig(policyKey("cooldownHours"), 0),
+                intConfig(policyKey("maxPerSession"), 0),
+                configValue(policyKey("audience"), ""));
     }
 
     private SessionWorkbenchPolicyView workbenchPolicy() {
-        return new SessionWorkbenchPolicyView("on".equalsIgnoreCase(configValue(workbenchKey("timeoutFallback"), "off")));
+        return new SessionWorkbenchPolicyView("on".equalsIgnoreCase(configValue(workbenchKey("timeoutFallback"), "")));
     }
 
     private SessionCategoryView categoryView(SessionCategorySeed seed) {
-        boolean enabled = "on".equalsIgnoreCase(configValue(categoryKey(seed.type()), seed.enabled() ? "on" : "off"));
+        boolean enabled = "on".equalsIgnoreCase(configValue(categoryKey(seed.type()), ""));
         return new SessionCategoryView(seed.type(), seed.name(), seed.roleKey(), enabled, seed.managedBy(), seed.readOnly());
     }
 
@@ -518,14 +482,14 @@ public class OpsSessionTemplateService {
         try {
             return Integer.parseInt(configValue(key, String.valueOf(fallback)));
         } catch (NumberFormatException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : 0;
+            return 0;
         }
     }
 
     private String configValue(String key, String fallback) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
+                .orElse("");
     }
 
     private String categoryKey(String type) {

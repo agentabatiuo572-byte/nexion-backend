@@ -202,40 +202,28 @@ class OpsTreasuryServiceTest {
         Map<String, Object> dashboard = service.bDomainDashboard().getData();
 
         assertThat(dashboard).containsEntry("domain", "B");
-        assertThat(configFacade.upsertedKeys)
-                .isNotEmpty()
-                .allMatch(key -> key.startsWith("treasury.b."))
-                .noneMatch(key -> key.startsWith("wallet.dual-ledger."));
+        assertThat(configFacade.upsertedKeys).isEmpty();
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void bDomainDashboardSeedsConfigRowsAndReadsThemBack() {
+    void bDomainDashboardReadsExistingConfigRowsWithoutSeedingThem() {
         ledgerRepository.usdtAvailable = new BigDecimal("1000");
         ledgerRepository.withdrawalQueue = new BigDecimal("120");
         ledgerRepository.activeQueueCount = 2L;
         ledgerRepository.avgRiskScore = new BigDecimal("36.4");
         configFacade.values.put("killswitch.withdraw", "disabled");
         configFacade.values.put("emergency.killswitch.exchange", "off");
+        configFacade.values.put("treasury.b.liquidity.runway", "[{\"day\":\"D0\",\"cash\":\"1,000\",\"need\":\"120\",\"gap\":\"880\"}]");
+        configFacade.values.put("treasury.b.funnel.stages", "[{\"key\":\"reg\",\"label\":\"注册\",\"count\":10},{\"key\":\"cash\",\"label\":\"入金\",\"count\":3}]");
+        configFacade.values.put("treasury.b.risk.rules", "[{\"dom\":\"manual\",\"state\":\"on\",\"on\":true}]");
 
         Map<String, Object> dashboard = service.bDomainDashboard().getData();
 
         assertThat(dashboard)
                 .containsEntry("domain", "B")
                 .containsKeys("dualLedger", "liquidity", "funnel", "rhythm", "riskRadar");
-        assertThat(configFacade.values).containsKeys(
-                "treasury.b.liquidity.runway",
-                "treasury.b.funnel.stages",
-                "treasury.b.funnel.daily-target",
-                "treasury.b.rhythm.phases",
-                "treasury.b.rhythm.healthy-ratio",
-                "treasury.b.risk.pressure-tight-pct",
-                "treasury.b.risk.rules");
-        assertThat(configFacade.upsertedKeys)
-                .isNotEmpty()
-                .allMatch(key -> key.startsWith("treasury.b."))
-                .noneMatch(key -> key.startsWith("wallet.dual-ledger."))
-                .noneMatch(key -> key.startsWith("killswitch.") || key.startsWith("emergency.killswitch."));
+        assertThat(configFacade.upsertedKeys).isEmpty();
         Map<String, Object> liquidity = (Map<String, Object>) dashboard.get("liquidity");
         assertThat((List<Map<String, Object>>) liquidity.get("runway")).isNotEmpty();
         Map<String, Object> funnel = (Map<String, Object>) dashboard.get("funnel");
@@ -257,10 +245,8 @@ class OpsTreasuryServiceTest {
                     assertThat(gate).containsEntry("configKey", "emergency.killswitch.exchange");
                 });
         assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
-                .anySatisfy(gate -> {
-                    assertThat(gate).containsEntry("dom", "staking");
-                    assertThat(gate).containsEntry("state", "missing");
-                });
+                .extracting(gate -> gate.get("dom"))
+                .doesNotContain("staking");
         assertThat(riskRadar).containsEntry("trippedGateCount", 2L);
     }
 
@@ -286,7 +272,7 @@ class OpsTreasuryServiceTest {
                 .doesNotContain("treasury.b.funnel.stages", "treasury.b.funnel.daily-target");
         Map<String, Object> funnel = (Map<String, Object>) dashboard.get("funnel");
         assertThat((List<Map<String, Object>>) funnel.get("stages")).isEmpty();
-        assertThat(funnel).containsEntry("dailyTarget", new BigDecimal("18"));
+        assertThat(funnel).containsEntry("dailyTarget", BigDecimal.ZERO);
     }
 
     @Test

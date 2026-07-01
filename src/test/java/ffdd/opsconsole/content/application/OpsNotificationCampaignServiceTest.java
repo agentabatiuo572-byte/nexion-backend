@@ -47,7 +47,7 @@ class OpsNotificationCampaignServiceTest {
         assertThat(result.getData().capRules()).hasSize(4);
         assertThat(result.getData().stats().monthScheduled()).isEqualTo(1);
         assertThat(result.getData().sources()).contains("nx_notification_campaign", "nx_notification_cap_rule", "nx_notification");
-        assertThat(repository.seedCalls).isEqualTo(1);
+        assertThat(repository.seedCalls).isZero();
     }
 
     @Test

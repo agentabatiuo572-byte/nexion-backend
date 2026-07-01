@@ -49,7 +49,7 @@ class OpsCopyAbServiceTest {
         assertThat(result.getData().experiments()).hasSize(2);
         assertThat(result.getData().frameworkParams()).hasSize(1);
         assertThat(result.getData().sources()).contains("nx_content_copy", "nx_content_experiment_variant");
-        assertThat(repository.seedCalls).isEqualTo(1);
+        assertThat(repository.seedCalls).isZero();
     }
 
     @Test

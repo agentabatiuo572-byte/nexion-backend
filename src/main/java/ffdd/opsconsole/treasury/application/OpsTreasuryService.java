@@ -512,8 +512,8 @@ public class OpsTreasuryService {
                     return row;
                 })
                 .toList();
-        List<Map<String, Object>> runway = readJsonRows(B_LIQUIDITY_RUNWAY_KEY, defaultLiquidityRunway(), "B2 liquidity runway seed", warnings);
-        List<BigDecimal> flow = readDecimalList(B_LIQUIDITY_FLOW_KEY, defaultLiquidityFlow(), "B2 liquidity flow seed", warnings);
+        List<Map<String, Object>> runway = readJsonRows(B_LIQUIDITY_RUNWAY_KEY, warnings);
+        List<BigDecimal> flow = readDecimalList(B_LIQUIDITY_FLOW_KEY, warnings);
         BigDecimal runwayTotalWan = runway.stream()
                 .map(row -> decimal(row.get("valueWan")))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -528,12 +528,12 @@ public class OpsTreasuryService {
     }
 
     private Map<String, Object> funnelDashboard(List<Map<String, Object>> warnings) {
-        List<Map<String, Object>> stages = readJsonRows(B_FUNNEL_STAGES_KEY, defaultFunnelStages(), "B3 funnel stage seed", warnings);
-        List<Map<String, Object>> transitions = readJsonRows(B_FUNNEL_TRANSITIONS_KEY, defaultFunnelTransitions(), "B3 funnel transition seed", warnings);
-        List<BigDecimal> cohort = readDecimalList(B_FUNNEL_COHORT_KEY, defaultFunnelCohort(), "B3 funnel cohort seed", warnings);
-        List<Map<String, Object>> channels = readJsonRows(B_FUNNEL_CHANNELS_KEY, defaultFunnelChannels(), "B3 funnel channel seed", warnings);
-        List<BigDecimal> daily = readDecimalList(B_FUNNEL_DAILY_KEY, defaultFunnelDaily(), "B3 funnel daily seed", warnings);
-        BigDecimal dailyTarget = readDecimalSeed(B_FUNNEL_DAILY_TARGET_KEY, new BigDecimal("18"), "B3 funnel daily target seed", warnings);
+        List<Map<String, Object>> stages = readJsonRows(B_FUNNEL_STAGES_KEY, warnings);
+        List<Map<String, Object>> transitions = readJsonRows(B_FUNNEL_TRANSITIONS_KEY, warnings);
+        List<BigDecimal> cohort = readDecimalList(B_FUNNEL_COHORT_KEY, warnings);
+        List<Map<String, Object>> channels = readJsonRows(B_FUNNEL_CHANNELS_KEY, warnings);
+        List<BigDecimal> daily = readDecimalList(B_FUNNEL_DAILY_KEY, warnings);
+        BigDecimal dailyTarget = readDecimalSeed(B_FUNNEL_DAILY_TARGET_KEY, warnings);
         BigDecimal first = stages.isEmpty() ? BigDecimal.ZERO : decimal(stages.get(0).get("ct"));
         BigDecimal last = stages.isEmpty() ? BigDecimal.ZERO : decimal(stages.get(stages.size() - 1).get("ct"));
         Map<String, Object> bottleneck = transitions.stream()
@@ -560,11 +560,11 @@ public class OpsTreasuryService {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> rhythmDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
-        List<Map<String, Object>> phaseNodes = readJsonRows(B_RHYTHM_PHASES_KEY, defaultRhythmPhases(), "B4 rhythm phase seed", warnings);
-        List<BigDecimal> inflow = readDecimalList(B_RHYTHM_INFLOW_KEY, defaultRhythmInflow(), "B4 rhythm inflow seed", warnings);
-        List<Map<String, Object>> budget = readJsonRows(B_RHYTHM_BUDGET_KEY, defaultRhythmBudget(), "B4 rhythm budget seed", warnings);
-        List<BigDecimal> ratio = readDecimalList(B_RHYTHM_RATIO_KEY, defaultRhythmRatio(), "B4 rhythm ratio seed", warnings);
-        BigDecimal healthyRatio = readDecimalSeed(B_RHYTHM_HEALTHY_RATIO_KEY, new BigDecimal("1.2"), "B4 rhythm healthy ratio seed", warnings);
+        List<Map<String, Object>> phaseNodes = readJsonRows(B_RHYTHM_PHASES_KEY, warnings);
+        List<BigDecimal> inflow = readDecimalList(B_RHYTHM_INFLOW_KEY, warnings);
+        List<Map<String, Object>> budget = readJsonRows(B_RHYTHM_BUDGET_KEY, warnings);
+        List<BigDecimal> ratio = readDecimalList(B_RHYTHM_RATIO_KEY, warnings);
+        BigDecimal healthyRatio = readDecimalSeed(B_RHYTHM_HEALTHY_RATIO_KEY, warnings);
         Map<String, Object> h1Rhythm = (Map<String, Object>) dualLedger.getOrDefault("h1Rhythm", Map.of());
         BigDecimal currentRatio = ratio.isEmpty() ? BigDecimal.ZERO : ratio.get(ratio.size() - 1);
         return section(
@@ -588,15 +588,15 @@ public class OpsTreasuryService {
     @SuppressWarnings("unchecked")
     private Map<String, Object> riskRadarDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
         Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
-        List<Map<String, Object>> configuredFeed = readJsonRows(B_RISK_FEED_KEY, defaultRiskFeed(), "B5 risk feed seed", warnings);
+        List<Map<String, Object>> configuredFeed = readJsonRows(B_RISK_FEED_KEY, warnings);
         List<Map<String, Object>> feed = new ArrayList<>();
         feed.add(dynamicCoverageFeed(snapshot));
         feed.addAll(configuredFeed);
-        List<BigDecimal> pressure = readDecimalList(B_RISK_PRESSURE_KEY, defaultRiskPressure(), "B5 risk pressure seed", warnings);
-        List<Map<String, Object>> rules = readJsonRows(B_RISK_RULES_KEY, defaultRiskRules(), "B5 risk rule seed", warnings);
-        List<Map<String, Object>> severity = readJsonRows(B_RISK_SEVERITY_KEY, defaultRiskSeverity(), "B5 risk severity seed", warnings);
-        List<Map<String, Object>> volume = readJsonRows(B_RISK_VOLUME_KEY, defaultRiskVolume(), "B5 risk volume seed", warnings);
-        BigDecimal pressureTightPct = readDecimalSeed(B_RISK_PRESSURE_TIGHT_KEY, new BigDecimal("70"), "B5 risk pressure threshold seed", warnings);
+        List<BigDecimal> pressure = readDecimalList(B_RISK_PRESSURE_KEY, warnings);
+        List<Map<String, Object>> rules = readJsonRows(B_RISK_RULES_KEY, warnings);
+        List<Map<String, Object>> severity = readJsonRows(B_RISK_SEVERITY_KEY, warnings);
+        List<Map<String, Object>> volume = readJsonRows(B_RISK_VOLUME_KEY, warnings);
+        BigDecimal pressureTightPct = readDecimalSeed(B_RISK_PRESSURE_TIGHT_KEY, warnings);
         BigDecimal reserveUsd = decimal(snapshot.get("reserveUsd"));
         BigDecimal queueBacklogUsd = decimal(snapshot.get("queueBacklogUsd"));
         BigDecimal bankRunRatio = pctScale(pct(queueBacklogUsd, reserveUsd));
@@ -644,7 +644,7 @@ public class OpsTreasuryService {
                 }
             }
             boolean configuredPresent = StringUtils.hasText(configured);
-            if (!configuredPresent && !readTimeSeedPolicy.enabled()) {
+            if (!configuredPresent) {
                 continue;
             }
             boolean on = !configuredPresent || enabledFromConfig(configured);
@@ -667,9 +667,7 @@ public class OpsTreasuryService {
                 "href", "/overview/dual-ledger");
     }
 
-    private List<Map<String, Object>> readJsonRows(String key, List<Map<String, Object>> fallback, String remark,
-                                                   List<Map<String, Object>> warnings) {
-        seedJsonIfAbsent(key, fallback, remark);
+    private List<Map<String, Object>> readJsonRows(String key, List<Map<String, Object>> warnings) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
                 .map(raw -> {
@@ -680,12 +678,10 @@ public class OpsTreasuryService {
                         return List.<Map<String, Object>>of();
                     }
                 })
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : List.of());
+                .orElse(List.of());
     }
 
-    private List<BigDecimal> readDecimalList(String key, List<BigDecimal> fallback, String remark,
-                                             List<Map<String, Object>> warnings) {
-        seedJsonIfAbsent(key, fallback, remark);
+    private List<BigDecimal> readDecimalList(String key, List<Map<String, Object>> warnings) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
                 .map(raw -> {
@@ -696,11 +692,10 @@ public class OpsTreasuryService {
                         return List.<BigDecimal>of();
                     }
                 })
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : List.of());
+                .orElse(List.of());
     }
 
-    private BigDecimal readDecimalSeed(String key, BigDecimal fallback, String remark, List<Map<String, Object>> warnings) {
-        seedConfigIfAbsent(key, safe(fallback).toPlainString(), "NUMBER", "treasury_b", remark);
+    private BigDecimal readDecimalSeed(String key, List<Map<String, Object>> warnings) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
                 .map(raw -> {
@@ -708,10 +703,10 @@ public class OpsTreasuryService {
                         return new BigDecimal(raw.trim());
                     } catch (RuntimeException ex) {
                         warnConfig(warnings, key, "B_CONFIG_NUMBER_INVALID", "Configured number is invalid; existing value was not overwritten.");
-                        return readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO;
+                        return BigDecimal.ZERO;
                     }
                 })
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO);
+                .orElse(BigDecimal.ZERO);
     }
 
     private void warnConfig(List<Map<String, Object>> warnings, String key, String code, String message) {
@@ -719,21 +714,11 @@ public class OpsTreasuryService {
     }
 
     private void seedJsonIfAbsent(String key, Object fallback, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
-            return;
-        }
-        seedJson(key, fallback, remark);
+        // Intentionally empty: read paths must not seed treasury configuration.
     }
 
     private void seedJson(String key, Object value, String remark) {
-        try {
-            configFacade.upsertAdminValue(key, objectMapper.writeValueAsString(value), "JSON", "treasury_b", remark);
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("Unable to seed treasury B config: " + key, ex);
-        }
+        // Intentionally empty: read paths must not seed treasury configuration.
     }
 
     private List<Map<String, Object>> defaultLiquidityRunway() {
@@ -956,10 +941,6 @@ public class OpsTreasuryService {
     }
 
     private void ensureD3FallbackSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        ensureD3ConfigDefaults();
     }
 
     private void ensureD4FallbackSeedData() {
@@ -986,13 +967,7 @@ public class OpsTreasuryService {
     }
 
     private void seedConfigIfAbsent(String key, String value, String type, String group, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
-            return;
-        }
-        configFacade.upsertAdminValue(key, value, type, group, remark);
+        // Intentionally empty: read paths must not seed treasury configuration.
     }
 
     private int normalizeDays(int days) {
@@ -1071,7 +1046,7 @@ public class OpsTreasuryService {
     private BigDecimal configDecimal(String key, BigDecimal fallback) {
         return configFacade.activeValue(key)
                 .map(value -> parseDecimal(value, fallback))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO);
+                .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal requiredConfigDecimal(String key) {
@@ -1102,14 +1077,14 @@ public class OpsTreasuryService {
     private String configValue(String key, String fallback) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
+                .orElse("");
     }
 
     private BigDecimal parseDecimal(String value, BigDecimal fallback) {
         try {
             return new BigDecimal(value.trim());
         } catch (RuntimeException ex) {
-            return readTimeSeedPolicy.enabled() ? safe(fallback) : BigDecimal.ZERO;
+            return BigDecimal.ZERO;
         }
     }
 

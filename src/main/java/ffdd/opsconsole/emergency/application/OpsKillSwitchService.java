@@ -215,7 +215,7 @@ public class OpsKillSwitchService {
         gate.put("amplifies", seed.amplifies());
         gate.put("ownerDomain", "J1");
         gate.put("lastChange", activeValue(lastChangeConfigKey(key))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.lastChange() : ""));
+                .orElse(""));
         gate.put("proposalStatus", seed.proposalStatus());
         gate.put("emergency", Boolean.parseBoolean(activeValue(emergencyFlagConfigKey(key)).orElse("false")));
         return gate;
@@ -294,9 +294,9 @@ public class OpsKillSwitchService {
                 .or(() -> configFacade.activeValue(legacyConfigKey(key)));
         return value.map(raw -> {
                     String normalized = raw.trim().toLowerCase(Locale.ROOT);
-                    return "enabled".equals(normalized) || "enable".equals(normalized) || "on".equals(normalized) || "true".equals(normalized) || "1".equals(normalized);
+                return "enabled".equals(normalized) || "enable".equals(normalized) || "on".equals(normalized) || "true".equals(normalized) || "1".equals(normalized);
                 })
-                .orElse(true);
+                .orElse(false);
     }
 
     private void writeGate(String key, boolean enabled) {
@@ -313,6 +313,9 @@ public class OpsKillSwitchService {
     }
 
     private void ensureSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         if (!readTimeSeedPolicy.enabled()) {
             return;
         }
@@ -333,6 +336,10 @@ public class OpsKillSwitchService {
         }
     }
 
+    private boolean readTimeBusinessSeedsDisabled() {
+        return true;
+    }
+
     private void ensureConfig(String key, String value, String valueType, String group, String remark) {
         if (!readTimeSeedPolicy.enabled()) {
             return;
@@ -348,8 +355,7 @@ public class OpsKillSwitchService {
 
     private List<Map<String, Object>> emergencySlaRows(TreasuryCoverageSnapshot coverage) {
         return EMERGENCY_SLA_SEEDS.stream()
-                .filter(seed -> readTimeSeedPolicy.enabled()
-                        || "recoverGate".equals(seed.id())
+                .filter(seed -> "recoverGate".equals(seed.id())
                         || activeValue(emergencySlaConfigKey(seed.id())).filter(StringUtils::hasText).isPresent())
                 .map(seed -> {
             Map<String, Object> row = new LinkedHashMap<>();
@@ -362,7 +368,7 @@ public class OpsKillSwitchService {
             row.put("v", "recoverGate".equals(seed.id())
                     ? coverage.redlinePct().stripTrailingZeros().toPlainString()
                     : activeValue(emergencySlaConfigKey(seed.id()))
-                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.defaultValue() : ""));
+                    .orElse(""));
             row.put("source", "recoverGate".equals(seed.id()) ? "B1 treasury coverage" : emergencySlaConfigKey(seed.id()));
             return row;
         }).toList();
@@ -370,17 +376,16 @@ public class OpsKillSwitchService {
 
     private List<Map<String, Object>> autoRuleRows() {
         return AUTO_RULE_SEEDS.stream()
-                .filter(seed -> readTimeSeedPolicy.enabled()
-                        || activeValue(autoRuleConfigKey(seed.id())).filter(StringUtils::hasText).isPresent()
+                .filter(seed -> activeValue(autoRuleConfigKey(seed.id())).filter(StringUtils::hasText).isPresent()
                         || ("tamperCluster".equals(seed.id())
                         && activeValue("emergency.tamper.alert.threshold").filter(StringUtils::hasText).isPresent()))
                 .map(seed -> {
             String threshold = "tamperCluster".equals(seed.id())
                     ? activeValue("emergency.tamper.alert.threshold").map(value -> value + " 次 / 24h")
                     .orElseGet(() -> activeValue(autoRuleConfigKey(seed.id()))
-                            .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.threshold() : ""))
+                            .orElse(""))
                     : activeValue(autoRuleConfigKey(seed.id()))
-                    .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.threshold() : "");
+                    .orElse("");
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
             row.put("nm", seed.name());

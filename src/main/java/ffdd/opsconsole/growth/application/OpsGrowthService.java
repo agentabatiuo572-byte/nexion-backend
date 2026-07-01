@@ -146,9 +146,10 @@ public class OpsGrowthService {
         response.put("currentMonth", currentMonth);
         response.put("currentPhase", currentPhaseForRhythm(currentMonth, totalMonths));
         response.put("rhythm", rhythmOverview());
-        response.put("dialCount", 8);
         response.put("phaseConfig", phaseConfig());
-        response.put("activeDials", activeDials());
+        Map<String, Object> activeDials = activeDials();
+        response.put("dialCount", activeDials.size());
+        response.put("activeDials", activeDials);
         response.put("monthlyDials", monthlyDials(currentMonth));
         response.put("controls", phaseControls());
         response.put("overrides", phaseOverrides());
@@ -1350,7 +1351,7 @@ public class OpsGrowthService {
                 .map(row -> row.get("mult"))
                 .map(value -> value == null ? "" : value.toString())
                 .anyMatch(StringUtils::hasText);
-        return hasRuntimeMultiplier || readTimeSeedPolicy.enabled() ? rows : List.of();
+        return hasRuntimeMultiplier ? rows : List.of();
     }
 
     private List<Map<String, Object>> monthlyMissions() {
@@ -1380,7 +1381,8 @@ public class OpsGrowthService {
     private Map<String, Object> promoBanner() {
         Map<String, Object> banner = readJsonMap(QUEST_PROMO_BANNER_KEY, defaultPromoBanner());
         for (String key : List.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDevice", "targetDaily", "status")) {
-            banner.put(key, questConfig("promoBanner." + key));
+            String configKey = questConfigStorageKey("promoBanner." + key);
+            configFacade.activeValue(configKey).ifPresent(value -> banner.put(key, value));
         }
         return banner;
     }
@@ -1631,7 +1633,7 @@ public class OpsGrowthService {
         }
         return configFacade.activeValue(trialParamConfigKey(key))
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
+                .orElse("");
     }
 
     private List<Map<String, Object>> trialGates() {
@@ -1669,25 +1671,7 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> trialSessions() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
-        return defaultTrialSessions().stream()
-                .map(row -> {
-                    String sid = row.get("sid").toString();
-                    String state = trialSessionState(sid);
-                    Map<String, Object> copy = new LinkedHashMap<>(row);
-                    copy.put("state", state);
-                    if ("cancelled".equals(state)) {
-                        copy.put("shadow", "归零");
-                    }
-                    configFacade.activeValue(trialSessionConfigKey(sid, "cancelled_at"))
-                            .ifPresent(value -> copy.put("cancelledAt", value));
-                    configFacade.activeValue(trialSessionConfigKey(sid, "charged_at"))
-                            .ifPresent(value -> copy.put("chargedAt", value));
-                    return copy;
-                })
-                .toList();
+        return List.of();
     }
 
     private List<Map<String, Object>> defaultTrialSessions() {
@@ -1803,9 +1787,7 @@ public class OpsGrowthService {
         boolean configured = configFacade.activeValue(trialSessionConfigKey(sid, "state"))
                 .filter(StringUtils::hasText)
                 .isPresent();
-        boolean seeded = readTimeSeedPolicy.enabled()
-                && defaultTrialSessions().stream().anyMatch(row -> sid.equals(row.get("sid")));
-        if (!configured && !seeded) {
+        if (!configured) {
             throw new IllegalArgumentException("TRIAL_SESSION_NOT_FOUND");
         }
         return sid;
@@ -1815,11 +1797,7 @@ public class OpsGrowthService {
         return configFacade.activeValue(trialSessionConfigKey(sid, "state"))
                 .filter(StringUtils::hasText)
                 .map(value -> value.trim().toLowerCase(Locale.ROOT))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? defaultTrialSessions().stream()
-                        .filter(row -> sid.equals(row.get("sid")))
-                        .findFirst()
-                        .map(row -> row.get("state").toString())
-                        .orElse("idle") : "idle");
+                .orElse("idle");
     }
 
     private String trialSessionConfigKey(String sid, String field) {
@@ -1830,15 +1808,15 @@ public class OpsGrowthService {
         BigDecimal lucky15Pct = configDecimal(CHECKIN_LUCKY_15_PCT_KEY, new BigDecimal("15"));
         BigDecimal lucky2Pct = configDecimal(CHECKIN_LUCKY_2_PCT_KEY, new BigDecimal("5"));
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("todaySign", readTimeSeedPolicy.enabled() ? 61420 : 0);
-        stats.put("signRate", readTimeSeedPolicy.enabled() ? "47.8%" : "0%");
-        stats.put("lucky15Actual", readTimeSeedPolicy.enabled() ? "15.2%" : "0%");
-        stats.put("lucky2Actual", readTimeSeedPolicy.enabled() ? "4.9%" : "0%");
+        stats.put("todaySign", 0);
+        stats.put("signRate", "0%");
+        stats.put("lucky15Actual", "0%");
+        stats.put("lucky2Actual", "0%");
         stats.put("lucky15Config", lucky15Pct.stripTrailingZeros().toPlainString() + "%");
         stats.put("lucky2Config", lucky2Pct.stripTrailingZeros().toPlainString() + "%");
-        stats.put("weekRevive", readTimeSeedPolicy.enabled() ? 1840 : 0);
-        stats.put("weekMsTrigger", readTimeSeedPolicy.enabled() ? 2214 : 0);
-        stats.put("weekMsNex", readTimeSeedPolicy.enabled() ? "412K NEX" : "0 NEX");
+        stats.put("weekRevive", 0);
+        stats.put("weekMsTrigger", 0);
+        stats.put("weekMsNex", "0 NEX");
         return stats;
     }
 
@@ -1853,7 +1831,7 @@ public class OpsGrowthService {
                 checkInRule("broken", "断签阈值", "超过没签连胜归零(可用复活卡)",
                         configDecimal(CHECKIN_BROKEN_HOURS_KEY, new BigDecimal("48")).stripTrailingZeros().toPlainString() + " 小时", false),
                 checkInRule("saver", "复活卡默认持有 / 恢复上限", "恢复到 min(历史最长连胜, 上限)",
-                        configFacade.activeValue(CHECKIN_REVIVE_CARDS_KEY).orElseGet(() -> readTimeSeedPolicy.enabled() ? "1 张 / 30 天" : ""), false));
+                        configFacade.activeValue(CHECKIN_REVIVE_CARDS_KEY).orElse(""), false));
     }
 
     private Map<String, Object> checkInRule(String key, String name, String sub, String current, boolean hot) {
@@ -1867,15 +1845,15 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> streakMilestones() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
         return defaultStreakMilestones().stream()
+                .filter(row -> configFacade.activeValue(CHECKIN_STREAK_MS_PREFIX + row.get("id") + ".reward")
+                        .filter(StringUtils::hasText)
+                        .isPresent())
                 .map(row -> {
                     int id = Integer.parseInt(row.get("id").toString());
                     Map<String, Object> copy = new LinkedHashMap<>(row);
                     copy.put("reward", configFacade.activeValue(CHECKIN_STREAK_MS_PREFIX + id + ".reward")
-                            .orElse(row.get("reward").toString()));
+                            .orElse(""));
                     return copy;
                 })
                 .toList();
@@ -1906,15 +1884,7 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> streakDistribution() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
-        return List.of(
-                streakDistribution("≥7 天", "38.2K", 100),
-                streakDistribution("≥14", "21.4K", 56),
-                streakDistribution("≥30", "9.8K", 26),
-                streakDistribution("≥60", "3.1K", 8),
-                streakDistribution("≥100", "640", 3));
+        return List.of();
     }
 
     private Map<String, Object> streakDistribution(String day, String count, int height) {
@@ -1926,10 +1896,12 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> powerUps() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
         return defaultPowerUps().stream()
+                .filter(row -> {
+                    int id = Integer.parseInt(row.get("id").toString());
+                    return configFacade.activeValue(CHECKIN_POWER_UP_PREFIX + id + ".day").filter(StringUtils::hasText).isPresent()
+                            && configFacade.activeValue(CHECKIN_POWER_UP_PREFIX + id + ".note").filter(StringUtils::hasText).isPresent();
+                })
                 .map(row -> {
                     int id = Integer.parseInt(row.get("id").toString());
                     Map<String, Object> copy = new LinkedHashMap<>(row);
@@ -1964,10 +1936,12 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> earnMilestones() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
         return defaultEarnMilestones().stream()
+                .filter(row -> {
+                    String key = row.get("key").toString();
+                    return configFacade.activeValue(earnThresholdConfigKey(key)).filter(StringUtils::hasText).isPresent()
+                            && configFacade.activeValue(earnRewardConfigKey(key)).filter(StringUtils::hasText).isPresent();
+                })
                 .map(row -> {
                     String key = row.get("key").toString();
                     Map<String, Object> copy = new LinkedHashMap<>(row);
@@ -2034,6 +2008,9 @@ public class OpsGrowthService {
     }
 
     private void ensurePhaseSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         ensureRhythmSeedData();
         seedJsonIfMissing(PHASE_CONFIG_KEY, defaultPhaseConfig(), "platform", "H1 phase config seed");
         seedIfMissing(CURRENT_PHASE_KEY, phaseForRhythmMonth(rhythmCurrentMonth(rhythmTotalMonths()), rhythmTotalMonths()), "STRING", "growth", "H1 current phase seed");
@@ -2055,6 +2032,9 @@ public class OpsGrowthService {
     }
 
     private void ensureTrialSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         for (Map<String, Object> param : defaultTrialParams()) {
             String key = param.get("key").toString();
             String value = trialParamSeedValue(key, param.get("cur").toString());
@@ -2108,6 +2088,9 @@ public class OpsGrowthService {
     }
 
     private void ensureQuestEventSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         if (!readTimeSeedPolicy.enabled()) {
             return;
         }
@@ -2174,6 +2157,9 @@ public class OpsGrowthService {
     }
 
     private void ensureCheckInSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         seedIfMissing(CHECKIN_REWARD_KEY, "2", "NUMBER", "growth", "H5 check-in seed");
         seedIfMissing(CHECKIN_STREAK_BONUS_KEY, "5", "NUMBER", "growth", "H5 check-in seed");
         seedIfMissing(CHECKIN_LUCKY_MULTIPLIER_KEY, "2", "NUMBER", "growth", "H5 check-in seed");
@@ -2197,6 +2183,9 @@ public class OpsGrowthService {
     }
 
     private void ensureWithdrawGateSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         seedIfMissing(WITHDRAW_MIN_BALANCE_KEY, "100", "NUMBER", "growth", "H1 withdraw NEX gate seed");
         seedIfMissing(WITHDRAW_HOLD_DAYS_KEY, "7", "NUMBER", "growth", "H1 withdraw NEX gate seed");
         seedIfMissing(WITHDRAW_MIN_BALANCE_MIRROR_KEY, "100", "NUMBER", "wallet", "D5 mirror of H1 withdraw NEX gate seed");
@@ -2204,32 +2193,15 @@ public class OpsGrowthService {
     }
 
     private void seedIfMissing(String key, String value, String type, String group, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).isEmpty()) {
-            configFacade.upsertAdminValue(key, value, type, group, remark);
-        }
+        // Intentionally empty: read paths must not initialize business configuration.
     }
 
     private void seedJsonIfMissing(String key, Object value, String group, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).isEmpty()) {
-            writeJsonConfig(key, value, remark, group);
-        }
+        // Intentionally empty: read paths must not initialize business configuration.
     }
 
     private void backfillJsonRows(String key, List<Map<String, Object>> defaults, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        List<Map<String, Object>> rows = readJsonRows(key, defaults);
-        boolean changed = backfillJsonRowsByIdentity(key, rows, defaults);
-        if (changed) {
-            writeJsonConfig(key, rows, remark, "growth");
-        }
+        // Intentionally empty: read paths must not backfill business rows.
     }
 
     private boolean backfillJsonRowsByIdentity(String key, List<Map<String, Object>> rows, List<Map<String, Object>> defaults) {
@@ -2297,20 +2269,7 @@ public class OpsGrowthService {
     }
 
     private void backfillJsonMap(String key, Map<String, Object> defaults, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        Map<String, Object> row = readJsonMap(key, defaults);
-        boolean changed = false;
-        for (Map.Entry<String, Object> entry : defaults.entrySet()) {
-            if (!row.containsKey(entry.getKey()) || row.get(entry.getKey()) == null) {
-                row.put(entry.getKey(), entry.getValue());
-                changed = true;
-            }
-        }
-        if (changed) {
-            writeJsonConfig(key, row, remark, "growth");
-        }
+        // Intentionally empty: read paths must not backfill business rows.
     }
 
     private void writeJsonConfig(String key, Object value, String remark) {
@@ -2326,6 +2285,9 @@ public class OpsGrowthService {
     }
 
     private void ensureRhythmSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         seedRhythmValue(RHYTHM_TOTAL_MONTHS_KEY, "12");
         seedRhythmValue(RHYTHM_CURRENT_MONTH_KEY, "7");
         seedRhythmValue(RHYTHM_PHASE_PROGRESS_KEY, "58");
@@ -2335,12 +2297,11 @@ public class OpsGrowthService {
     }
 
     private void seedRhythmValue(String key, String value) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).isEmpty()) {
-            configFacade.upsertAdminValue(key, value, "NUMBER", "growth", "H1 rhythm seed");
-        }
+        // Intentionally empty: read paths must not initialize rhythm configuration.
+    }
+
+    private boolean readTimeBusinessSeedsDisabled() {
+        return true;
     }
 
     private Map<String, Object> rhythmOverview() {
@@ -2367,7 +2328,7 @@ public class OpsGrowthService {
         int total = configDecimal(RHYTHM_TOTAL_MONTHS_KEY, new BigDecimal("12"))
                 .setScale(0, RoundingMode.DOWN)
                 .intValue();
-        return RHYTHM_TOTAL_OPTIONS.contains(total) ? total : (readTimeSeedPolicy.enabled() ? 12 : 0);
+        return RHYTHM_TOTAL_OPTIONS.contains(total) ? total : 0;
     }
 
     private int storedRhythmCurrentMonth() {
@@ -2382,7 +2343,7 @@ public class OpsGrowthService {
         }
         int month = storedRhythmCurrentMonth();
         if (month < 1) {
-            return readTimeSeedPolicy.enabled() ? 1 : 0;
+            return 0;
         }
         return Math.min(month, totalMonths);
     }
@@ -2442,15 +2403,24 @@ public class OpsGrowthService {
 
     private Map<String, Object> activeDials() {
         Map<String, Object> dials = new LinkedHashMap<>();
-        dials.put("inviteRewardMultiplier", configDecimal("growth.phase.invite_reward_multiplier", BigDecimal.ONE));
-        dials.put("questRewardMultiplier", configDecimal("growth.phase.quest_reward_multiplier", BigDecimal.ONE));
-        dials.put("trialOffsetCapUsdt", configDecimal("growth.phase.trial_offset_cap_usdt", new BigDecimal("50")));
-        dials.put("deviceReleasePacingPct", percent(configDecimal("growth.phase.device_release_pacing_pct", new BigDecimal("0.60"))));
-        dials.put("commissionTighteningPct", percent(configDecimal("growth.phase.commission_tightening_pct", new BigDecimal("0.10"))));
-        dials.put("campaignRewardNex", configDecimal("growth.phase.campaign_reward_nex", new BigDecimal("10")));
-        dials.put("withdrawNexMinBalance", configDecimal(WITHDRAW_MIN_BALANCE_KEY, new BigDecimal("100")));
-        dials.put("withdrawNexHoldDays", configDecimal(WITHDRAW_HOLD_DAYS_KEY, new BigDecimal("7")).intValue());
+        putActiveDial(dials, "inviteRewardMultiplier", "growth.phase.invite_reward_multiplier", BigDecimal.ONE, false);
+        putActiveDial(dials, "questRewardMultiplier", "growth.phase.quest_reward_multiplier", BigDecimal.ONE, false);
+        putActiveDial(dials, "trialOffsetCapUsdt", "growth.phase.trial_offset_cap_usdt", new BigDecimal("50"), false);
+        putActiveDial(dials, "deviceReleasePacingPct", "growth.phase.device_release_pacing_pct", new BigDecimal("0.60"), true);
+        putActiveDial(dials, "commissionTighteningPct", "growth.phase.commission_tightening_pct", new BigDecimal("0.10"), true);
+        putActiveDial(dials, "campaignRewardNex", "growth.phase.campaign_reward_nex", new BigDecimal("10"), false);
+        putActiveDial(dials, "withdrawNexMinBalance", WITHDRAW_MIN_BALANCE_KEY, new BigDecimal("100"), false);
+        configFacade.activeValue(WITHDRAW_HOLD_DAYS_KEY)
+                .ifPresent(value -> dials.put("withdrawNexHoldDays", configDecimal(WITHDRAW_HOLD_DAYS_KEY, new BigDecimal("7")).intValue()));
         return dials;
+    }
+
+    private void putActiveDial(Map<String, Object> dials, String outputKey, String configKey, BigDecimal fallback, boolean percentage) {
+        if (configFacade.activeValue(configKey).isEmpty()) {
+            return;
+        }
+        BigDecimal value = configDecimal(configKey, fallback);
+        dials.put(outputKey, percentage ? percent(value) : value);
     }
 
     private int currentMonth() {
@@ -2460,7 +2430,7 @@ public class OpsGrowthService {
         }
         int month = storedRhythmCurrentMonth();
         if (month < 1) {
-            return readTimeSeedPolicy.enabled() ? 1 : 0;
+            return 0;
         }
         return Math.min(month, totalMonths);
     }
@@ -2510,7 +2480,7 @@ public class OpsGrowthService {
     private String currentPhaseForRhythm(int currentMonth, int totalMonths) {
         return configFacade.activeValue(CURRENT_PHASE_KEY)
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? phaseForRhythmMonth(currentMonth, totalMonths) : "");
+                .orElse("");
     }
 
     private List<Map<String, Object>> monthlyDials(int currentMonth) {
@@ -2537,7 +2507,7 @@ public class OpsGrowthService {
                 phaseControl("schedule", "排程", "按 12 个月增长曲线自动推进"),
                 phaseControl("pin", "锁定阶段", "临时固定在指定阶段，用于投产窗口或演示"),
                 phaseControl("override", "覆盖策略", "按批次或 cohort 临时覆盖阶段")).stream()
-                .filter(row -> readTimeSeedPolicy.enabled() || StringUtils.hasText(String.valueOf(row.get("value"))))
+                .filter(row -> StringUtils.hasText(String.valueOf(row.get("value"))))
                 .toList();
     }
 
@@ -2727,11 +2697,11 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> fallbackRows(List<Map<String, Object>> fallback) {
-        return readTimeSeedPolicy.enabled() ? new ArrayList<>(fallback) : new ArrayList<>();
+        return new ArrayList<>();
     }
 
     private Map<String, Object> fallbackMap(Map<String, Object> fallback) {
-        return readTimeSeedPolicy.enabled() ? new LinkedHashMap<>(fallback) : new LinkedHashMap<>();
+        return new LinkedHashMap<>();
     }
 
     private boolean disclosureGateActive(String key) {
@@ -3204,7 +3174,7 @@ public class OpsGrowthService {
 
     private String questConfig(String normalizedKey) {
         return configFacade.activeValue(questConfigStorageKey(normalizedKey))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? defaultQuestConfigValue(normalizedKey) : "");
+                .orElse("");
     }
 
     private String questConfigStorageKey(String key) {
@@ -3533,7 +3503,7 @@ public class OpsGrowthService {
     private BigDecimal configDecimal(String key, BigDecimal fallback) {
         return configFacade.activeValue(key)
                 .flatMap(value -> Optional.ofNullable(parseDecimal(value, fallback)))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO);
+                .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal parseDecimal(String raw) {
@@ -3543,7 +3513,7 @@ public class OpsGrowthService {
     private BigDecimal parseDecimal(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             if (fallback != null) {
-                return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
+                return BigDecimal.ZERO;
             }
             throw new IllegalArgumentException("Numeric value is required");
         }
@@ -3551,7 +3521,7 @@ public class OpsGrowthService {
             return new BigDecimal(raw.trim().replace("%", "").replace(",", ""));
         } catch (NumberFormatException ex) {
             if (fallback != null) {
-                return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
+                return BigDecimal.ZERO;
             }
             throw new IllegalArgumentException("Numeric value is invalid", ex);
         }

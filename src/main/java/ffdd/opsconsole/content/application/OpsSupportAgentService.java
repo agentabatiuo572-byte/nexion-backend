@@ -207,9 +207,6 @@ public class OpsSupportAgentService {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        if (readTimeSeedPolicy.enabled()) {
-            repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now);
-        }
         SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
         if (profile == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_PROFILE_NOT_CONFIGURED");
@@ -292,14 +289,6 @@ public class OpsSupportAgentService {
     }
 
     private void ensureDefaultProfiles(List<AdminAccountOverview.OperatorRecord> operators) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        LocalDateTime now = LocalDateTime.now(clock);
-        for (AdminAccountOverview.OperatorRecord operator : operators) {
-            parseAdminId(operator.id()).ifPresent(adminId ->
-                    repository.ensureDefaultProfile(adminId, defaultPosition(), List.of("support"), DEFAULT_TAGS, 10, now));
-        }
     }
 
     private SupportAgentProfileView profileView(

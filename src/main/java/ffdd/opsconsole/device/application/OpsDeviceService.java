@@ -842,13 +842,7 @@ public class OpsDeviceService {
     public ApiResult<Map<String, Object>> e1GenerationGates() {
         int platformMonth = currentPlatformMonth();
         Map<String, String> e1Configs = configFacade.activeValuesByGroup(E1_GATE_GROUP);
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
-        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
-        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         List<DeviceGenerationGateView> gates = catalogRepository.listGenerationGates(false);
         Map<String, String> configValues = e1GateConfigValues(gates);
@@ -984,9 +978,6 @@ public class OpsDeviceService {
         if (guard != null) {
             return guard;
         }
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
-        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         List<DevicePhaseView> phases = e1PhaseDefs();
         String normalized = matchE1PhaseId(phaseId, phases);
@@ -1022,9 +1013,6 @@ public class OpsDeviceService {
         }
         if (request == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_REQUEST_REQUIRED");
-        }
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
         }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         String skuId = normalizeGenerationId(request.skuId());
@@ -1070,9 +1058,6 @@ public class OpsDeviceService {
             return guard;
         }
         String normalized = normalizeGenerationId(skuId);
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
-        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
         if (before == null) {
@@ -1124,13 +1109,7 @@ public class OpsDeviceService {
             return guard;
         }
         Map<String, String> e1Configs = configFacade.activeValuesByGroup(E1_GATE_GROUP);
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1PhasesFromLegacyConfigIfEmpty(e1Configs);
-        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1GenerationGatesFromLegacyConfigIfEmpty(e1Configs);
-        }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         String[] key = normalizeE1GateKey(request.key());
         String value = normalizeE1GateValue(key[1], request.value());
@@ -1183,7 +1162,7 @@ public class OpsDeviceService {
         if (!readTimeSeedPolicy.enabled() && !StringUtils.hasText(config.get("stageMidEnd"))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E3_STAGE_MID_END_NOT_CONFIGURED");
         }
-        int cliffMonth = parsePositiveInt(config.get("stageMidEnd"), readTimeSeedPolicy.enabled() ? 8 : 0) + 1;
+        int cliffMonth = parsePositiveInt(config.get("stageMidEnd"), 0) + 1;
         LocalDateTime now = LocalDateTime.now(clock);
         return ApiResult.ok(deviceRepository.e3TradeinOverview(
                 now.minusHours(24),
@@ -1397,9 +1376,6 @@ public class OpsDeviceService {
         }
         if (!allows(request.lifecycle(), SKU_LIFECYCLES)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_LIFECYCLE_INVALID");
-        }
-        if (readTimeSeedPolicy.enabled()) {
-            seedE1PhasesFromLegacyConfigIfEmpty(configFacade.activeValuesByGroup(E1_GATE_GROUP));
         }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         if (!"Share".equals(tier) && !isConfiguredE1PhaseId(request.unlockPhase())) {
@@ -1832,7 +1808,7 @@ public class OpsDeviceService {
         return configFacade.activeValue(CURRENT_PHASE_KEY)
                 .map(value -> matchE1PhaseId(value, phases))
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? phaseForMonth(platformMonth, phases) : "");
+                .orElse("");
     }
 
     private int readInt(String configKey, int fallback) {

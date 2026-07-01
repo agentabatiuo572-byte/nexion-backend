@@ -729,26 +729,12 @@ class OpsUserServiceTest {
         ApiResult<UserRegistrationRiskOverview> result = service.registrationRiskOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values)
-                .containsEntry("auth.risk.otp_ttl_minutes", "5")
-                .containsEntry("auth.risk.otp_cooldown_seconds", "60")
-                .containsEntry("auth.risk.otp_max_24h", "3")
-                .containsEntry("auth.risk.login_lock_threshold", "5")
-                .containsEntry("auth.risk.lock_duration_minutes", "15")
-                .containsEntry("auth.risk.login_long_lock_threshold", "10")
-                .containsEntry("auth.risk.long_lock_duration_hours", "24")
-                .containsEntry("auth.risk.otp_sent_today", "31240")
-                .containsEntry("auth.risk.captcha_triggered_today", "412")
-                .containsEntry("auth.risk.locked_short_count", "198")
-                .containsEntry("auth.risk.locked_long_count", "16")
-                .containsEntry("auth.risk.stuffing_clusters_7d", "38");
+        assertThat(configFacade.values).isEmpty();
         assertThat(configFacade.values).doesNotContainKey("auth.risk.captcha_off_window");
-        assertThat(configFacade.lastConfigGroup).isEqualTo("auth");
-        assertThat(configFacade.lastValueType).isEqualTo("NUMBER");
         assertThat(result.getData().params()).filteredOn(param -> "lockShort".equals(param.key()))
                 .singleElement()
                 .extracting(UserRegistrationRiskParamView::value)
-                .isEqualTo("5 次 / 15 分钟");
+                .isEqualTo("0 次 / 0 分钟");
     }
 
     @Test
@@ -868,7 +854,7 @@ class OpsUserServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(userRepository.lockedSecurityUsersCalls).isGreaterThan(0);
         assertThat(result.getData().lockedUsers()).extracting(UserSecurityUserRow::userNo)
-                .containsExactly("U00003315", "U00008807");
+                .containsExactly("U00003315", "U00008807", "U00002231");
     }
 
     private static final class FakeFinanceWithdrawalControlFacade implements FinanceWithdrawalControlFacade {

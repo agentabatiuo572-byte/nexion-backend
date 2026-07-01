@@ -373,7 +373,7 @@ class OpsConversationServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(conversationRepository.seedCalls).isGreaterThan(0);
+        assertThat(conversationRepository.seedCalls).isZero();
         assertThat(result.getData().get("transferStateMachine"))
                 .asList()
                 .contains("OPEN->TRANSFERRED", "TRANSFERRED->OPEN");

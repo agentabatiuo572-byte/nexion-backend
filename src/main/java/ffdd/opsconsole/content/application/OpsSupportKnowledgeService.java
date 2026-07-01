@@ -188,10 +188,6 @@ public class OpsSupportKnowledgeService {
     }
 
     private void ensureSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        knowledgeRepository.ensureSeedData(LocalDateTime.now(clock));
     }
 
     private List<String> slaQueues(List<SupportSlaView> slaRules) {

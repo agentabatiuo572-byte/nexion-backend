@@ -99,8 +99,8 @@ public class OpsEmergencyControlService {
                         "blockedCount", blocked.size(),
                         "limitedCount", limited.size(),
                         "totalHits", totalHits,
-                        "health", activeValue("ops.J.emergency.health").orElseGet(() -> readTimeSeedPolicy.enabled() ? "99.8%" : ""),
-                        "confirmSlaMins", activeValue("ops.J.emergency.confirmSlaMins").orElseGet(() -> readTimeSeedPolicy.enabled() ? "15" : "")),
+                        "health", activeValue("ops.J.emergency.health").orElse(""),
+                        "confirmSlaMins", activeValue("ops.J.emergency.confirmSlaMins").orElse("")),
                 "sources", List.of("nx_config_item:emergency.geo.*", "server edge geo decision stream"));
         return ApiResult.ok(response);
     }
@@ -274,15 +274,14 @@ public class OpsEmergencyControlService {
                         "todoCount", playbooks.size() - ready,
                         "emergencyCount", emergency,
                         "liveExec90d", executions.stream().filter(row -> !String.valueOf(row.get("name")).contains("(演练)")).count(),
-                        "drill90d", executions.stream().filter(row -> String.valueOf(row.get("name")).contains("(演练)")).count()
-                                + (readTimeSeedPolicy.enabled() ? 12 : 0)),
+                        "drill90d", executions.stream().filter(row -> String.valueOf(row.get("name")).contains("(演练)")).count()),
                 "sla", map(
                         "confirmSlaMins", activeValue("ops.J.emergency.confirmSlaMins")
-                                .orElseGet(() -> readTimeSeedPolicy.enabled() ? "15" : ""),
+                                .orElse(""),
                         "escalateMaxMins", activeValue("ops.J.emergency.escalateMaxMins")
-                                .orElseGet(() -> readTimeSeedPolicy.enabled() ? "60" : ""),
+                                .orElse(""),
                         "escalateMaxRounds", activeValue("ops.J.emergency.escalateMaxRounds")
-                                .orElseGet(() -> readTimeSeedPolicy.enabled() ? "4" : "")),
+                                .orElse("")),
                 "scenes", List.of("全部", "监管点名", "资金异常", "数据泄露", "舆情挤兑", "技术故障"),
                 "actionOptions", enumJsonList(SOP_ACTION_OPTIONS, defaultActionOptions()),
                 "rollbackOptions", enumJsonList(SOP_ROLLBACK_OPTIONS, defaultRollbackOptions()),
@@ -302,7 +301,7 @@ public class OpsEmergencyControlService {
         if (!StringUtils.hasText(request.name())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PLAYBOOK_NAME_REQUIRED");
         }
-        List<Map<String, Object>> rows = new ArrayList<>(jsonList(SOP_PLAYBOOKS, defaultPlaybookRows()));
+        List<Map<String, Object>> rows = new ArrayList<>(jsonList(SOP_PLAYBOOKS, List.of()));
         Map<String, Object> row = playbookDraftRow(nextDraftCode(rows), request);
         rows.add(row);
         configFacade.upsertAdminValue(SOP_PLAYBOOKS, toJson(rows), "JSON", GROUP_SOP, request.reason().trim());
@@ -722,6 +721,9 @@ public class OpsEmergencyControlService {
     }
 
     private void ensureSeedData() {
+        if (readTimeBusinessSeedsDisabled()) {
+            return;
+        }
         if (!readTimeSeedPolicy.enabled()) {
             return;
         }
@@ -752,6 +754,10 @@ public class OpsEmergencyControlService {
         ensureJsonConfig(SOP_ROLLBACK_OPTIONS, defaultRollbackOptions(), GROUP_SOP, "J4 SOP selectable rollback templates");
     }
 
+    private boolean readTimeBusinessSeedsDisabled() {
+        return true;
+    }
+
     private void ensureConfig(String key, String value, String valueType, String group, String remark) {
         if (!readTimeSeedPolicy.enabled()) {
             return;
@@ -767,13 +773,10 @@ public class OpsEmergencyControlService {
 
     private List<Map<String, Object>> countryViews() {
         Set<String> countries = new LinkedHashSet<>();
-        if (readTimeSeedPolicy.enabled()) {
-            countrySeeds().forEach(seed -> countries.add(seed.cc()));
-        }
         countries.addAll(readCsv(GEO_CUSTOM_COUNTRIES));
         return countries.stream()
                 .map(this::countryView)
-                .filter(row -> !"allowed".equals(row.get("status")) || countrySeed((String) row.get("cc")).isPresent())
+                .filter(row -> !"allowed".equals(row.get("status")))
                 .sorted(Comparator.comparing(row -> String.valueOf(row.get("status"))))
                 .toList();
     }
@@ -782,10 +785,10 @@ public class OpsEmergencyControlService {
         String cc = normalizeCountry(countryCode);
         Optional<CountrySeed> seed = countrySeed(cc);
         String status = activeValue(countryConfigKey(cc))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.map(CountrySeed::status).orElse("allowed") : "allowed");
+                .orElse("allowed");
         String name = seed.map(CountrySeed::name).orElse(cc);
         String reason = activeValue(countryConfigKey(cc) + ".reason")
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.map(CountrySeed::reason).orElse("运营加入 · A2 留痕") : "");
+                .orElse("");
         return map("cc", cc, "name", name, "status", status, "reason", reason);
     }
 
@@ -833,7 +836,7 @@ public class OpsEmergencyControlService {
 
     private List<Map<String, Object>> geoEndpoints() {
         return endpointSeeds().stream()
-                .filter(seed -> readTimeSeedPolicy.enabled() || endpointConfigured(seed))
+                .filter(this::endpointConfigured)
                 .map(this::endpointView)
                 .toList();
     }
@@ -841,9 +844,9 @@ public class OpsEmergencyControlService {
     private Map<String, Object> endpointView(EndpointSeed seed) {
         List<String> countries = activeValue(endpointConfigKey(seed.key()))
                 .map(OpsEmergencyControlService::splitCsv)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.countries() : List.of());
+                .orElseGet(List::of);
         String source = activeValue(endpointSourceConfigKey(seed.key()))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.source() : "");
+                .orElse("");
         return map(
                 "key", seed.key(),
                 "endpoint", seed.endpoint(),
@@ -858,8 +861,8 @@ public class OpsEmergencyControlService {
                     default -> "待设置";
                 },
                 "sourceDescription", activeValue(endpointSourceDescriptionConfigKey(seed.key()))
-                        .orElseGet(() -> readTimeSeedPolicy.enabled() ? seed.sourceDescription() : ""),
-                "hits", readTimeSeedPolicy.enabled() ? seed.hits() : 0);
+                        .orElse(""),
+                "hits", 0);
     }
 
     private boolean endpointConfigured(EndpointSeed seed) {
@@ -870,34 +873,34 @@ public class OpsEmergencyControlService {
 
     private Map<String, Object> geoEdge() {
         return map(
-                "source", activeValue(GEO_EDGE_SOURCE).orElseGet(() -> readTimeSeedPolicy.enabled() ? "服务器边缘 IP 判定" : ""),
-                "metrics", jsonList(GEO_EDGE_METRICS, defaultGeoEdgeMetrics()));
+                "source", activeValue(GEO_EDGE_SOURCE).orElse(""),
+                "metrics", jsonList(GEO_EDGE_METRICS, List.of()));
     }
 
     private List<Map<String, Object>> geoHits() {
-        return jsonList(GEO_HITS, defaultGeoHits());
+        return jsonList(GEO_HITS, List.of());
     }
 
     private Map<String, Object> tamperAlertConfig() {
         int threshold = activeValue(TAMPER_THRESHOLD)
                 .map(Integer::parseInt)
-                .orElse(readTimeSeedPolicy.enabled() ? 10 : 0);
+                .orElse(0);
         boolean feedK4 = activeValue(TAMPER_FEED_K4)
                 .map(Boolean::parseBoolean)
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(false);
         return map("threshold", threshold, "label", threshold + " 次 / 24h", "feedK4", feedK4);
     }
 
     private Map<String, Object> tamperTrend() {
-        return jsonMap(TAMPER_TREND, defaultTamperTrend());
+        return jsonMap(TAMPER_TREND, Map.of());
     }
 
     private List<Map<String, Object>> tamperPaths() {
-        return jsonList(TAMPER_PATHS, defaultTamperPaths());
+        return jsonList(TAMPER_PATHS, List.of());
     }
 
     private List<Map<String, Object>> tamperAccounts() {
-        return jsonList(TAMPER_ACCOUNTS, defaultTamperAccounts()).stream()
+        return jsonList(TAMPER_ACCOUNTS, List.of()).stream()
                 .map(this::tamperAccountView)
                 .toList();
     }
@@ -1045,7 +1048,7 @@ public class OpsEmergencyControlService {
     }
 
     private Map<String, Object> updatePlaybookRow(String code, SopPlaybookUpdateRequest request) {
-        List<Map<String, Object>> rows = new ArrayList<>(jsonList(SOP_PLAYBOOKS, defaultPlaybookRows()));
+        List<Map<String, Object>> rows = new ArrayList<>(jsonList(SOP_PLAYBOOKS, List.of()));
         for (Map<String, Object> row : rows) {
             String rowCode = stringValue(row.get("code"), "").toUpperCase(Locale.ROOT);
             if (!code.equals(rowCode)) {
@@ -1068,7 +1071,7 @@ public class OpsEmergencyControlService {
     }
 
     private List<Map<String, Object>> executionSeeds() {
-        return jsonList(SOP_EXECUTIONS, defaultExecutions());
+        return jsonList(SOP_EXECUTIONS, List.of());
     }
 
     private Map<String, Object> execution(String ts, String code, String name, String trigger, String mode, List<String> steps, String operator, String roleGate) {
@@ -1111,7 +1114,7 @@ public class OpsEmergencyControlService {
     }
 
     private List<PlaybookSeed> playbookSeeds() {
-        return jsonList(SOP_PLAYBOOKS, defaultPlaybookRows()).stream()
+        return jsonList(SOP_PLAYBOOKS, List.of()).stream()
                 .map(this::playbookFromRow)
                 .toList();
     }
@@ -1314,10 +1317,10 @@ public class OpsEmergencyControlService {
                     try {
                         return objectMapper.readValue(value, LIST_MAP_TYPE);
                     } catch (Exception e) {
-                        return readTimeSeedPolicy.enabled() ? fallback : List.<Map<String, Object>>of();
+                        return List.<Map<String, Object>>of();
                     }
                 })
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : List.of());
+                .orElseGet(List::of);
     }
 
     private List<Map<String, Object>> enumJsonList(String configKey, List<Map<String, Object>> fallback) {
@@ -1338,10 +1341,10 @@ public class OpsEmergencyControlService {
                     try {
                         return objectMapper.readValue(value, MAP_TYPE);
                     } catch (Exception e) {
-                        return readTimeSeedPolicy.enabled() ? fallback : Map.<String, Object>of();
+                        return Map.<String, Object>of();
                     }
                 })
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : Map.of());
+                .orElseGet(Map::of);
     }
 
     private int intValue(Object value) {

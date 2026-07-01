@@ -14,10 +14,10 @@ class OpsReadTimeSeedPolicyTest {
     }
 
     @Test
-    void keepsLegacyDirectConstructionTestsSeeded() {
+    void directConstructionCannotEnableReadTimeSeeds() {
         OpsReadTimeSeedPolicy policy = OpsReadTimeSeedPolicy.enabledForDirectConstruction();
 
-        assertThat(policy.enabled()).isTrue();
+        assertThat(policy.enabled()).isFalse();
     }
 
     @Test

@@ -122,14 +122,14 @@ public class UserSecurityRiskFacadeAdapter implements UserSecurityRiskFacade {
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .map(value -> parseInt(value, fallback))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : 0);
+                .orElse(0);
     }
 
     private int parseInt(String value, int fallback) {
         try {
             return Integer.parseInt(value);
         } catch (NumberFormatException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : 0;
+            return 0;
         }
     }
 

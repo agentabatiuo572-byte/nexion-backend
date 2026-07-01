@@ -53,9 +53,6 @@ public class OpsNotificationCampaignService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<NotificationCampaignOverview> overview() {
-        if (readTimeSeedPolicy.enabled()) {
-            campaignRepository.ensureSeedData(now());
-        }
         List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns();
         return ApiResult.ok(new NotificationCampaignOverview(
                 stats(campaigns),

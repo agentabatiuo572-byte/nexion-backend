@@ -146,7 +146,7 @@ class OpsSupportTicketServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(ticketRepository.seedCalls).isGreaterThan(0);
+        assertThat(ticketRepository.seedCalls).isZero();
         assertThat(result.getData().get("sources")).asList().contains("nx_support_ticket", "nx_support_ticket_message");
     }
 

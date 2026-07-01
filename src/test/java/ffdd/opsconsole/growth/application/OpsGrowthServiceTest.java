@@ -52,6 +52,9 @@ class OpsGrowthServiceTest {
 
     @Test
     void checkInUsesNexAndKeepsPointsSunset() {
+        seedCheckInConfiguredRows();
+        seedEarnMilestones();
+
         ApiResult<Map<String, Object>> result = service.checkIn();
 
         assertThat(result.getCode()).isZero();
@@ -61,7 +64,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getData().get("disabledOutputs").toString()).contains("Points ledger writes");
         assertThat(result.getData().get("rules")).asList().hasSize(6);
         assertThat(result.getData().get("streakMilestones")).asList().hasSize(7);
-        assertThat(result.getData().get("streakDistribution")).asList().hasSize(5);
+        assertThat(result.getData().get("streakDistribution")).asList().isEmpty();
         assertThat(result.getData().get("powerUps")).asList().hasSize(4);
         assertThat(result.getData().get("earnMilestones")).asList().hasSize(5);
         assertThat(result.getData()).containsKeys("tickInterval", "coverage");
@@ -79,7 +82,7 @@ class OpsGrowthServiceTest {
                 .containsEntry("autoPushKilled", false);
         assertThat(result.getData().toString()).doesNotContain("4.1");
         assertThat(result.getData().get("params")).asList().hasSize(12);
-        assertThat(result.getData().get("sessions")).asList().hasSize(4);
+        assertThat(result.getData().get("sessions")).asList().isEmpty();
         assertThat(result.getData().get("serverOnlyFields")).asList().contains("failRate");
 
         @SuppressWarnings("unchecked")
@@ -134,19 +137,23 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void splitTrialDaySeedCanMigrateLegacyCombinedDaysValue() {
+    void legacyCombinedTrialDaysValueIsNotMigratedByReadModel() {
         configFacade.values.put("growth.trial.param.days", "4 / 8 / 2 天");
 
         service.trials();
 
         assertThat(configFacade.values)
-                .containsEntry("growth.trial.param.trialDays", "4")
-                .containsEntry("growth.trial.param.graceDays", "8")
-                .containsEntry("growth.trial.param.extensionDays", "2");
+                .containsEntry("growth.trial.param.days", "4 / 8 / 2 天")
+                .doesNotContainKeys(
+                        "growth.trial.param.trialDays",
+                        "growth.trial.param.graceDays",
+                        "growth.trial.param.extensionDays");
     }
 
     @Test
     void cancelTrialSessionWritesTerminalStateAndAudit() {
+        configFacade.values.put("growth.trial.session.usr_9921.state", "active");
+
         ApiResult<Map<String, Object>> result = service.cancelTrialSession(
                 "idem-h2-cancel",
                 "usr_9921",
@@ -164,6 +171,8 @@ class OpsGrowthServiceTest {
 
     @Test
     void chargeTerminalTrialSessionReturns409() {
+        configFacade.values.put("growth.trial.session.usr_77D4.state", "redeemed");
+
         ApiResult<Map<String, Object>> result = service.chargeTrialSession(
                 "idem-h2-charge",
                 "usr_77D4",
@@ -176,6 +185,7 @@ class OpsGrowthServiceTest {
     @Test
     void chargeTrialSessionPostsD4LedgerEntry() {
         configFacade.values.put("growth.trial.param.price", "$1,299");
+        configFacade.values.put("growth.trial.session.usr_9921.state", "active");
 
         ApiResult<Map<String, Object>> result = service.chargeTrialSession(
                 "idem-h2-charge",
@@ -198,6 +208,7 @@ class OpsGrowthServiceTest {
     @Test
     void j1TrialKillSwitchBlocksTrialChargeAndIsVisibleInOverview() {
         configFacade.values.put("killswitch.trial", "disabled");
+        configFacade.values.put("growth.trial.session.usr_9921.state", "active");
 
         ApiResult<Map<String, Object>> overview = service.trials();
         ApiResult<Map<String, Object>> result = service.chargeTrialSession(
@@ -240,22 +251,18 @@ class OpsGrowthServiceTest {
                 .containsEntry("domain", "H3_H4")
                 .containsEntry("rewardAsset", "NEX")
                 .containsEntry("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
-        assertThat(result.getData().get("dayOneTasks")).asList().hasSize(6);
-        assertThat(result.getData().get("weeklyTier1")).asList().hasSize(9);
-        assertThat(result.getData().get("weeklyTier2")).asList().hasSize(8);
-        assertThat(result.getData().get("monthlyMissions")).asList().hasSize(5);
-        assertThat(result.getData().get("taskContracts")).asList().hasSize(6);
-        assertThat(result.getData().get("events")).asList().hasSize(7);
-        assertThat(result.getData().get("wheelTiers")).asList().hasSize(8);
-        assertThat(result.getData().get("trackables")).asList().hasSize(4);
+        assertThat(result.getData().get("dayOneTasks")).asList().isEmpty();
+        assertThat(result.getData().get("weeklyTier1")).asList().isEmpty();
+        assertThat(result.getData().get("weeklyTier2")).asList().isEmpty();
+        assertThat(result.getData().get("monthlyMissions")).asList().isEmpty();
+        assertThat(result.getData().get("taskContracts")).asList().isEmpty();
+        assertThat(result.getData().get("events")).asList().isEmpty();
+        assertThat(result.getData().get("wheelTiers")).asList().isEmpty();
+        assertThat(result.getData().get("trackables")).asList().isEmpty();
         assertThat(result.getData()).containsKeys("h3Stats", "h4Stats", "taskContracts", "promoBanner", "wheelEvUsd", "coverage", "sources");
-        assertThat(result.getData().get("dayOneTasks")).asList()
-                .first()
-                .extracting(row -> ((Map<?, ?>) row).get("completionType"))
-                .isEqualTo("event");
         assertThat(result.getData().get("promoBanner"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
-                .containsEntry("status", "active");
+                .isEmpty();
     }
 
     @Test
@@ -305,7 +312,7 @@ class OpsGrowthServiceTest {
     @Test
     void questEventsReadsH3H4RowsFromConfigItems() {
         configFacade.values.put("growth.quest.day_one.tasks",
-                "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\"}]");
+                "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\",\"completionType\":\"event\"}]");
         configFacade.values.put("growth.quest.weekly.t1.rows",
                 "[{\"cond\":\"DB 一档\",\"reward\":\"22\"}]");
         configFacade.values.put("growth.quest.weekly.t2.rows",
@@ -329,7 +336,7 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().get("dayOneTasks")).asList()
-                .hasSize(6)
+                .hasSize(1)
                 .first()
                 .extracting(row -> ((Map<?, ?>) row).get("task"))
                 .isEqualTo("DB 首日任务");
@@ -338,13 +345,13 @@ class OpsGrowthServiceTest {
                 .extracting(row -> ((Map<?, ?>) row).get("completionType"))
                 .isEqualTo("event");
         assertThat(result.getData().get("weeklyTier1")).asList()
-                .hasSize(9)
+                .hasSize(1)
                 .first()
                 .extracting(row -> ((Map<?, ?>) row).get("cond"))
                 .isEqualTo("DB 一档");
-        assertThat(result.getData().get("weeklyTier2")).asList().hasSize(8);
+        assertThat(result.getData().get("weeklyTier2")).asList().hasSize(1);
         assertThat(result.getData().get("monthlyMissions")).asList()
-                .hasSize(6)
+                .hasSize(1)
                 .first()
                 .extracting(row -> ((Map<?, ?>) row).get("theme"))
                 .isEqualTo("DB 月度");
@@ -353,7 +360,7 @@ class OpsGrowthServiceTest {
                 .extracting(row -> ((Map<?, ?>) row).get("note"))
                 .isEqualTo("来自 nx_config_item");
         assertThat(result.getData().get("taskContracts")).asList()
-                .hasSize(6)
+                .hasSize(1)
                 .first()
                 .extracting(row -> ((Map<?, ?>) row).get("taskKey"))
                 .isEqualTo("db.task");
@@ -378,6 +385,9 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateQuestConfigWritesAllowedConfigAndAudits() {
+        configFacade.values.put("growth.quest.day_one.tasks",
+                "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\",\"completionType\":\"event\"}]");
+
         ApiResult<Map<String, Object>> result = service.updateQuestConfig(
                 "idem-h3-config",
                 "dayOne.tasks.0.reward",
@@ -407,6 +417,9 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateQuestEventStatusWritesConfigAndAudit() {
+        seedQuestEvents(
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"draft\",\"reward\":\"10 NEX\",\"featured\":false}");
+
         ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
                 "idem-h4-status",
                 "regional-pk",
@@ -450,6 +463,10 @@ class OpsGrowthServiceTest {
 
     @Test
     void settingSecondFeaturedOngoingEventReturns422() {
+        seedQuestEvents(
+                "{\"id\":\"current-featured\",\"name\":\"Current\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":true}",
+                "{\"id\":\"ref-5\",\"name\":\"Referral\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":false}");
+
         ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
                 "idem-h4-featured",
                 "ref-5",
@@ -461,6 +478,9 @@ class OpsGrowthServiceTest {
 
     @Test
     void disabledBooleanAliasTurnsOffEventFeatured() {
+        seedQuestEvents(
+                "{\"id\":\"pro-7d\",\"name\":\"Pro 7d\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":true}");
+
         ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
                 "idem-h4-featured-off",
                 "pro-7d",
@@ -499,6 +519,8 @@ class OpsGrowthServiceTest {
 
     @Test
     void luckyProbabilitySumAboveOneHundredReturns422() {
+        configFacade.values.put("growth.checkin.lucky_2_pct", "10");
+
         ApiResult<Map<String, Object>> result = service.updateCheckInRule(
                 "idem-h5-lucky",
                 "p15",
@@ -553,6 +575,8 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateEarnMilestoneWritesThresholdRewardAndAudit() {
+        seedEarnMilestones();
+
         ApiResult<Map<String, Object>> result = service.updateEarnMilestone(
                 "idem-h6-earn",
                 "earn-500",
@@ -635,27 +659,30 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void phaseOverviewHasEightActiveDialsAndSunsetExclusions() {
+    void phaseOverviewDoesNotSeedDialsOrWithdrawGateWhenDatabaseIsEmpty() {
         ApiResult<Map<String, Object>> result = service.phases();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
-                .containsEntry("dialCount", 8)
-                .containsEntry("currentMonth", 7);
-        assertThat(result.getData().get("monthlyDials")).asList().hasSize(12);
-        assertThat(result.getData().get("controls")).asList().hasSize(3);
+                .containsEntry("dialCount", 0)
+                .containsEntry("currentMonth", 0);
+        assertThat(result.getData().get("monthlyDials")).asList().isEmpty();
+        assertThat(result.getData().get("controls")).asList().isEmpty();
         assertThat(result.getData()).containsKey("coverage");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
         assertThat(configFacade.values)
-                .containsKey("platform.phase.config")
-                .containsEntry("growth.phase.month.7.withdrawNexMinBalance", "100")
-                .containsEntry("growth.withdraw_nex_gate.min_balance_nex", "100");
+                .doesNotContainKeys(
+                        "platform.phase.config",
+                        "growth.phase.month.7.withdrawNexMinBalance",
+                        "growth.withdraw_nex_gate.min_balance_nex");
     }
 
     @Test
     void updateRhythmCurrentMonthMirrorsH1PhaseForDownstreamReaders() {
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+
         ApiResult<Map<String, Object>> result = service.updateRhythmParam(
                 "idem-h1-rhythm",
                 "currentMonth",
@@ -740,6 +767,9 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateCurrentMonthDialWritesMonthlyCellActiveDialMirrorAndAudit() {
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "7");
+
         ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
                 "idem-h1-cell",
                 7,
@@ -789,29 +819,12 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void h2ToH6ReadModelsSeedConfigItemsBeforeReturningData() {
+    void h2ToH6ReadModelsDoNotSeedConfigItemsBeforeReturningData() {
         service.trials();
         service.questEvents();
         service.checkIn();
 
-        assertThat(configFacade.values)
-                .containsEntry("growth.trial.param.trialDays", "3")
-                .containsEntry("growth.trial.param.graceDays", "7")
-                .containsEntry("growth.trial.param.extensionDays", "3")
-                .containsEntry("growth.trial.param.offsetCap", "$50")
-                .containsEntry("growth.trial.session.usr_9921.state", "active")
-                .containsKey("growth.quest.day_one.tasks")
-                .containsKey("growth.quest.weekly.t1.rows")
-                .containsKey("growth.quest.weekly.t2.rows")
-                .containsKey("growth.quest.monthly.rows")
-                .containsKey("growth.quest.task_monitor")
-                .containsEntry("growth.quest.day_one.task.0.reward", "50 NEX")
-                .containsKey("growth.event.rows")
-                .containsKey("growth.event.trackables")
-                .containsKey("growth.wheel.tiers")
-                .containsEntry("growth.event.pro-7d.status", "ongoing")
-                .containsEntry("growth.checkin.reward_nex", "2")
-                .containsEntry("growth.earn_milestone.earn-500.reward_nex", "250");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
@@ -928,6 +941,51 @@ class OpsGrowthServiceTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
+    }
+
+    private void seedQuestEvents(String... rows) {
+        configFacade.values.put("growth.event.rows", "[" + String.join(",", rows) + "]");
+    }
+
+    private void seedEarnMilestones() {
+        configFacade.values.put("growth.earn_milestone.earn-100.threshold_usd", "100");
+        configFacade.values.put("growth.earn_milestone.earn-100.reward_nex", "100");
+        configFacade.values.put("growth.earn_milestone.earn-500.threshold_usd", "500");
+        configFacade.values.put("growth.earn_milestone.earn-500.reward_nex", "250");
+        configFacade.values.put("growth.earn_milestone.earn-1000.threshold_usd", "1000");
+        configFacade.values.put("growth.earn_milestone.earn-1000.reward_nex", "500");
+        configFacade.values.put("growth.earn_milestone.earn-5000.threshold_usd", "5000");
+        configFacade.values.put("growth.earn_milestone.earn-5000.reward_nex", "1500");
+        configFacade.values.put("growth.earn_milestone.earn-10000.threshold_usd", "10000");
+        configFacade.values.put("growth.earn_milestone.earn-10000.reward_nex", "3000");
+    }
+
+    private void seedCheckInConfiguredRows() {
+        configFacade.values.put("growth.checkin.reward_nex", "2");
+        configFacade.values.put("growth.checkin.streak_bonus_nex", "5");
+        configFacade.values.put("growth.checkin.lucky_multiplier_max", "2");
+        configFacade.values.put("growth.checkin.lucky_1_5_pct", "15");
+        configFacade.values.put("growth.checkin.lucky_2_pct", "5");
+        configFacade.values.put("growth.checkin.broken_hours", "48");
+        configFacade.values.put("growth.checkin.revive_cards", "1 card / 30 days");
+
+        String[] streakRewards = {"+5 NEX", "+15 NEX", "+1 USD", "+100 NEX", "wheel ticket x1", "+10 USD",
+                "streak master badge"};
+        for (int i = 0; i < streakRewards.length; i++) {
+            configFacade.values.put("growth.checkin.streak_milestone." + i + ".reward", streakRewards[i]);
+        }
+
+        int[] powerUpDays = {7, 14, 30, 60};
+        String[] powerUpNotes = {
+                "redeem in team rate F2",
+                "Premium is sunset; keep migration note only",
+                "redeem in staking G1",
+                "redeem in Genesis G4"
+        };
+        for (int i = 0; i < powerUpDays.length; i++) {
+            configFacade.values.put("growth.checkin.power_up." + i + ".day", String.valueOf(powerUpDays[i]));
+            configFacade.values.put("growth.checkin.power_up." + i + ".note", powerUpNotes[i]);
+        }
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {

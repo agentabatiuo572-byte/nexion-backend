@@ -228,7 +228,7 @@ public class OpsEventCenterService {
     private List<EventDimensionParam> dimensionParams() {
         return paramDefinitions().stream()
                 .map(definition -> paramView(definition, configFacade.activeValue(definition.configKey())
-                        .orElseGet(() -> readTimeSeedPolicy.enabled() ? definition.defaultValue() : "")))
+                        .orElse("")))
                 .toList();
     }
 
@@ -324,7 +324,7 @@ public class OpsEventCenterService {
 
     private String schemaVersion() {
         return configFacade.activeValue(SCHEMA_VERSION_KEY)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? DEFAULT_SCHEMA_VERSION : "");
+                .orElse("");
     }
 
     private <T> ApiResult<T> requireMutation(String idempotencyKey, EventCenterMutationRequest request) {

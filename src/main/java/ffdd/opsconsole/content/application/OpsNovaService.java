@@ -90,14 +90,13 @@ public class OpsNovaService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<NovaOverview> overview() {
-        ensureSeedConfigs();
         Map<String, String> configs = configs();
         List<NovaChannelView> channels = channels(configs);
         int onlineCount = (int) channels.stream().filter(NovaChannelView::enabled).count();
         return ApiResult.ok(new NovaOverview(
                 novaStats(onlineCount, channels.size()),
                 channels,
-                readTimeSeedPolicy.enabled() ? EVENT_DRIVEN : List.of(),
+                List.of(),
                 templates(configs),
                 distribution(configs),
                 pools(configs),
@@ -274,14 +273,6 @@ public class OpsNovaService {
     private List<NovaChannelView> channels(Map<String, String> configs) {
         List<NovaChannelView> channels = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
-        if (readTimeSeedPolicy.enabled()) {
-            for (ChannelSeed seed : CHANNEL_SEEDS) {
-                seen.add(seed.key());
-                if (!bool(configs, CHANNEL_PREFIX + seed.key() + ".deleted", false)) {
-                    channels.add(toChannel(seed.key(), seed, configs));
-                }
-            }
-        }
         for (String key : discoveredKeys(configs, CHANNEL_PREFIX)) {
             if (!seen.contains(key) && !bool(configs, CHANNEL_PREFIX + key + ".deleted", false)) {
                 channels.add(toChannel(key, null, configs));
@@ -312,14 +303,6 @@ public class OpsNovaService {
     private List<NovaTemplateView> templates(Map<String, String> configs) {
         List<NovaTemplateView> templates = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
-        if (readTimeSeedPolicy.enabled()) {
-            for (TemplateSeed seed : TEMPLATE_SEEDS) {
-                seen.add(seed.channel());
-                if (!bool(configs, TEMPLATE_PREFIX + seed.channel() + ".deleted", false)) {
-                    templates.add(toTemplate(seed.channel(), seed, configs));
-                }
-            }
-        }
         for (String channel : discoveredKeys(configs, TEMPLATE_PREFIX)) {
             if (!seen.contains(channel) && !bool(configs, TEMPLATE_PREFIX + channel + ".deleted", false)) {
                 templates.add(toTemplate(channel, null, configs));
@@ -345,7 +328,7 @@ public class OpsNovaService {
 
     private List<NovaSocialDistributionItem> distribution(Map<String, String> configs) {
         return DISTRIBUTION_SEEDS.stream()
-                .filter(seed -> readTimeSeedPolicy.enabled() || configs.containsKey(SOCIAL_DIST_PREFIX + seed.key() + ".pct"))
+                .filter(seed -> configs.containsKey(SOCIAL_DIST_PREFIX + seed.key() + ".pct"))
                 .map(seed -> new NovaSocialDistributionItem(
                         seed.key(),
                         seed.name(),
@@ -356,7 +339,7 @@ public class OpsNovaService {
 
     private List<NovaSocialPoolView> pools(Map<String, String> configs) {
         return POOL_SEEDS.stream()
-                .filter(seed -> readTimeSeedPolicy.enabled() || configs.containsKey(SOCIAL_POOL_PREFIX + seed.key() + ".count"))
+                .filter(seed -> configs.containsKey(SOCIAL_POOL_PREFIX + seed.key() + ".count"))
                 .map(seed -> new NovaSocialPoolView(
                         seed.key(),
                         seed.name(),
@@ -366,10 +349,7 @@ public class OpsNovaService {
     }
 
     private NovaStats novaStats(int onlineCount, int channelCount) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return new NovaStats("0", "0%", 0, onlineCount, channelCount, "0");
-        }
-        return new NovaStats("84.2K", "27.4%", 25, onlineCount, channelCount, "12.8K");
+        return new NovaStats("0", "0%", 0, onlineCount, channelCount, "0");
     }
 
     private ApiResult<NovaChannelView> requireChannelCommand(String idempotencyKey, NovaChannelUpsertRequest request) {
@@ -447,45 +427,6 @@ public class OpsNovaService {
         }
     }
 
-    private void ensureSeedConfigs() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        for (ChannelSeed seed : CHANNEL_SEEDS) {
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".name", seed.name());
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".trigger", seed.trigger());
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".tick", seed.tick());
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".cooldown", seed.cooldown());
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".phaseKeyed", seed.phaseKeyed());
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".ctr", seed.ctr().stripTrailingZeros().toPlainString());
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".on", String.valueOf(seed.enabled()));
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".deleted", "false");
-            seedIfMissing(CHANNEL_PREFIX + seed.key() + ".order", String.valueOf(seed.order()));
-        }
-        for (TemplateSeed seed : TEMPLATE_SEEDS) {
-            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".name", seed.name());
-            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".cta", seed.cta());
-            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".version", seed.version());
-            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".status", seed.status());
-            seedIfMissing(TEMPLATE_PREFIX + seed.channel() + ".deleted", "false");
-        }
-        for (DistributionSeed seed : DISTRIBUTION_SEEDS) {
-            seedIfMissing(SOCIAL_DIST_PREFIX + seed.key() + ".pct", String.valueOf(seed.pct()));
-        }
-        for (PoolSeed seed : POOL_SEEDS) {
-            seedIfMissing(SOCIAL_POOL_PREFIX + seed.key() + ".count", String.valueOf(seed.count()));
-        }
-    }
-
-    private void seedIfMissing(String key, String value) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).isEmpty()) {
-            configFacade.upsertAdminValue(key, value, "STRING", GROUP, "I2 Nova seed");
-        }
-    }
-
     private Map<String, String> configs() {
         return new LinkedHashMap<>(configFacade.activeValuesByGroup(GROUP));
     }
@@ -514,14 +455,14 @@ public class OpsNovaService {
 
     private String text(Map<String, String> configs, String key, String fallback, boolean allowExplicitFallback) {
         String value = configs.get(key);
-        return StringUtils.hasText(value) ? value.trim() : (readTimeSeedPolicy.enabled() || allowExplicitFallback ? fallback : "");
+        return StringUtils.hasText(value) ? value.trim() : (allowExplicitFallback ? fallback : "");
     }
 
     private int number(Map<String, String> configs, String key, int fallback) {
         try {
             return Integer.parseInt(text(configs, key, String.valueOf(fallback)).replaceAll("[^0-9-]", ""));
         } catch (NumberFormatException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : 0;
+            return 0;
         }
     }
 
@@ -529,13 +470,13 @@ public class OpsNovaService {
         try {
             return new BigDecimal(text(configs, key, fallback.toPlainString()));
         } catch (NumberFormatException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
+            return BigDecimal.ZERO;
         }
     }
 
     private boolean bool(Map<String, String> configs, String key, boolean fallback) {
         String value = configs.get(key);
-        return StringUtils.hasText(value) ? Boolean.parseBoolean(value) : readTimeSeedPolicy.enabled() && fallback;
+        return StringUtils.hasText(value) ? Boolean.parseBoolean(value) : false;
     }
 
     private String decimalValue(BigDecimal value) {

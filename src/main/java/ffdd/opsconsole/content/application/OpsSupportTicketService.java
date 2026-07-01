@@ -297,32 +297,6 @@ public class OpsSupportTicketService {
     }
 
     private void ensureSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        LocalDateTime now = LocalDateTime.now(clock);
-        ticketRepository.ensureSeedData(now);
-        ensureLoadConfigSeedData();
-    }
-
-    private void ensureLoadConfigSeedData() {
-        Map<String, String> values = configFacade.activeValuesByGroup(LOAD_GROUP);
-        seedLoadValue(values, "autoBalance", "true", "BOOLEAN");
-        seedLoadValue(values, "defaultCap", "10", "NUMBER");
-        seedLoadValue(values, "burstCap", "14", "NUMBER");
-        seedLoadValue(values, "warnPct", "80", "NUMBER");
-        seedLoadValue(values, "quietHourBalance", "false", "BOOLEAN");
-        seedLoadValue(values, "overflowQueue", "转人工备勤队列", "STRING");
-    }
-
-    private void seedLoadValue(Map<String, String> values, String suffix, String value, String valueType) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        String key = LOAD_PREFIX + suffix;
-        if (!values.containsKey(key)) {
-            configFacade.upsertAdminValue(key, value, valueType, LOAD_GROUP, "seed support load config");
-        }
     }
 
     private ApiResult<Map<String, Object>> requireSupportCommand(String idempotencyKey, String reason) {
@@ -337,14 +311,14 @@ public class OpsSupportTicketService {
 
     private Map<String, Object> loadConfigView() {
         Map<String, String> values = configFacade.activeValuesByGroup(LOAD_GROUP);
-        int defaultCap = intValue(values, "defaultCap", readTimeSeedPolicy.enabled() ? 8 : 0);
+        int defaultCap = intValue(values, "defaultCap", 0);
         Map<String, Object> loadConfig = new LinkedHashMap<>();
-        loadConfig.put("autoBalance", boolValue(values, "autoBalance", readTimeSeedPolicy.enabled()));
+        loadConfig.put("autoBalance", boolValue(values, "autoBalance", false));
         loadConfig.put("defaultCap", defaultCap);
-        loadConfig.put("burstCap", intValue(values, "burstCap", readTimeSeedPolicy.enabled() ? 12 : 0));
-        loadConfig.put("warnPct", intValue(values, "warnPct", readTimeSeedPolicy.enabled() ? 80 : 0));
-        loadConfig.put("quietHourBalance", boolValue(values, "quietHourBalance", readTimeSeedPolicy.enabled()));
-        loadConfig.put("overflowQueue", textValue(values, "overflowQueue", readTimeSeedPolicy.enabled() ? "转人工备勤队列" : ""));
+        loadConfig.put("burstCap", intValue(values, "burstCap", 0));
+        loadConfig.put("warnPct", intValue(values, "warnPct", 0));
+        loadConfig.put("quietHourBalance", boolValue(values, "quietHourBalance", false));
+        loadConfig.put("overflowQueue", textValue(values, "overflowQueue", ""));
 
         Map<String, Map<String, Object>> agentState = new LinkedHashMap<>();
         String agentPrefix = LOAD_PREFIX + "agent.";

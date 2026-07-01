@@ -69,9 +69,6 @@ public class OpsI18nLearningService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public ApiResult<I18nLearningOverview> overview() {
-        if (readTimeSeedPolicy.enabled()) {
-            learningRepository.ensureSeedData(now());
-        }
         return ApiResult.ok(currentOverview());
     }
 
@@ -276,17 +273,11 @@ public class OpsI18nLearningService {
     }
 
     private List<LearningMetricView> metrics(int onlineCourses) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
-        return List.of(
-                new LearningMetricView("本周开课", decimalK(onlineCourses * 3150L)),
-                new LearningMetricView("完课率", "42%"),
-                new LearningMetricView("周完课触达回访(D7)", "+3.1pp"));
+        return List.of();
     }
 
     private String weeklyNexPayout(int onlineCourses) {
-        return readTimeSeedPolicy.enabled() ? decimalK(onlineCourses * 5760L) : "0K";
+        return "0K";
     }
 
     private String decimalK(long value) {

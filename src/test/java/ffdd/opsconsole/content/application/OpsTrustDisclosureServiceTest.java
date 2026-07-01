@@ -58,9 +58,7 @@ class OpsTrustDisclosureServiceTest {
         assertThat(result.getData().stats().staleAckUsers()).isEqualTo(2632);
         assertThat(result.getData().gateScope()).isEqualTo("提现");
         assertThat(result.getData().sources()).contains("nx_trust_section", "nx_disclosure_draft");
-        assertThat(repository.seedCalls).isEqualTo(1);
-        verify(configFacade).upsertAdminValue("disclosure.gate.withdraw", "true", "BOOLEAN", "content", "I4 overview gate sync");
-        verify(configFacade).upsertAdminValue("disclosure.gate.staking", "false", "BOOLEAN", "content", "I4 overview gate sync");
+        assertThat(repository.seedCalls).isZero();
     }
 
     @Test

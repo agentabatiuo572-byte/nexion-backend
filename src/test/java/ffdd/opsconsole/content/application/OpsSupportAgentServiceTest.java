@@ -55,7 +55,10 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
-    void overviewFiltersSupportAdminsAndSeedsProfiles() {
+    void overviewReadsExistingSupportProfilesOnly() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+
         ApiResult<SupportAgentOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
@@ -64,9 +67,7 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getData().transferTargets())
                 .anySatisfy(target -> assertThat(target).containsEntry("targetType", "agent").containsEntry("targetId", "2"));
         assertThat(result.getData().sources()).contains("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment");
-
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        assertThat(fake.seededAdminIds).containsExactly(2L);
+        assertThat(fake.seededAdminIds).isEmpty();
     }
 
     @Test
@@ -78,6 +79,10 @@ class OpsSupportAgentServiceTest {
                 operator("7", "Support Agent D", "support", "enabled"),
                 operator("8", "Disabled Support", "support", "disabled")))));
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(5L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(6L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(7L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
         fake.assignments.add(new SupportAgentAssignmentView(10L, 2L, 1001L, "U00001001", "用户1001", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
         fake.assignments.add(new SupportAgentAssignmentView(11L, 6L, 1006L, "U00001006", "用户1006", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
 
@@ -120,6 +125,9 @@ class OpsSupportAgentServiceTest {
 
     @Test
     void assignAdvisorRequiresAdvisorServiceType() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+
         var result = service.assignAdvisorUser(
                 2L,
                 "idem-assign",

@@ -286,21 +286,20 @@ public class OpsFinanceService {
     }
 
     public ApiResult<Map<String, Object>> withdrawalParams() {
-        ensureD5ConfigDefaults();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
-        BigDecimal dailyLimitCount = requiredConfigDecimal("withdrawal.daily_count_limit");
-        BigDecimal maxBalanceRatio = requiredConfigDecimal("withdrawal.max_balance_pct");
-        BigDecimal feeRate = requiredConfigDecimal("withdrawal.fee_rate");
+        BigDecimal dailyLimitCount = configDecimal("withdrawal.daily_count_limit", BigDecimal.ZERO);
+        BigDecimal maxBalanceRatio = configDecimal("withdrawal.max_balance_pct", BigDecimal.ZERO);
+        BigDecimal feeRate = configDecimal("withdrawal.fee_rate", BigDecimal.ZERO);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("dailyLimitCount", dailyLimitCount.intValue());
         response.put("maxBalancePct", percent(maxBalanceRatio));
         response.put("maxBalanceRatio", maxBalanceRatio);
         response.put("feeRatePct", percent(feeRate));
         response.put("feeRate", feeRate);
-        response.put("minUsdt", requiredConfigDecimal("withdrawal.min_usdt"));
-        response.put("trc20Enabled", requiredConfigBoolean("withdrawal.trc20.enabled"));
-        response.put("erc20Enabled", requiredConfigBoolean("withdrawal.erc20.enabled"));
+        response.put("minUsdt", configDecimal("withdrawal.min_usdt", BigDecimal.ZERO));
+        response.put("trc20Enabled", optionalConfigBoolean("withdrawal.trc20.enabled"));
+        response.put("erc20Enabled", optionalConfigBoolean("withdrawal.erc20.enabled"));
         response.put("h1Rhythm", rhythm.summary());
         response.put("withdrawNexGate", Map.of(
                 "sourceDomain", "H1",
@@ -341,7 +340,6 @@ public class OpsFinanceService {
         if (guard != null) {
             return guard;
         }
-        ensureD5ConfigDefaults();
         String key = normalizeParamKey(request.key());
         BigDecimal oldValue = currentParamValue(key);
         BigDecimal newValue = normalizeParamValue(key, request.value());
@@ -470,27 +468,24 @@ public class OpsFinanceService {
     }
 
     private List<DepositChannelView> topupChannels() {
-        ensureD1ConfigDefaults();
         return TOPUP_CHANNELS.stream()
-                .filter(channel -> readTimeSeedPolicy.enabled() || hasAnyTopupChannelConfig(channel))
+                .filter(this::hasAnyTopupChannelConfig)
                 .map(channel -> new DepositChannelView(
                         channel.id(),
                         channel.code(),
-                        configValue(channelConfigKey(channel.code(), "fee"), channel.defaultFee()),
-                        configValue(channelConfigKey(channel.code(), "min_amount"), channel.defaultMinAmount()),
-                        configBoolean(channelConfigKey(channel.code(), "enabled"), channel.defaultEnabled())))
+                        configValue(channelConfigKey(channel.code(), "fee"), ""),
+                        configValue(channelConfigKey(channel.code(), "min_amount"), ""),
+                        configBoolean(channelConfigKey(channel.code(), "enabled"), false)))
                 .toList();
     }
 
     private List<DepositCardRiskParamView> topupCardParams() {
-        ensureD1ConfigDefaults();
         return TOPUP_CARD_PARAMS.stream()
-                .filter(param -> readTimeSeedPolicy.enabled()
-                        || configFacade.activeValue(cardParamConfigKey(param.key())).filter(StringUtils::hasText).isPresent())
+                .filter(param -> configFacade.activeValue(cardParamConfigKey(param.key())).filter(StringUtils::hasText).isPresent())
                 .map(param -> new DepositCardRiskParamView(
                         param.key(),
                         param.name(),
-                        configValue(cardParamConfigKey(param.key()), param.defaultValue()),
+                        configValue(cardParamConfigKey(param.key()), ""),
                         param.note()))
                 .toList();
     }
@@ -561,7 +556,7 @@ public class OpsFinanceService {
     }
 
     private List<DepositBinRiskView> binRiskRows() {
-        int threshold = parseInteger(configValue("finance.topup.card.cardRetryLimit", "5"), 5);
+        int threshold = parseInteger(configValue("finance.topup.card.cardRetryLimit", ""), 0);
         Map<String, String> values = configFacade.activeValuesByGroup(TOPUP_CONFIG_GROUP);
         List<DepositBinRiskView> rows = new ArrayList<>();
         for (DepositBinRiskView row : depositOpsRepository.failedPaymentRiskRows(threshold)) {
@@ -587,10 +582,6 @@ public class OpsFinanceService {
     }
 
     private void ensureD1FallbackSeedData() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        ensureD1ConfigDefaults();
     }
 
     private void ensureD2FallbackSeedData() {
@@ -611,13 +602,6 @@ public class OpsFinanceService {
     }
 
     private void ensureD5ConfigDefaults() {
-        ensureBaseConfigIfAbsent("withdrawal.daily_count_limit", "1", "NUMBER", "wallet", "D5 withdrawal daily count");
-        ensureBaseConfigIfAbsent("withdrawal.max_balance_pct", "0.80", "NUMBER", "wallet", "D5 withdrawal balance cap");
-        ensureBaseConfigIfAbsent("withdrawal.fee_rate", "0.02", "NUMBER", "wallet", "D5 withdrawal fee rate");
-        ensureBaseConfigIfAbsent("withdrawal.min_usdt", "20", "NUMBER", "wallet", "D5 minimum withdrawal USDT");
-        ensureBaseConfigIfAbsent("withdrawal.trc20.enabled", "true", "BOOLEAN", "wallet", "D5 TRC20 withdrawal enabled");
-        ensureBaseConfigIfAbsent("withdrawal.erc20.enabled", "true", "BOOLEAN", "wallet", "D5 ERC20 withdrawal enabled");
-        syncWalletWithdrawalMirrors();
     }
 
     private void syncWalletWithdrawalMirrors() {
@@ -649,13 +633,7 @@ public class OpsFinanceService {
     }
 
     private void seedConfigIfAbsent(String key, String value, String type, String group, String remark) {
-        if (!readTimeSeedPolicy.enabled()) {
-            return;
-        }
-        if (configFacade.activeValue(key).filter(StringUtils::hasText).isPresent()) {
-            return;
-        }
-        configFacade.upsertAdminValue(key, value, type, group, remark);
+        // Intentionally empty: read paths must not seed finance configuration.
     }
 
     private TopupChannelDef topupChannel(String channelCode) {
@@ -726,7 +704,7 @@ public class OpsFinanceService {
     private String configValue(String key, String fallback) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : "");
+                .orElse("");
     }
 
     private boolean configBooleanValue(String value) {
@@ -737,7 +715,7 @@ public class OpsFinanceService {
         try {
             return Integer.parseInt(value.replaceAll("[^0-9-]", ""));
         } catch (RuntimeException ex) {
-            return readTimeSeedPolicy.enabled() ? fallback : 0;
+            return 0;
         }
     }
 
@@ -800,8 +778,7 @@ public class OpsFinanceService {
     }
 
     private int withdrawalDailyLimitCount() {
-        ensureD5ConfigDefaults();
-        int count = requiredConfigDecimal("withdrawal.daily_count_limit")
+        int count = configDecimal("withdrawal.daily_count_limit", BigDecimal.ZERO)
                 .setScale(0, RoundingMode.DOWN)
                 .intValue();
         if (count <= 0) {
@@ -870,7 +847,7 @@ public class OpsFinanceService {
         return configFacade.activeValue(WITHDRAW_KILLSWITCH_KEY)
                 .or(() -> configFacade.activeValue(WITHDRAW_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
-                .orElse(readTimeSeedPolicy.enabled());
+                .orElse(false);
     }
 
     private boolean withdrawDisclosureGateActive() {
@@ -918,7 +895,7 @@ public class OpsFinanceService {
         return switch (value) {
             case "enabled", "enable", "on", "true", "1" -> true;
             case "disabled", "disable", "off", "false", "0" -> false;
-            default -> readTimeSeedPolicy.enabled();
+            default -> false;
         };
     }
 
@@ -1185,10 +1162,10 @@ public class OpsFinanceService {
                     try {
                         return new BigDecimal(value.trim());
                     } catch (RuntimeException ex) {
-                        return readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO;
+                        return BigDecimal.ZERO;
                     }
                 })
-                .orElseGet(() -> readTimeSeedPolicy.enabled() ? fallback : BigDecimal.ZERO);
+                .orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal requiredConfigDecimal(String key) {
@@ -1211,10 +1188,17 @@ public class OpsFinanceService {
         return "true".equalsIgnoreCase(value) || "1".equals(value);
     }
 
+    private boolean optionalConfigBoolean(String key) {
+        return configFacade.activeValue(key)
+                .filter(StringUtils::hasText)
+                .map(value -> "true".equalsIgnoreCase(value) || "1".equals(value))
+                .orElse(false);
+    }
+
     private boolean configBoolean(String key, boolean fallback) {
         return configFacade.activeValue(key)
                 .map(value -> "true".equalsIgnoreCase(value) || "1".equals(value))
-                .orElseGet(() -> readTimeSeedPolicy.enabled() && fallback);
+                .orElse(false);
     }
 
     private BigDecimal percent(BigDecimal ratio) {

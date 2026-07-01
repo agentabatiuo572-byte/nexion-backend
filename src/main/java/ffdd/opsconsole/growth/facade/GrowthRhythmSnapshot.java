@@ -31,10 +31,10 @@ public record GrowthRhythmSnapshot(
     private static final List<Integer> RHYTHM_TOTAL_OPTIONS = List.of(9, 12, 15, 18, 24);
 
     public static GrowthRhythmSnapshot from(PlatformConfigFacade configFacade, OpsReadTimeSeedPolicy readTimeSeedPolicy) {
-        boolean allowFallback = readTimeSeedPolicy != null && readTimeSeedPolicy.enabled();
+        boolean allowFallback = false;
         int totalMonths = rhythmTotalMonths(configFacade, allowFallback);
         int currentMonth = rhythmCurrentMonth(configFacade, totalMonths, allowFallback);
-        String computedPhase = phaseForRhythmMonth(currentMonth, totalMonths);
+        String computedPhase = currentMonth > 0 && totalMonths > 0 ? phaseForRhythmMonth(currentMonth, totalMonths) : "";
         String currentPhase = activeValue(configFacade, CURRENT_PHASE_KEY, computedPhase, allowFallback);
         return new GrowthRhythmSnapshot(
                 totalMonths,
@@ -85,7 +85,7 @@ public record GrowthRhythmSnapshot(
 
     private static int rhythmTotalMonths(PlatformConfigFacade configFacade, boolean allowFallback) {
         int total = configInt(configFacade, RHYTHM_TOTAL_MONTHS_KEY, 12, allowFallback);
-        return RHYTHM_TOTAL_OPTIONS.contains(total) ? total : (allowFallback ? 12 : 0);
+        return RHYTHM_TOTAL_OPTIONS.contains(total) ? total : 0;
     }
 
     private static int rhythmCurrentMonth(PlatformConfigFacade configFacade, int totalMonths, boolean allowFallback) {
@@ -98,7 +98,7 @@ public record GrowthRhythmSnapshot(
                 .filter(StringUtils::hasText)
                 .map(value -> parseInt(value, configInt(configFacade, CURRENT_MONTH_KEY, 7, allowFallback), allowFallback))
                 .orElseGet(() -> configInt(configFacade, CURRENT_MONTH_KEY, 7, allowFallback));
-        return clamp(month, 1, totalMonths);
+        return totalMonths <= 0 ? Math.max(0, month) : clamp(month, 1, totalMonths);
     }
 
     public static String phaseForRhythmMonth(int month, int totalMonths) {

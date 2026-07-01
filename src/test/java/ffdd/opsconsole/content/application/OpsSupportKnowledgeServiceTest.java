@@ -153,7 +153,7 @@ class OpsSupportKnowledgeServiceTest {
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(knowledgeRepository.seedCalls).isGreaterThan(0);
+        assertThat(knowledgeRepository.seedCalls).isZero();
         assertThat(result.getData().sources()).contains("nx_help_article", "nx_support_sla_rule");
         assertThat(result.getData().categories()).contains("withdrawal", "general");
     }
