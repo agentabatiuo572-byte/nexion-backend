@@ -422,22 +422,30 @@ public class OpsEmergencyControlService {
         if (guard != null) {
             return guard;
         }
-        PlaybookSeed seed = playbookSeed(code);
+        String requestedCode = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
         String execId = stringValue(executionId, "").trim();
         if (!StringUtils.hasText(execId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_EXECUTION_ID_REQUIRED");
         }
         List<Map<String, Object>> rows = new ArrayList<>(executionSeeds());
         Optional<Map<String, Object>> found = rows.stream()
-                .filter(row -> execId.equals(stringValue(row.get("executionId"), "")))
+                .filter(row -> execId.equals(stringValue(row.get("executionId"), ""))
+                        && (!StringUtils.hasText(requestedCode)
+                        || requestedCode.equals(stringValue(row.get("code"), "").toUpperCase(Locale.ROOT))))
                 .findFirst();
         if (found.isEmpty()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_EXECUTION_NOT_FOUND");
         }
         Map<String, Object> execution = found.get();
+        String playbookCode = requestedCode;
+        if (!StringUtils.hasText(playbookCode)) {
+            playbookCode = stringValue(execution.get("code"), "").toUpperCase(Locale.ROOT);
+        }
+        PlaybookSeed seed = findPlaybookSeed(playbookCode).orElse(null);
+        String effectiveCode = seed == null ? playbookCode : seed.code();
         if ("ROLLED_BACK".equals(stringValue(execution.get("rollbackStatus"), ""))) {
             Map<String, Object> response = sopOverview().getData();
-            response.put("updated", map("executionId", execId, "code", seed.code(), "idempotentReplay", true, "rollbackStatus", "ROLLED_BACK"));
+            response.put("updated", map("executionId", execId, "code", effectiveCode, "idempotentReplay", true, "rollbackStatus", "ROLLED_BACK"));
             return ApiResult.ok(response);
         }
         List<Map<String, Object>> rollbackWrites = rollbackDomainActions(execId, mapList(execution.get("domainActions")), request);
@@ -446,16 +454,18 @@ public class OpsEmergencyControlService {
         execution.put("rollbackReason", request.reason().trim());
         execution.put("rollbackActions", rollbackWrites);
         configFacade.upsertAdminValue(SOP_EXECUTIONS, toJson(rows), "JSON", GROUP_SOP, request.reason().trim());
-        configFacade.upsertAdminValue(playbookConfigKey(seed.code(), "rollback." + sanitizeConfigPart(execId)), "ROLLED_BACK", "STRING", GROUP_SOP, request.reason().trim());
+        configFacade.upsertAdminValue(playbookConfigKey(effectiveCode, "rollback." + sanitizeConfigPart(execId)), "ROLLED_BACK", "STRING", GROUP_SOP, request.reason().trim());
         audit("J4_SOP_PLAYBOOK_ROLLED_BACK", "SOP_PLAYBOOK_EXECUTION", execId, request.operator(), "HIGH", map(
-                "code", seed.code(),
+                "code", effectiveCode,
+                "playbookSnapshotMissing", seed == null,
                 "domainActions", rollbackWrites,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = sopOverview().getData();
         response.put("updated", map(
                 "executionId", execId,
-                "code", seed.code(),
+                "code", effectiveCode,
+                "playbookSnapshotMissing", seed == null,
                 "rollbackStatus", "ROLLED_BACK",
                 "domainActions", rollbackWrites));
         return ApiResult.ok(response);
@@ -1170,10 +1180,15 @@ public class OpsEmergencyControlService {
 
     private PlaybookSeed playbookSeed(String code) {
         String normalized = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
+        return findPlaybookSeed(normalized)
+                .orElseThrow(() -> new IllegalArgumentException("SOP_PLAYBOOK_NOT_FOUND"));
+    }
+
+    private Optional<PlaybookSeed> findPlaybookSeed(String code) {
+        String normalized = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
         return playbookSeeds().stream()
                 .filter(seed -> seed.code().equals(normalized))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("SOP_PLAYBOOK_NOT_FOUND"));
+                .findFirst();
     }
 
     private PlaybookSeed playbook(String code, String name, String scene, boolean emergency, String sla, String state, String owner, String lastDrill, List<Map<String, Object>> seq) {

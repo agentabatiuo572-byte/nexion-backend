@@ -34,8 +34,16 @@ class AdminRbacBaselineInitializerTest {
                 anyString());
 
         verify(mapper).insertMissingRolePermission("FINANCE", "PERM_WITHDRAWAL_REVIEW");
+        verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_GROWTH_WRITE");
+        verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_MARKET_WRITE");
+        verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_CONTENT_WRITE");
+        verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_EMERGENCY_WRITE");
+        verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_AUDIT_EXPORT");
+        verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_BI_EXPORT");
         verify(mapper).insertMissingRolePermission("RISK", "PERM_RISK_WRITE");
         verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_USER_WRITE");
+        verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_READ");
+        verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_WRITE");
         verify(mapper).insertMissingRolePermission("AUDITOR", "PERM_AUDIT_EXPORT");
         verify(mapper).insertMissingRolePermission("AUDITOR", "PERM_BI_EXPORT");
     }

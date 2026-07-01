@@ -30,6 +30,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -98,7 +100,7 @@ public class OpsBiService {
         Object activity = activityByWindow.getOrDefault(normalizedWindow, List.of());
         dashboard.put("window", normalizedWindow);
         dashboard.put("activity", activity);
-        dashboard.put("sources", List.of());
+        dashboard.put("sources", appendSources(dashboard.get("sources"), "nx_audit_log"));
         return ApiResult.ok(dashboard);
     }
 
@@ -284,7 +286,7 @@ public class OpsBiService {
                         report.maskingPolicy(),
                         report.status()));
         String fileName = report.reportId().toLowerCase(Locale.ROOT) + ".csv";
-        auditResource("L_BI_REPORT_DOWNLOAD_FILE", "BI_REPORT", report.reportId(), "system",
+        auditResource("L_BI_REPORT_DOWNLOAD_FILE", "BI_REPORT", report.reportId(), currentActorUsername(),
                 Boolean.TRUE.equals(report.containsPii()) ? "HIGH" : "MEDIUM", Map.of(
                 "reportId", report.reportId(),
                 "type", report.type(),
@@ -311,6 +313,23 @@ public class OpsBiService {
             sources.add(source);
         }
         return sources;
+    }
+
+    private String currentActorUsername() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return null;
+        }
+        Object details = authentication.getDetails();
+        if (details instanceof Map<?, ?> values) {
+            Object username = values.get("username");
+            if (username instanceof String text && StringUtils.hasText(text)) {
+                return text.trim();
+            }
+        }
+        Object principal = authentication.getPrincipal();
+        String username = principal == null ? "" : String.valueOf(principal);
+        return "anonymousUser".equals(username) ? null : username;
     }
 
     private String nextStatus(BiReportView report, String action) {

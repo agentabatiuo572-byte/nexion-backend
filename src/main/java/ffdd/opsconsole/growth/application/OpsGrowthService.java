@@ -18,6 +18,7 @@ import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
+import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -89,7 +90,6 @@ public class OpsGrowthService {
     private static final String EVENT_TRACKABLES_KEY = EVENT_PREFIX + "trackables";
     private static final String WHEEL_TIERS_KEY = WHEEL_PREFIX + "tiers";
     private static final String WHEEL_GUARDS_KEY = WHEEL_PREFIX + "guards";
-    private static final String VOUCHER_ROWS_KEY = "growth.voucher.rows";
     private static final String VOUCHER_SKUS_KEY = "growth.voucher.sku_options";
     private static final Set<String> RETIRED_KEYS = Set.of(
             "withdrawPointsRatio",
@@ -135,6 +135,7 @@ public class OpsGrowthService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final Optional<DeviceCatalogRepository> deviceCatalogRepository;
     private final Optional<GrowthQuestEventMapper> questEventMapper;
+    private final Optional<GrowthVoucherMapper> voucherMapper;
 
     public ApiResult<Map<String, Object>> phases() {
         ensurePhaseSeedData();
@@ -1008,7 +1009,6 @@ public class OpsGrowthService {
     }
 
     public ApiResult<Map<String, Object>> vouchers() {
-        ensureVoucherSeedData();
         List<Map<String, Object>> rows = voucherRows();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H7");
@@ -1023,8 +1023,8 @@ public class OpsGrowthService {
                         .filter(voucher -> Boolean.TRUE.equals(voucher.get("popupEnabled")))
                         .count()));
         response.put("sources", List.of(
-                "nx_config_item:" + VOUCHER_ROWS_KEY,
-                "nx_config_item:" + VOUCHER_SKUS_KEY));
+                "nx_growth_voucher",
+                "nx_device_sku"));
         return ApiResult.ok(response);
     }
 
@@ -1034,15 +1034,34 @@ public class OpsGrowthService {
             return guard;
         }
         try {
-            ensureVoucherSeedData();
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
             Map<String, Object> next = normalizeVoucher(request, null);
             String id = next.get("id").toString();
             if (rows.stream().anyMatch(row -> id.equals(row.get("id")))) {
                 return validation("VOUCHER_ID_ALREADY_EXISTS");
             }
-            rows.add(0, next);
-            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            if (voucherMapper.isEmpty()) {
+                return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
+            }
+            voucherMapper.get().insertVoucher(
+                    id,
+                    stringValue(next.get("name"), ""),
+                    stringValue(next.get("type"), ""),
+                    voucherNumberValue(next.get("amountUSD")),
+                    voucherNumberValue(next.get("percent")),
+                    voucherNumberValue(next.get("minPurchaseUSD")),
+                    voucherNumberValue(next.get("maxDiscountUSD")),
+                    toJsonString(normalizeStringList(castStringList(next.get("applicableSkus")), 16, 40)),
+                    stringValue(next.get("audience"), ""),
+                    longValue(next.get("startAt")),
+                    longValue(next.get("endAt")),
+                    toJsonString(normalizeStringList(castStringList(next.get("claimSurfaces")), 8, 20)),
+                    Boolean.TRUE.equals(next.get("popupEnabled")),
+                    Boolean.TRUE.equals(next.get("stackWithTrial")),
+                    Boolean.TRUE.equals(next.get("stackWithOthers")),
+                    Boolean.TRUE.equals(next.get("splittable")),
+                    stringValue(next.get("status"), ""),
+                    request.operator());
             audit("H7_VOUCHER_CREATED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "reason", request.reason().trim(),
@@ -1061,13 +1080,35 @@ public class OpsGrowthService {
             return guard;
         }
         try {
-            ensureVoucherSeedData();
             String id = normalizeVoucherId(voucherId);
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
-            int index = voucherIndex(rows, id);
+            voucherIndex(rows, id);
             Map<String, Object> next = normalizeVoucher(request, id);
-            rows.set(index, next);
-            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            if (voucherMapper.isEmpty()) {
+                return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
+            }
+            int updatedRows = voucherMapper.get().updateVoucher(
+                    id,
+                    stringValue(next.get("name"), ""),
+                    stringValue(next.get("type"), ""),
+                    voucherNumberValue(next.get("amountUSD")),
+                    voucherNumberValue(next.get("percent")),
+                    voucherNumberValue(next.get("minPurchaseUSD")),
+                    voucherNumberValue(next.get("maxDiscountUSD")),
+                    toJsonString(normalizeStringList(castStringList(next.get("applicableSkus")), 16, 40)),
+                    stringValue(next.get("audience"), ""),
+                    longValue(next.get("startAt")),
+                    longValue(next.get("endAt")),
+                    toJsonString(normalizeStringList(castStringList(next.get("claimSurfaces")), 8, 20)),
+                    Boolean.TRUE.equals(next.get("popupEnabled")),
+                    Boolean.TRUE.equals(next.get("stackWithTrial")),
+                    Boolean.TRUE.equals(next.get("stackWithOthers")),
+                    Boolean.TRUE.equals(next.get("splittable")),
+                    stringValue(next.get("status"), ""),
+                    request.operator());
+            if (updatedRows == 0) {
+                return validation("VOUCHER_NOT_FOUND");
+            }
             audit("H7_VOUCHER_UPDATED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "reason", request.reason().trim(),
@@ -1086,15 +1127,16 @@ public class OpsGrowthService {
             return guard;
         }
         try {
-            ensureVoucherSeedData();
             String id = normalizeVoucherId(voucherId);
             String status = normalizeVoucherStatus(request.value());
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
-            int index = voucherIndex(rows, id);
-            Map<String, Object> next = new LinkedHashMap<>(rows.get(index));
-            next.put("status", status);
-            rows.set(index, next);
-            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            voucherIndex(rows, id);
+            if (voucherMapper.isEmpty()) {
+                return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
+            }
+            if (voucherMapper.get().updateStatus(id, status, request.operator()) == 0) {
+                return validation("VOUCHER_NOT_FOUND");
+            }
             audit("H7_VOUCHER_STATUS_CHANGED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "status", status,
@@ -1114,12 +1156,15 @@ public class OpsGrowthService {
             return guard;
         }
         try {
-            ensureVoucherSeedData();
             String id = normalizeVoucherId(voucherId);
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
-            int index = voucherIndex(rows, id);
-            rows.remove(index);
-            writeJsonConfig(VOUCHER_ROWS_KEY, rows, "H7 voucher rows");
+            voucherIndex(rows, id);
+            if (voucherMapper.isEmpty()) {
+                return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
+            }
+            if (voucherMapper.get().softDelete(id, request.operator()) == 0) {
+                return validation("VOUCHER_NOT_FOUND");
+            }
             audit("H7_VOUCHER_DELETED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
                     "reason", request.reason().trim(),
@@ -2162,11 +2207,6 @@ public class OpsGrowthService {
         seedIfMissing(WITHDRAW_HOLD_DAYS_MIRROR_KEY, "7", "NUMBER", "wallet", "D5 mirror of H1 withdraw NEX gate seed");
     }
 
-    private void ensureVoucherSeedData() {
-        seedJsonIfMissing(VOUCHER_ROWS_KEY, defaultVouchers(), "growth", "H7 voucher seed");
-        seedJsonIfMissing(VOUCHER_SKUS_KEY, defaultVoucherSkuOptions(), "growth", "H7 voucher SKU option seed");
-    }
-
     private void seedIfMissing(String key, String value, String type, String group, String remark) {
         if (!readTimeSeedPolicy.enabled()) {
             return;
@@ -2609,7 +2649,13 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> voucherRows() {
-        return readJsonRows(VOUCHER_ROWS_KEY, defaultVouchers());
+        if (voucherMapper.isEmpty()) {
+            return new ArrayList<>();
+        }
+        voucherMapper.get().ensureTable();
+        return voucherMapper.get().listVouchers().stream()
+                .map(this::voucherRowFromBusinessTable)
+                .toList();
     }
 
     private List<Map<String, Object>> voucherSkuOptions() {
@@ -2624,7 +2670,7 @@ public class OpsGrowthService {
                 return skus;
             }
         }
-        return readJsonRows(VOUCHER_SKUS_KEY, defaultVoucherSkuOptions());
+        return new ArrayList<>();
     }
 
     private Map<String, Object> voucherSkuOption(DeviceSkuView sku) {
@@ -2632,6 +2678,28 @@ public class OpsGrowthService {
                 "id", sku.skuId(),
                 "name", sku.name(),
                 "status", "ACTIVE".equalsIgnoreCase(sku.status()) || "ON".equalsIgnoreCase(sku.status()) ? "on" : "off");
+    }
+
+    private Map<String, Object> voucherRowFromBusinessTable(Map<String, Object> row) {
+        Map<String, Object> voucher = new LinkedHashMap<>();
+        voucher.put("id", stringValue(row.get("id"), ""));
+        voucher.put("name", stringValue(row.get("name"), ""));
+        voucher.put("type", stringValue(row.get("type"), ""));
+        voucher.put("amountUSD", voucherNumberValue(row.get("amountUSD")).stripTrailingZeros());
+        voucher.put("percent", voucherNumberValue(row.get("percent")).stripTrailingZeros());
+        voucher.put("minPurchaseUSD", voucherNumberValue(row.get("minPurchaseUSD")).stripTrailingZeros());
+        voucher.put("maxDiscountUSD", voucherNumberValue(row.get("maxDiscountUSD")).stripTrailingZeros());
+        voucher.put("applicableSkus", parseJsonStringList(row.get("applicableSkusJson")));
+        voucher.put("audience", stringValue(row.get("audience"), ""));
+        voucher.put("startAt", longValue(row.get("startAt")));
+        voucher.put("endAt", longValue(row.get("endAt")));
+        voucher.put("claimSurfaces", parseJsonStringList(row.get("claimSurfacesJson")));
+        voucher.put("popupEnabled", truthy(row.get("popupEnabled")));
+        voucher.put("stackWithTrial", truthy(row.get("stackWithTrial")));
+        voucher.put("stackWithOthers", truthy(row.get("stackWithOthers")));
+        voucher.put("splittable", truthy(row.get("splittable")));
+        voucher.put("status", stringValue(row.get("status"), ""));
+        return voucher;
     }
 
     private List<Map<String, Object>> readJsonRows(String key, List<Map<String, Object>> fallback) {
@@ -2677,52 +2745,6 @@ public class OpsGrowthService {
                     default -> false;
                 })
                 .orElse(false);
-    }
-
-    private List<Map<String, Object>> defaultVouchers() {
-        return List.of(
-                row(
-                        "id", "vc-newuser-50",
-                        "name", "New User Gift",
-                        "type", "fixed",
-                        "amountUSD", 50,
-                        "minPurchaseUSD", 600,
-                        "maxDiscountUSD", 0,
-                        "applicableSkus", List.of("stellarbox-s1"),
-                        "audience", "new",
-                        "startAt", 0,
-                        "endAt", 0,
-                        "claimSurfaces", List.of("home", "store"),
-                        "popupEnabled", true,
-                        "stackWithTrial", false,
-                        "stackWithOthers", false,
-                        "splittable", false,
-                        "status", "active"),
-                row(
-                        "id", "vc-activity-8pct",
-                        "name", "Summer Activity",
-                        "type", "percent",
-                        "amountUSD", 0,
-                        "percent", 8,
-                        "minPurchaseUSD", 0,
-                        "maxDiscountUSD", 200,
-                        "applicableSkus", List.of(),
-                        "audience", "all",
-                        "startAt", 0,
-                        "endAt", 1798675200000L,
-                        "claimSurfaces", List.of("home", "store", "me", "earn"),
-                        "popupEnabled", true,
-                        "stackWithTrial", true,
-                        "stackWithOthers", false,
-                        "splittable", false,
-                        "status", "active"));
-    }
-
-    private List<Map<String, Object>> defaultVoucherSkuOptions() {
-        return List.of(
-                row("id", "stellarbox-s1", "name", "StellarBox S1", "status", "on"),
-                row("id", "stellarbox-pro", "name", "StellarBox Pro", "status", "on"),
-                row("id", "genesis-g1", "name", "Genesis G1", "status", "on"));
     }
 
     private Map<String, Object> normalizeVoucher(GrowthVoucherRequest request, String enforcedId) {
@@ -3395,6 +3417,69 @@ public class OpsGrowthService {
         }
         String value = raw.toString();
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private long longValue(Object raw) {
+        if (raw instanceof Number number) {
+            return number.longValue();
+        }
+        if (raw == null) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(raw.toString());
+        } catch (NumberFormatException ex) {
+            return 0L;
+        }
+    }
+
+    private BigDecimal voucherNumberValue(Object raw) {
+        if (raw instanceof BigDecimal value) {
+            return value;
+        }
+        if (raw instanceof Number number) {
+            return BigDecimal.valueOf(number.doubleValue());
+        }
+        if (raw == null || !StringUtils.hasText(raw.toString())) {
+            return BigDecimal.ZERO;
+        }
+        try {
+            return new BigDecimal(raw.toString());
+        } catch (NumberFormatException ex) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private String toJsonString(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalArgumentException("JSON_SERIALIZE_FAILED");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> castStringList(Object raw) {
+        if (raw instanceof List<?> list) {
+            return list.stream()
+                    .filter(item -> item != null && StringUtils.hasText(item.toString()))
+                    .map(Object::toString)
+                    .toList();
+        }
+        return List.of();
+    }
+
+    private List<String> parseJsonStringList(Object raw) {
+        if (raw == null || !StringUtils.hasText(raw.toString())) {
+            return List.of();
+        }
+        try {
+            List<String> values = objectMapper.readValue(raw.toString(), new TypeReference<List<String>>() {
+            });
+            return values == null ? List.of() : values;
+        } catch (JsonProcessingException ex) {
+            return List.of();
+        }
     }
 
     private boolean truthy(Object raw) {

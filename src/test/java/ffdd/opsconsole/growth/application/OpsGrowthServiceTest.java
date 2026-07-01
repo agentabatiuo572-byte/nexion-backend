@@ -1,8 +1,13 @@
 package ffdd.opsconsole.growth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -13,6 +18,7 @@ import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -40,6 +46,7 @@ class OpsGrowthServiceTest {
                     auditLogService,
                     new ObjectMapper(),
                     ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    Optional.empty(),
                     Optional.empty(),
                     Optional.empty());
 
@@ -660,6 +667,7 @@ class OpsGrowthServiceTest {
                 new ObjectMapper(),
                 OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
                 Optional.empty(),
+                Optional.empty(),
                 Optional.empty());
 
         ApiResult<Map<String, Object>> rhythm = realOnlyService.rhythm();
@@ -690,6 +698,7 @@ class OpsGrowthServiceTest {
                 mock(AuditLogService.class),
                 new ObjectMapper(),
                 OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
+                Optional.empty(),
                 Optional.empty(),
                 Optional.empty());
 
@@ -792,14 +801,40 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void vouchersSeedRowsAndPersistCrudToConfigItem() {
-        ApiResult<Map<String, Object>> initial = service.vouchers();
+    void vouchersReadAndPersistCrudToBusinessTable() {
+        GrowthVoucherMapper voucherMapper = mock(GrowthVoucherMapper.class);
+        OpsGrowthService h7Service = new OpsGrowthService(
+                configFacade,
+                coverageFacade,
+                ledgerPostingFacade,
+                auditLogService,
+                new ObjectMapper(),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.of(voucherMapper));
+        Map<String, Object> createdRow = voucherDbRow("vc-test-25", "active");
+        Map<String, Object> pausedRow = voucherDbRow("vc-test-25", "paused");
+        when(voucherMapper.listVouchers()).thenReturn(
+                List.of(),
+                List.of(),
+                List.of(createdRow),
+                List.of(createdRow),
+                List.of(pausedRow),
+                List.of(pausedRow),
+                List.of());
+        when(voucherMapper.insertVoucher(anyString(), anyString(), anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class), anyString(),
+                anyString(), anyLong(), anyLong(), anyString(), anyBoolean(),
+                anyBoolean(), anyBoolean(), anyBoolean(), anyString(), anyString())).thenReturn(1);
+        when(voucherMapper.updateStatus(anyString(), anyString(), anyString())).thenReturn(1);
+        when(voucherMapper.softDelete(anyString(), anyString())).thenReturn(1);
+
+        ApiResult<Map<String, Object>> initial = h7Service.vouchers();
 
         assertThat(initial.getCode()).isZero();
-        assertThat(initial.getData().get("vouchers")).asList().hasSize(2);
-        assertThat(configFacade.values)
-                .containsKey("growth.voucher.rows")
-                .containsKey("growth.voucher.sku_options");
+        assertThat(initial.getData().get("vouchers")).asList().isEmpty();
+        assertThat(initial.getData().get("sources").toString()).contains("nx_growth_voucher");
 
         GrowthVoucherRequest request = new GrowthVoucherRequest(
                 "vc-test-25",
@@ -809,7 +844,7 @@ class OpsGrowthServiceTest {
                 null,
                 new BigDecimal("200"),
                 BigDecimal.ZERO,
-                List.of("stellarbox-s1"),
+                List.of(),
                 "all",
                 0L,
                 0L,
@@ -821,23 +856,46 @@ class OpsGrowthServiceTest {
                 "active",
                 "create voucher",
                 "superadmin");
-        ApiResult<Map<String, Object>> created = service.createVoucher("idem-h7-create", request);
-        assertThat(created.getCode()).isZero();
-        assertThat(configFacade.values.get("growth.voucher.rows")).contains("vc-test-25");
+        ApiResult<Map<String, Object>> created = h7Service.createVoucher("idem-h7-create", request);
+        assertThat(created.getCode()).as(created.getMessage()).isZero();
+        assertThat(created.getData().get("vouchers").toString()).contains("vc-test-25");
+        assertThat(configFacade.values).doesNotContainKey("growth.voucher.rows");
 
-        ApiResult<Map<String, Object>> paused = service.updateVoucherStatus(
+        ApiResult<Map<String, Object>> paused = h7Service.updateVoucherStatus(
                 "idem-h7-status",
                 "vc-test-25",
                 new GrowthConfigUpdateRequest("status", "paused", "pause voucher", "superadmin"));
         assertThat(paused.getCode()).isZero();
-        assertThat(configFacade.values.get("growth.voucher.rows")).contains("\"status\":\"paused\"");
+        assertThat(paused.getData().get("vouchers").toString()).contains("paused");
 
-        ApiResult<Map<String, Object>> deleted = service.deleteVoucher(
+        ApiResult<Map<String, Object>> deleted = h7Service.deleteVoucher(
                 "idem-h7-delete",
                 "vc-test-25",
                 new GrowthConfigUpdateRequest("delete", "delete", "delete voucher", "superadmin"));
         assertThat(deleted.getCode()).isZero();
-        assertThat(configFacade.values.get("growth.voucher.rows")).doesNotContain("vc-test-25");
+        assertThat(deleted.getData().get("vouchers")).asList().isEmpty();
+    }
+
+    private static Map<String, Object> voucherDbRow(String voucherId, String status) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", voucherId);
+        row.put("name", "Test Voucher");
+        row.put("type", "fixed");
+        row.put("amountUSD", new BigDecimal("25"));
+        row.put("percent", BigDecimal.ZERO);
+        row.put("minPurchaseUSD", new BigDecimal("200"));
+        row.put("maxDiscountUSD", BigDecimal.ZERO);
+        row.put("applicableSkusJson", "[]");
+        row.put("audience", "all");
+        row.put("startAt", 0L);
+        row.put("endAt", 0L);
+        row.put("claimSurfacesJson", "[\"home\",\"store\"]");
+        row.put("popupEnabled", 1);
+        row.put("stackWithTrial", 0);
+        row.put("stackWithOthers", 0);
+        row.put("splittable", 0);
+        row.put("status", status);
+        return row;
     }
 
     private OpsGrowthService serviceWithConfig(FakePlatformConfigFacade config, OpsReadTimeSeedPolicy seedPolicy) {
@@ -848,6 +906,7 @@ class OpsGrowthServiceTest {
                 auditLogService,
                 new ObjectMapper(),
                 seedPolicy,
+                Optional.empty(),
                 Optional.empty(),
                 Optional.empty());
     }

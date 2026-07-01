@@ -247,6 +247,50 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void rollbackUsesExecutionSnapshotWhenDraftPlaybookConfigWasReplaced() {
+        service.createPlaybook(
+                "idem-j4-create",
+                new SopPlaybookCreateRequest(
+                        "监管点名快速止血",
+                        "监管点名",
+                        "合规审计",
+                        "15 分钟",
+                        true,
+                        "J1·熔断提现\nI3·通知法务",
+                        "CMP-2617",
+                        "SFC 风险披露重新确认",
+                        "根因消除后常规轨恢复",
+                        false,
+                        "wire I3 campaign",
+                        "superadmin"));
+        var executed = service.executePlaybook(
+                "SOP-DRAFT-1",
+                "idem-j4-run-before-replace",
+                new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
+        String execId = String.valueOf(((Map<String, Object>) executed.getData().get("updated")).get("executionId"));
+        configFacade.values.put("emergency.sop.playbooks", "[{\"code\":\"SOP-RISK2\",\"name\":\"other\"}]");
+
+        var rolledBack = service.rollbackPlaybookExecution(
+                "SOP-DRAFT-1",
+                execId,
+                "idem-j4-rollback-after-replace",
+                new SopPlaybookRunRequest(false, "restore production controls", "superadmin"));
+
+        assertThat(rolledBack.getCode()).isZero();
+        Map<String, Object> updated = (Map<String, Object>) rolledBack.getData().get("updated");
+        assertThat(updated)
+                .containsEntry("code", "SOP-DRAFT-1")
+                .containsEntry("rollbackStatus", "ROLLED_BACK")
+                .containsEntry("playbookSnapshotMissing", true);
+        assertThat(configFacade.values.get("emergency.sop.executions"))
+                .contains("\"rollbackStatus\":\"ROLLED_BACK\"")
+                .contains("\"rollbackActions\"");
+        assertThat(configFacade.values)
+                .containsEntry("emergency.sop.playbook.SOP-DRAFT-1.rollback." + execId, "ROLLED_BACK");
+    }
+
+    @Test
     void geoAndTamperOverviewsSeedConfigWhenDatabaseIsEmpty() {
         var geo = service.geoBlockOverview();
         var tamper = service.tamperOverview();

@@ -37,7 +37,14 @@ public class MybatisBiReportRepository implements BiReportRepository {
 
     @Override
     public Map<String, Object> dashboard(String moduleCode) {
-        return Map.of();
+        return switch (normalizeModule(moduleCode)) {
+            case "L1" -> kpiDashboard();
+            case "L2" -> funnelDashboard();
+            case "L4" -> operationsDashboard();
+            case "L6" -> behaviorDashboard();
+            case "L5" -> exportDashboard();
+            default -> Map.of();
+        };
     }
 
     @Override
@@ -77,6 +84,122 @@ public class MybatisBiReportRepository implements BiReportRepository {
     @Override
     public void updateAction(String reportId, String action, String nextStatus, String reason) {
         mapper.updateAction(reportId, action, nextStatus, reason);
+    }
+
+    private Map<String, Object> kpiDashboard() {
+        return linked(
+                "module", "L1",
+                "totals", linked(
+                        "users", mapper.countUsers(),
+                        "orders", mapper.countOrders() + mapper.countAdminDeviceOrders(),
+                        "withdrawals", mapper.countWithdrawals(),
+                        "exchanges", mapper.countExchanges(),
+                        "stakingPositions", mapper.countStakingPositions(),
+                        "walletLedgerRows", mapper.countWalletLedgers(),
+                        "supportTickets", mapper.countSupportTickets(),
+                        "auditLogs", mapper.countAuditLogs()),
+                "sources", List.of(
+                        "nx_user",
+                        "nx_order",
+                        "nx_admin_device_order",
+                        "nx_withdrawal_order",
+                        "nx_exchange_order",
+                        "nx_staking_position",
+                        "nx_wallet_ledger",
+                        "nx_support_ticket",
+                        "nx_audit_log"));
+    }
+
+    private Map<String, Object> funnelDashboard() {
+        return linked(
+                "module", "L2",
+                "stages", List.of(
+                        stage("registered", mapper.countUsers(), "nx_user"),
+                        stage("profileCompleted", mapper.countUserProfiles(), "nx_user_profile"),
+                        stage("kycSubmitted", mapper.countKycProfiles(), "nx_kyc_profile"),
+                        stage("kycApproved", mapper.countKycProfilesByStatus("APPROVED"), "nx_kyc_profile"),
+                        stage("ordered", mapper.countOrders() + mapper.countAdminDeviceOrders(), "nx_order/nx_admin_device_order"),
+                        stage("walletActivity", mapper.countWalletLedgers() + mapper.countWalletBills(), "nx_wallet_ledger/nx_wallet_bill")),
+                "sources", List.of(
+                        "nx_user",
+                        "nx_user_profile",
+                        "nx_kyc_profile",
+                        "nx_order",
+                        "nx_admin_device_order",
+                        "nx_wallet_ledger",
+                        "nx_wallet_bill"));
+    }
+
+    private Map<String, Object> operationsDashboard() {
+        return linked(
+                "module", "L4",
+                "workload", linked(
+                        "supportTickets", mapper.countSupportTickets(),
+                        "openSupportTickets", mapper.countSupportTicketsByStatus("OPEN"),
+                        "conversations", mapper.countConversations(),
+                        "deviceOrders", mapper.countAdminDeviceOrders(),
+                        "devices", mapper.countDevices(),
+                        "pendingWithdrawals", mapper.countWithdrawalsByStatus("PENDING"),
+                        "auditLogs", mapper.countAuditLogs()),
+                "sources", List.of(
+                        "nx_support_ticket",
+                        "nx_conversation",
+                        "nx_admin_device_order",
+                        "nx_device",
+                        "nx_withdrawal_order",
+                        "nx_audit_log"));
+    }
+
+    private Map<String, Object> behaviorDashboard() {
+        List<Map<String, Object>> activity = List.of(
+                activity("account", mapper.countUsers(), "nx_user"),
+                activity("funds", mapper.countWithdrawals() + mapper.countExchanges() + mapper.countWalletLedgers(), "nx_withdrawal_order/nx_exchange_order/nx_wallet_ledger"),
+                activity("commerce", mapper.countOrders() + mapper.countAdminDeviceOrders(), "nx_order/nx_admin_device_order"),
+                activity("support", mapper.countSupportTickets() + mapper.countConversations(), "nx_support_ticket/nx_conversation"),
+                activity("audit", mapper.countAuditLogs(), "nx_audit_log"));
+        return linked(
+                "module", "L6",
+                "activityByWindow", linked(
+                        "24h", activity,
+                        "7d", activity,
+                        "30d", activity),
+                "sources", List.of(
+                        "nx_user",
+                        "nx_withdrawal_order",
+                        "nx_exchange_order",
+                        "nx_wallet_ledger",
+                        "nx_order",
+                        "nx_admin_device_order",
+                        "nx_support_ticket",
+                        "nx_conversation",
+                        "nx_audit_log"));
+    }
+
+    private Map<String, Object> exportDashboard() {
+        return linked(
+                "module", "L5",
+                "regulatoryTemplates", List.of(),
+                "sources", List.of("nx_admin_fourth_batch_report", "nx_wallet_ledger", "nx_audit_log"));
+    }
+
+    private Map<String, Object> stage(String key, long count, String source) {
+        return linked("key", key, "count", count, "source", source);
+    }
+
+    private Map<String, Object> activity(String bucket, long count, String source) {
+        return linked("bucket", bucket, "count", count, "source", source);
+    }
+
+    private Map<String, Object> linked(Object... pairs) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        for (int i = 0; i < pairs.length; i += 2) {
+            response.put((String) pairs[i], pairs[i + 1]);
+        }
+        return response;
+    }
+
+    private String normalizeModule(String moduleCode) {
+        return StringUtils.hasText(moduleCode) ? moduleCode.trim().toUpperCase() : "";
     }
 
 }

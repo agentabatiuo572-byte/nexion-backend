@@ -29,8 +29,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsBiServiceTest {
     private final FakeBiReportRepository reportRepository = new FakeBiReportRepository();
@@ -39,6 +42,11 @@ class OpsBiServiceTest {
     private final GrowthRhythmFacade growthRhythmFacade = () -> h1Snapshot;
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, ledgerRepository, auditLogService);
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
 
     @Test
     void overviewDeclaresSensitiveExportRules() {
@@ -91,7 +99,7 @@ class OpsBiServiceTest {
         assertThat(l5.getData()).containsKeys("summary", "ledgerLive", "reports", "sources");
         assertThat(l5.getData().get("sources").toString()).doesNotContain("nx_admin_bi_dashboard_payload");
         assertThat(l6.getData()).containsEntry("window", "7d");
-        assertThat(l6.getData()).containsEntry("sources", List.of());
+        assertThat(l6.getData().get("sources").toString()).contains("nx_user", "nx_audit_log");
     }
 
     @Test
@@ -246,6 +254,10 @@ class OpsBiServiceTest {
                 null,
                 null);
         ledgerRepository.counts.put(null, 12L);
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("131", "N/A", List.of());
+        authentication.setDetails(Map.of("username", "e2e_goal_audit_1"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
 
         ApiResult<BiReportDownloadFile> result = service.downloadFile("EXP-READY");
 
@@ -256,6 +268,7 @@ class OpsBiServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("L_BI_REPORT_DOWNLOAD_FILE");
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("e2e_goal_audit_1");
     }
 
     private GrowthRhythmSnapshot h1Snapshot(int totalMonths, int currentMonth, String currentPhase) {
@@ -420,6 +433,11 @@ class OpsBiServiceTest {
 
         @Override
         public Map<String, Object> dashboard(String moduleCode) {
+            if ("L6".equals(moduleCode)) {
+                return new LinkedHashMap<>(Map.of(
+                        "activityByWindow", Map.of("7d", List.of(Map.of("bucket", "account", "count", 1L, "source", "nx_user"))),
+                        "sources", List.of("nx_user")));
+            }
             return Map.of();
         }
 

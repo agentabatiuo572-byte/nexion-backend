@@ -84,6 +84,60 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             """)
     long countReadyReports();
 
+    @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0")
+    long countUsers();
+
+    @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND status = #{status}")
+    long countUsersByStatus(@Param("status") String status);
+
+    @Select("SELECT COUNT(*) FROM nx_user_profile WHERE is_deleted = 0")
+    long countUserProfiles();
+
+    @Select("SELECT COUNT(*) FROM nx_kyc_profile WHERE is_deleted = 0")
+    long countKycProfiles();
+
+    @Select("SELECT COUNT(*) FROM nx_kyc_profile WHERE is_deleted = 0 AND status = #{status}")
+    long countKycProfilesByStatus(@Param("status") String status);
+
+    @Select("SELECT COUNT(*) FROM nx_order WHERE is_deleted = 0")
+    long countOrders();
+
+    @Select("SELECT COUNT(*) FROM nx_admin_device_order WHERE is_deleted = 0")
+    long countAdminDeviceOrders();
+
+    @Select("SELECT COUNT(*) FROM nx_device WHERE deleted = 0")
+    long countDevices();
+
+    @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE is_deleted = 0")
+    long countWithdrawals();
+
+    @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE is_deleted = 0 AND status = #{status}")
+    long countWithdrawalsByStatus(@Param("status") String status);
+
+    @Select("SELECT COUNT(*) FROM nx_exchange_order WHERE is_deleted = 0")
+    long countExchanges();
+
+    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE is_deleted = 0")
+    long countStakingPositions();
+
+    @Select("SELECT COUNT(*) FROM nx_wallet_ledger WHERE is_deleted = 0")
+    long countWalletLedgers();
+
+    @Select("SELECT COUNT(*) FROM nx_wallet_bill WHERE deleted = 0")
+    long countWalletBills();
+
+    @Select("SELECT COUNT(*) FROM nx_support_ticket WHERE is_deleted = 0")
+    long countSupportTickets();
+
+    @Select("SELECT COUNT(*) FROM nx_support_ticket WHERE is_deleted = 0 AND status = #{status}")
+    long countSupportTicketsByStatus(@Param("status") String status);
+
+    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted = 0")
+    long countConversations();
+
+    @Select("SELECT COUNT(*) FROM nx_audit_log WHERE is_deleted = 0")
+    long countAuditLogs();
+
     @Select("""
             <script>
             SELECT COUNT(*)
