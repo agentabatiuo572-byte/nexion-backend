@@ -237,6 +237,42 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
                                     @Param("actorId") Long actorId,
                                     @Param("limit") int limit);
 
+    @Select("""
+            <script>
+            SELECT prefixes.prefix AS `key`,
+                   COUNT(logs.id) AS count
+              FROM (
+                <foreach collection='prefixes' item='prefix' separator=' UNION ALL '>
+                SELECT #{prefix} AS prefix
+                </foreach>
+              ) prefixes
+              LEFT JOIN nx_audit_log logs
+                ON logs.is_deleted = 0
+               AND logs.created_at &gt;= #{startAt}
+               AND logs.created_at &lt; #{endAt}
+               AND (
+                    UPPER(COALESCE(logs.action, '')) LIKE CONCAT(prefixes.prefix, '%')
+                 OR UPPER(COALESCE(logs.resource_type, '')) LIKE CONCAT(prefixes.prefix, '%')
+               )
+             <if test='serviceName != null and serviceName != ""'>AND logs.service_name = #{serviceName}</if>
+             <if test='action != null and action != ""'>AND logs.action = #{action}</if>
+             <if test='riskLevel != null and riskLevel != ""'>AND logs.risk_level = #{riskLevel}</if>
+             <if test='result != null and result != ""'>AND logs.result = #{result}</if>
+             <if test='userId != null'>AND logs.user_id = #{userId}</if>
+             <if test='actorId != null'>AND logs.actor_id = #{actorId}</if>
+             GROUP BY prefixes.prefix
+            </script>
+            """)
+    List<AuditStatsBucket> countActionsByPrefixes(@Param("startAt") LocalDateTime startAt,
+                                                  @Param("endAt") LocalDateTime endAt,
+                                                  @Param("serviceName") String serviceName,
+                                                  @Param("action") String action,
+                                                  @Param("riskLevel") String riskLevel,
+                                                  @Param("result") String result,
+                                                  @Param("userId") Long userId,
+                                                  @Param("actorId") Long actorId,
+                                                  @Param("prefixes") List<String> prefixes);
+
     record AuditLogWrite(
             String traceId,
             String serviceName,

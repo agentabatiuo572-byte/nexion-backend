@@ -181,7 +181,7 @@ public class MybatisBiReportRepository implements BiReportRepository {
     private Map<String, Object> exportDashboard() {
         return linked(
                 "module", "L5",
-                "regulatoryTemplates", List.of(),
+                "regulatoryTemplates", mapper.regulatoryTemplates(),
                 "sources", List.of("nx_admin_fourth_batch_report", "nx_wallet_ledger", "nx_audit_log"));
     }
 

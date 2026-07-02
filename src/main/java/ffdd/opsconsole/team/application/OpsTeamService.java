@@ -1,9 +1,6 @@
 package ffdd.opsconsole.team.application;
 
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -13,6 +10,9 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.team.domain.TeamCommissionRepository;
+import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository;
+import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRow;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -30,18 +30,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
-import org.springframework.dao.DuplicateKeyException;
+import java.util.UUID;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsTeamService {
-    private static final ObjectMapper JSON = new ObjectMapper();
-    private static final TypeReference<List<Map<String, Object>>> REWARD_LIST_TYPE = new TypeReference<>() {
-    };
-    private static final AtomicLong REWARD_SEQUENCE = new AtomicLong();
     private static final Set<String> ACTIVE_KEYS = Set.of(
             "directRoyaltyPct",
             "networkRoyaltyPct",
@@ -53,39 +47,20 @@ public class OpsTeamService {
     private static final List<String> VRANK_LEVELS = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12");
     private static final List<VRankSeed> VRANK_SEEDS = List.of(
-            new VRankSeed("V0", null, null, null, null, null, 84231),
-            new VRankSeed("V1", "$299", "3", null, null, null, 12483),
-            new VRankSeed("V2", null, null, "$5k", null, null, 3247),
-            new VRankSeed("V3", null, null, "$20k", "2", "V1", 360),
-            new VRankSeed("V4", null, null, "$50k", "3", "V2", 84),
-            new VRankSeed("V5", null, null, "$150k", "4", "V3", 27),
-            new VRankSeed("V6", null, null, "$500k", "5", "V4", 11),
-            new VRankSeed("V7", null, null, "$1M", "6", "V5", 6),
-            new VRankSeed("V8", null, null, "$3M", "7", "V6", 4),
-            new VRankSeed("V9", null, null, "$10M", null, null, 2),
-            new VRankSeed("V10", null, null, "$30M", null, null, 2),
-            new VRankSeed("V11", null, null, "$100M", null, null, 1),
-            new VRankSeed("V12", null, null, "$500M", null, null, 1));
-    private static final Map<String, List<Map<String, Object>>> VRANK_REWARD_SEEDS = vrankRewardSeeds();
+            vRank("V0"),
+            vRank("V1", "selfBuy", "directRefs"),
+            vRank("V2", "teamGv"),
+            vRank("V3", "teamGv", "legCount", "legRank"),
+            vRank("V4", "teamGv", "legCount", "legRank"),
+            vRank("V5", "teamGv", "legCount", "legRank"),
+            vRank("V6", "teamGv", "legCount", "legRank"),
+            vRank("V7", "teamGv", "legCount", "legRank"),
+            vRank("V8", "teamGv", "legCount", "legRank"),
+            vRank("V9", "teamGv"),
+            vRank("V10", "teamGv"),
+            vRank("V11", "teamGv"),
+            vRank("V12", "teamGv"));
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "nex", "voucher", "sku", "custom");
-    private static final List<F2MetricSeed> F2_METRIC_SEEDS = List.of(
-            new F2MetricSeed("l1TriggerRate", "L1 触发率", "76%", "目标 80% · 直推转化", ""),
-            new F2MetricSeed("maxCombinedOutflow", "合并出口最大", "25%", "Royalty 8-15% + L1 10%", "warn"),
-            new F2MetricSeed("weeklyUsdtRoyalty", "本周 USDT 版税", "$182k", "L1-L7 总额", "ok"),
-            new F2MetricSeed("weeklyNexPayout", "本周 NEX 派发", "3.46M", "折 ≈ $148k · 受 B1 约束", "cyan"));
-    private static final List<F2UnilevelSeed> F2_UNILEVEL_SEEDS = List.of(
-            new F2UnilevelSeed("L1", new BigDecimal("10"), new BigDecimal("50"), "直推 DIRECT", true),
-            new F2UnilevelSeed("L2", new BigDecimal("5"), new BigDecimal("20"), "扩展 EXTENDED", false),
-            new F2UnilevelSeed("L3", new BigDecimal("3"), new BigDecimal("10"), "扩展", false),
-            new F2UnilevelSeed("L4", new BigDecimal("2"), new BigDecimal("5"), "扩展", false),
-            new F2UnilevelSeed("L5", new BigDecimal("1"), new BigDecimal("2.5"), "扩展", false),
-            new F2UnilevelSeed("L6", new BigDecimal("0.5"), new BigDecimal("1"), "扩展", false),
-            new F2UnilevelSeed("L7", new BigDecimal("0.5"), new BigDecimal("1"), "扩展", false));
-    private static final List<F2RateTierSeed> F2_RATE_TIER_SEEDS = List.of(
-            new F2RateTierSeed("Standard", "$0+ 网络 GMV", "8%", "62%", "t-0"),
-            new F2RateTierSeed("Verified", "$5,000+ 网络 GMV", "10%", "24%", "t-1"),
-            new F2RateTierSeed("Elite", "$50,000+ 网络 GMV", "12%", "11%", "t-2"),
-            new F2RateTierSeed("Diamond", "$500,000+ 网络 GMV", "15%", "3%", "t-3"));
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
             new F2PolicyParamSeed("clampMin", "影响分下限", "F.influence.clampMin", "1.0", "", "InfluenceScore 下限;clamp 后参与版税权重计算。", false, false, ""),
             new F2PolicyParamSeed("clampMax", "影响分上限", "F.influence.clampMax", "5.0", "", "InfluenceScore 上限;clamp 后参与版税权重计算。", false, false, ""),
@@ -100,28 +75,6 @@ public class OpsTeamService {
             new F2PolicyParamSeed("binary-threshold", "两轨结算门槛", "F.binary.threshold", "$1,000 / 轨", "", "最低门槛;改后对下一周期结算生效。", false, false, ""),
             new F2PolicyParamSeed("binary-rate", "平衡匹配比例", "F.binary.matchRate", "10%", "brand", "min(A,B) × 该比例日结算;放大佣金流出,受 B1 覆盖率约束。", true, true, "%"),
             new F2PolicyParamSeed("pool-ratio", "领导池比例", "F.pool.ratio", "5%", "brand", "每周 GMV 注入领导池的比例;放大池子流出,受 B1 约束。", true, true, "%"));
-    private static final List<F3MetricSeed> F3_METRIC_SEEDS = List.of(
-            new F3MetricSeed("todayBalanceMatch", "今日 Balance Match", "$10,490", "4 用户参与结算", "ok"),
-            new F3MetricSeed("participantCount", "参与结算用户", "1,842", "两轨均 ≥ $1k 阈值", ""),
-            new F3MetricSeed("blockedUsers", "阻塞用户(轨不平衡)", "468", "单轨 < $1k 门槛", "warn"),
-            new F3MetricSeed("residualPool", "沉淀池(未匹配)", "$1.2M", "月底归零 · 不结转", "cyan"));
-    private static final List<F3BinarySettlementSeed> F3_BINARY_SEEDS = binarySettlementSeeds();
-    private static final List<F4QuotaSeed> F4_QUOTA_SEEDS = List.of(
-            new F4QuotaSeed("Pro", 48, 70, false),
-            new F4QuotaSeed("Rack", 22, 26, true));
-    private static final List<F4AmbassadorBandSeed> F4_AMBASSADOR_BAND_SEEDS = List.of(
-            new F4AmbassadorBandSeed("KOL", 3),
-            new F4AmbassadorBandSeed("EVENT", 2),
-            new F4AmbassadorBandSeed("AD", 1),
-            new F4AmbassadorBandSeed("LOCAL", 1));
-    private static final List<F4PodiumSeed> F4_PODIUM_SEEDS = List.of(
-            new F4PodiumSeed(2, "usr_19C7", "$182k", "本期 GV", "r-2"),
-            new F4PodiumSeed(1, "usr_31E8", "$214k", "本期 GV", "r-1"),
-            new F4PodiumSeed(3, "usr_55B1", "$156k", "取消资格", "r-3 dq"));
-    private static final List<Map<String, Object>> F5_COMMISSION_KIND_SEEDS = f5CommissionKinds();
-    private static final List<Map<String, Object>> F5_COMMISSION_FILTER_SEEDS = f5CommissionFilters();
-    private static final List<Map<String, Object>> F5_COMMISSION_EVENT_SEEDS = f5CommissionEvents();
-    private static final List<Map<String, Object>> F5_COMMISSION_AUDIT_FEED_SEEDS = f5CommissionAuditFeed();
     private static final Set<String> UI_CONFIG_KEYS = uiConfigKeys();
 
     private final PlatformConfigFacade configFacade;
@@ -129,8 +82,11 @@ public class OpsTeamService {
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final TeamFulfillmentQueueRepository fulfillmentQueueRepository;
+    private final TeamCommissionRepository commissionRepository;
 
     public ApiResult<Map<String, Object>> overview() {
+        Map<String, Object> binarySummary = binarySettlementSummary();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F");
         response.put("commissionPolicy", commissionPolicy());
@@ -141,10 +97,10 @@ public class OpsTeamService {
         response.put("policyParams", policyParams());
         response.put("rateTiers", rateTiers());
         response.put("binarySettlements", binarySettlements());
-        response.put("binaryMaxTrackGmv", binaryMaxTrackGmv());
-        response.put("binaryParticipantCount", intConfig(uiConfigKey("F.binary.participantCount"), 0));
-        response.put("binaryMonthlyMatchedUsd", intConfig(uiConfigKey("F.binary.monthlyMatchedUsd"), 0));
-        response.put("binaryAutoPlacement7dCount", intConfig(uiConfigKey("F.binary.autoPlacement7dCount"), 0));
+        response.put("binaryMaxTrackGmv", intValue(binarySummary.get("maxTrackGmv"), 0));
+        response.put("binaryParticipantCount", intValue(binarySummary.get("participantCount"), 0));
+        response.put("binaryMonthlyMatchedUsd", intValue(binarySummary.get("monthlyMatchedUsd"), 0));
+        response.put("binaryAutoPlacement7dCount", intValue(binarySummary.get("autoPlacement7dCount"), 0));
         Map<String, Object> dailyCap = f3DailyCap();
         response.put("binaryDailyCapCurrentLabel", dailyCap.get("currentLabel"));
         response.put("binaryDailyCapWindowLabel", dailyCap.get("windowLabel"));
@@ -154,12 +110,19 @@ public class OpsTeamService {
         response.put("quotaPolicy", quotaPolicy());
         response.put("payoutGuardrails", guardrails());
         response.put("configValues", configValues());
-        response.put("sunsetExclusions", List.of("Premium rank unlock", "Points commission payout", "NEX v2 lock reward"));
+        response.put("sunsetExclusions", sunsetExclusions());
         response.put("sources", List.of(
-                "nx_config_item:team.*",
-                "nx_team_rank_snapshot",
-                "nx_team_binary_settlement_view",
-                "nx_team_leadership_pool_view",
+                "nx_config_item:team.* policy keys",
+                "nx_config_item:team.ui.F.sunset.exclusions",
+                "nx_v_rank_config",
+                "nx_team_member",
+                "nx_v_rank_reward_fulfillment",
+                "nx_binary_commission_settlement",
+                "nx_commission_event",
+                "nx_team_hardware_quota_tier",
+                "nx_team_hardware_quota_usage",
+                "nx_team_ambassador_application",
+                "nx_team_leaderboard_action",
                 "B1 treasury coverage facade",
                 "H1 growth rhythm facade"));
         return ApiResult.ok(response);
@@ -176,11 +139,15 @@ public class OpsTeamService {
         response.put("guardrails", guardrails());
         response.put("configValues", configValues());
         response.put("sources", List.of(
-                "nx_config_item:team.ui.F4.*",
-                "nx_config_item:team.ui.F.pool.*",
-                "nx_config_item:team.ui.F.quota.*",
-                "nx_config_item:team.ui.F.ambassador.*",
-                "nx_config_item:team.ui.F.leaderboard.*",
+                "nx_v_rank_config",
+                "nx_team_member",
+                "nx_team_hardware_quota_tier",
+                "nx_team_hardware_quota_usage",
+                "nx_team_ambassador_application",
+                "nx_team_leaderboard_action",
+                "nx_commission_event:leadership",
+                "nx_config_item:team.ui.F.pool.ratio policy",
+                "nx_config_item:team.ui.F.pool.monthlyCap policy",
                 "B1 treasury coverage facade"));
         return ApiResult.ok(response);
     }
@@ -209,9 +176,8 @@ public class OpsTeamService {
                 "defaultPageSize", 20,
                 "maxPageSize", 100));
         response.put("sources", List.of(
-                "nx_config_item:team.ui.F5.commission.*",
-                "nx_config_item:team.ui.F.commission.*.status",
-                "nx_config_item:team.ui.F5.commission.auditFeed"));
+                "nx_commission_event",
+                "nx_wallet_ledger"));
         return ApiResult.ok(response);
     }
 
@@ -230,9 +196,10 @@ public class OpsTeamService {
         response.put("quotaPolicy", quotaPolicy());
         response.put("configValues", configValues());
         response.put("sources", List.of(
-                "nx_config_item:team.ui.F.vrank.*",
-                "nx_config_item:team.ui.F.vrank.rewards.*",
-                "nx_config_item:team.ui.F.pool.*"));
+                "nx_v_rank_config",
+                "nx_team_member",
+                "nx_v_rank_reward_rule",
+                "nx_commission_event:leadership"));
         return ApiResult.ok(response);
     }
 
@@ -247,35 +214,35 @@ public class OpsTeamService {
         response.put("guardrails", guardrails());
         response.put("configValues", configValues());
         response.put("sources", List.of(
-                "nx_config_item:team.ui.F.unilevel.*",
-                "nx_config_item:team.ui.F.rateTier.*",
                 "nx_config_item:team.ui.F.influence.*",
-                "nx_config_item:team.ui.F2.metric.*",
+                "nx_commission_rule:UNILEVEL",
+                "nx_v_rank_config",
+                "nx_team_member",
+                "nx_commission_event",
                 "B1 treasury coverage facade"));
         return ApiResult.ok(response);
     }
 
     public ApiResult<Map<String, Object>> binary() {
+        Map<String, Object> summary = binarySettlementSummary();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F3");
-        response.put("metrics", f3Metrics());
+        response.put("metrics", f3Metrics(summary));
         response.put("formula", f3Formula());
         response.put("settlements", binarySettlements());
-        response.put("maxTrackGmv", binaryMaxTrackGmv());
-        response.put("participantCount", intConfig(uiConfigKey("F.binary.participantCount"), 0));
-        response.put("blockedCount", intConfig(uiConfigKey("F.binary.blockedCount"), 0));
-        response.put("monthlyMatchedUsd", intConfig(uiConfigKey("F.binary.monthlyMatchedUsd"), 0));
-        response.put("autoPlacement7dCount", intConfig(uiConfigKey("F.binary.autoPlacement7dCount"), 0));
-        response.put("dailyMatchUsd", intConfig(uiConfigKey("F.binary.dailyMatchUsd"), 0));
+        response.put("maxTrackGmv", intValue(summary.get("maxTrackGmv"), 0));
+        response.put("participantCount", intValue(summary.get("participantCount"), 0));
+        response.put("blockedCount", intValue(summary.get("blockedCount"), 0));
+        response.put("monthlyMatchedUsd", intValue(summary.get("monthlyMatchedUsd"), 0));
+        response.put("autoPlacement7dCount", intValue(summary.get("autoPlacement7dCount"), 0));
+        response.put("dailyMatchUsd", intValue(summary.get("dailyMatchUsd"), 0));
         response.put("dailyCap", f3DailyCap());
-        response.put("config", f3Config());
+        response.put("config", f3Config(summary));
         response.put("commissionPolicy", commissionPolicy());
         response.put("guardrails", guardrails());
         response.put("configValues", configValues());
         response.put("sources", List.of(
-                "nx_config_item:team.ui.F3.binary.rows",
-                "nx_config_item:team.ui.F3.metric.*",
-                "nx_config_item:team.ui.F.binary.*",
+                "nx_binary_commission_settlement",
                 "B1 treasury coverage facade",
                 "H1 growth rhythm facade"));
         return ApiResult.ok(response);
@@ -293,12 +260,17 @@ public class OpsTeamService {
             throw new IllegalArgumentException("Unsupported F1 V-Rank threshold field");
         }
         String value = normalizeVRankThreshold(normalizedField, request.value());
-        String key = "F.vrank." + seed.v() + "." + normalizedField;
-        String configKey = uiConfigKey(key);
-        String oldValue = configFacade.activeValue(configKey)
-                .orElse("");
-        configFacade.upsertAdminValue(configKey, value, "TEXT", "team", "F1 V-Rank threshold");
-        audit("F_TEAM_VRANK_THRESHOLD_CHANGED", configKey, request.operator(), Map.of(
+        Object businessValue = vRankThresholdBusinessValue(normalizedField, value);
+        Map<String, Object> before = vrankRows().stream()
+                .filter(row -> seed.v().equals(row.get("v")))
+                .findFirst()
+                .orElse(Map.of());
+        String oldValue = String.valueOf(before.getOrDefault(normalizedField, ""));
+        if (!commissionRepository.updateVRankThreshold(seed.v(), normalizedField, businessValue)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_BUSINESS_TABLE_UPDATE_FAILED");
+        }
+        String resourceId = "nx_v_rank_config:" + seed.v() + "." + normalizedField;
+        audit("F_TEAM_VRANK_THRESHOLD_CHANGED", resourceId, request.operator(), Map.of(
                 "rank", seed.v(),
                 "field", normalizedField,
                 "oldValue", oldValue,
@@ -306,7 +278,7 @@ public class OpsTeamService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = ranks().getData();
-        response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", value));
+        response.put("updated", Map.of("key", seed.v() + "." + normalizedField, "source", "nx_v_rank_config", "oldValue", oldValue, "newValue", value));
         return ApiResult.ok(response);
     }
 
@@ -316,11 +288,11 @@ public class OpsTeamService {
             return guard;
         }
         VRankSeed seed = requireVRank(rank);
-        List<Map<String, Object>> rewards = new ArrayList<>(activeRewards(seed.v()));
         Map<String, Object> item = normalizeReward(nextRewardId(seed.v()), request);
-        rewards.add(item);
-        persistRewards(seed.v(), rewards);
-        audit("F_TEAM_VRANK_REWARD_ADDED", rewardConfigKey(seed.v()), request.operator(), Map.of(
+        if (!commissionRepository.addVRankReward(seed.v(), item)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_INSERT_FAILED");
+        }
+        audit("F_TEAM_VRANK_REWARD_ADDED", rewardResourceId(seed.v(), String.valueOf(item.get("id"))), request.operator(), Map.of(
                 "rank", seed.v(),
                 "reward", item,
                 "reason", request.reason().trim(),
@@ -338,20 +310,16 @@ public class OpsTeamService {
         }
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        List<Map<String, Object>> rewards = new ArrayList<>(activeRewards(seed.v()));
-        boolean updated = false;
-        for (int i = 0; i < rewards.size(); i++) {
-            if (id.equals(String.valueOf(rewards.get(i).get("id")))) {
-                rewards.set(i, normalizeReward(id, request));
-                updated = true;
-                break;
-            }
-        }
-        if (!updated) {
+        boolean exists = activeRewards(seed.v()).stream()
+                .anyMatch(item -> id.equals(String.valueOf(item.get("id"))));
+        if (!exists) {
             throw new IllegalArgumentException("F1 V-Rank reward not found");
         }
-        persistRewards(seed.v(), rewards);
-        audit("F_TEAM_VRANK_REWARD_CHANGED", rewardConfigKey(seed.v()), request.operator(), Map.of(
+        Map<String, Object> item = normalizeReward(id, request);
+        if (!commissionRepository.updateVRankReward(seed.v(), id, item)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_UPDATE_FAILED");
+        }
+        audit("F_TEAM_VRANK_REWARD_CHANGED", rewardResourceId(seed.v(), id), request.operator(), Map.of(
                 "rank", seed.v(),
                 "rewardId", id,
                 "reason", request.reason().trim(),
@@ -369,13 +337,15 @@ public class OpsTeamService {
         }
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        List<Map<String, Object>> rewards = new ArrayList<>(activeRewards(seed.v()));
-        boolean removed = rewards.removeIf(item -> id.equals(String.valueOf(item.get("id"))));
-        if (!removed) {
+        boolean exists = activeRewards(seed.v()).stream()
+                .anyMatch(item -> id.equals(String.valueOf(item.get("id"))));
+        if (!exists) {
             throw new IllegalArgumentException("F1 V-Rank reward not found");
         }
-        persistRewards(seed.v(), rewards);
-        audit("F_TEAM_VRANK_REWARD_REMOVED", rewardConfigKey(seed.v()), request.operator(), Map.of(
+        if (!commissionRepository.deleteVRankReward(seed.v(), id)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_DELETE_FAILED");
+        }
+        audit("F_TEAM_VRANK_REWARD_REMOVED", rewardResourceId(seed.v(), id), request.operator(), Map.of(
                 "rank", seed.v(),
                 "rewardId", id,
                 "reason", request.reason().trim(),
@@ -415,6 +385,13 @@ public class OpsTeamService {
 
     private ApiResult<Map<String, Object>> updateUiConfig(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        Optional<String> commissionEventId = commissionStatusEventId(key);
+        if (commissionEventId.isPresent()) {
+            return updateCommissionEventStatus(idempotencyKey, request, key, commissionEventId.get());
+        }
+        if (isUnilevelRuleKey(key)) {
+            return updateUnilevelRule(idempotencyKey, request, key);
+        }
         if (!UI_CONFIG_KEYS.contains(key)) {
             throw new IllegalArgumentException("Unsupported F team UI config key");
         }
@@ -431,6 +408,66 @@ public class OpsTeamService {
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = overview().getData();
         response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", value));
+        return ApiResult.ok(response);
+    }
+
+    private ApiResult<Map<String, Object>> updateUnilevelRule(
+            String idempotencyKey,
+            TeamCommissionConfigUpdateRequest request,
+            String key) {
+        String value = normalizeUiValue(request.value());
+        int layerNo = unilevelLayerNo(key);
+        String field = key.startsWith("F.unilevel.nex.") ? "nexPerUsd" : "usdtRate";
+        Object businessValue = "usdtRate".equals(field)
+                ? percentRatio(value, BigDecimal.ZERO)
+                : parseDecimal(value, BigDecimal.ZERO);
+        Map<String, Object> oldRow = unilevelRates().stream()
+                .filter(row -> ("L" + layerNo).equals(row.get("level")))
+                .findFirst()
+                .orElse(Map.of());
+        String oldValue = String.valueOf(oldRow.getOrDefault("usdtRate".equals(field) ? "usdtPct" : "nexReward", ""));
+        if (!commissionRepository.updateUnilevelRule(layerNo, field, businessValue)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNILEVEL_RULE_BUSINESS_TABLE_UPDATE_FAILED");
+        }
+        String resourceId = "nx_commission_rule:UNILEVEL:L" + layerNo + "." + field;
+        audit("F_TEAM_UNILEVEL_RULE_CHANGED", resourceId, request.operator(), Map.of(
+                "key", key,
+                "field", field,
+                "oldValue", oldValue,
+                "newValue", value,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = rates().getData();
+        response.put("updated", Map.of("key", key, "source", "nx_commission_rule", "oldValue", oldValue, "newValue", value));
+        return ApiResult.ok(response);
+    }
+
+    private ApiResult<Map<String, Object>> updateCommissionEventStatus(
+            String idempotencyKey,
+            TeamCommissionConfigUpdateRequest request,
+            String key,
+            String eventId) {
+        String value = normalizeUiValue(request.value());
+        Map<String, Object> oldEvent = commissionEvents().stream()
+                .filter(row -> eventId.equals(row.get("id")))
+                .findFirst()
+                .orElse(null);
+        if (oldEvent == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMMISSION_EVENT_NOT_FOUND");
+        }
+        if (!commissionRepository.updateCommissionStatus(eventId, value)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMMISSION_EVENT_UPDATE_FAILED");
+        }
+        postCommissionLedgerIfStatusChanged(key, value);
+        audit("F_TEAM_COMMISSION_STATUS_CHANGED", "nx_commission_event:" + eventId, request.operator(), Map.of(
+                "key", key,
+                "eventId", eventId,
+                "oldValue", oldEvent.get("state"),
+                "newValue", value,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = overview().getData();
+        response.put("updated", Map.of("key", key, "source", "nx_commission_event", "oldValue", oldEvent.get("state"), "newValue", value));
         return ApiResult.ok(response);
     }
 
@@ -469,6 +506,31 @@ public class OpsTeamService {
             return Optional.empty();
         }
         return Optional.of(key.substring(prefix.length(), key.length() - suffix.length()));
+    }
+
+    private boolean isUnilevelRuleKey(String key) {
+        if (!key.startsWith("F.unilevel.L") && !key.startsWith("F.unilevel.nex.L")) {
+            return false;
+        }
+        String raw = key.startsWith("F.unilevel.nex.L")
+                ? key.substring("F.unilevel.nex.L".length())
+                : key.substring("F.unilevel.L".length());
+        return StringUtils.hasText(raw) && raw.chars().allMatch(Character::isDigit);
+    }
+
+    private int unilevelLayerNo(String key) {
+        String raw = key.startsWith("F.unilevel.nex.L")
+                ? key.substring("F.unilevel.nex.L".length())
+                : key.substring("F.unilevel.L".length());
+        try {
+            int value = Integer.parseInt(raw);
+            if (value <= 0) {
+                throw new IllegalArgumentException("Unsupported F2 unilevel layer");
+            }
+            return value;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("Unsupported F2 unilevel layer", ex);
+        }
     }
 
     private String ledgerStateCode(String state) {
@@ -515,120 +577,81 @@ public class OpsTeamService {
         return List.of();
     }
 
-    private Map<String, Object> rank(String rank, String label, BigDecimal minTeamGmvUsdt, BigDecimal maxDepth, int windowDays) {
-        return Map.of(
-                "rank", rank,
-                "label", label,
-                "minTeamGmvUsdt", minTeamGmvUsdt,
-                "commissionDepth", maxDepth,
-                "windowDays", windowDays);
-    }
-
     private List<Map<String, Object>> vrankRows() {
-        return VRANK_SEEDS.stream()
-                .filter(this::hasVRankConfig)
-                .map(this::vrank)
+        return commissionRepository.vRankRows().stream()
+                .map(this::normalizeVRankRow)
                 .toList();
     }
 
-    private boolean hasVRankConfig(VRankSeed seed) {
-        if (configFacade.activeValue(rewardConfigKey(seed.v())).isPresent()
-                || configFacade.activeValue(uiConfigKey("F.vrank." + seed.v() + ".pop")).isPresent()) {
-            return true;
-        }
-        return staticThresholdFields(seed).stream()
-                .anyMatch(field -> configFacade.activeValue(uiConfigKey("F.vrank." + seed.v() + "." + field)).isPresent());
-    }
-
-    private Map<String, Object> vrank(VRankSeed seed) {
+    private Map<String, Object> normalizeVRankRow(Map<String, Object> raw) {
+        String level = textValue(raw, "v", "");
         Map<String, Object> row = new LinkedHashMap<>();
-        row.put("v", seed.v());
-        putConfiguredField(row, seed, "selfBuy", seed.selfBuy());
-        putConfiguredField(row, seed, "directRefs", seed.directRefs());
-        putConfiguredField(row, seed, "teamGv", seed.teamGv());
-        putConfiguredField(row, seed, "legCount", seed.legCount());
-        putConfiguredField(row, seed, "legRank", seed.legRank());
-        row.put("pop", intConfig(uiConfigKey("F.vrank." + seed.v() + ".pop"), 0));
-        row.put("rewards", activeRewards(seed.v()));
-        row.put("configKey", "F.vrank." + seed.v());
+        row.put("v", level);
+        row.put("label", textValue(raw, "label", level));
+        row.put("selfBuy", moneyCompact(intValue(raw.get("selfBuyUsd"), 0)));
+        row.put("directRefs", intValue(raw.get("directRefs"), 0));
+        row.put("teamGv", moneyCompact(intValue(raw.get("teamGvUsd"), 0)));
+        row.put("legCount", intValue(raw.get("legCount"), 0));
+        row.put("legRank", textValue(raw, "legRank", ""));
+        row.put("votes", intValue(raw.get("votes"), 0));
+        row.put("pop", intValue(raw.get("pop"), 0));
+        row.put("rewards", activeRewards(level));
+        row.put("source", "nx_v_rank_config + nx_team_member");
         return row;
     }
 
-    private void putConfiguredField(Map<String, Object> row, VRankSeed seed, String field, String fallback) {
-        if (fallback == null) {
-            return;
-        }
-        row.put(field, configFacade.activeValue(uiConfigKey("F.vrank." + seed.v() + "." + field))
-                .orElse(""));
-    }
-
     private List<Map<String, Object>> fulfillmentQueues() {
-        return List.of(
-                fulfillment("V3", "Apple Watch SE", 24),
-                fulfillment("V4", "iPhone 16 Pro", 10),
-                fulfillment("V5", "Apple Vision Pro", 3),
-                fulfillment("V6", "Rolex Submariner", 1)).stream()
-                .filter(row -> StringUtils.hasText(String.valueOf(row.get("status"))))
+        return fulfillmentQueueRepository.fulfillmentQueues().stream()
+                .map(this::fulfillmentQueue)
                 .toList();
     }
 
-    private Map<String, Object> fulfillment(String v, String name, int count) {
-        String configKey = "F.fulfillment." + v + ".queue.status";
+    private Map<String, Object> fulfillmentQueue(TeamFulfillmentQueueRow source) {
+        String rankCode = normalizeUiValue(source.rankCode());
+        String rewardName = normalizeUiValue(source.rewardName());
+        String status = normalizeUiValue(source.status());
         Map<String, Object> row = new LinkedHashMap<>();
-        row.put("v", v);
-        row.put("name", name);
-        row.put("count", 0);
-        row.put("status", configFacade.activeValue(uiConfigKey(configKey))
-                .orElse(""));
-        row.put("configKey", configKey);
+        row.put("v", rankCode);
+        row.put("name", rewardName);
+        row.put("count", source.count() == null ? 0 : source.count());
+        row.put("status", status);
+        row.put("configKey", StringUtils.hasText(rankCode) ? "F.fulfillment." + rankCode + ".queue.status" : "");
+        row.put("source", "nx_v_rank_reward_fulfillment");
         return row;
     }
 
     private List<Map<String, Object>> f2Metrics() {
-        return F2_METRIC_SEEDS.stream()
-                .filter(seed -> metricConfigured("F2.metric." + seed.id()))
-                .map(this::f2Metric)
+        return commissionRepository.f2Metrics().stream()
+                .map(row -> {
+                    Map<String, Object> metric = new LinkedHashMap<>();
+                    metric.put("id", textValue(row, "id", ""));
+                    metric.put("label", textValue(row, "label", ""));
+                    metric.put("value", textValue(row, "value", ""));
+                    metric.put("sub", textValue(row, "sub", ""));
+                    metric.put("tone", textValue(row, "tone", ""));
+                    metric.put("source", "nx_commission_event / nx_team_member");
+                    return metric;
+                })
                 .toList();
-    }
-
-    private Map<String, Object> f2Metric(F2MetricSeed seed) {
-        String prefix = "F2.metric." + seed.id();
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("id", seed.id());
-        row.put("label", configText(prefix + ".label", seed.label()));
-        row.put("value", configText(prefix + ".value", seed.value()));
-        row.put("sub", configText(prefix + ".sub", seed.sub()));
-        row.put("tone", configText(prefix + ".tone", seed.tone()));
-        row.put("configKey", prefix + ".value");
-        return row;
     }
 
     private List<Map<String, Object>> unilevelRates() {
-        return F2_UNILEVEL_SEEDS.stream()
-                .filter(this::unilevelConfigured)
-                .map(this::unilevel)
+        return commissionRepository.unilevelRates().stream()
+                .map(this::normalizeUnilevelRate)
                 .toList();
     }
 
-    private boolean unilevelConfigured(F2UnilevelSeed seed) {
-        String configKey = "F.unilevel." + seed.level();
-        return configFacade.activeValue(uiConfigKey(configKey)).isPresent()
-                || configFacade.activeValue(uiConfigKey("F.unilevel.nex." + seed.level())).isPresent()
-                || configFacade.activeValue(uiConfigKey(configKey + ".label")).isPresent()
-                || configFacade.activeValue(uiConfigKey(configKey + ".direct")).isPresent();
-    }
-
-    private Map<String, Object> unilevel(F2UnilevelSeed seed) {
-        String configKey = "F.unilevel." + seed.level();
-        String nexConfigKey = "F.unilevel.nex." + seed.level();
+    private Map<String, Object> normalizeUnilevelRate(Map<String, Object> raw) {
+        String level = textValue(raw, "level", "");
         Map<String, Object> row = new LinkedHashMap<>();
-        row.put("level", seed.level());
-        row.put("usdtPct", configDecimal(uiConfigKey(configKey), seed.usdtPct()));
-        row.put("nexReward", configDecimal(uiConfigKey(nexConfigKey), seed.nexReward()));
-        row.put("label", configText(configKey + ".label", seed.label()));
-        row.put("direct", boolConfig(uiConfigKey(configKey + ".direct"), seed.direct()));
-        row.put("configKey", configKey);
-        row.put("nexConfigKey", nexConfigKey);
+        row.put("level", level);
+        row.put("usdtPct", decimalValue(raw.get("usdtPct"), BigDecimal.ZERO).stripTrailingZeros());
+        row.put("nexReward", decimalValue(raw.get("nexReward"), BigDecimal.ZERO).stripTrailingZeros());
+        row.put("label", textValue(raw, "label", ""));
+        row.put("direct", boolValue(raw.get("direct"), false));
+        row.put("configKey", "nx_commission_rule:UNILEVEL:" + level + ".usdt_rate");
+        row.put("nexConfigKey", "nx_commission_rule:UNILEVEL:" + level + ".nex_per_usd");
+        row.put("source", "nx_commission_rule");
         return row;
     }
 
@@ -668,69 +691,64 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> rateTiers() {
-        return F2_RATE_TIER_SEEDS.stream()
-                .filter(this::rateTierConfigured)
-                .map(this::tier)
+        return commissionRepository.rateTiers().stream()
+                .map(this::normalizeRateTier)
                 .toList();
     }
 
-    private boolean rateTierConfigured(F2RateTierSeed seed) {
-        String prefix = "F.rateTier." + seed.name();
-        return List.of(".name", ".requirement", ".rate", ".distribution", ".className").stream()
-                .anyMatch(suffix -> configFacade.activeValue(uiConfigKey(prefix + suffix)).isPresent());
-    }
-
-    private Map<String, Object> tier(F2RateTierSeed seed) {
-        String prefix = "F.rateTier." + seed.name();
-        String rate = configText(prefix + ".rate", seed.rate());
+    private Map<String, Object> normalizeRateTier(Map<String, Object> raw) {
+        String rate = textValue(raw, "rate", "0%");
         Map<String, Object> row = new LinkedHashMap<>();
-        row.put("name", configText(prefix + ".name", seed.name()));
-        row.put("requirement", configText(prefix + ".requirement", seed.requirement()));
+        row.put("name", textValue(raw, "name", ""));
+        row.put("requirement", textValue(raw, "requirement", ""));
         row.put("rate", rate);
-        row.put("ratePct", parseDecimal(rate, parseDecimal(seed.rate(), BigDecimal.ZERO)).stripTrailingZeros());
-        row.put("distribution", configText(prefix + ".distribution", seed.distribution()));
-        row.put("className", configText(prefix + ".className", seed.className()));
-        row.put("configKey", prefix);
+        row.put("ratePct", parseDecimal(rate, BigDecimal.ZERO).stripTrailingZeros());
+        row.put("distribution", textValue(raw, "distribution", "0%"));
+        row.put("className", textValue(raw, "className", ""));
+        row.put("source", "nx_v_rank_config + nx_team_member");
         return row;
     }
 
-    private List<Map<String, Object>> f3Metrics() {
-        return F3_METRIC_SEEDS.stream()
-                .filter(seed -> metricConfigured("F3.metric." + seed.id()))
-                .map(this::f3Metric)
-                .toList();
+    private List<Map<String, Object>> f3Metrics(Map<String, Object> summary) {
+        if (summary.isEmpty() || intValue(summary.get("participantCount"), 0) == 0) {
+            return List.of();
+        }
+        return List.of(
+                f3Metric("todayBalanceMatch", "今日 Balance Match", moneyCompact(intValue(summary.get("dailyMatchUsd"), 0)),
+                        intValue(summary.get("participantCount"), 0) + " 用户参与结算", "ok"),
+                f3Metric("participantCount", "参与结算用户", String.valueOf(intValue(summary.get("participantCount"), 0)),
+                        "两轨均达到结算门槛", ""),
+                f3Metric("blockedUsers", "阻塞用户(轨不平衡)", String.valueOf(intValue(summary.get("blockedCount"), 0)),
+                        "来自结算状态聚合", intValue(summary.get("blockedCount"), 0) > 0 ? "warn" : ""),
+                f3Metric("residualPool", "沉淀池(未匹配)", moneyCompact(intValue(summary.get("residualPoolUsd"), 0)),
+                        "来自左右轨未匹配差额", "cyan"));
     }
 
-    private boolean metricConfigured(String prefix) {
-        return List.of(".label", ".value", ".sub", ".tone").stream()
-                .anyMatch(suffix -> configFacade.activeValue(uiConfigKey(prefix + suffix)).isPresent());
-    }
-
-    private Map<String, Object> f3Metric(F3MetricSeed seed) {
-        String prefix = "F3.metric." + seed.id();
+    private Map<String, Object> f3Metric(String id, String label, String value, String sub, String tone) {
         Map<String, Object> row = new LinkedHashMap<>();
-        row.put("id", seed.id());
-        row.put("label", configText(prefix + ".label", seed.label()));
-        row.put("value", configText(prefix + ".value", seed.value()));
-        row.put("sub", configText(prefix + ".sub", seed.sub()));
-        row.put("tone", configText(prefix + ".tone", seed.tone()));
-        row.put("configKey", prefix + ".value");
+        row.put("id", id);
+        row.put("label", label);
+        row.put("value", value);
+        row.put("sub", sub);
+        row.put("tone", tone);
+        row.put("source", "nx_binary_commission_settlement");
         return row;
     }
 
     private Map<String, Object> f3Formula() {
+        Map<String, Object> settlement = binarySettlements().stream().findFirst().orElse(Map.of());
         Map<String, Object> formula = new LinkedHashMap<>();
-        formula.put("user", configText("F3.formula.user", ""));
-        formula.put("trackA", intConfig(uiConfigKey("F3.formula.trackA"), 0));
-        formula.put("trackB", intConfig(uiConfigKey("F3.formula.trackB"), 0));
-        formula.put("matchAmount", intConfig(uiConfigKey("F3.formula.matchAmount"), 0));
+        formula.put("user", String.valueOf(settlement.getOrDefault("user", "")));
+        formula.put("trackA", intValue(settlement.get("trackA"), 0));
+        formula.put("trackB", intValue(settlement.get("trackB"), 0));
+        formula.put("matchAmount", intValue(settlement.get("matchAmount"), 0));
         formula.put("matchRate", configText("F.binary.matchRate", ""));
         formula.put("threshold", configText("F.binary.threshold", ""));
         formula.put("settlePeriod", configText("F.binary.settlePeriod", ""));
         return formula;
     }
 
-    private Map<String, Object> f3Config() {
+    private Map<String, Object> f3Config(Map<String, Object> summary) {
         String spillover = configText("F.binary.spillover", "");
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("threshold", configText("F.binary.threshold", ""));
@@ -740,8 +758,8 @@ public class OpsTeamService {
         config.put("gvResetCron", configText("F.binary.gvResetCron", ""));
         config.put("settlePeriod", configText("F.binary.settlePeriod", ""));
         config.put("residualPolicy", configText("F.binary.residualPolicy", ""));
-        config.put("residualPool", configText("F.binary.residualPool", ""));
-        config.put("residualSub", configText("F.binary.residualSub", ""));
+        config.put("residualPool", moneyCompact(intValue(summary.get("residualPoolUsd"), 0)));
+        config.put("residualSub", "来自 nx_binary_commission_settlement");
         return config;
     }
 
@@ -760,30 +778,14 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> binarySettlements() {
-        Optional<String> value = configFacade.activeValue(uiConfigKey("F3.binary.rows"));
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        try {
-            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
-            if (parsed == null || parsed.isEmpty()) {
-                return List.of();
-            }
-            return parsed.stream().map(this::normalizeBinarySettlementMap).toList();
-        } catch (JsonProcessingException ex) {
-            return List.of();
-        }
+        return commissionRepository.binarySettlements(100).stream()
+                .map(this::normalizeBinarySettlementMap)
+                .toList();
     }
 
-    private Map<String, Object> binarySettlement(F3BinarySettlementSeed seed) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("user", seed.user());
-        row.put("trackA", seed.trackA());
-        row.put("trackB", seed.trackB());
-        row.put("matchAmount", seed.matchAmount());
-        row.put("todayPaid", seed.todayPaid());
-        row.put("state", seed.state());
-        row.put("tone", seed.tone());
+    private Map<String, Object> binarySettlementSummary() {
+        Map<String, Object> row = new LinkedHashMap<>(commissionRepository.binarySettlementSummary());
+        row.putIfAbsent("autoPlacement7dCount", 0);
         return row;
     }
 
@@ -809,23 +811,18 @@ public class OpsTeamService {
     private Map<String, Object> leadershipPoolReadModel() {
         String ratioLabel = configText("F.pool.ratio", "");
         BigDecimal poolRatio = percentRatio(ratioLabel, BigDecimal.ZERO);
-        int weeklyGmvUsd = intConfig(uiConfigKey("F4.pool.weeklyGmvUsd"),
-                intConfig(uiConfigKey("F.vrank.leadership.weeklyGmvUsdt"), 0));
-        int weeklyInjectedUsd = BigDecimal.valueOf(weeklyGmvUsd)
-                .multiply(poolRatio)
-                .setScale(0, RoundingMode.HALF_UP)
-                .intValue();
-        int unlockRank = intConfig(uiConfigKey("F.vrank.leadership.unlockRank"), 0);
+        Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
+        int weeklyGmvUsd = intValue(summary.get("weeklyGmvUsd"), 0);
+        int weeklyInjectedUsd = intValue(summary.get("weeklyInjectedUsd"), 0);
+        int unlockRank = leadershipUnlockRank();
         int topN = intConfig(uiConfigKey("F.vrank.leadership.topN"), 0);
         List<Map<String, Object>> ranks = leadershipRanks();
-        int defaultParticipants = ranks.stream()
-                .filter(rank -> ((Number) rank.get("v")).intValue() >= unlockRank)
-                .mapToInt(rank -> ((Number) rank.get("pop")).intValue())
-                .sum();
         List<Map<String, Object>> quotaRows = quotaRows();
         int quotaCurrent = quotaRows.stream().mapToInt(row -> intValue(row.get("current"), 0)).sum();
         int quotaCap = quotaRows.stream().mapToInt(row -> intValue(row.get("cap"), 0)).sum();
-        String leaderboardStatus = configText("F.leaderboard.period.status", "");
+        Map<String, Object> ambassador = commissionRepository.ambassadorSummary();
+        Map<String, Object> leaderboard = commissionRepository.leaderboardSummary();
+        String leaderboardStatus = textValue(leaderboard, "periodStatus", "");
         Map<String, Object> pool = new LinkedHashMap<>();
         pool.put("weeklyInjectedUsd", weeklyInjectedUsd);
         pool.put("weeklyGmvUsd", weeklyGmvUsd);
@@ -833,30 +830,31 @@ public class OpsTeamService {
         pool.put("poolRatioValue", poolRatio);
         pool.put("monthlyCapLabel", configText("F.pool.monthlyCap", ""));
         pool.put("monthlyCapUsd", moneyLabelToInt(configText("F.pool.monthlyCap", ""), 0));
-        pool.put("participantCount", intConfig(uiConfigKey("F4.pool.participantCount"), defaultParticipants));
+        pool.put("monthLeadershipUsd", intValue(summary.get("monthLeadershipUsd"), 0));
+        pool.put("participantCount", intValue(summary.get("participantCount"), 0));
         pool.put("topN", topN);
         pool.put("topSharePct", leadershipTopConcentrationPct(ranks, topN));
         pool.put("unlockRank", unlockRank);
-        pool.put("settlementWindow", configText("F4.pool.settlementWindow", ""));
-        pool.put("settlementDispatchWindow", configText("F4.pool.settlementDispatchWindow", ""));
+        pool.put("settlementWindow", "");
+        pool.put("settlementDispatchWindow", "");
         pool.put("quotaRows", quotaRows);
-        pool.put("quotaMonthlyStockLabel", configText("F.quota.monthlyStock", ""));
+        pool.put("quotaMonthlyStockLabel", String.valueOf(quotaCap));
         pool.put("quotaMonthlyStockTotal", quotaCap);
         pool.put("quotaMonthlyStockUsed", quotaCurrent);
         pool.put("quotaMonthlyStockRemaining", Math.max(0, quotaCap - quotaCurrent));
-        pool.put("proUnlock", configText("F.quota.proUnlock", ""));
-        pool.put("rackUnlock", configText("F.quota.rackUnlock", ""));
+        pool.put("proUnlock", quotaUnlock("PRO"));
+        pool.put("rackUnlock", quotaUnlock("RACK"));
         pool.put("ambassadorBands", ambassadorBands());
-        pool.put("ambassadorStatus", configText("F.ambassador.q3-2025.status", ""));
-        pool.put("ambassadorPendingCount", intConfig(uiConfigKey("F4.ambassador.pendingCount"), 0));
-        pool.put("ambassadorBudgetApprovedLabel", configText("F4.ambassador.budgetApprovedLabel", ""));
-        pool.put("ambassadorBudgetCapLabel", configText("F4.ambassador.budgetCapLabel", ""));
-        pool.put("ambassadorKolBudgetPct", intConfig(uiConfigKey("F4.ambassador.kolBudgetPct"), 0));
-        pool.put("ambassadorNextQuotaReviewDate", configText("F4.ambassador.nextQuotaReviewDate", ""));
-        pool.put("leaderboardPoolLabel", configText("F.leaderboard.poolUsd", ""));
-        pool.put("leaderboardParticipantCount", intConfig(uiConfigKey("F4.leaderboard.participantCount"), 0));
-        pool.put("leaderboardFraudHitCount", intConfig(uiConfigKey("F4.leaderboard.fraudHitCount"), 0));
-        pool.put("leaderboardDisqualified", "disqualified".equalsIgnoreCase(leaderboardStatus));
+        pool.put("ambassadorStatus", textValue(ambassador, "status", ""));
+        pool.put("ambassadorPendingCount", intValue(ambassador.get("pendingCount"), 0));
+        pool.put("ambassadorBudgetApprovedLabel", moneyLabel(decimalValue(ambassador.get("approvedBudgetUsd"), BigDecimal.ZERO)));
+        pool.put("ambassadorBudgetCapLabel", moneyLabel(decimalValue(ambassador.get("requestedBudgetUsd"), BigDecimal.ZERO)));
+        pool.put("ambassadorKolBudgetPct", intValue(ambassador.get("kolBudgetPct"), 0));
+        pool.put("ambassadorNextQuotaReviewDate", textValue(ambassador, "nextQuotaReviewDate", ""));
+        pool.put("leaderboardPoolLabel", moneyLabel(decimalValue(leaderboard.get("poolUsd"), BigDecimal.ZERO)));
+        pool.put("leaderboardParticipantCount", intValue(leaderboard.get("participantCount"), 0));
+        pool.put("leaderboardFraudHitCount", intValue(leaderboard.get("fraudHitCount"), 0));
+        pool.put("leaderboardDisqualified", Set.of("disqualified", "flagged").contains(leaderboardStatus.toLowerCase(Locale.ROOT)));
         pool.put("leaderboardPeriodStatus", leaderboardStatus);
         pool.put("podium", leaderboardPodium());
         pool.put("voteWeights", voteWeights());
@@ -929,23 +927,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> quotaRows() {
-        Optional<String> value = configFacade.activeValue(uiConfigKey("F4.quota.rows"));
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        try {
-            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
-            if (parsed == null || parsed.isEmpty()) {
-                return List.of();
-            }
-            return parsed.stream().map(this::normalizeQuotaRow).toList();
-        } catch (JsonProcessingException ex) {
-            return List.of();
-        }
-    }
-
-    private Map<String, Object> quotaRow(F4QuotaSeed seed) {
-        return quotaRow(seed.name(), seed.current(), seed.cap(), seed.tight());
+        return commissionRepository.quotaRows().stream()
+                .map(this::normalizeQuotaRow)
+                .toList();
     }
 
     private Map<String, Object> quotaRow(String name, int current, int cap, boolean tight) {
@@ -963,23 +947,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> ambassadorBands() {
-        Optional<String> value = configFacade.activeValue(uiConfigKey("F4.ambassador.bands"));
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        try {
-            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
-            if (parsed == null || parsed.isEmpty()) {
-                return List.of();
-            }
-            return parsed.stream().map(this::normalizeAmbassadorBand).toList();
-        } catch (JsonProcessingException ex) {
-            return List.of();
-        }
-    }
-
-    private Map<String, Object> ambassadorBand(F4AmbassadorBandSeed seed) {
-        return Map.of("name", seed.name(), "count", seed.count());
+        return commissionRepository.ambassadorBands().stream()
+                .map(this::normalizeAmbassadorBand)
+                .toList();
     }
 
     private Map<String, Object> normalizeAmbassadorBand(Map<String, Object> raw) {
@@ -989,23 +959,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> leaderboardPodium() {
-        Optional<String> value = configFacade.activeValue(uiConfigKey("F4.leaderboard.podium"));
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        try {
-            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
-            if (parsed == null || parsed.isEmpty()) {
-                return List.of();
-            }
-            return parsed.stream().map(this::normalizePodium).toList();
-        } catch (JsonProcessingException ex) {
-            return List.of();
-        }
-    }
-
-    private Map<String, Object> podium(F4PodiumSeed seed) {
-        return podium(seed.rank(), seed.userId(), seed.gmvLabel(), seed.tip(), seed.className());
+        return commissionRepository.leaderboardPodium(3).stream()
+                .map(this::normalizePodium)
+                .toList();
     }
 
     private Map<String, Object> podium(int rank, String userId, String gmvLabel, String tip, String className) {
@@ -1027,21 +983,15 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> voteWeights() {
-        List<Map<String, Object>> weights = new ArrayList<>();
-        for (int i = 3; i <= 12; i++) {
-            String v = "V" + i;
-            String key = uiConfigKey("F.pool.votes." + v);
-            if (configFacade.activeValue(key).isPresent()) {
-                weights.add(voteWeight(v));
-            }
-        }
-        return weights;
-    }
-
-    private Map<String, Object> voteWeight(String v) {
-        String configKey = "F.pool.votes." + v;
-        String effective = configFacade.activeValue(uiConfigKey(configKey)).orElse("0");
-        return Map.of("v", v, "votes", parseDecimal(effective, BigDecimal.ZERO), "configKey", configKey);
+        return leadershipRanks().stream()
+                .map(row -> {
+                    Map<String, Object> weight = new LinkedHashMap<>();
+                    weight.put("v", "V" + intValue(row.get("v"), 0));
+                    weight.put("votes", decimalValue(row.get("votes"), BigDecimal.ZERO));
+                    weight.put("source", "nx_v_rank_config");
+                    return weight;
+                })
+                .toList();
     }
 
     private Map<String, Object> commissionSummary(List<Map<String, Object>> commissionEvents) {
@@ -1049,15 +999,39 @@ public class OpsTeamService {
                 .map(event -> String.valueOf(event.get("state")))
                 .filter(state -> "异常回退".equals(state) || "frozen".equals(state) || "rejected".equals(state))
                 .count();
+        BigDecimal total = sumCommissionAmount(commissionEvents);
+        BigDecimal cooling = sumCommissionAmountByState(commissionEvents, "计提");
+        BigDecimal withdrawable = sumCommissionAmountByState(commissionEvents, "可提", "unlocked");
         return Map.of(
-                "monthlyCommissionSpendLabel", configText("F5.commission.monthlySpendLabel", ""),
-                "coolingBalanceLabel", configText("F5.commission.coolingBalanceLabel", ""),
-                "withdrawableThisMonthLabel", configText("F5.commission.withdrawableThisMonthLabel", ""),
+                "monthlyCommissionSpendLabel", moneyLabel(total),
+                "coolingBalanceLabel", moneyLabel(cooling),
+                "withdrawableThisMonthLabel", moneyLabel(withdrawable),
                 "abnormalOrFrozenCount", abnormalOrFrozen);
     }
 
+    private BigDecimal sumCommissionAmount(List<Map<String, Object>> commissionEvents) {
+        return commissionEvents.stream()
+                .map(event -> decimalValue(event.get("amount"), BigDecimal.ZERO))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private BigDecimal sumCommissionAmountByState(List<Map<String, Object>> commissionEvents, String... states) {
+        Set<String> expected = Set.of(states);
+        return commissionEvents.stream()
+                .filter(event -> expected.contains(String.valueOf(event.get("state"))))
+                .map(event -> decimalValue(event.get("amount"), BigDecimal.ZERO))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private String moneyLabel(BigDecimal value) {
+        BigDecimal safe = value == null ? BigDecimal.ZERO : value;
+        return "$" + safe.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+    }
+
     private List<Map<String, Object>> commissionKinds() {
-        return configRows("F5.commission.kinds", this::normalizeCommissionKind, "F5 commission kinds");
+        return commissionRepository.commissionKindSummary().stream()
+                .map(this::normalizeCommissionKind)
+                .toList();
     }
 
     private Map<String, Object> commissionKind(
@@ -1074,11 +1048,17 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> commissionFilters() {
-        return configRows("F5.commission.filters", this::normalizeCommissionFilter, "F5 commission filters");
+        return List.of(
+                Map.of("key", "all", "label", "全部状态"),
+                Map.of("key", "withdrawable", "label", "可提"),
+                Map.of("key", "cooling", "label", "计提"),
+                Map.of("key", "exception", "label", "异常/冻结/驳回"));
     }
 
     private List<Map<String, Object>> commissionEvents() {
-        return configRows("F5.commission.events", this::normalizeCommissionEvent, "F5 commission events");
+        return commissionRepository.commissionEvents(100).stream()
+                .map(this::normalizeCommissionEvent)
+                .toList();
     }
 
     private Map<String, Object> commissionEvent(
@@ -1090,10 +1070,7 @@ public class OpsTeamService {
             int cooldownPercent,
             String cooldownLabel,
             String fallbackState) {
-        String state = configFacade.activeValue(uiConfigKey("F.commission." + id + ".status"))
-                .filter(StringUtils::hasText)
-                .map(String::trim)
-                .orElse(fallbackState);
+        String state = fallbackState;
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("id", id);
         event.put("kind", kind);
@@ -1128,30 +1105,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> commissionAuditFeed() {
-        return configRows("F5.commission.auditFeed", this::normalizeCommissionAuditFeedItem, "F5 commission audit feed");
-    }
-
-    private List<Map<String, Object>> configRows(
-            String key,
-            Function<Map<String, Object>, Map<String, Object>> normalizer,
-            String label) {
-        String configKey = uiConfigKey(key);
-        Optional<String> value = configFacade.activeValue(configKey);
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        try {
-            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
-            if (parsed == null || parsed.isEmpty()) {
-                return List.of();
-            }
-            return parsed.stream().map(normalizer).toList();
-        } catch (JsonProcessingException ex) {
-            if (readTimeSeedPolicy.enabled()) {
-                throw new IllegalStateException("Invalid " + label + " config", ex);
-            }
-            return List.of();
-        }
+        return commissionRepository.commissionAuditFeed(20).stream()
+                .map(this::normalizeCommissionAuditFeedItem)
+                .toList();
     }
 
     private Map<String, Object> normalizeCommissionKind(Map<String, Object> raw) {
@@ -1295,141 +1251,18 @@ public class OpsTeamService {
         return values;
     }
 
-    private void seedVRankIfMissing() {
-        for (VRankSeed seed : VRANK_SEEDS) {
-            seedText("F.vrank." + seed.v() + ".pop", String.valueOf(seed.pop()), "F1 V-Rank member population");
-            seedText("F.vrank." + seed.v() + ".selfBuy", seed.selfBuy(), "F1 V-Rank self purchase threshold");
-            seedText("F.vrank." + seed.v() + ".directRefs", seed.directRefs(), "F1 V-Rank direct referral threshold");
-            seedText("F.vrank." + seed.v() + ".teamGv", seed.teamGv(), "F1 V-Rank team GV threshold");
-            seedText("F.vrank." + seed.v() + ".legCount", seed.legCount(), "F1 V-Rank qualified leg threshold");
-            seedText("F.vrank." + seed.v() + ".legRank", seed.legRank(), "F1 V-Rank qualified leg rank threshold");
-            seedJson("F.vrank.rewards." + seed.v(), rewardsJson(VRANK_REWARD_SEEDS.getOrDefault(seed.v(), List.of())),
-                    "F1 V-Rank reward list");
+    private List<String> sunsetExclusions() {
+        Optional<String> raw = configFacade.activeValue(uiConfigKey("F.sunset.exclusions"));
+        if (raw.isEmpty()) {
+            return List.of();
         }
-        seedText("F.vrank.leadership.weeklyGmvUsdt", "9746420", "F1 leadership pool weekly GMV");
-        seedText("F.vrank.leadership.poolRatio", "0.05", "F1 leadership pool ratio");
-        seedText("F.vrank.leadership.monthlyCapUsdt", "2600000", "F1 leadership monthly cap");
-        seedText("F.vrank.leadership.unlockRank", "3", "F1 leadership unlock rank");
-        seedText("F.vrank.leadership.topN", "10", "F1 leadership top-N concentration");
-        int votes = 1;
-        for (int i = 3; i <= 12; i++) {
-            seedText("F.pool.votes.V" + i, String.valueOf(votes), "F1 leadership vote weight");
-            votes *= 2;
-        }
-    }
-
-    private void seedF2RatesIfMissing() {
-        for (F2MetricSeed seed : F2_METRIC_SEEDS) {
-            String prefix = "F2.metric." + seed.id();
-            seedText(prefix + ".label", seed.label(), "F2 metric label");
-            seedText(prefix + ".value", seed.value(), "F2 metric value");
-            seedText(prefix + ".sub", seed.sub(), "F2 metric subtitle");
-            seedText(prefix + ".tone", seed.tone(), "F2 metric tone");
-        }
-        for (F2UnilevelSeed seed : F2_UNILEVEL_SEEDS) {
-            String prefix = "F.unilevel." + seed.level();
-            seedText(prefix, seed.usdtPct().stripTrailingZeros().toPlainString(), "F2 unilevel USDT royalty rate");
-            seedText("F.unilevel.nex." + seed.level(), seed.nexReward().stripTrailingZeros().toPlainString(), "F2 unilevel NEX reward per USDT");
-            seedText(prefix + ".label", seed.label(), "F2 unilevel label");
-            seedText(prefix + ".direct", seed.direct() ? "true" : "false", "F2 unilevel direct flag");
-        }
-        for (F2RateTierSeed seed : F2_RATE_TIER_SEEDS) {
-            String prefix = "F.rateTier." + seed.name();
-            seedText(prefix + ".name", seed.name(), "F2 rate tier name");
-            seedText(prefix + ".requirement", seed.requirement(), "F2 rate tier requirement");
-            seedText(prefix + ".rate", seed.rate(), "F2 rate tier rate");
-            seedText(prefix + ".distribution", seed.distribution(), "F2 rate tier distribution");
-            seedText(prefix + ".className", seed.className(), "F2 rate tier UI class");
-        }
-        for (F2PolicyParamSeed seed : F2_POLICY_PARAM_SEEDS) {
-            seedText(seed.key(), seed.defaultValue(), "F2 policy parameter");
-        }
-    }
-
-    private void seedF3BinaryIfMissing() {
-        for (F3MetricSeed seed : F3_METRIC_SEEDS) {
-            String prefix = "F3.metric." + seed.id();
-            seedText(prefix + ".label", seed.label(), "F3 binary metric label");
-            seedText(prefix + ".value", seed.value(), "F3 binary metric value");
-            seedText(prefix + ".sub", seed.sub(), "F3 binary metric subtitle");
-            seedText(prefix + ".tone", seed.tone(), "F3 binary metric tone");
-        }
-        seedJson("F3.binary.rows", binaryRowsJson(F3_BINARY_SEEDS), "F3 binary settlement rows");
-        seedText("F3.formula.user", "usr_31E8", "F3 binary formula sample user");
-        seedText("F3.formula.trackA", "84000", "F3 binary formula Track A");
-        seedText("F3.formula.trackB", "62000", "F3 binary formula Track B");
-        seedText("F3.formula.matchAmount", "6200", "F3 binary formula match amount");
-        seedText("F3.dailyCap.currentLabel", "$5,000", "F3 binary daily cap current label");
-        seedText("F3.dailyCap.windowLabel", "月 1-6 现值 · 全局统一", "F3 binary daily cap window");
-        seedText("F3.dailyCap.nextTrigger", "月 7", "F3 binary daily cap next trigger");
-        seedText("F3.dailyCap.nextLabel", "$2,000", "F3 binary daily cap next value");
-        seedText("F3.dailyCap.currentMonth", "6", "F3 binary daily cap current month");
-        seedText("F3.dailyCap.currentPhase", "收缩期", "F3 binary daily cap current phase");
-        seedText("F.binary.threshold", "$1,000 / 轨", "F3 binary threshold");
-        seedText("F.binary.matchRate", "10%", "F3 binary balance match rate");
-        seedText("F.binary.spillover", "已启用", "F3 binary spillover placement");
-        seedText("F.binary.gvResetCron", "每月 1 日 00:00 UTC", "F3 binary GV reset schedule");
-        seedText("F.binary.settlePeriod", "每月", "F3 binary settlement period");
-        seedText("F.binary.residualPolicy", "每月清零", "F3 binary residual policy");
-        seedText("F.binary.residualPool", "$1.2M", "F3 binary residual pool");
-        seedText("F.binary.residualSub", "月底归零 · 不结转", "F3 binary residual subtitle");
-        seedText("F.binary.participantCount", "1842", "F3 binary settlement participant count");
-        seedText("F.binary.blockedCount", "468", "F3 binary blocked user count");
-        seedText("F.binary.monthlyMatchedUsd", "214800", "F3 binary monthly matched amount");
-        seedText("F.binary.autoPlacement7dCount", "1284", "F3 binary 7-day auto placement count");
-        seedText("F.binary.dailyMatchUsd", "10490", "F3 binary daily matched amount");
-    }
-
-    private void seedF4LeadershipPoolIfMissing() {
-        seedText("F.pool.ratio", "5%", "F4 leadership pool inject ratio");
-        seedText("F.pool.monthlyCap", "$2,600,000", "F4 leadership pool monthly cap");
-        seedText("F.quota.proUnlock", "直推 5 / 月业绩 $50k", "F4 Pro quota unlock rule");
-        seedText("F.quota.rackUnlock", "直推 15", "F4 Rack quota unlock rule");
-        seedText("F.quota.monthlyStock", "96 台", "F4 quota monthly stock");
-        seedText("F.ambassador.q3-2025.status", "pending", "F4 ambassador quarter decision status");
-        seedText("F.leaderboard.poolUsd", "$48,000", "F4 leaderboard reward pool");
-        seedText("F.leaderboard.period.status", "active", "F4 leaderboard period status");
-        seedText("F4.pool.weeklyGmvUsd", "9746420", "F4 leadership pool weekly GMV");
-        seedText("F4.pool.participantCount", "496", "F4 leadership pool qualified participants");
-        seedText("F4.pool.settlementWindow", "周日 23:59 UTC", "F4 leadership pool snapshot window");
-        seedText("F4.pool.settlementDispatchWindow", "周一 00:00 UTC", "F4 leadership pool dispatch window");
-        seedJson("F4.quota.rows", f4QuotaRowsJson(F4_QUOTA_SEEDS), "F4 quota rows");
-        seedJson("F4.ambassador.bands", f4AmbassadorBandsJson(F4_AMBASSADOR_BAND_SEEDS), "F4 ambassador request bands");
-        seedText("F4.ambassador.pendingCount", "7", "F4 ambassador pending request count");
-        seedText("F4.ambassador.budgetApprovedLabel", "$48,200", "F4 ambassador approved budget label");
-        seedText("F4.ambassador.budgetCapLabel", "$80,000", "F4 ambassador budget cap label");
-        seedText("F4.ambassador.kolBudgetPct", "50", "F4 ambassador KOL budget percentage");
-        seedText("F4.ambassador.nextQuotaReviewDate", "2026-09-01", "F4 ambassador next quota review date");
-        seedText("F4.leaderboard.participantCount", "1284", "F4 leaderboard participant count");
-        seedText("F4.leaderboard.fraudHitCount", "3", "F4 leaderboard fraud hit count");
-        seedJson("F4.leaderboard.podium", f4PodiumJson(F4_PODIUM_SEEDS), "F4 leaderboard podium rows");
-    }
-
-    private void seedF5CommissionAuditIfMissing() {
-        // F5 commission rows are business events and must come from MySQL-backed writes.
-    }
-
-    private void seedText(String key, String value, String remark) {
-        // Intentionally empty: read paths must not seed team business configuration.
-    }
-
-    private void seedJson(String key, String value, String remark) {
-        // Intentionally empty: read paths must not seed team business configuration.
-    }
-
-    private boolean isDuplicateConfigKey(RuntimeException ex) {
-        Throwable current = ex;
-        while (current != null) {
-            if (current instanceof DuplicateKeyException) {
-                return true;
+        Set<String> values = new LinkedHashSet<>();
+        for (String item : raw.get().split("[,;，；\\r\\n]+")) {
+            if (StringUtils.hasText(item)) {
+                values.add(item.trim());
             }
-            String message = current.getMessage();
-            if (message != null && message.contains("Duplicate entry") && message.contains("uk_config_key")) {
-                return true;
-            }
-            current = current.getCause();
         }
-        return false;
+        return new ArrayList<>(values);
     }
 
     private Map<String, List<Map<String, Object>>> vRankRewards() {
@@ -1441,16 +1274,9 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> activeRewards(String level) {
-        Optional<String> value = configFacade.activeValue(rewardConfigKey(level));
-        if (value.isEmpty()) {
-            return List.of();
-        }
-        try {
-            List<Map<String, Object>> parsed = JSON.readValue(value.get(), REWARD_LIST_TYPE);
-            return parsed == null ? List.of() : parsed.stream().map(this::normalizeRewardMap).toList();
-        } catch (JsonProcessingException ex) {
-            return List.of();
-        }
+        return commissionRepository.vRankRewards(level).stream()
+                .map(this::normalizeRewardMap)
+                .toList();
     }
 
     private Map<String, Object> normalizeRewardMap(Map<String, Object> raw) {
@@ -1473,12 +1299,8 @@ public class OpsTeamService {
         }
     }
 
-    private void persistRewards(String level, List<Map<String, Object>> rewards) {
-        configFacade.upsertAdminValue(rewardConfigKey(level), rewardsJson(rewards), "JSON", "team", "F1 V-Rank reward list");
-    }
-
-    private String rewardConfigKey(String level) {
-        return uiConfigKey("F.vrank.rewards." + level);
+    private String rewardResourceId(String level, String rewardId) {
+        return "nx_v_rank_reward_rule:" + level + ":" + rewardId;
     }
 
     private Map<String, Object> normalizeReward(String id, VRankRewardRequest request) {
@@ -1508,44 +1330,8 @@ public class OpsTeamService {
         return item;
     }
 
-    private String rewardsJson(List<Map<String, Object>> rewards) {
-        try {
-            return JSON.writeValueAsString(rewards);
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("Failed to serialize F1 V-Rank rewards", ex);
-        }
-    }
-
-    private String binaryRowsJson(List<F3BinarySettlementSeed> rows) {
-        try {
-            return JSON.writeValueAsString(rows.stream().map(this::binarySettlement).toList());
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("Failed to serialize F3 binary settlement rows", ex);
-        }
-    }
-
-    private String f4QuotaRowsJson(List<F4QuotaSeed> rows) {
-        return mapRowsJson(rows.stream().map(this::quotaRow).toList(), "F4 quota rows");
-    }
-
-    private String f4AmbassadorBandsJson(List<F4AmbassadorBandSeed> rows) {
-        return mapRowsJson(rows.stream().map(this::ambassadorBand).toList(), "F4 ambassador bands");
-    }
-
-    private String f4PodiumJson(List<F4PodiumSeed> rows) {
-        return mapRowsJson(rows.stream().map(this::podium).toList(), "F4 leaderboard podium");
-    }
-
-    private String mapRowsJson(List<Map<String, Object>> rows, String label) {
-        try {
-            return JSON.writeValueAsString(rows);
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("Failed to serialize " + label, ex);
-        }
-    }
-
     private String nextRewardId(String level) {
-        return "vr-" + level + "-" + System.currentTimeMillis() + "-" + REWARD_SEQUENCE.incrementAndGet();
+        return "vr-" + level + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     private List<String> voucherOptions() {
@@ -1577,7 +1363,9 @@ public class OpsTeamService {
     }
 
     private Map<String, Object> leadershipSnapshot() {
-        int unlockRank = intConfig(uiConfigKey("F.vrank.leadership.unlockRank"), 0);
+        Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
+        Map<String, Object> leaderboard = commissionRepository.leaderboardSummary();
+        int unlockRank = leadershipUnlockRank();
         int topN = intConfig(uiConfigKey("F.vrank.leadership.topN"), 0);
         List<Map<String, Object>> ranks = leadershipRanks();
         int totalMembers = ranks.stream().mapToInt(rank -> ((Number) rank.get("pop")).intValue()).sum();
@@ -1586,9 +1374,9 @@ public class OpsTeamService {
                 .mapToInt(rank -> ((Number) rank.get("pop")).intValue())
                 .sum();
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("weeklyGmvUsdt", configDecimal(uiConfigKey("F.vrank.leadership.weeklyGmvUsdt"), BigDecimal.ZERO));
-        response.put("poolRatio", configDecimal(uiConfigKey("F.vrank.leadership.poolRatio"), BigDecimal.ZERO));
-        response.put("monthlyCapUsdt", configDecimal(uiConfigKey("F.vrank.leadership.monthlyCapUsdt"), BigDecimal.ZERO));
+        response.put("weeklyGmvUsdt", decimalValue(summary.get("weeklyGmvUsd"), BigDecimal.ZERO));
+        response.put("poolRatio", percentRatio(configText("F.pool.ratio", ""), BigDecimal.ZERO));
+        response.put("monthlyCapUsdt", decimalValue(leaderboard.get("poolUsd"), BigDecimal.ZERO));
         response.put("unlockRank", unlockRank);
         response.put("topN", topN);
         response.put("ranks", ranks);
@@ -1599,19 +1387,16 @@ public class OpsTeamService {
     }
 
     private List<Map<String, Object>> leadershipRanks() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
-        List<Map<String, Object>> ranks = new ArrayList<>();
-        for (int i = 3; i <= 12; i++) {
-            VRankSeed seed = requireVRank("V" + i);
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("v", i);
-            row.put("votes", intConfig(uiConfigKey("F.pool.votes.V" + i), 0));
-            row.put("pop", intConfig(uiConfigKey("F.vrank.V" + i + ".pop"), 0));
-            ranks.add(row);
-        }
-        return ranks;
+        return commissionRepository.leadershipRanks().stream()
+                .map(row -> {
+                    Map<String, Object> normalized = new LinkedHashMap<>();
+                    normalized.put("v", intValue(row.get("v"), 0));
+                    normalized.put("votes", intValue(row.get("votes"), 0));
+                    normalized.put("pop", intValue(row.get("pop"), 0));
+                    normalized.put("source", "nx_v_rank_config + nx_team_member");
+                    return normalized;
+                })
+                .toList();
     }
 
     private int leadershipTopConcentrationPct(List<Map<String, Object>> ranks, int topN) {
@@ -1649,34 +1434,7 @@ public class OpsTeamService {
     }
 
     private Set<String> thresholdFields(VRankSeed seed) {
-        Set<String> fields = new LinkedHashSet<>();
-        if (seed.selfBuy() != null) {
-            fields.add("selfBuy");
-        }
-        if (seed.directRefs() != null) {
-            fields.add("directRefs");
-        }
-        if (seed.teamGv() != null) {
-            fields.add("teamGv");
-        }
-        if (seed.legCount() != null) {
-            fields.add("legCount");
-        }
-        if (seed.legRank() != null) {
-            fields.add("legRank");
-        }
-        return fields;
-    }
-
-    private String defaultField(VRankSeed seed, String field) {
-        return switch (field) {
-            case "selfBuy" -> seed.selfBuy();
-            case "directRefs" -> seed.directRefs();
-            case "teamGv" -> seed.teamGv();
-            case "legCount" -> seed.legCount();
-            case "legRank" -> seed.legRank();
-            default -> "";
-        };
+        return seed.fields();
     }
 
     private String normalizeVRankThreshold(String field, String raw) {
@@ -1690,6 +1448,31 @@ public class OpsTeamService {
         return "legRank".equals(field) ? value.toUpperCase(Locale.ROOT) : value;
     }
 
+    private Object vRankThresholdBusinessValue(String field, String value) {
+        return switch (field) {
+            case "selfBuy", "teamGv" -> BigDecimal.valueOf(moneyLabelToInt(value, 0));
+            case "directRefs", "legCount" -> parseDecimal(value).setScale(0, RoundingMode.DOWN).intValue();
+            case "legRank" -> value;
+            default -> throw new IllegalArgumentException("Unsupported F1 V-Rank threshold field");
+        };
+    }
+
+    private int leadershipUnlockRank() {
+        return leadershipRanks().stream()
+                .filter(row -> intValue(row.get("votes"), 0) > 0)
+                .mapToInt(row -> intValue(row.get("v"), 0))
+                .min()
+                .orElse(0);
+    }
+
+    private String quotaUnlock(String code) {
+        return quotaRows().stream()
+                .filter(row -> textValue(row, "name", "").toUpperCase(Locale.ROOT).contains(code))
+                .findFirst()
+                .map(row -> "月配额 " + row.get("cap"))
+                .orElse("");
+    }
+
     private int intConfig(String key, int fallback) {
         return configDecimal(key, BigDecimal.valueOf(fallback)).setScale(0, RoundingMode.DOWN).intValue();
     }
@@ -1700,48 +1483,11 @@ public class OpsTeamService {
 
     private static Set<String> uiConfigKeys() {
         Set<String> keys = new LinkedHashSet<>();
-        for (VRankSeed seed : VRANK_SEEDS) {
-            keys.add("F.vrank." + seed.v());
-            keys.add("F.vrank." + seed.v() + ".pop");
-            keys.add("F.vrank.rewards." + seed.v());
-            for (String field : staticThresholdFields(seed)) {
-                keys.add("F.vrank." + seed.v() + "." + field);
-            }
-        }
         keys.addAll(List.of(
-                "F.vrank.leadership.weeklyGmvUsdt",
-                "F.vrank.leadership.poolRatio",
-                "F.vrank.leadership.monthlyCapUsdt",
                 "F.vrank.leadership.unlockRank",
                 "F.vrank.leadership.topN"));
         for (int i = 1; i <= 12; i++) {
             keys.add("F.fulfillment.V" + i + ".queue.status");
-        }
-        for (int i = 1; i <= 7; i++) {
-            keys.add("F.unilevel.L" + i);
-            keys.add("F.unilevel.nex.L" + i);
-            keys.add("F.unilevel.L" + i + ".label");
-            keys.add("F.unilevel.L" + i + ".direct");
-        }
-        for (F2MetricSeed seed : F2_METRIC_SEEDS) {
-            keys.add("F2.metric." + seed.id() + ".label");
-            keys.add("F2.metric." + seed.id() + ".value");
-            keys.add("F2.metric." + seed.id() + ".sub");
-            keys.add("F2.metric." + seed.id() + ".tone");
-        }
-        for (F3MetricSeed seed : F3_METRIC_SEEDS) {
-            keys.add("F3.metric." + seed.id() + ".label");
-            keys.add("F3.metric." + seed.id() + ".value");
-            keys.add("F3.metric." + seed.id() + ".sub");
-            keys.add("F3.metric." + seed.id() + ".tone");
-        }
-        for (F2RateTierSeed seed : F2_RATE_TIER_SEEDS) {
-            String prefix = "F.rateTier." + seed.name();
-            keys.add(prefix + ".name");
-            keys.add(prefix + ".requirement");
-            keys.add(prefix + ".rate");
-            keys.add(prefix + ".distribution");
-            keys.add(prefix + ".className");
         }
         for (F2PolicyParamSeed seed : F2_POLICY_PARAM_SEEDS) {
             keys.add(seed.key());
@@ -1754,86 +1500,20 @@ public class OpsTeamService {
                 "F.unilevel.depthGate",
                 "F.unilevel.nexCap",
                 "F.unilevel.backfill",
+                "F.sunset.exclusions",
                 "F.binary.threshold",
                 "F.binary.matchRate",
                 "F.binary.spillover",
                 "F.binary.gvResetCron",
                 "F.binary.settlePeriod",
                 "F.binary.residualPolicy",
-                "F.binary.residualPool",
-                "F.binary.residualSub",
-                "F.binary.participantCount",
-                "F.binary.blockedCount",
-                "F.binary.monthlyMatchedUsd",
-                "F.binary.autoPlacement7dCount",
-                "F.binary.dailyMatchUsd",
-                "F3.binary.rows",
-                "F3.formula.user",
-                "F3.formula.trackA",
-                "F3.formula.trackB",
-                "F3.formula.matchAmount",
                 "F3.dailyCap.currentLabel",
                 "F3.dailyCap.windowLabel",
                 "F3.dailyCap.nextTrigger",
                 "F3.dailyCap.nextLabel",
-                "F3.dailyCap.currentMonth",
-                "F3.dailyCap.currentPhase",
                 "F.pool.ratio",
-                "F.pool.monthlyCap",
-                "F.quota.proUnlock",
-                "F.quota.rackUnlock",
-                "F.quota.monthlyStock",
-                "F.ambassador.q3-2025.status",
-                "F.leaderboard.poolUsd",
-                "F.leaderboard.period.status",
-                "F4.pool.weeklyGmvUsd",
-                "F4.pool.participantCount",
-                "F4.pool.settlementWindow",
-                "F4.pool.settlementDispatchWindow",
-                "F4.quota.rows",
-                "F4.ambassador.bands",
-                "F4.ambassador.pendingCount",
-                "F4.ambassador.budgetApprovedLabel",
-                "F4.ambassador.budgetCapLabel",
-                "F4.ambassador.kolBudgetPct",
-                "F4.ambassador.nextQuotaReviewDate",
-                "F4.leaderboard.participantCount",
-                "F4.leaderboard.fraudHitCount",
-                "F4.leaderboard.podium",
-                "F5.commission.monthlySpendLabel",
-                "F5.commission.coolingBalanceLabel",
-                "F5.commission.withdrawableThisMonthLabel",
-                "F5.commission.kinds",
-                "F5.commission.filters",
-                "F5.commission.events",
-                "F5.commission.auditFeed"));
-        for (int i = 3; i <= 12; i++) {
-            keys.add("F.pool.votes.V" + i);
-        }
-        for (Map<String, Object> event : F5_COMMISSION_EVENT_SEEDS) {
-            keys.add("F.commission." + event.get("id") + ".status");
-        }
+                "F.pool.monthlyCap"));
         return Collections.unmodifiableSet(keys);
-    }
-
-    private static Set<String> staticThresholdFields(VRankSeed seed) {
-        Set<String> fields = new LinkedHashSet<>();
-        if (seed.selfBuy() != null) {
-            fields.add("selfBuy");
-        }
-        if (seed.directRefs() != null) {
-            fields.add("directRefs");
-        }
-        if (seed.teamGv() != null) {
-            fields.add("teamGv");
-        }
-        if (seed.legCount() != null) {
-            fields.add("legCount");
-        }
-        if (seed.legRank() != null) {
-            fields.add("legRank");
-        }
-        return fields;
     }
 
     private boolean loosensPayoutControl(String key, BigDecimal oldValue, BigDecimal newValue) {
@@ -2011,185 +1691,11 @@ public class OpsTeamService {
                 .build());
     }
 
-    private static List<F3BinarySettlementSeed> binarySettlementSeeds() {
-        List<F3BinarySettlementSeed> seeds = new ArrayList<>();
-        seeds.add(new F3BinarySettlementSeed("usr_31E8", 84000, 62000, 6200, 1500, "结算中", "ok"));
-        seeds.add(new F3BinarySettlementSeed("usr_19C7", 38000, 41000, 3800, 1500, "达封顶", "warn"));
-        seeds.add(new F3BinarySettlementSeed("usr_02A9", 12000, 800, 0, 0, "阻塞 · 弱轨 < $1k", "err"));
-        seeds.add(new F3BinarySettlementSeed("usr_84F2", 5400, 4900, 490, 490, "结算中", "ok"));
-        for (int i = 0; i < 26; i++) {
-            String user = "usr_" + String.format("%04X", (0xA100 + i * 0x1D7) & 0xFFFF);
-            int trackA = 2200 + ((i * 7919) % 79000);
-            int trackB = 600 + ((i * 6131) % 77000);
-            boolean blocked = Math.min(trackA, trackB) < 1000;
-            int matchAmount = blocked ? 0 : (int) (Math.round((Math.min(trackA, trackB) * 0.1) / 10.0) * 10);
-            boolean capped = !blocked && matchAmount >= 1500;
-            int todayPaid = blocked ? 0 : Math.min(matchAmount, 1500);
-            seeds.add(new F3BinarySettlementSeed(
-                    user,
-                    trackA,
-                    trackB,
-                    matchAmount,
-                    todayPaid,
-                    blocked ? "阻塞 · 弱轨 < $1k" : capped ? "达封顶" : "结算中",
-                    blocked ? "err" : capped ? "warn" : "ok"));
-        }
-        return Collections.unmodifiableList(seeds);
+    private static VRankSeed vRank(String v, String... fields) {
+        return new VRankSeed(v, Set.of(fields));
     }
 
-    private static Map<String, List<Map<String, Object>>> vrankRewardSeeds() {
-        Map<String, List<Map<String, Object>>> seeds = new LinkedHashMap<>();
-        for (String level : VRANK_LEVELS) {
-            seeds.put(level, List.of());
-        }
-        seeds.put("V1", List.of(rewardSeed("vr-V1-nex", "nex", new BigDecimal("500"), null, null, null)));
-        seeds.put("V2", List.of(rewardSeed("vr-V2-nex", "nex", new BigDecimal("2000"), null, null, null)));
-        seeds.put("V3", List.of(rewardSeed("vr-V3-nex", "nex", new BigDecimal("10000"), null, null, null)));
-        seeds.put("V4", List.of(rewardSeed("vr-V4-nex", "nex", new BigDecimal("50000"), null, null, null)));
-        seeds.put("V5", List.of(rewardSeed("vr-V5-nex", "nex", new BigDecimal("200000"), null, null, null)));
-        seeds.put("V6", List.of(rewardSeed("vr-V6-nex", "nex", new BigDecimal("800000"), null, null, null)));
-        seeds.put("V7", List.of(rewardSeed("vr-V7-nex", "nex", new BigDecimal("3200000"), null, null, null)));
-        seeds.put("V8", List.of(rewardSeed("vr-V8-nex", "nex", new BigDecimal("10000000"), null, null, null)));
-        return Collections.unmodifiableMap(seeds);
-    }
-
-    private static Map<String, Object> rewardSeed(
-            String id, String type, BigDecimal amount, String voucherId, String skuId, String custom) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", id);
-        item.put("type", type);
-        if (amount != null) {
-            item.put("amount", amount);
-        }
-        if (StringUtils.hasText(voucherId)) {
-            item.put("voucherId", voucherId);
-        }
-        if (StringUtils.hasText(skuId)) {
-            item.put("skuId", skuId);
-        }
-        if (StringUtils.hasText(custom)) {
-            item.put("custom", custom);
-        }
-        return Collections.unmodifiableMap(item);
-    }
-
-    private static List<Map<String, Object>> f5CommissionKinds() {
-        return List.of(
-                f5Kind("all", "ALL", "全部佣金类型", "$8.42M", "12,847 笔", "k-network", ""),
-                f5Kind("network", "NETWORK", "L1-L7 网络版税", "$3.21M", "8,124 笔", "k-network", "var(--brand)"),
-                f5Kind("binary", "BINARY", "双轨平衡匹配", "$2.18M", "1,842 笔", "k-binary", "var(--cyan)"),
-                f5Kind("leadership", "LEADERSHIP", "领导奖池", "$1.46M", "214 笔", "k-leadership", "var(--warning)"),
-                f5Kind("cultivation", "CULTIVATION", "培育奖 NEX", "$0.92M", "418 笔", "k-cultivation", "#B6A4FF"),
-                f5Kind("genesis", "GENESIS", "创世节点二级版税", "$0.65M", "2,249 笔", "k-genesis", "var(--brand-2)"));
-    }
-
-    private static Map<String, Object> f5Kind(
-            String key,
-            String code,
-            String label,
-            String amountLabel,
-            String countLabel,
-            String className,
-            String amountColor) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("key", key);
-        item.put("code", code);
-        item.put("label", label);
-        item.put("amountLabel", amountLabel);
-        item.put("countLabel", countLabel);
-        item.put("className", className);
-        item.put("amountColor", amountColor);
-        return Collections.unmodifiableMap(item);
-    }
-
-    private static List<Map<String, Object>> f5CommissionFilters() {
-        return List.of(
-                f5Filter("all", "全部状态"),
-                f5Filter("计提", "计提中"),
-                f5Filter("可提", "已解锁可提"),
-                f5Filter("frozen", "已冻结"),
-                f5Filter("rejected", "已驳回"),
-                f5Filter("异常回退", "异常回退"));
-    }
-
-    private static Map<String, Object> f5Filter(String key, String label) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("key", key);
-        item.put("label", label);
-        return Collections.unmodifiableMap(item);
-    }
-
-    private static List<Map<String, Object>> f5CommissionEvents() {
-        return List.of(
-                f5Event("CM-7781", "network", "usr_19C7", new BigDecimal("420"), "USDT", 60, "冷却 18d", "计提"),
-                f5Event("CM-7780", "binary", "usr_31E8", new BigDecimal("1500"), "USDT", 100, "已解锁", "可提"),
-                f5Event("CM-7779", "cultivation", "usr_02A9", new BigDecimal("200"), "NEX", 0, "冷却 30d", "计提"),
-                f5Event("CM-7778", "leadership", "usr_77D4", new BigDecimal("1240"), "USDT", 100, "已解锁", "可提"),
-                f5Event("CM-7777", "leadership", "usr_31E8", new BigDecimal("880"), "USDT", 100, "已解锁", "可提"),
-                f5Event("CM-7776", "network", "usr_84F2", new BigDecimal("65"), "USDT", 42, "冷却 17d", "计提"),
-                f5Event("CM-7775", "binary", "usr_84F2", new BigDecimal("490"), "USDT", 100, "已解锁", "可提"),
-                f5Event("CM-7774", "genesis", "usr_19C7", new BigDecimal("90"), "USDT", 100, "已解锁", "可提"),
-                f5Event("CM-7773", "cultivation", "usr_55B1", new BigDecimal("3500"), "NEX", 25, "冷却 22d", "计提"),
-                f5Event("CM-7772", "leadership", "usr_19C7", new BigDecimal("520"), "USDT", 0, "冻结", "frozen"),
-                f5Event("CM-7771", "network", "usr_02A9", new BigDecimal("140"), "USDT", 0, "已驳回", "rejected"),
-                f5Event("CM-7770", "network", "usr_55B1", new BigDecimal("140"), "USDT", 0, "撤销", "异常回退"));
-    }
-
-    private static Map<String, Object> f5Event(
-            String id,
-            String kind,
-            String user,
-            BigDecimal amount,
-            String currency,
-            int cooldownPercent,
-            String cooldownLabel,
-            String state) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", id);
-        item.put("kind", kind);
-        item.put("user", user);
-        item.put("amount", amount);
-        item.put("currency", currency);
-        item.put("cooldownPercent", cooldownPercent);
-        item.put("cooldownLabel", cooldownLabel);
-        item.put("state", state);
-        return Collections.unmodifiableMap(item);
-    }
-
-    private static List<Map<String, Object>> f5CommissionAuditFeed() {
-        return List.of(
-                f5AuditFeed("2m", "CM-7770 网络版税异常回退已驳回,红冲 D4,risk-ops", "HIGH"),
-                f5AuditFeed("14m", "CM-7762 培育奖 NEX 已冻结,K2 套利簇,risk-ops", "HIGH"),
-                f5AuditFeed("38m", "CM-7747 领导奖提前解锁,周结算优先,super-admin", "MEDIUM"),
-                f5AuditFeed("1h", "批量解锁 89 笔,双轨佣金冷却到期,server cron", "LOW"),
-                f5AuditFeed("3h", "CM-7710 培育奖已驳回,红冲,risk-ops", "HIGH"));
-    }
-
-    private static Map<String, Object> f5AuditFeed(String when, String text, String level) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("when", when);
-        item.put("text", text);
-        item.put("level", level);
-        return Collections.unmodifiableMap(item);
-    }
-
-    private record VRankSeed(
-            String v,
-            String selfBuy,
-            String directRefs,
-            String teamGv,
-            String legCount,
-            String legRank,
-            int pop) {
-    }
-
-    private record F2MetricSeed(String id, String label, String value, String sub, String tone) {
-    }
-
-    private record F2UnilevelSeed(String level, BigDecimal usdtPct, BigDecimal nexReward, String label, boolean direct) {
-    }
-
-    private record F2RateTierSeed(String name, String requirement, String rate, String distribution, String className) {
+    private record VRankSeed(String v, Set<String> fields) {
     }
 
     private record F2PolicyParamSeed(
@@ -2204,25 +1710,4 @@ public class OpsTeamService {
             String unit) {
     }
 
-    private record F3MetricSeed(String id, String label, String value, String sub, String tone) {
-    }
-
-    private record F3BinarySettlementSeed(
-            String user,
-            int trackA,
-            int trackB,
-            int matchAmount,
-            int todayPaid,
-            String state,
-            String tone) {
-    }
-
-    private record F4QuotaSeed(String name, int current, int cap, boolean tight) {
-    }
-
-    private record F4AmbassadorBandSeed(String name, int count) {
-    }
-
-    private record F4PodiumSeed(int rank, String userId, String gmvLabel, String tip, String className) {
-    }
 }

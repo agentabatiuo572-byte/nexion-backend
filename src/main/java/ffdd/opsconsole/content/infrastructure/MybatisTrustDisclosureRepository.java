@@ -41,45 +41,11 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     private final DisclosureGateActionMapper disclosureGateActionMapper;
     private final DisclosureDraftMapper disclosureDraftMapper;
 
-    private static final List<TrustSectionSeed> TRUST_SECTION_SEEDS = List.of(
-            section("financials", "财务透明数字组", "数字组 + 脚注", "v5", "PUBLISHED", "合规 / 超管", true, "05-12", 10),
-            section("leadership", "管理团队", "人员卡 x5(姓名/职务/前公司/占位链接)", "v3", "PUBLISHED", "内容主管", false, "03-08", 20),
-            section("nexNarrative", "NEX 代币叙事", "叙事文案 + 行情 stats + top3 客户榜", "v6", "PUBLISHED", "合规 / 超管", true, "05-26", 30),
-            section("complianceBadges", "合规徽章", "徽章组(SOC2 / ISO27001 / CertiK)", "v2", "PUBLISHED", "合规 / 超管", true, "02-14", 40),
-            section("auditsReserves", "审计与储备证明", "外链占位(链上储备 / 审计报告)", "v4", "PUBLISHED", "合规 / 超管", true, "04-20", 50),
-            section("listings", "交易所与行情外链", "外链占位(PancakeSwap 等)", "v2", "PUBLISHED", "内容主管", false, "01-30", 60));
-
-    private static final List<FieldSeed> FIELD_SEEDS = List.of(
-            field(FINANCIALS, "MRR", "$4.87M", "+22%", 10),
-            field(FINANCIALS, "Active", "184,206", "+38%", 20),
-            field(FINANCIALS, "Devices", "28,432", "+12%", 30),
-            field(FINANCIALS, "Payouts", "$31.2M", "+27%", 40),
-            field("leadership", "成员数", "5 位核心成员", "", 10),
-            field("nexNarrative", "叙事重点", "产能、回购、锁仓与网络增长", "", 10),
-            field("complianceBadges", "徽章", "SOC2 / ISO27001 / CertiK", "", 10),
-            field("auditsReserves", "证明", "链上储备证明 + 审计报告", "", 10),
-            field("listings", "外链", "PancakeSwap / 行情页", "", 10));
-
-    private static final List<JurisdictionSeed> JURISDICTION_SEEDS = List.of(
-            jurisdiction("MAS", "新加坡", "v11", "PUBLISHED", "05-02", 41200L, "100", 0L),
-            jurisdiction("BaFin", "德国", "v11", "PUBLISHED", "05-02", 18600L, "99.7", 4L),
-            jurisdiction("FinCEN", "美国", "v10", "PUBLISHED", "03-18", 52800L, "100", 0L),
-            jurisdiction("SFC", "香港", "v12", "PUBLISHED", "06-08", 9400L, "72", 312L));
-
-    private static final List<ChapterSeed> CHAPTER_SEEDS = List.of(
-            chapter("01", "收益预估不构成承诺", "Earnings estimates are not guarantees", 10),
-            chapter("02", "硬件衰减与产量波动", "Hardware decay & output variance", 20),
-            chapter("03", "NEX 市场风险", "NEX market risk", 30),
-            chapter("04", "提现窗口与合规审查", "Withdrawal windows & compliance review", 40),
-            chapter("05", "质押不可撤销", "Staking is irrevocable", 50),
-            chapter("06", "网络经济与推荐激励", "Network economy & referral incentives", 60),
-            chapter("07", "托管、KYC 与监管管辖", "Custody, KYC & regulatory jurisdiction", 70));
-
-    private static final List<GateSeed> GATE_SEEDS = List.of(
-            gate("withdraw", "提现", "提交提现前服务器先验披露确认", "已实装", "ok", true, 10),
-            gate("staking", "质押锁仓", "App 侧排期接入披露确认", "规划集成 · 待接线", "warn", false, 20),
-            gate("exchange", "兑换", "提交兑换前服务器先验披露确认", "已实装", "ok", false, 30),
-            gate(NEX_V2, "NEX v2 历史锁仓", "历史功能只读保留,不再扩展受限动作", "已下线 · 历史兼容", "dim", false, 40));
+    private static final List<TrustSectionSeed> TRUST_SECTION_SEEDS = List.of();
+    private static final List<FieldSeed> FIELD_SEEDS = List.of();
+    private static final List<JurisdictionSeed> JURISDICTION_SEEDS = List.of();
+    private static final List<ChapterSeed> CHAPTER_SEEDS = List.of();
+    private static final List<GateSeed> GATE_SEEDS = List.of();
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
@@ -444,26 +410,6 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         disclosureGateActionMapper.insert(entity);
-    }
-
-    private void ensureDisclosureDraft(LocalDateTime now) {
-        if (findDraftEntity("SFC", "v13") != null) {
-            return;
-        }
-        DisclosureDraftEntity draft = new DisclosureDraftEntity();
-        draft.setJurisdictionCode("SFC");
-        draft.setVersionLabel("v13");
-        draft.setLanguageScope("en+zh");
-        draft.setEffectiveDate("06-30");
-        draft.setRequiresReack(true);
-        draft.setZhBody("香港 SFC 风险披露草稿 v13,发布后需要用户重新确认。");
-        draft.setEnBody("Hong Kong SFC risk disclosure draft v13 requires user re-acknowledgement after publication.");
-        draft.setStatus("DRAFT");
-        draft.setLastOperator("seed");
-        draft.setCreatedAt(now);
-        draft.setUpdatedAt(now);
-        draft.setIsDeleted(0);
-        disclosureDraftMapper.insert(draft);
     }
 
     private TrustSectionView toTrustSection(TrustSectionEntity entity) {

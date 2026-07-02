@@ -99,6 +99,54 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public List<Map<String, Object>> maturityBuckets(LocalDateTime startAt, LocalDateTime endAt) {
+        return mapper.maturityBuckets(startAt, endAt);
+    }
+
+    @Override
+    public List<BigDecimal> riskPressureSeries(LocalDateTime since) {
+        return mapper.riskPressureSeries(since).stream()
+                .map(this::nz)
+                .toList();
+    }
+
+    @Override
+    public List<Map<String, Object>> riskRuleBuckets(LocalDateTime since) {
+        return mapper.riskRuleBuckets(since);
+    }
+
+    @Override
+    public List<Map<String, Object>> riskSeverityBuckets(LocalDateTime since) {
+        return mapper.riskSeverityBuckets(since);
+    }
+
+    @Override
+    public List<Map<String, Object>> riskVolumeBuckets(LocalDateTime since) {
+        return mapper.riskVolumeBuckets(since);
+    }
+
+    @Override
+    public BigDecimal currentReserveUsd() {
+        return nz(mapper.currentReserveUsd());
+    }
+
+    @Override
+    public Optional<BigDecimal> latestNexUsdtPrice() {
+        return Optional.ofNullable(mapper.latestNexUsdtPrice()).map(this::nz);
+    }
+
+    @Override
+    public void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
+        mapper.insertReserveInjection(
+                "RSV-" + java.util.UUID.randomUUID(),
+                trim(voucherNo),
+                nz(amountUsd).setScale(2, java.math.RoundingMode.HALF_UP),
+                trim(reason),
+                trim(operator),
+                trim(idempotencyKey));
+    }
+
+    @Override
     public long countLedgerBills(String type, Long userId, String keyword) {
         return mapper.countLedgerBills(trim(type), userId, trim(keyword));
     }

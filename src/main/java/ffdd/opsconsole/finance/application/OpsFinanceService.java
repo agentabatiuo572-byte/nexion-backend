@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.finance.domain.DepositAggregateView;
 import ffdd.opsconsole.finance.domain.DepositBinRiskView;
 import ffdd.opsconsole.finance.domain.DepositCardRiskParamView;
@@ -33,6 +34,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -40,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -73,11 +76,12 @@ public class OpsFinanceService {
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
     private static final String WITHDRAW_DISCLOSURE_GATE_KEY = "disclosure.gate.withdraw";
     private static final String WITHDRAW_GEO_EMERGENCY_KEY = "emergency.geo.j4.block.required";
-    private static final String WITHDRAW_GEO_ENDPOINT_COUNTRIES_KEY = "emergency.geo.endpoint.withdraw.countries";
+    private static final String WITHDRAW_GEO_ENDPOINT_KEY = "withdraw";
     private static final Pattern FIRST_DECIMAL = Pattern.compile("(\\d+(?:\\.\\d+)?)");
     private static final Pattern K3_VELOCITY_RULE = Pattern.compile("^24h\\s*(>=|>)\\s*(\\d+)\\s*笔\\s*或\\s*(>=|>)\\s*\\$?([\\d,]+)$", Pattern.CASE_INSENSITIVE);
     private static final int HIGH_RISK_SCORE = 70;
     private final PlatformConfigFacade configFacade;
+    private final EmergencyControlRepository emergencyRepository;
     private final TreasuryCoverageFacade coverageFacade;
     private final WithdrawalOrderRepository withdrawalRepository;
     private final DepositOpsRepository depositOpsRepository;
@@ -124,7 +128,11 @@ public class OpsFinanceService {
         response.put("bins", bins);
         response.put("binLockedCount", lockedBins);
         response.put("chargebacks", chargebacks());
-        response.put("sources", List.of("nx_deposit_order", "nx_payment_record", "nx_config_item: finance.topup.*"));
+        response.put("sources", List.of(
+                "nx_deposit_order",
+                "nx_payment_record",
+                "nx_deposit_reconciliation_writeoff",
+                "nx_config_item: finance.topup.params"));
         return ApiResult.ok(response);
     }
 
@@ -219,13 +227,19 @@ public class OpsFinanceService {
         if (guard != null) {
             return guard;
         }
-        String configKey = reconciliationConfigKey(channel.code());
-        if ("RECONCILED".equalsIgnoreCase(configValue(configKey, ""))) {
+        LocalDate reconcileDate = LocalDate.now();
+        if (depositOpsRepository.hasReconciliationWriteoff(channel.code(), reconcileDate)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        configFacade.upsertAdminValue(configKey, "RECONCILED", "STRING", TOPUP_CONFIG_GROUP, "D1 reconciliation writeoff");
+        depositOpsRepository.writeoffReconciliation(
+                channel.code(),
+                reconcileDate,
+                request.operator() == null ? "" : request.operator().trim(),
+                request.reason().trim(),
+                idempotencyKey.trim());
         audit("D1_TOPUP_RECONCILIATION_WRITEOFF", "TOPUP_RECONCILIATION", channel.id(), request.operator(), Map.of(
                 "channel", channel.id(),
+                "reconcileDate", reconcileDate.toString(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return topupOverview();
@@ -527,7 +541,7 @@ public class OpsFinanceService {
         BigDecimal providerAmount = safe(aggregate.providerAmount());
         BigDecimal ledgerAmount = safe(aggregate.ledgerAmount());
         BigDecimal diffAmount = providerAmount.subtract(ledgerAmount);
-        boolean reconciled = "RECONCILED".equalsIgnoreCase(configValue(reconciliationConfigKey(channelCode), ""));
+        boolean reconciled = depositOpsRepository.hasReconciliationWriteoff(channelCode, LocalDate.now());
         String diff = diffText(diffAmount, aggregate.providerCount(), aggregate.ledgerCount(), reconciled);
         return new DepositReconciliationRowView(
                 channelId,
@@ -680,10 +694,6 @@ public class OpsFinanceService {
 
     private String cardParamConfigKey(String key) {
         return "finance.topup.card." + key;
-    }
-
-    private String reconciliationConfigKey(String channelCode) {
-        return "finance.topup.reconciliation." + normalizeChannelCode(channelCode) + ".status";
     }
 
     private String binConfigKey(String segment) {
@@ -844,20 +854,20 @@ public class OpsFinanceService {
     }
 
     private boolean withdrawGateEnabled() {
-        return configFacade.activeValue(WITHDRAW_KILLSWITCH_KEY)
-                .or(() -> configFacade.activeValue(WITHDRAW_LEGACY_KILLSWITCH_KEY))
+        return controlValue(WITHDRAW_KILLSWITCH_KEY)
+                .or(() -> controlValue(WITHDRAW_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
-                .orElse(false);
+                .orElse(true);
     }
 
     private boolean withdrawDisclosureGateActive() {
-        return configFacade.activeValue(WITHDRAW_DISCLOSURE_GATE_KEY)
+        return controlValue(WITHDRAW_DISCLOSURE_GATE_KEY)
                 .map(this::parseDisclosureGateActive)
                 .orElse(false);
     }
 
     private boolean withdrawGeoEmergencyBlocked() {
-        return configFacade.activeValue(WITHDRAW_GEO_EMERGENCY_KEY)
+        return controlValue(WITHDRAW_GEO_EMERGENCY_KEY)
                 .map(this::parseDisclosureGateActive)
                 .orElse(false);
     }
@@ -866,7 +876,7 @@ public class OpsFinanceService {
         if (order == null || order.userId() == null) {
             return false;
         }
-        Set<String> blockedCountries = parseCountryCsv(configFacade.activeValue(WITHDRAW_GEO_ENDPOINT_COUNTRIES_KEY).orElse(""));
+        Set<String> blockedCountries = withdrawEndpointBlockedCountries();
         if (blockedCountries.isEmpty()) {
             return false;
         }
@@ -875,14 +885,16 @@ public class OpsFinanceService {
                 .orElse(false);
     }
 
-    private Set<String> parseCountryCsv(String raw) {
-        if (!StringUtils.hasText(raw)) {
-            return Set.of();
-        }
-        return Set.copyOf(List.of(raw.split(",")).stream()
-                .map(country -> country.trim().toUpperCase(Locale.ROOT))
+    private Set<String> withdrawEndpointBlockedCountries() {
+        return emergencyRepository.geoEndpointPolicies().stream()
+                .filter(row -> WITHDRAW_GEO_ENDPOINT_KEY.equalsIgnoreCase(String.valueOf(row.getOrDefault("endpointKey", "")).trim()))
+                .map(row -> String.valueOf(row.getOrDefault("countryCode", "")).trim().toUpperCase(Locale.ROOT))
                 .filter(StringUtils::hasText)
-                .toList());
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private Optional<String> controlValue(String key) {
+        return emergencyRepository.settingValue(key);
     }
 
     private boolean coverageBelowRedline() {

@@ -5,5 +5,6 @@ public record TrustDisclosureStats(
         int jurisdictions,
         long staleAckUsers,
         long weeklyGateBlocked,
-        double sfcReackPct) {
+        String reackJurisdiction,
+        double reackPct) {
 }

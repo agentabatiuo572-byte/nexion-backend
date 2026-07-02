@@ -373,6 +373,45 @@ class OpsBiServiceTest {
         }
 
         @Override
+        public List<Map<String, Object>> maturityBuckets(LocalDateTime startAt, LocalDateTime endAt) {
+            return List.of();
+        }
+
+        @Override
+        public List<BigDecimal> riskPressureSeries(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> riskRuleBuckets(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> riskSeverityBuckets(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> riskVolumeBuckets(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public BigDecimal currentReserveUsd() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public Optional<BigDecimal> latestNexUsdtPrice() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
+        }
+
+        @Override
         public long countLedgerBills(String type, Long userId, String keyword) {
             return counts.getOrDefault(type, counts.getOrDefault(null, 0L));
         }

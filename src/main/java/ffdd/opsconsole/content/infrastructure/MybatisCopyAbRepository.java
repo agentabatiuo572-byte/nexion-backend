@@ -36,52 +36,10 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     private final CopyExperimentVariantMapper variantMapper;
     private final CopyFrameworkParamMapper frameworkMapper;
 
-    private static final List<CopySeed> COPY_SEEDS = List.of(
-            copy("home.conversionBanner", "主转化横幅 · 激活设备每日收益话术", "Home", "v7", "PUBLISHED", "marketing.home.convBanner", "EXP-2611", "05-28"),
-            copy("home.missedIncome", "错过收益条 · 与基准机型的日产差额", "Home", "v4", "PUBLISHED", "marketing.home.missedIncome", "EXP-2612", "05-30"),
-            copy("home.heroCta", "首屏主按钮文案", "Home", "v9", "PUBLISHED", "marketing.home.heroCta", "", "05-21"),
-            copy("home.trialNudge", "试用引导条(试用资格用户可见)", "Home", "v3", "PUBLISHED", "marketing.home.trialNudge", "", "04-30"),
-            copy("home.paybackChip", "回本周期角标", "Home", "v2", "PUBLISHED", "marketing.home.paybackChip", "", "04-02"),
-            copy("me.upgradeCard", "「该升级了」卡片 · 按机队推荐", "Me", "v5", "PUBLISHED", "marketing.me.upgradeCard", "EXP-2613", "06-02"),
-            copy("me.referralNudge", "邀请返佣提示条", "Me", "v6", "PUBLISHED", "marketing.me.referralNudge", "", "05-11"),
-            copy("me.vrankProgress", "V 等级进度话术", "Me", "v2", "PUBLISHED", "marketing.me.vrankProgress", "", "03-19"),
-            copy("me.walletEmpty", "钱包空态引导", "Me", "v3", "PUBLISHED", "marketing.me.walletEmpty", "", "02-27"),
-            copy("store.paybackHint", "商品卡回本提示", "商城", "v4", "PUBLISHED", "marketing.store.paybackHint", "EXP-2598", "05-06"),
-            copy("store.bundleBanner", "捆绑购横幅", "商城", "v3", "PUBLISHED", "marketing.store.bundleBanner", "", "04-22"),
-            copy("store.tradeinHook", "以旧换新钩子文案", "商城", "v2", "PUBLISHED", "marketing.store.tradeinHook", "", "03-30"));
-
-    private static final List<VersionSeed> HCB_VERSIONS = List.of(
-            version("home.conversionBanner", "v8", "DRAFT", "li.wen / -", "06-10 18:22",
-                    "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
-                    "Reinvest {amount} USDT and earn {nex} NEX", "Home", "全量", "50", "复投文案草稿"),
-            version("home.conversionBanner", "v7", "PUBLISHED", "li.wen / chen.r", "05-28 11:04",
-                    "激活 {targetName},每天赚 ${targetDaily},约 {paybackDays} 天回本,收益是 {lowestName} 的 {multiplier} 倍",
-                    "Activate {targetName} · earn ${targetDaily}/day · payback ~{paybackDays} days · {multiplier}x {lowestName}",
-                    "Home", "P3 · 全语言", "50", "当前线上版本"),
-            version("home.conversionBanner", "v6", "ARCHIVED", "zhao.m / chen.r", "04-12 09:40",
-                    "激活 {targetName},开启每日收益", "Activate {targetName} and start daily earnings",
-                    "Home", "P2-P3", "50", "上一轮版本"),
-            version("home.conversionBanner", "v5", "ARCHIVED", "zhao.m / 超管", "03-02 15:17",
-                    "购买 {targetName},获得更多收益", "Buy {targetName} for higher earnings",
-                    "Home", "全量", "50", "历史版本"));
-
-    private static final List<FrameworkSeed> FRAMEWORK_SEEDS = List.of(
-            framework("split", "分流比例默认", "变体等分", "默认按变体等分,上线前可调", 10),
-            framework("aud", "受众定向默认", "全量", "默认覆盖全部可见用户", 20),
-            framework("sample", "最小样本量", "5,000 / 变体", "未达样本量不允许采纳", 30),
-            framework("maxrun", "最长运行期", "90 天", "超过最长运行期需要复核", 40));
-
-    private static final List<ExperimentSeed> EXPERIMENT_SEEDS = List.of(
-            experiment("EXP-2611", "home.conversionBanner", "P3 · 全语言", "412K", "18.3K", "RUNNING", "05-29 起 · 已 13 天",
-                    List.of(variant("A(v7现版)", 50, "4.1", 10), variant("B(v8候选)", 50, "4.8", 20))),
-            experiment("EXP-2612", "home.missedIncome", "全量", "388K", "13.6K", "RUNNING", "错过收益条多版本实验",
-                    List.of(variant("A", 34, "3.2", 10), variant("B", 33, "3.9", 20), variant("C", 33, "3.4", 30))),
-            experiment("EXP-2613", "me.upgradeCard", "zh · 注册>30天", "96K", "2.2K", "RUNNING", "升级卡片主文案实验",
-                    List.of(variant("A", 50, "2.1", 10), variant("B", 50, "2.6", 20))),
-            experiment("EXP-2607", "home.conversionBanner", "P2-P3", "1.02M", "37.8K", "ADOPTED", "v7 已采纳",
-                    List.of(variant("A(v6)", 50, "3.4", 10), variant("B(v7)", 50, "4.0", 20))),
-            experiment("EXP-2598", "store.paybackHint", "全量", "640K", "17.6K", "DISCARDED", "效果未达预期",
-                    List.of(variant("A", 50, "2.8", 10), variant("B", 50, "2.7", 20))));
+    private static final List<CopySeed> COPY_SEEDS = List.of();
+    private static final List<VersionSeed> HCB_VERSIONS = List.of();
+    private static final List<FrameworkSeed> FRAMEWORK_SEEDS = List.of();
+    private static final List<ExperimentSeed> EXPERIMENT_SEEDS = List.of();
 
     @Override
     public void ensureSeedData(LocalDateTime now) {

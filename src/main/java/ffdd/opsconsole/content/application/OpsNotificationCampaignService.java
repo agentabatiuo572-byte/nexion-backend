@@ -34,12 +34,6 @@ import org.springframework.util.StringUtils;
 public class OpsNotificationCampaignService {
     private static final Set<String> TIERS = Set.of("critical", "high", "normal", "low");
     private static final Set<String> ACTIVE_STATUSES = Set.of("draft", "scheduled", "sending", "sent", "cancelled");
-    private static final List<String> AUDIENCES = List.of(
-            "全量",
-            "SFC 辖区 · 未重确认用户",
-            "近 30 天提现 >$1k",
-            "注册 ≤14 天",
-            "P3 阶段活跃用户");
     private static final List<NotificationSwipeRouteView> SWIPE_ROUTES = List.of(
             new NotificationSwipeRouteView("/reinvest", "commission", "佣金到账 -> 复投"),
             new NotificationSwipeRouteView("/me/bills", "refund", "退款到账 -> 账单"),
@@ -59,7 +53,7 @@ public class OpsNotificationCampaignService {
                 campaigns,
                 campaignRepository.listCapRules(),
                 List.copyOf(TIERS),
-                AUDIENCES,
+                audienceOptions(campaigns),
                 List.copyOf(ACTIVE_STATUSES),
                 SWIPE_ROUTES,
                 List.of("nx_notification_campaign", "nx_notification_cap_rule", "nx_notification")));
@@ -305,6 +299,15 @@ public class OpsNotificationCampaignService {
                 criticalInflight,
                 delivered <= 0 ? "0%" : String.format(Locale.ROOT, "%.1f%%", read * 100.0 / delivered),
                 compactNumber(read * 0.031));
+    }
+
+    private List<String> audienceOptions(List<NotificationCampaignRow> campaigns) {
+        return campaigns.stream()
+                .map(NotificationCampaignRow::audience)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     private double quantity(String value) {

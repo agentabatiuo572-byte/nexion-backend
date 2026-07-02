@@ -95,6 +95,21 @@ public class AuditLogService {
                 query.result(), query.userId(), query.actorId(), query.limit());
     }
 
+    public List<AuditStatsBucket> countActionsByPrefixes(AuditStatsQueryRequest request, List<String> prefixes) {
+        NormalizedAuditStatsQuery query = normalizeStatsQuery(request);
+        List<String> normalizedPrefixes = prefixes == null ? List.of() : prefixes.stream()
+                .filter(StringUtils::hasText)
+                .map(prefix -> prefix.trim().toUpperCase(Locale.ROOT))
+                .distinct()
+                .toList();
+        if (normalizedPrefixes.isEmpty()) {
+            return List.of();
+        }
+        return auditLogMapper.countActionsByPrefixes(
+                query.startAt(), query.endAt(), query.serviceName(), query.action(), query.riskLevel(),
+                query.result(), query.userId(), query.actorId(), normalizedPrefixes);
+    }
+
     private AuditLogMapper.AuditLogWrite buildWrite(AuditLogWriteRequest request) {
         HttpServletRequest servletRequest = currentRequest();
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();

@@ -33,7 +33,7 @@ class OpsPlatformConfigServiceTest {
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
     @Test
-    void overviewSeedsRemainingA3DataAndExcludesDeletedDomains() {
+    void overviewExcludesDeletedDomainsWithoutMutatingReadPath() {
         repository.put(activeConfig(90L, "admin.system.ntp_source", "pool.ntp.org"));
         repository.put(activeConfig(91L, "admin.idempotency.window_hours", "24"));
 
@@ -49,8 +49,8 @@ class OpsPlatformConfigServiceTest {
                         "feature.ab.newWithdrawFlow",
                         "killswitch.withdraw",
                         "admin.health.event_pipeline");
-        assertThat(repository.items.get("admin.system.ntp_source").status()).isZero();
-        assertThat(repository.items.get("admin.idempotency.window_hours").status()).isZero();
+        assertThat(repository.items.get("admin.system.ntp_source").status()).isEqualTo(1);
+        assertThat(repository.items.get("admin.idempotency.window_hours").status()).isEqualTo(1);
     }
 
     @Test
@@ -131,19 +131,15 @@ class OpsPlatformConfigServiceTest {
     }
 
     @Test
-    void updateNormalizesKillSwitchAndMarksHighRisk() {
+    void updateRejectsKillSwitchBecauseJ1OwnsEmergencyControlSettings() {
         PlatformConfigUpdateRequest request =
                 new PlatformConfigUpdateRequest("gate", null, "withdraw", "disabled", "incident freeze", "superadmin");
 
         ApiResult<PlatformConfigResponse> result = service.update("idem-gate-1", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().configKey()).isEqualTo("killswitch.withdraw");
-        assertThat(result.getData().configValue()).isEqualTo("disabled");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("J1_KILLSWITCH_MOVED_TO_EMERGENCY_CONTROL_SETTING");
+        assertThat(repository.items).doesNotContainKey("killswitch.withdraw");
     }
 
     @SuppressWarnings("unchecked")

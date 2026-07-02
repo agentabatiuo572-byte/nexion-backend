@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.infrastructure.BiReportEntity;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -216,6 +217,26 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             """)
     List<BiReportView> reports(@Param("type") String type, @Param("statuses") List<String> statuses,
                                 @Param("pageSize") int pageSize, @Param("offset") int offset);
+
+    @Select("""
+            SELECT report_id AS reportId,
+                   report_name AS name,
+                   report_type AS type,
+                   cycle,
+                   file_format AS format,
+                   scope_text AS scope,
+                   field_text AS fields,
+                   status,
+                   row_count AS rowCount,
+                   contains_pii AS containsPii,
+                   masking_policy AS maskingPolicy
+              FROM nx_admin_fourth_batch_report
+             WHERE module_code = 'L5'
+               AND is_deleted = 0
+               AND UPPER(report_type) IN ('REGULATORY', 'REGULATORY_TEMPLATE', 'REGULATORY_EXPORT')
+             ORDER BY updated_at DESC, id DESC
+            """)
+    List<Map<String, Object>> regulatoryTemplates();
 
     @Select("""
             SELECT report_id AS reportId,

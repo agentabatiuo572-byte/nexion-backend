@@ -602,6 +602,26 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e1GenerationGatesReturnEmptyWhenCatalogIsEmpty() {
+        ApiResult<Map<String, Object>> result = service.e1GenerationGates();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("platformMonth", 0)
+                .containsEntry("phaseCurrent", "");
+        assertThat(result.getData().get("phaseOrder")).asList().isEmpty();
+        assertThat(result.getData().get("phases")).asList().isEmpty();
+        assertThat(result.getData().get("releases")).asList().isEmpty();
+        assertThat(result.getData().get("configValues"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .isEmpty();
+        assertThat(result.getData().toString())
+                .doesNotContain("NexionBox")
+                .doesNotContain("LLM 推理")
+                .doesNotContain("入门档");
+    }
+
+    @Test
     void e1PhaseArchiveRejectsReferencedPhase() {
         catalogRepository.phases.put("1", phase("1", "P1", 10));
         catalogRepository.phases.put("2", phase("2", "代际第一代", 20));
@@ -918,7 +938,8 @@ class OpsDeviceServiceTest {
                 null,
                 null,
                 null,
-                null);
+                null,
+                1L);
     }
 
     private static DeviceSkuUpsertRequest skuRequest(String skuId, String name, String status) {

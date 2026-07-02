@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.finance.domain.DepositAggregateView;
 import ffdd.opsconsole.finance.domain.DepositBinRiskView;
 import ffdd.opsconsole.finance.domain.DepositChargebackView;
@@ -30,7 +31,9 @@ import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +45,7 @@ import org.mockito.ArgumentCaptor;
 
 class OpsFinanceServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeWithdrawalOrderRepository withdrawalRepository = new FakeWithdrawalOrderRepository();
     private final FakeDepositOpsRepository depositOpsRepository = new FakeDepositOpsRepository();
@@ -51,6 +55,7 @@ class OpsFinanceServiceTest {
     private final OpsFinanceService service =
             new OpsFinanceService(
                     configFacade,
+                    emergencyRepository,
                     coverageFacade,
                     withdrawalRepository,
                     depositOpsRepository,
@@ -62,12 +67,13 @@ class OpsFinanceServiceTest {
     @BeforeEach
     void setUpRiskDefaults() {
         when(riskOpsRepository.withdrawRules()).thenReturn(List.of());
-        configFacade.values.put("killswitch.withdraw", "enabled");
+        emergencyRepository.settings.put("killswitch.withdraw", "enabled");
     }
 
     private OpsFinanceService service(OpsReadTimeSeedPolicy seedPolicy) {
         return new OpsFinanceService(
                 configFacade,
+                emergencyRepository,
                 coverageFacade,
                 withdrawalRepository,
                 depositOpsRepository,
@@ -364,7 +370,7 @@ class OpsFinanceServiceTest {
 
     @Test
     void reviewWithdrawalRejectsApproveWhenWithdrawKillSwitchDisabled() {
-        configFacade.values.put("killswitch.withdraw", "disabled");
+        emergencyRepository.settings.put("killswitch.withdraw", "disabled");
         withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
         WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
 
@@ -384,7 +390,7 @@ class OpsFinanceServiceTest {
 
     @Test
     void reviewWithdrawalRejectsApproveWhenI4DisclosureGateActive() {
-        configFacade.values.put("disclosure.gate.withdraw", "true");
+        emergencyRepository.settings.put("disclosure.gate.withdraw", "true");
         withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
         WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
 
@@ -404,7 +410,7 @@ class OpsFinanceServiceTest {
 
     @Test
     void reviewWithdrawalRejectsApproveWhenJ2EmergencyGeoBlockActive() {
-        configFacade.values.put("emergency.geo.j4.block.required", "true");
+        emergencyRepository.settings.put("emergency.geo.j4.block.required", "true");
         withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
         WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
 
@@ -420,6 +426,34 @@ class OpsFinanceServiceTest {
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("blockedReason", "WITHDRAWAL_GEO_BLOCKED")
                 .containsEntry("statusUnchanged", true);
+    }
+
+    @Test
+    void reviewWithdrawalRejectsApproveWhenJ2WithdrawEndpointPolicyBlocksUserCountry() {
+        emergencyRepository.geoEndpointPolicies.add(Map.of(
+                "endpointKey", "withdraw",
+                "countryCode", "US",
+                "source", "explicit"));
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_GEO_BLOCKED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalIgnoresRetiredWithdrawGeoEndpointConfigKey() {
+        emergencyRepository.settings.put("emergency.geo.endpoint.withdraw.countries", "US");
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING");
+        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
+
+        assertThat(result.getCode()).isEqualTo(0);
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("PENDING_CHAIN");
     }
 
     @Test
@@ -792,6 +826,141 @@ class OpsFinanceServiceTest {
         }
     }
 
+    private static final class FakeEmergencyControlRepository implements EmergencyControlRepository {
+        private final Map<String, String> settings = new LinkedHashMap<>();
+        private final List<Map<String, Object>> geoEndpointPolicies = new ArrayList<>();
+
+        @Override
+        public void ensureTables() {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoCountryPolicies() {
+            return List.of();
+        }
+
+        @Override
+        public void upsertGeoCountryPolicy(String countryCode, String countryName, String status, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointCatalogs() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> geoEndpointCatalog(String endpointKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointPolicies() {
+            return geoEndpointPolicies;
+        }
+
+        @Override
+        public void replaceGeoEndpointPolicies(String endpointKey, String endpointPath, String label, String biz, String domain,
+                                               List<String> countryCodes, String source, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoHits() {
+            return List.of();
+        }
+
+        @Override
+        public Map<String, Integer> geoEndpointHits() {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEdgeMetrics() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<String> settingValue(String settingKey) {
+            return Optional.ofNullable(settings.get(settingKey));
+        }
+
+        @Override
+        public void upsertSetting(String settingKey, String settingValue, String valueType, String groupCode, String remark, String operator) {
+            settings.put(settingKey, settingValue);
+        }
+
+        @Override
+        public Map<String, Object> tamperTrend(LocalDateTime now) {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperPaths() {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperAccounts() {
+            return List.of();
+        }
+
+        @Override
+        public void createTamperReport(String reportId, String window, boolean masked, String status,
+                                       Map<String, Object> payload, String operator, String reason) {
+        }
+
+        @Override
+        public List<Map<String, Object>> playbooks() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> playbook(String code) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void createPlaybook(String code, String name, String scene, boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   boolean drillRequired, boolean draft, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void updatePlaybook(String code, String name, String scene, Boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   Boolean drillRequired, String summary, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator) {
+        }
+
+        @Override
+        public Optional<Map<String, Object>> executionByIdempotencyKey(String code, String idempotencyKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> execution(String executionId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> executions(int limit) {
+            return List.of();
+        }
+
+        @Override
+        public void createExecution(Map<String, Object> row) {
+        }
+
+        @Override
+        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
+                                            List<Map<String, Object>> rollbackActions) {
+        }
+    }
+
     private static final class FakeWithdrawalOrderRepository implements WithdrawalOrderRepository {
         private WithdrawalOrderView order;
         private String lastStatus;
@@ -895,6 +1064,7 @@ class OpsFinanceServiceTest {
 
     private static final class FakeDepositOpsRepository implements DepositOpsRepository {
         private List<DepositAggregateView> aggregates = List.of();
+        private final Map<String, String> writeoffs = new LinkedHashMap<>();
 
         @Override
         public List<DepositAggregateView> aggregateToday() {
@@ -914,6 +1084,16 @@ class OpsFinanceServiceTest {
         @Override
         public BigDecimal cardPaidAmountToday() {
             return BigDecimal.ZERO;
+        }
+
+        @Override
+        public boolean hasReconciliationWriteoff(String channelCode, LocalDate reconcileDate) {
+            return writeoffs.containsKey(channelCode + "|" + reconcileDate);
+        }
+
+        @Override
+        public void writeoffReconciliation(String channelCode, LocalDate reconcileDate, String operator, String reason, String idempotencyKey) {
+            writeoffs.put(channelCode + "|" + reconcileDate, reason);
         }
 
         @Override

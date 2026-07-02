@@ -9,7 +9,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.facade.ContentNotificationDispatchFacade;
 import ffdd.opsconsole.content.facade.NotificationEmergencyDispatchResult;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.emergency.dto.GeoCountryStatusRequest;
+import ffdd.opsconsole.emergency.dto.GeoEdgeJudgeRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookCreateRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookRunRequest;
 import ffdd.opsconsole.emergency.dto.TamperAlertConfigRequest;
@@ -21,19 +23,22 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class OpsEmergencyControlServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeNotificationDispatchFacade notificationDispatchFacade = new FakeNotificationDispatchFacade();
+    private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsEmergencyControlService service = new OpsEmergencyControlService(
             configFacade,
             notificationDispatchFacade,
             auditLogService,
             new ObjectMapper(),
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+            emergencyRepository);
 
     @Test
     void geoCountryChangePersistsConfigAndAudits() {
@@ -43,9 +48,12 @@ class OpsEmergencyControlServiceTest {
                 new GeoCountryStatusRequest("blocked", "regulatory request", "risk-lead"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values)
-                .containsEntry("emergency.geo.country.VE", "blocked")
-                .containsEntry("emergency.geo.customCountries", "VE");
+        assertThat(emergencyRepository.geoCountries)
+                .anySatisfy(row -> assertThat(row)
+                        .containsEntry("cc", "VE")
+                        .containsEntry("status", "blocked")
+                        .containsEntry("reason", "regulatory request"));
+        assertThat(configFacade.values).isEmpty();
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -59,6 +67,66 @@ class OpsEmergencyControlServiceTest {
                 new TamperAlertConfigRequest(101, true, "too sensitive", "risk-lead"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void geoEdgeSourceWritesEmergencySettingTableNotConfigItem() {
+        var result = service.updateGeoEdgeJudge(
+                "idem-j2-edge",
+                new GeoEdgeJudgeRequest("edge-router", "switch edge source", "risk-lead"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(emergencyRepository.settings)
+                .containsEntry("emergency.geo.edgeJudgeSource", "edge-router");
+        assertThat(configFacade.values).isEmpty();
+        Map<String, Object> edge = (Map<String, Object>) result.getData().get("edge");
+        assertThat(edge).containsEntry("source", "edge-router");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void tamperAlertConfigWritesEmergencySettingTableNotConfigItem() {
+        var result = service.updateTamperAlertConfig(
+                "idem-j3-alert",
+                new TamperAlertConfigRequest(12, false, "raise alert threshold", "risk-lead"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(emergencyRepository.settings)
+                .containsEntry("emergency.tamper.alert.threshold", "12")
+                .containsEntry("emergency.tamper.alert.feedK4", "false");
+        assertThat(configFacade.values).isEmpty();
+        Map<String, Object> alert = (Map<String, Object>) result.getData().get("alertConfig");
+        assertThat(alert)
+                .containsEntry("threshold", 12)
+                .containsEntry("feedK4", false);
+    }
+
+    @Test
+    void tamperReportPersistsBusinessReportFromTamperTables() {
+        emergencyRepository.tamperPaths.add(new LinkedHashMap<>(Map.of(
+                "id", "withdraw-path",
+                "name", "提现链路",
+                "count", 3,
+                "accounts", 2)));
+        emergencyRepository.tamperAccounts.add(new LinkedHashMap<>(Map.of(
+                "userCode", "U00000001",
+                "count", 3)));
+
+        var result = service.createTamperReport(
+                "idem-j3-report",
+                new ffdd.opsconsole.emergency.dto.TamperReportRequest("24h", "export tamper report", "risk-lead"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("source", "nx_emergency_tamper_report");
+        assertThat(emergencyRepository.tamperReports).hasSize(1);
+        assertThat(emergencyRepository.tamperReports.get(0))
+                .containsEntry("window", "24h")
+                .containsEntry("status", "READY");
+        assertThat(String.valueOf(emergencyRepository.tamperReports.get(0).get("payload")))
+                .contains("nx_emergency_tamper_event")
+                .contains("withdraw-path");
+        assertThat(configFacade.values).isEmpty();
     }
 
     @Test
@@ -80,7 +148,7 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         var result = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4",
                 new SopPlaybookRunRequest(true, "incident", "tech-on-call"));
 
@@ -138,7 +206,7 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values.get("emergency.sop.playbooks"))
+        assertThat(emergencyRepository.playbooks.toString())
                 .contains("NC-CRITICAL-001")
                 .contains("监管点名通知");
         List<Map<String, Object>> playbooks = (List<Map<String, Object>>) result.getData().get("playbooks");
@@ -172,12 +240,12 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         var result = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-execute",
                 new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(notificationDispatchFacade.calls).containsExactly("CMP-2617:SOP-DRAFT-1");
+        assertThat(notificationDispatchFacade.calls).containsExactly("CMP-2617:SOP-CUSTOM-1");
         Map<String, Object> updated = (Map<String, Object>) result.getData().get("updated");
         Map<String, Object> dispatch = (Map<String, Object>) updated.get("notificationDispatch");
         assertThat(dispatch)
@@ -185,7 +253,7 @@ class OpsEmergencyControlServiceTest {
                 .containsEntry("campaignNo", "CMP-2617")
                 .containsEntry("notificationCount", 1);
         assertThat(updated).containsEntry("rollback", "根因消除后常规轨恢复");
-        assertThat(configFacade.values.get("emergency.sop.executions"))
+        assertThat(emergencyRepository.executions.toString())
                 .contains("CMP-2617")
                 .contains("notificationDispatch")
                 .contains("根因消除后常规轨恢复");
@@ -196,7 +264,7 @@ class OpsEmergencyControlServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void executePlaybookRunsTargetDomainActionsAndPersistsSharedConfig() {
+    void executePlaybookRunsTargetDomainActionsAndPersistsSharedControlSettings() {
         service.createPlaybook(
                 "idem-j4-create-domain-actions",
                 new SopPlaybookCreateRequest(
@@ -214,20 +282,20 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         var result = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-domain-actions",
                 new SopPlaybookRunRequest(true, "ledger gap containment", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values)
+        assertThat(emergencyRepository.settings)
                 .containsEntry("killswitch.withdraw", "disabled")
-                .containsEntry("treasury.j4.coverage_check.required", "true")
-                .containsEntry("withdrawal.j4.batch_release.mode", "B1_CAPACITY");
+                .doesNotContainKeys("treasury.j4.coverage_check.required", "withdrawal.j4.batch_release.mode");
+        assertThat(configFacade.values).isEmpty();
         Map<String, Object> updated = (Map<String, Object>) result.getData().get("updated");
         assertThat((List<Map<String, Object>>) updated.get("domainActions"))
                 .extracting("domain")
                 .contains("J1", "B1", "D2");
-        assertThat(configFacade.values.get("emergency.sop.executions"))
+        assertThat(emergencyRepository.executions.toString())
                 .contains("domainActions")
                 .contains("killswitch.withdraw")
                 .contains("withdrawal.j4.batch_release.mode");
@@ -252,7 +320,7 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         var result = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-missing-notify-execute",
                 new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
 
@@ -261,6 +329,7 @@ class OpsEmergencyControlServiceTest {
         assertThat(configFacade.values)
                 .doesNotContainKey("killswitch.withdraw")
                 .doesNotContainKey("emergency.sop.executions");
+        assertThat(emergencyRepository.executions).isEmpty();
     }
 
     @Test
@@ -282,7 +351,7 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         var result = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-long-action-execute",
                 new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
 
@@ -291,20 +360,12 @@ class OpsEmergencyControlServiceTest {
         assertThat(configFacade.values)
                 .doesNotContainKey("killswitch.withdraw")
                 .doesNotContainKey("emergency.sop.executions");
+        assertThat(emergencyRepository.executions).isEmpty();
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void executePlaybookTrimsOversizedExecutionHistoryAndKeepsCurrentExecution() throws Exception {
-        List<Map<String, Object>> oldRows = new ArrayList<>();
-        for (int i = 0; i < 30; i++) {
-            oldRows.add(Map.of(
-                    "executionId", "OLD-" + i,
-                    "code", "SOP-OLD",
-                    "trigger", "x".repeat(4_000),
-                    "domainActions", List.of(Map.of("configKey", "killswitch.withdraw", "valueType", "STRING", "group", "admin_killswitch"))));
-        }
-        configFacade.values.put("emergency.sop.executions", new ObjectMapper().writeValueAsString(oldRows));
+    void executePlaybookPersistsCurrentExecutionToBusinessRepository() {
         service.createPlaybook(
                 "idem-j4-create-trim-history",
                 new SopPlaybookCreateRequest(
@@ -322,17 +383,18 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         var result = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-trim-history",
                 new SopPlaybookRunRequest(true, "ledger gap containment", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        String executions = configFacade.values.get("emergency.sop.executions");
-        assertThat(executions.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).isLessThanOrEqualTo(60_000);
         String execId = String.valueOf(((Map<String, Object>) result.getData().get("updated")).get("executionId"));
-        assertThat(executions)
-                .contains(execId)
-                .contains("killswitch.withdraw");
+        assertThat(emergencyRepository.executions)
+                .singleElement()
+                .satisfies(row -> assertThat(row)
+                        .containsEntry("executionId", execId)
+                        .containsEntry("code", "SOP-CUSTOM-1"));
+        assertThat(emergencyRepository.executions.toString()).contains("killswitch.withdraw");
     }
 
     @Test
@@ -355,23 +417,24 @@ class OpsEmergencyControlServiceTest {
                         "superadmin"));
 
         var first = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-replay",
                 new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
-        String executionsAfterFirst = configFacade.values.get("emergency.sop.executions");
+        String executionsAfterFirst = emergencyRepository.executions.toString();
         var second = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-replay",
                 new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
 
         assertThat(first.getCode()).isZero();
         assertThat(second.getCode()).isZero();
-        assertThat(notificationDispatchFacade.calls).containsExactly("CMP-2617:SOP-DRAFT-1");
-        assertThat(configFacade.values.get("emergency.sop.executions")).isEqualTo(executionsAfterFirst);
+        assertThat(notificationDispatchFacade.calls).containsExactly("CMP-2617:SOP-CUSTOM-1");
+        assertThat(emergencyRepository.executions.toString()).isEqualTo(executionsAfterFirst);
+        assertThat(emergencyRepository.executions).hasSize(1);
         Map<String, Object> updated = (Map<String, Object>) second.getData().get("updated");
         assertThat(updated)
                 .containsEntry("idempotentReplay", true)
-                .containsEntry("code", "SOP-DRAFT-1");
+                .containsEntry("code", "SOP-CUSTOM-1");
         verify(auditLogService, times(2)).record(org.mockito.ArgumentMatchers.argThat(request ->
                 "J4_SOP_PLAYBOOK_EXECUTED".equals(request.getAction())));
         verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
@@ -398,14 +461,14 @@ class OpsEmergencyControlServiceTest {
                         "wire I3 campaign",
                         "superadmin"));
         var executed = service.executePlaybook(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 "idem-j4-run-before-replace",
                 new SopPlaybookRunRequest(true, "regulator escalation", "superadmin"));
         String execId = String.valueOf(((Map<String, Object>) executed.getData().get("updated")).get("executionId"));
-        configFacade.values.put("emergency.sop.playbooks", "[{\"code\":\"SOP-RISK2\",\"name\":\"other\"}]");
+        emergencyRepository.playbooks.clear();
 
         var rolledBack = service.rollbackPlaybookExecution(
-                "SOP-DRAFT-1",
+                "SOP-CUSTOM-1",
                 execId,
                 "idem-j4-rollback-after-replace",
                 new SopPlaybookRunRequest(false, "restore production controls", "superadmin"));
@@ -413,14 +476,15 @@ class OpsEmergencyControlServiceTest {
         assertThat(rolledBack.getCode()).isZero();
         Map<String, Object> updated = (Map<String, Object>) rolledBack.getData().get("updated");
         assertThat(updated)
-                .containsEntry("code", "SOP-DRAFT-1")
+                .containsEntry("code", "SOP-CUSTOM-1")
                 .containsEntry("rollbackStatus", "ROLLED_BACK")
                 .containsEntry("playbookSnapshotMissing", true);
-        assertThat(configFacade.values.get("emergency.sop.executions"))
-                .contains("\"rollbackStatus\":\"ROLLED_BACK\"")
-                .contains("\"rollbackActions\"");
-        assertThat(configFacade.values)
-                .containsEntry("emergency.sop.playbook.SOP-DRAFT-1.rollback." + execId, "ROLLED_BACK");
+        assertThat(emergencyRepository.executions)
+                .singleElement()
+                .satisfies(row -> assertThat(row)
+                        .containsEntry("rollbackStatus", "ROLLED_BACK")
+                        .containsKey("rollbackActions"));
+        assertThat(configFacade.values).doesNotContainKey("emergency.sop.executions");
     }
 
     @Test
@@ -436,16 +500,15 @@ class OpsEmergencyControlServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void tamperAccountsArePagedAndDoNotExposeUid() {
-        configFacade.values.put("emergency.tamper.accounts", "["
-                + "{\"uid\":\"u-10001\",\"count\":10,\"k4\":\"+10\",\"last\":\"14:00:01\",\"paths\":[\"p1\"],\"cluster\":\"CL-1\"},"
-                + "{\"uid\":\"u-10002\",\"count\":11,\"k4\":\"+11\",\"last\":\"14:00:02\",\"paths\":[\"p2\"],\"cluster\":\"CL-1\"},"
-                + "{\"uid\":\"u-10003\",\"count\":12,\"k4\":\"+12\",\"last\":\"14:00:03\",\"paths\":[\"p3\"],\"cluster\":\"CL-1\"},"
-                + "{\"uid\":\"u-10004\",\"count\":13,\"k4\":\"+13\",\"last\":\"14:00:04\",\"paths\":[\"p4\"],\"cluster\":\"CL-1\"},"
-                + "{\"uid\":\"u-10005\",\"count\":14,\"k4\":\"+14\",\"last\":\"14:00:05\",\"paths\":[\"p5\"],\"cluster\":\"CL-1\"},"
-                + "{\"uid\":\"u-10006\",\"count\":15,\"k4\":\"+15\",\"last\":\"14:00:06\",\"paths\":[\"p6\"],\"cluster\":\"CL-1\"},"
-                + "{\"uid\":\"u-10007\",\"count\":16,\"k4\":\"+16\",\"last\":\"14:00:07\",\"paths\":[\"p7\"],\"cluster\":\"CL-1\"},"
-                + "{\"uid\":\"u-10008\",\"count\":17,\"k4\":\"+17\",\"last\":\"14:00:08\",\"paths\":[\"p8\"],\"cluster\":\"CL-1\"}"
-                + "]");
+        for (int i = 1; i <= 8; i++) {
+            emergencyRepository.tamperAccounts.add(Map.of(
+                    "userCode", "u-1000" + i,
+                    "count", 9 + i,
+                    "k4", "+" + (9 + i),
+                    "last", "14:00:0" + i,
+                    "paths", List.of("p" + i),
+                    "cluster", "CL-1"));
+        }
 
         var result = service.tamperOverview(2, 3);
 
@@ -469,7 +532,13 @@ class OpsEmergencyControlServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void storedTamperUidIsConvertedToUserCode() {
-        configFacade.values.put("emergency.tamper.accounts", "[{\"uid\":\"u-83271\",\"count\":24,\"k4\":\"+42\",\"last\":\"14:18:32\",\"paths\":[\"local-balance\"],\"cluster\":\"CL-318\"}]");
+        emergencyRepository.tamperAccounts.add(Map.of(
+                "uid", "u-83271",
+                "count", 24,
+                "k4", "+42",
+                "last", "14:18:32",
+                "paths", List.of("local-balance"),
+                "cluster", "CL-318"));
 
         var result = service.tamperOverview(1, 5);
 
@@ -491,6 +560,239 @@ class OpsEmergencyControlServiceTest {
         @Override
         public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
             values.put(configKey, configValue);
+        }
+    }
+
+    private static final class FakeEmergencyControlRepository implements EmergencyControlRepository {
+        private final List<Map<String, Object>> geoCountries = new ArrayList<>();
+        private final List<Map<String, Object>> geoEndpointCatalogs = new ArrayList<>();
+        private final List<Map<String, Object>> geoEndpoints = new ArrayList<>();
+        private final List<Map<String, Object>> geoHits = new ArrayList<>();
+        private final Map<String, Integer> geoEndpointHits = new LinkedHashMap<>();
+        private final List<Map<String, Object>> geoEdgeMetrics = new ArrayList<>();
+        private final Map<String, String> settings = new LinkedHashMap<>();
+        private final List<Map<String, Object>> tamperPaths = new ArrayList<>();
+        private final List<Map<String, Object>> tamperAccounts = new ArrayList<>();
+        private final List<Map<String, Object>> tamperReports = new ArrayList<>();
+        private final List<Map<String, Object>> playbooks = new ArrayList<>();
+        private final List<Map<String, Object>> executions = new ArrayList<>();
+
+        @Override
+        public void ensureTables() {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoCountryPolicies() {
+            return geoCountries;
+        }
+
+        @Override
+        public void upsertGeoCountryPolicy(String countryCode, String countryName, String status, String reason, String operator) {
+            geoCountries.removeIf(row -> countryCode.equals(row.get("cc")));
+            geoCountries.add(new LinkedHashMap<>(Map.of(
+                    "cc", countryCode,
+                    "name", countryName,
+                    "status", status,
+                    "reason", reason,
+                    "operator", operator == null ? "" : operator)));
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointCatalogs() {
+            return geoEndpointCatalogs;
+        }
+
+        @Override
+        public Optional<Map<String, Object>> geoEndpointCatalog(String endpointKey) {
+            return geoEndpointCatalogs.stream()
+                    .filter(row -> endpointKey.equals(row.get("endpointKey")))
+                    .findFirst();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointPolicies() {
+            return geoEndpoints;
+        }
+
+        @Override
+        public void replaceGeoEndpointPolicies(String endpointKey, String endpointPath, String label, String biz, String domain,
+                                               List<String> countryCodes, String source, String reason, String operator) {
+            geoEndpoints.removeIf(row -> endpointKey.equals(row.get("endpointKey")));
+            for (String countryCode : countryCodes) {
+                geoEndpoints.add(new LinkedHashMap<>(Map.of(
+                        "endpointKey", endpointKey,
+                        "endpointPath", endpointPath,
+                        "label", label,
+                        "biz", biz,
+                        "domain", domain,
+                        "countryCode", countryCode,
+                        "source", source,
+                        "reason", reason)));
+            }
+        }
+
+        @Override
+        public List<Map<String, Object>> geoHits() {
+            return geoHits;
+        }
+
+        @Override
+        public Map<String, Integer> geoEndpointHits() {
+            return geoEndpointHits;
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEdgeMetrics() {
+            return geoEdgeMetrics;
+        }
+
+        @Override
+        public Optional<String> settingValue(String settingKey) {
+            return Optional.ofNullable(settings.get(settingKey));
+        }
+
+        @Override
+        public void upsertSetting(
+                String settingKey,
+                String settingValue,
+                String valueType,
+                String groupCode,
+                String remark,
+                String operator) {
+            settings.put(settingKey, settingValue);
+        }
+
+        @Override
+        public Map<String, Object> tamperTrend(LocalDateTime now) {
+            return Map.of(
+                    "24h", Map.of("points", List.of(), "max", 0, "labels", List.of()),
+                    "7d", Map.of("points", List.of(), "max", 0, "labels", List.of()),
+                    "30d", Map.of("points", List.of(), "max", 0, "labels", List.of()));
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperPaths() {
+            return tamperPaths;
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperAccounts() {
+            return tamperAccounts;
+        }
+
+        @Override
+        public void createTamperReport(String reportId, String window, boolean masked, String status,
+                                       Map<String, Object> payload, String operator, String reason) {
+            tamperReports.add(new LinkedHashMap<>(Map.of(
+                    "reportId", reportId,
+                    "window", window,
+                    "masked", masked,
+                    "status", status,
+                    "payload", payload,
+                    "operator", operator,
+                    "reason", reason)));
+        }
+
+        @Override
+        public List<Map<String, Object>> playbooks() {
+            return playbooks;
+        }
+
+        @Override
+        public Optional<Map<String, Object>> playbook(String code) {
+            return playbooks.stream()
+                    .filter(row -> code.equals(row.get("code")))
+                    .findFirst();
+        }
+
+        @Override
+        public void createPlaybook(String code, String name, String scene, boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   boolean drillRequired, boolean draft, List<Map<String, Object>> sequence,
+                                   String operator) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("code", code);
+            row.put("name", name);
+            row.put("scene", scene);
+            row.put("emergency", emergency);
+            row.put("sla", sla);
+            row.put("state", state);
+            row.put("owner", owner);
+            row.put("lastDrill", "未演练");
+            row.put("sequence", sequence);
+            row.put("notifyCampaignNo", notifyCampaignNo);
+            row.put("notifyTemplate", notifyTemplate);
+            row.put("rollback", rollback);
+            row.put("drillRequired", drillRequired);
+            row.put("draft", draft);
+            row.put("customSummary", "");
+            row.put("lastExecution", "");
+            playbooks.add(row);
+        }
+
+        @Override
+        public void updatePlaybook(String code, String name, String scene, Boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   Boolean drillRequired, String summary, List<Map<String, Object>> sequence,
+                                   String operator) {
+            Map<String, Object> row = playbook(code).orElseThrow();
+            if (name != null && !name.isBlank()) row.put("name", name.trim());
+            if (scene != null && !scene.isBlank()) row.put("scene", scene.trim());
+            if (emergency != null) row.put("emergency", emergency);
+            if (sla != null && !sla.isBlank()) row.put("sla", sla.trim());
+            if (state != null && !state.isBlank()) row.put("state", state.trim());
+            if (owner != null && !owner.isBlank()) row.put("owner", owner.trim());
+            if (notifyCampaignNo != null && !notifyCampaignNo.isBlank()) row.put("notifyCampaignNo", notifyCampaignNo.trim());
+            if (notifyTemplate != null && !notifyTemplate.isBlank()) row.put("notifyTemplate", notifyTemplate.trim());
+            if (rollback != null && !rollback.isBlank()) row.put("rollback", rollback.trim());
+            if (drillRequired != null) row.put("drillRequired", drillRequired);
+            if (summary != null && !summary.isBlank()) row.put("customSummary", summary.trim());
+            if (sequence != null) row.put("sequence", sequence);
+        }
+
+        @Override
+        public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator) {
+            playbook(code).ifPresent(row -> {
+                row.put("state", "active");
+                row.put("lastDrill", drillAt.toString());
+            });
+        }
+
+        @Override
+        public Optional<Map<String, Object>> executionByIdempotencyKey(String code, String idempotencyKey) {
+            return executions.stream()
+                    .filter(row -> code.equals(row.get("code")) && idempotencyKey.equals(row.get("idempotencyKey")))
+                    .findFirst();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> execution(String executionId) {
+            return executions.stream()
+                    .filter(row -> executionId.equals(row.get("executionId")))
+                    .findFirst();
+        }
+
+        @Override
+        public List<Map<String, Object>> executions(int limit) {
+            return executions.stream().limit(limit).toList();
+        }
+
+        @Override
+        public void createExecution(Map<String, Object> row) {
+            String code = String.valueOf(row.get("code"));
+            playbook(code).ifPresent(playbook -> playbook.put("lastExecution", row.get("executionId")));
+            executions.add(0, new LinkedHashMap<>(row));
+        }
+
+        @Override
+        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
+                                            List<Map<String, Object>> rollbackActions) {
+            execution(executionId).ifPresent(row -> {
+                row.put("rollbackStatus", "ROLLED_BACK");
+                row.put("rollbackAt", rollbackAt.toString());
+                row.put("rollbackReason", reason);
+                row.put("rollbackActions", rollbackActions);
+            });
         }
     }
 

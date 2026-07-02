@@ -35,7 +35,7 @@ public class OpsPlatformConfigService {
     private static final String META_DELIMITER = "||";
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Pattern CONFIG_SUFFIX_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{1,96}$");
-    private static final Set<String> ACTIVE_GROUPS = Set.of(GROUP_FLAG, GROUP_GATE, GROUP_HEALTH);
+    private static final Set<String> ACTIVE_GROUPS = Set.of(GROUP_FLAG, GROUP_HEALTH);
     private static final Set<String> DELETED_CONFIG_KEYS = Set.of(
             "admin.system.clock_drift_ms",
             "admin.system.clock_threshold_ms",
@@ -100,6 +100,9 @@ public class OpsPlatformConfigService {
         }
 
         ConfigCommand command = commandFor(request);
+        if ("gate".equals(command.kind())) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "J1_KILLSWITCH_MOVED_TO_EMERGENCY_CONTROL_SETTING");
+        }
         if (isSunsetCapabilityKey(command.configKey())) {
             return fail(OpsErrorCode.PHASE_PARAM_READONLY, "SUNSET_CAPABILITY_READONLY");
         }
@@ -136,7 +139,7 @@ public class OpsPlatformConfigService {
     }
 
     private void ensureSeedData() {
-        retireDeletedConfigData();
+        // Read paths must not mutate nx_config_item. Retired keys are ignored by active-group filtering.
     }
 
     private void retireDeletedConfigData() {

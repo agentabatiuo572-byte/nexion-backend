@@ -1,9 +1,11 @@
 package ffdd.opsconsole.market.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.market.domain.NexPricePointView;
 import ffdd.opsconsole.market.infrastructure.PriceIndexEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -39,6 +41,19 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
              LIMIT 1
             """)
     String latestNexSparkline();
+
+    @Select("""
+            SELECT price_usdt AS priceUsdt,
+                   delta_percent AS deltaPercent,
+                   sampled_at AS sampledAt
+              FROM nx_price_index
+             WHERE is_deleted = 0
+               AND status = 'ACTIVE'
+               AND metric_code IN ('NEX','NEX_USDT')
+             ORDER BY sampled_at DESC, id DESC
+             LIMIT #{limit}
+            """)
+    List<NexPricePointView> latestNexPricePoints(@Param("limit") int limit);
 
     @Insert("""
             INSERT INTO nx_price_index(

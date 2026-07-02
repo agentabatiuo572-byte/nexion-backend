@@ -6,6 +6,7 @@ import ffdd.opsconsole.treasury.infrastructure.WalletLedgerEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -167,6 +168,141 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             </script>
             """)
     BigDecimal sumNetUsdtFlowBetween(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT day,
+                   COALESCE(SUM(withdrawUsd), 0) AS withdrawUsd,
+                   COALESCE(SUM(interestUsd), 0) AS interestUsd
+              FROM (
+                    SELECT DATE_FORMAT(DATE(COALESCE(next_broadcast_at, chain_submitted_at, created_at)), '%Y-%m-%d') AS day,
+                           COALESCE(SUM(amount), 0) AS withdrawUsd,
+                           0 AS interestUsd
+                      FROM nx_withdrawal_order
+                     WHERE is_deleted = 0
+                       AND asset = 'USDT'
+                       AND status IN ('PENDING', 'REVIEWING', 'PENDING_CHAIN', 'CHAIN_SUBMITTED')
+                       AND COALESCE(next_broadcast_at, chain_submitted_at, created_at) >= #{startAt}
+                       AND COALESCE(next_broadcast_at, chain_submitted_at, created_at) < #{endAt}
+                     GROUP BY DATE(COALESCE(next_broadcast_at, chain_submitted_at, created_at))
+                    UNION ALL
+                    SELECT DATE_FORMAT(DATE(unlock_at), '%Y-%m-%d') AS day,
+                           0 AS withdrawUsd,
+                           COALESCE(SUM(estimated_interest_usdt), 0) AS interestUsd
+                      FROM nx_staking_position
+                     WHERE is_deleted = 0
+                       AND status IN ('ACTIVE', 'LOCKED')
+                       AND unlock_at >= #{startAt}
+                       AND unlock_at < #{endAt}
+                     GROUP BY DATE(unlock_at)
+              ) buckets
+             GROUP BY day
+             ORDER BY day ASC
+            """)
+    List<Map<String, Object>> maturityBuckets(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT COALESCE(AVG(risk_score), 0) AS value
+              FROM nx_risk_decision
+             WHERE is_deleted = 0
+               AND created_at >= #{since}
+             GROUP BY DATE(created_at)
+             ORDER BY DATE(created_at) ASC
+            """)
+    List<BigDecimal> riskPressureSeries(@Param("since") LocalDateTime since);
+
+    @Select("""
+            SELECT COALESCE(NULLIF(SUBSTRING_INDEX(rule_codes, ',', 1), ''), decision) AS nm,
+                   COUNT(1) AS ct,
+                   CASE
+                     WHEN MAX(risk_score) >= 90 THEN 'P0'
+                     WHEN MAX(risk_score) >= 70 THEN 'P1'
+                     WHEN MAX(risk_score) >= 40 THEN 'P2'
+                     ELSE 'P3'
+                   END AS sev,
+                   COALESCE(NULLIF(biz_type, ''), 'risk') AS dom,
+                   'nx_risk_decision' AS source
+              FROM nx_risk_decision
+             WHERE is_deleted = 0
+               AND created_at >= #{since}
+             GROUP BY COALESCE(NULLIF(SUBSTRING_INDEX(rule_codes, ',', 1), ''), decision),
+                      COALESCE(NULLIF(biz_type, ''), 'risk')
+             ORDER BY ct DESC, nm ASC
+             LIMIT 10
+            """)
+    List<Map<String, Object>> riskRuleBuckets(@Param("since") LocalDateTime since);
+
+    @Select("""
+            SELECT sev AS nm,
+                   COUNT(1) AS v,
+                   CASE sev
+                     WHEN 'P0' THEN 'var(--danger)'
+                     WHEN 'P1' THEN 'var(--warning)'
+                     WHEN 'P2' THEN 'var(--cyan)'
+                     ELSE 'var(--muted)'
+                   END AS c
+              FROM (
+                    SELECT CASE
+                             WHEN risk_score >= 90 THEN 'P0'
+                             WHEN risk_score >= 70 THEN 'P1'
+                             WHEN risk_score >= 40 THEN 'P2'
+                             ELSE 'P3'
+                           END AS sev
+                      FROM nx_risk_decision
+                     WHERE is_deleted = 0
+                       AND created_at >= #{since}
+              ) buckets
+             GROUP BY sev
+             ORDER BY FIELD(sev, 'P0', 'P1', 'P2', 'P3')
+            """)
+    List<Map<String, Object>> riskSeverityBuckets(@Param("since") LocalDateTime since);
+
+    @Select("""
+            SELECT DATE_FORMAT(DATE(created_at), '%m-%d') AS label,
+                   COUNT(1) AS count
+              FROM nx_risk_decision
+             WHERE is_deleted = 0
+               AND created_at >= #{since}
+             GROUP BY DATE(created_at)
+             ORDER BY DATE(created_at) ASC
+            """)
+    List<Map<String, Object>> riskVolumeBuckets(@Param("since") LocalDateTime since);
+
+    @Select("""
+            SELECT COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount_usd ELSE -amount_usd END), 0)
+              FROM nx_treasury_reserve_ledger
+             WHERE is_deleted = 0
+               AND status = 'CONFIRMED'
+            """)
+    BigDecimal currentReserveUsd();
+
+    @Select("""
+            SELECT price_usdt
+              FROM nx_price_index
+             WHERE is_deleted = 0
+               AND status = 'ACTIVE'
+               AND metric_code IN ('NEX', 'NEX_USDT')
+             ORDER BY sampled_at DESC, id DESC
+             LIMIT 1
+            """)
+    BigDecimal latestNexUsdtPrice();
+
+    @Insert("""
+            INSERT INTO nx_treasury_reserve_ledger (
+                reserve_no, voucher_no, direction, amount_usd, reason, operator,
+                idempotency_key, status, created_at, updated_at, is_deleted
+            )
+            VALUES (
+                #{reserveNo}, #{voucherNo}, 'IN', #{amountUsd}, #{reason}, #{operator},
+                #{idempotencyKey}, 'CONFIRMED', NOW(), NOW(), 0
+            )
+            """)
+    int insertReserveInjection(
+            @Param("reserveNo") String reserveNo,
+            @Param("voucherNo") String voucherNo,
+            @Param("amountUsd") BigDecimal amountUsd,
+            @Param("reason") String reason,
+            @Param("operator") String operator,
+            @Param("idempotencyKey") String idempotencyKey);
 
     @Select("""
             <script>

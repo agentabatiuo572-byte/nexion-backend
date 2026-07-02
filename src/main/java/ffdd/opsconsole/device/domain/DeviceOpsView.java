@@ -27,5 +27,6 @@ public record DeviceOpsView(
         BigDecimal gpuPowerW,
         String pausedReason,
         String activeTaskNo,
-        LocalDateTime heartbeatAt) {
+        LocalDateTime heartbeatAt,
+        Long userDeviceSlotNo) {
 }

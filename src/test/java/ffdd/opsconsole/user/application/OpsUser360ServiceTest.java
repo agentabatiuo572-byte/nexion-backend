@@ -236,7 +236,8 @@ class OpsUser360ServiceTest {
                 new BigDecimal("240"),
                 null,
                 "TASK-1",
-                now.minusMinutes(1));
+                now.minusMinutes(1),
+                1L);
         DeviceOpsView otherDevice = new DeviceOpsView(
                 701L,
                 9999L,
@@ -261,7 +262,8 @@ class OpsUser360ServiceTest {
                 BigDecimal.ONE,
                 null,
                 null,
-                now);
+                now,
+                1L);
         DeviceOrderView order = new DeviceOrderView(
                 "ORD-1",
                 "U00002231",

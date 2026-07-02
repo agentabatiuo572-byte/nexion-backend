@@ -54,81 +54,9 @@ public class OpsAuditCenterService {
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
-    private static final List<OperationSeed> OPERATION_SEEDS = List.of(
-            op("WO-8852", "提现放行(大额操作确认)", "usr-7F21 · $8,200", "review", "approved",
-                    "郑爽(财务)", "finance", "fund", true, false, "2m", false,
-                    "财务 / 超管", "用户工单 #4471 核实补偿;依据已附"),
-            op("WO-8851", "账单手工调整", "bill-2K8842 · 误扣冲正", "-", "+$214.00",
-                    "吴桐(财务)", "finance", "fund", true, false, "18m", false,
-                    "财务 / 超管", "客服工单 #4488 误扣证据齐全"),
-            op("WO-8850", "J1 熔断恢复 · exchange 闸", "J 域 · 兑换能力", "disabled", "enabled",
-                    "王磊(风控)", "risk", "sos", false, true, "42m", false,
-                    "超管(应急轨)", "风险事件已闭环,SLA 内恢复"),
-            op("WO-8849", "课程奖励上调(I7)", "genesis-nodes · +40→+45 NEX", "+40", "+45",
-                    "李文(内容)", "content", "fund", true, false, "36m", false,
-                    "内容 / 超管", "P3 阶段教育引流提升,B1 覆盖率核验通过"),
-            op("WO-8848", "余额调整(客服小额)", "usr-9C03 · 补偿", "$0", "+$36.00",
-                    "刘佳(客服)", "support", "fund", true, false, "34m", false,
-                    "财务 / 超管", "客诉 ticket #5512 已核实"),
-            op("WO-8847", "Phase dial · 周任务倍率", "H1 · P3 月档", "1.25x", "1.30x",
-                    "高翔(增长)", "growth", "param", true, false, "1h", false,
-                    "对应域角色 / 超管(dial 放大方向需风控或超管)", "本周 KPI 节奏校准,7 日窗口实验"),
-            op("WO-8846", "OTP 发送频次(C6)", "注册风控", "3 次/小时", "5 次/小时",
-                    "许晴(风控)", "risk", "param", false, false, "2h", false,
-                    "风控 / 超管", "正常用户重发投诉激增,放宽频控"),
-            op("WO-8845", "风险模型权重(K4)", "多账户信号权重", "0.32", "0.40",
-                    "王磊(风控)", "risk", "param", false, false, "3h", false,
-                    "超管 / 风控", "K1 簇击中样本回归,权重需上调"),
-            op("WO-8844", "账户冻结(C2)", "usr-1A77 · 套利簇关联", "active", "frozen",
-                    "许晴(风控)", "risk", "acct", false, false, "4h", false,
-                    "风控 / 超管", "K1 多账户簇命中,套利路径已闭合证据"),
-            op("WO-8843", "披露新版发布(I5)", "SFC · v12→v13", "v12", "v13",
-                    "王磊(风控)", "risk", "acct", false, false, "5h", false,
-                    "风控 / 超管", "监管发函要求条款更新,7 日内全量重确认"),
-            op("WO-8842", "运营账号创建(A1)", "新风控成员", "-", "op-072",
-                    "赵敏(超管)", "super", "acct", false, false, "6h", false,
-                    "超管", "新员工入职,风控成员岗 op-072"),
-            op("WO-8840", "feature flag · 灰度 20%", "新提现页灰度", "off", "20%",
-                    "高翔(增长)", "growth", "param", false, false, "8h", false,
-                    "超管", "新提现 UX A/B,灰度 20% 7 日观察"),
-            op("WO-8839", "储备注入登记(B1/D3)", "+$500K 入储备池", "-", "+$500K",
-                    "吴桐(财务)", "finance", "fund", false, false, "12h", false,
-                    "财务 / 超管", "财务季度调拨,提升 B1 覆盖率 +5pp"),
-            op("WO-8838", "提现参数 · 冷却时长(D5)", "非 Phase 参数", "48h", "36h",
-                    "吴桐(财务)", "finance", "param", true, false, "14h", true,
-                    "财务 / 超管", "缩短冷却提升用户体验,逐步降低摩擦"));
-
-    private static final List<AuditOperationHistory> DEFAULT_HISTORY = List.of(
-            new AuditOperationHistory("WO-8841", "提现放行 $12,400", STATUS_APPROVED,
-                    "吴桐(财务) · reason + admin.operation_confirmed", "今天 09:21",
-                    "原因:大额操作确认线上人工核验,KYC 与风险分均过"),
-            new AuditOperationHistory("WO-8836", "幸运 2x 概率 5%→8%", STATUS_REJECTED,
-                    "吴桐(财务) · reason + admin.operation_rejected", "今天 08:40",
-                    "取消原因:本周代币流出已超预算 12%,下周再议"),
-            new AuditOperationHistory("WO-8830", "余额调整 +$50", "withdrawn",
-                    "刘佳(客服) · reason + admin.operation_cancelled", "昨天 18:02",
-                    "取消原因:用户工单重复,已有在途补偿"),
-            new AuditOperationHistory("WO-8798", "OTP 频次参数", "expired",
-                    "许晴(风控) · reason 校验未通过", "06-08 00:00",
-                    "作废事件落审计(admin.operation_expired)"));
-
-    private static final List<AuditLogSeed> AUDIT_LOG_SEEDS = List.of(
-            audit("今天 10:12", "王磊", "风控", "killswitch_toggled", "J1 · exchange 闸",
-                    "enabled -> disabled", "A", "10.2.3.21", "A2_AUDIT_ADMIN"),
-            audit("今天 09:21", "吴桐", "财务", "withdraw_approved", "D2 · usr-7F21 $12,400",
-                    "review -> sent", "D", "10.2.3.31", "A2_AUDIT_WITHDRAW"),
-            audit("今天 09:02", "李文", "内容", "content_published", "I1 · home.conversionBanner",
-                    "v7 -> v8", "I", "10.2.3.41", "A2_AUDIT_CONTENT"),
-            audit("今天 08:55", "陈锐", "超管", "operator_role_changed", "A1 · op-041",
-                    "内容 -> 增长", "A", "10.2.3.11", "A2_AUDIT_ADMIN"),
-            audit("今天 08:40", "吴桐", "财务", "operation_rejected", "H5 · 幸运 2x 概率",
-                    "5% -> 8%(驳回)", "H", "10.2.3.31", "A2_AUDIT_OPERATION"),
-            audit("昨天 21:18", "许晴", "风控", "user_frozen", "C2 · usr-1A77",
-                    "active -> frozen", "C", "10.2.3.22", "A2_AUDIT_USER"),
-            audit("昨天 18:02", "刘佳", "客服", "operation_withdrawn", "C3 · usr-9C03 余额",
-                    "+$36(撤回)", "C", "10.2.3.51", "A2_AUDIT_OPERATION"),
-            audit("昨天 15:44", "高翔", "增长", "phase_dial_changed", "H1 · 周任务倍率",
-                    "1.20x -> 1.25x", "H", "10.2.3.41", "A2_AUDIT_PHASE"));
+    private static final List<OperationSeed> OPERATION_SEEDS = List.of();
+    private static final List<AuditOperationHistory> DEFAULT_HISTORY = List.of();
+    private static final List<AuditLogSeed> AUDIT_LOG_SEEDS = List.of();
 
     private static final List<AuditConfirmCategory> CONFIRM_CATEGORY_SEEDS = List.of(
             new AuditConfirmCategory("资金/资产调整", "余额增减(C3)· 手工账单(D4)· 储备注入(B1/D3)· 对账核销(D1)", "财务 / 超管"),

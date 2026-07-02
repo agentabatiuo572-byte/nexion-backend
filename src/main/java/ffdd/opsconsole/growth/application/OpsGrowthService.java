@@ -13,6 +13,7 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
@@ -37,6 +38,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.function.Function;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -58,39 +60,19 @@ public class OpsGrowthService {
     private static final String CHECKIN_LUCKY_2_PCT_KEY = "growth.checkin.lucky_2_pct";
     private static final String CHECKIN_BROKEN_HOURS_KEY = "growth.checkin.broken_hours";
     private static final String CHECKIN_REVIVE_CARDS_KEY = "growth.checkin.revive_cards";
-    private static final String CHECKIN_STREAK_MS_PREFIX = "growth.checkin.streak_milestone.";
-    private static final String CHECKIN_POWER_UP_PREFIX = "growth.checkin.power_up.";
-    private static final String EARN_MS_PREFIX = "growth.earn_milestone.";
     private static final String EARN_TICK_INTERVAL_KEY = "growth.earn_milestone.tick_interval_seconds";
     private static final String WITHDRAW_MIN_BALANCE_KEY = "growth.withdraw_nex_gate.min_balance_nex";
     private static final String WITHDRAW_HOLD_DAYS_KEY = "growth.withdraw_nex_gate.hold_days";
     private static final String WITHDRAW_MIN_BALANCE_MIRROR_KEY = "withdrawal.nex_gate.min_balance_nex";
     private static final String WITHDRAW_HOLD_DAYS_MIRROR_KEY = "withdrawal.nex_gate.hold_days";
     private static final String WITHDRAW_STAKING_DISCLOSURE_GATE_KEY = "disclosure.gate.staking";
-    private static final String TRIAL_PARAM_PREFIX = "growth.trial.param.";
-    private static final String TRIAL_SESSION_PREFIX = "growth.trial.session.";
     private static final String TRIAL_AUTO_PUSH_KILLED_KEY = "growth.trial.auto_push_killed";
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
     private static final String QUEST_PREFIX = "growth.quest.";
-    private static final String EVENT_PREFIX = "growth.event.";
     private static final String WHEEL_PREFIX = "growth.wheel.";
-    private static final String QUEST_H3_STATS_KEY = QUEST_PREFIX + "h3_stats";
-    private static final String EVENT_H4_STATS_KEY = EVENT_PREFIX + "h4_stats";
-    private static final String QUEST_DAY_ONE_TASKS_KEY = QUEST_PREFIX + "day_one.tasks";
-    private static final String QUEST_DAY_ONE_STATES_KEY = QUEST_PREFIX + "day_one.states";
-    private static final String QUEST_WEEKLY_TIER1_ROWS_KEY = QUEST_PREFIX + "weekly.t1.rows";
-    private static final String QUEST_WEEKLY_TIER2_ROWS_KEY = QUEST_PREFIX + "weekly.t2.rows";
-    private static final String QUEST_MONTHLY_ROWS_KEY = QUEST_PREFIX + "monthly.rows";
-    private static final String QUEST_TASK_MONITOR_KEY = QUEST_PREFIX + "task_monitor";
-    private static final String QUEST_TASK_CONTRACTS_KEY = QUEST_PREFIX + "task_contracts";
-    private static final String QUEST_PROMO_BANNER_KEY = QUEST_PREFIX + "promo_banner";
-    private static final String EVENT_ROWS_KEY = EVENT_PREFIX + "rows";
-    private static final String EVENT_STATES_KEY = EVENT_PREFIX + "states";
-    private static final String EVENT_TRACKABLES_KEY = EVENT_PREFIX + "trackables";
-    private static final String WHEEL_TIERS_KEY = WHEEL_PREFIX + "tiers";
-    private static final String WHEEL_GUARDS_KEY = WHEEL_PREFIX + "guards";
     private static final String VOUCHER_SKUS_KEY = "growth.voucher.sku_options";
+    private static final String SUNSET_EXCLUSIONS_KEY = "growth.sunset.exclusions";
     private static final Set<String> RETIRED_KEYS = Set.of(
             "withdrawPointsRatio",
             "pointsExchangeRate",
@@ -128,6 +110,7 @@ public class OpsGrowthService {
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
 
     private final PlatformConfigFacade configFacade;
+    private final EmergencyControlRepository emergencyRepository;
     private final TreasuryCoverageFacade coverageFacade;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final AuditLogService auditLogService;
@@ -157,8 +140,8 @@ public class OpsGrowthService {
         response.put("coverage", coverage());
         response.put("withdrawNexGate", withdrawGate().getData());
         response.put("retiredDials", List.copyOf(RETIRED_KEYS));
-        response.put("sunsetExclusions", List.of("Premium", "NEX v2", "Points"));
-        response.put("sources", List.of("nx_config_item:" + PHASE_CONFIG_KEY, "nx_config_item:growth.*"));
+        response.put("sunsetExclusions", sunsetExclusions());
+        response.put("sources", List.of("nx_config_item:" + PHASE_CONFIG_KEY, "nx_config_item:" + SUNSET_EXCLUSIONS_KEY, "nx_config_item:growth.*"));
         return ApiResult.ok(response);
     }
 
@@ -377,8 +360,9 @@ public class OpsGrowthService {
         response.put("serverOnlyFields", List.of("failRate"));
         response.put("coverage", coverage());
         response.put("sources", List.of(
-                "nx_config_item:" + TRIAL_PARAM_PREFIX + "*",
-                "nx_config_item:" + TRIAL_SESSION_PREFIX + "*",
+                "nx_growth_trial_policy",
+                "nx_growth_trial_gate",
+                "nx_trial_claim",
                 "nx_config_item:" + TRIAL_AUTO_PUSH_KILLED_KEY,
                 "nx_config_item:" + TRIAL_KILLSWITCH_KEY));
         return ApiResult.ok(response);
@@ -399,10 +383,20 @@ public class OpsGrowthService {
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
-        String configKey = trialParamConfigKey(key);
         boolean serverOnly = "failRate".equals(key);
-        configFacade.upsertAdminValue(configKey, value, trialParamValueType(key), "growth", "H2 trial parameter");
-        audit("H2_TRIAL_PARAM_CHANGED", "TRIAL_PARAM", configKey, request.operator(), Map.of(
+        ensureGrowthBusinessTables();
+        if (questEventMapper.isEmpty()) {
+            return validation("TRIAL_POLICY_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        questEventMapper.get().upsertTrialPolicyValue(
+                key,
+                value,
+                trialParamValueType(key),
+                trialParamHot(key),
+                trialParamSection(key),
+                serverOnly,
+                TRIAL_PARAM_KEYS.indexOf(key));
+        audit("H2_TRIAL_PARAM_CHANGED", "TRIAL_PARAM", key, request.operator(), Map.of(
                 "key", key,
                 "newValue", serverOnly ? "MASKED_SERVER_ONLY" : value,
                 "serverOnly", serverOnly,
@@ -411,7 +405,7 @@ public class OpsGrowthService {
         Map<String, Object> response = trials().getData();
         response.put("updated", Map.of(
                 "key", key,
-                "configKey", configKey,
+                "source", "nx_growth_trial_policy",
                 "value", serverOnly ? "•••(server only)" : value,
                 "serverOnly", serverOnly));
         return ApiResult.ok(response);
@@ -430,10 +424,9 @@ public class OpsGrowthService {
         if (TRIAL_TERMINAL_STATES.contains(state)) {
             return invalidState("TRIAL_SESSION_ALREADY_TERMINAL");
         }
-        String stateKey = trialSessionConfigKey(sid, "state");
-        String timeKey = trialSessionConfigKey(sid, "cancelled_at");
-        configFacade.upsertAdminValue(stateKey, "cancelled", "STRING", "growth", "H2 trial session state");
-        configFacade.upsertAdminValue(timeKey, Instant.now().toString(), "STRING", "growth", "H2 trial session cancelled time");
+        if (questEventMapper.isEmpty() || questEventMapper.get().updateTrialSessionStatus(sid, "CANCELLED") <= 0) {
+            return validation("TRIAL_SESSION_BUSINESS_TABLE_UPDATE_FAILED");
+        }
         audit("H2_TRIAL_SESSION_CANCELLED", "TRIAL_SESSION", sid, request.operator(), Map.of(
                 "sessionId", sid,
                 "oldState", state,
@@ -461,10 +454,9 @@ public class OpsGrowthService {
         if (TRIAL_TERMINAL_STATES.contains(state)) {
             return invalidState("TRIAL_SESSION_ALREADY_TERMINAL");
         }
-        String stateKey = trialSessionConfigKey(sid, "state");
-        String timeKey = trialSessionConfigKey(sid, "charged_at");
-        configFacade.upsertAdminValue(stateKey, "redeemed", "STRING", "growth", "H2 trial session state");
-        configFacade.upsertAdminValue(timeKey, Instant.now().toString(), "STRING", "growth", "H2 trial session charged time");
+        if (questEventMapper.isEmpty() || questEventMapper.get().updateTrialSessionStatus(sid, "REDEEMED") <= 0) {
+            return validation("TRIAL_SESSION_BUSINESS_TABLE_UPDATE_FAILED");
+        }
         ledgerPostingFacade.postLedgerEntry(
                 "H2-TRIAL-CHARGE-" + sid,
                 userIdFromToken(sid),
@@ -510,13 +502,13 @@ public class OpsGrowthService {
         response.put("rewardAsset", "NEX");
         response.put("h3Stats", questStats());
         response.put("h4Stats", eventStats());
-        response.put("dayOneWindow", questConfig("dayOne.windowMs"));
-        response.put("dayOneTriReward", questConfig("dayOne.triReward"));
+        response.put("dayOneWindow", dayOneWindow());
+        response.put("dayOneTriReward", rewardSummary(dayOneTaskRows()));
         response.put("dayOneTasks", dayOneTasks());
         response.put("dayOneStates", dayOneStates());
         response.put("weeklyTier1", weeklyTier1());
         response.put("weeklyTier2", weeklyTier2());
-        response.put("weeklyChampionBonus", questConfig("weekly.champBonus"));
+        response.put("weeklyChampionBonus", rewardSummary(weeklyTaskRows()));
         response.put("weeklyMultipliers", weeklyMultipliers());
         response.put("monthlyMissions", monthlyMissions());
         response.put("taskMonitor", taskMonitor());
@@ -526,7 +518,7 @@ public class OpsGrowthService {
         response.put("events", questEventsList());
         response.put("eventStates", eventStateLegend());
         response.put("wheelTiers", wheelTiers());
-        response.put("wheelSignature", questConfig("wheel.pool"));
+        response.put("wheelSignature", wheelPoolSignature());
         response.put("wheelEvUsd", wheelEvUsd());
         response.put("wheelGuards", wheelGuards());
         response.put("trackables", trackables());
@@ -534,15 +526,14 @@ public class OpsGrowthService {
         response.put("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
         response.put("disabledOutputs", List.of("Premium entitlement writes", "NEX v2 lock rewards", "Points ledger writes"));
         response.put("sources", List.of(
-                "nx_config_item:" + QUEST_DAY_ONE_TASKS_KEY,
-                "nx_config_item:" + QUEST_WEEKLY_TIER1_ROWS_KEY,
-                "nx_config_item:" + QUEST_WEEKLY_TIER2_ROWS_KEY,
-                "nx_config_item:" + QUEST_MONTHLY_ROWS_KEY,
-                "nx_config_item:" + QUEST_TASK_CONTRACTS_KEY,
-                "nx_config_item:" + QUEST_PROMO_BANNER_KEY,
-                "nx_config_item:" + EVENT_ROWS_KEY,
-                "nx_config_item:" + WHEEL_TIERS_KEY,
-                "nx_config_item:" + EVENT_TRACKABLES_KEY));
+                "nx_mission",
+                "nx_user_mission",
+                "nx_monthly_challenge",
+                "nx_growth_promo_banner",
+                "nx_event_quest",
+                "nx_user_event_quest",
+                "nx_growth_wheel_tier",
+                "nx_growth_wheel_guard"));
         return ApiResult.ok(response);
     }
 
@@ -674,9 +665,8 @@ public class OpsGrowthService {
         if (rewardFlow(value).compareTo(rewardFlow(oldValue)) > 0 && coverageBelowRedline()) {
             return coverageRedline();
         }
-        String configKey = EVENT_PREFIX + id + ".reward";
         if (!updateBusinessEventReward(id, value)) {
-            configFacade.upsertAdminValue(configKey, value, "STRING", "growth", "H4 event reward");
+            return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
         audit("H4_EVENT_REWARD_CHANGED", "GROWTH_EVENT", id, request.operator(), Map.of(
                 "eventId", id,
@@ -708,13 +698,12 @@ public class OpsGrowthService {
             return validation("EVENT_STATUS_INVALID");
         }
         String oldStatus = eventStatus(id);
-        String configKey = EVENT_PREFIX + id + ".status";
         if (!updateBusinessEventStatus(id, status)) {
-            configFacade.upsertAdminValue(configKey, status, "STRING", "growth", "H4 event status");
+            return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
         if ("ended".equals(status) && eventFeatured(id)) {
             if (!updateBusinessEventFeatured(id, false)) {
-                configFacade.upsertAdminValue(EVENT_PREFIX + id + ".featured", "false", "BOOLEAN", "growth", "H4 event featured");
+                return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
             }
         }
         audit("H4_EVENT_STATUS_CHANGED", "GROWTH_EVENT", id, request.operator(), Map.of(
@@ -759,9 +748,8 @@ public class OpsGrowthService {
                 return validation("EVENT_FEATURED_UNIQUE_VIOLATION");
             }
         }
-        String configKey = EVENT_PREFIX + id + ".featured";
         if (!updateBusinessEventFeatured(id, featured)) {
-            configFacade.upsertAdminValue(configKey, featured.toString(), "BOOLEAN", "growth", "H4 event featured");
+            return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
         audit("H4_EVENT_FEATURED_CHANGED", "GROWTH_EVENT", id, request.operator(), Map.of(
                 "eventId", id,
@@ -778,9 +766,9 @@ public class OpsGrowthService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H5");
         response.put("rewardAsset", "NEX");
-        response.put("baseRewardNex", configDecimal(CHECKIN_REWARD_KEY, new BigDecimal("2")));
-        response.put("streakBonusNex", configDecimal(CHECKIN_STREAK_BONUS_KEY, new BigDecimal("5")));
-        response.put("luckyMultiplierMax", configDecimal(CHECKIN_LUCKY_MULTIPLIER_KEY, new BigDecimal("2")));
+        response.put("baseRewardNex", currentCheckInValue("baseRewardNex"));
+        response.put("streakBonusNex", currentCheckInValue("streakBonusNex"));
+        response.put("luckyMultiplierMax", currentCheckInValue("luckyMultiplierMax"));
         response.put("stats", checkInStats());
         response.put("rules", checkInRules());
         response.put("streakMilestones", streakMilestones());
@@ -792,11 +780,13 @@ public class OpsGrowthService {
         response.put("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
         response.put("disabledOutputs", List.of("Points ledger writes", "points redemption", "premium trial points"));
         response.put("sources", List.of(
-                "nx_config_item:" + CHECKIN_REWARD_KEY,
-                "nx_config_item:" + CHECKIN_STREAK_BONUS_KEY,
-                "nx_config_item:" + CHECKIN_STREAK_MS_PREFIX + "*",
-                "nx_config_item:" + CHECKIN_POWER_UP_PREFIX + "*",
-                "nx_config_item:" + EARN_MS_PREFIX + "*"));
+                "nx_growth_checkin_rule",
+                "nx_daily_check_in",
+                "nx_user_streak",
+                "nx_streak_milestone",
+                "nx_user_streak_power_up",
+                "nx_earning_milestone_rule",
+                "nx_earning_milestone"));
         return ApiResult.ok(response);
     }
 
@@ -811,16 +801,25 @@ public class OpsGrowthService {
         if (newValue.compareTo(oldValue) > 0 && coverageBelowRedline()) {
             return coverageRedline();
         }
-        String configKey = checkInConfigKey(key);
-        configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "growth", "H5 check-in NEX reward");
-        audit("H5_CHECKIN_NEX_CONFIG_CHANGED", "CHECKIN_NEX_REWARD", configKey, request.operator(), Map.of(
+        String ruleKey = checkInRewardRuleKey(key);
+        ensureGrowthBusinessTables();
+        if (questEventMapper.isEmpty()) {
+            return validation("CHECKIN_RULE_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        questEventMapper.get().upsertCheckInRuleValue(
+                ruleKey,
+                newValue.toPlainString(),
+                "NUMBER",
+                checkInRuleHot(ruleKey),
+                checkInRuleSortOrder(ruleKey));
+        audit("H5_CHECKIN_NEX_CONFIG_CHANGED", "CHECKIN_NEX_REWARD", ruleKey, request.operator(), Map.of(
                 "key", key,
                 "oldValue", oldValue,
                 "newValue", newValue,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = checkIn().getData();
-        response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", newValue));
+        response.put("updated", Map.of("key", key, "source", "nx_growth_checkin_rule", "ruleKey", ruleKey, "oldValue", oldValue, "newValue", newValue));
         return ApiResult.ok(response);
     }
 
@@ -845,15 +844,23 @@ public class OpsGrowthService {
             }
             value = newValue.toPlainString();
         }
-        String configKey = checkInRuleConfigKey(key);
-        configFacade.upsertAdminValue(configKey, value, checkInRuleValueType(key), "growth", "H5 check-in rule");
-        audit("H5_CHECKIN_RULE_CHANGED", "CHECKIN_RULE", configKey, request.operator(), Map.of(
+        ensureGrowthBusinessTables();
+        if (questEventMapper.isEmpty()) {
+            return validation("CHECKIN_RULE_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        questEventMapper.get().upsertCheckInRuleValue(
+                key,
+                value,
+                checkInRuleValueType(key),
+                checkInRuleHot(key),
+                checkInRuleSortOrder(key));
+        audit("H5_CHECKIN_RULE_CHANGED", "CHECKIN_RULE", key, request.operator(), Map.of(
                 "key", key,
                 "value", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = checkIn().getData();
-        response.put("updated", Map.of("key", key, "configKey", configKey, "value", value));
+        response.put("updated", Map.of("key", key, "source", "nx_growth_checkin_rule", "value", value));
         return ApiResult.ok(response);
     }
 
@@ -865,24 +872,29 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
-        if (milestoneId < 0 || milestoneId >= defaultStreakMilestones().size()) {
+        List<Map<String, Object>> rows = streakMilestones();
+        Optional<Map<String, Object>> current = indexedBusinessRow(rows, milestoneId);
+        if (current.isEmpty()) {
             return validation("STREAK_MILESTONE_ID_INVALID");
         }
         String reward = requireText(request.value(), "reward is required");
-        BigDecimal oldFlow = rewardFlow(defaultStreakMilestone(milestoneId).get("reward").toString());
+        BigDecimal oldFlow = rewardFlow(String.valueOf(current.get().get("reward")));
         BigDecimal newFlow = rewardFlow(reward);
         if (newFlow.compareTo(oldFlow) > 0 && coverageBelowRedline()) {
             return coverageRedline();
         }
-        String configKey = CHECKIN_STREAK_MS_PREFIX + milestoneId + ".reward";
-        configFacade.upsertAdminValue(configKey, reward, "STRING", "growth", "H5 streak milestone reward");
-        audit("H5_STREAK_MILESTONE_CHANGED", "STREAK_MILESTONE", configKey, request.operator(), Map.of(
+        if (questEventMapper.isEmpty()
+                || questEventMapper.get().updateStreakMilestoneReward(
+                        milestoneId, reward, rewardTypeFromReward(reward), newFlow) <= 0) {
+            return validation("STREAK_MILESTONE_BUSINESS_TABLE_UPDATE_FAILED");
+        }
+        audit("H5_STREAK_MILESTONE_CHANGED", "STREAK_MILESTONE", String.valueOf(milestoneId), request.operator(), Map.of(
                 "milestoneId", milestoneId,
                 "reward", reward,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = checkIn().getData();
-        response.put("updated", Map.of("milestoneId", milestoneId, "configKey", configKey, "reward", reward));
+        response.put("updated", Map.of("milestoneId", milestoneId, "source", "nx_streak_milestone", "reward", reward));
         return ApiResult.ok(response);
     }
 
@@ -894,7 +906,9 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
-        if (powerUpId < 0 || powerUpId >= defaultPowerUps().size()) {
+        List<Map<String, Object>> rows = powerUps();
+        Optional<Map<String, Object>> current = indexedBusinessRow(rows, powerUpId);
+        if (current.isEmpty()) {
             return validation("POWER_UP_ID_INVALID");
         }
         String key = requireText(request.key(), "Power-up key is required");
@@ -902,25 +916,29 @@ public class OpsGrowthService {
             return validation("POWER_UP_KEY_INVALID");
         }
         String value = requireText(request.value(), "value is required");
+        int updated;
         if ("day".equals(key)) {
-            BigDecimal oldDay = configDecimal(CHECKIN_POWER_UP_PREFIX + powerUpId + ".day",
-                    new BigDecimal(defaultPowerUp(powerUpId).get("day").toString()));
+            BigDecimal oldDay = rowDecimal(current.get(), "day");
             BigDecimal newDay = bounded(parseDecimal(value), BigDecimal.ONE, new BigDecimal("365"));
             if (newDay.compareTo(oldDay) > 0 && coverageBelowRedline()) {
                 return coverageRedline();
             }
             value = newDay.setScale(0, RoundingMode.DOWN).toPlainString();
+            updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpDay(powerUpId, Integer.parseInt(value));
+        } else {
+            updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpNote(powerUpId, value);
         }
-        String configKey = CHECKIN_POWER_UP_PREFIX + powerUpId + "." + key;
-        configFacade.upsertAdminValue(configKey, value, "day".equals(key) ? "NUMBER" : "STRING", "growth", "H5 power-up");
-        audit("H5_POWER_UP_CHANGED", "POWER_UP", configKey, request.operator(), Map.of(
+        if (updated <= 0) {
+            return validation("POWER_UP_BUSINESS_TABLE_UPDATE_FAILED");
+        }
+        audit("H5_POWER_UP_CHANGED", "POWER_UP", String.valueOf(powerUpId), request.operator(), Map.of(
                 "powerUpId", powerUpId,
                 "key", key,
                 "value", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = checkIn().getData();
-        response.put("updated", Map.of("powerUpId", powerUpId, "configKey", configKey, "value", value));
+        response.put("updated", Map.of("powerUpId", powerUpId, "source", "nx_streak_power_up", "key", key, "value", value));
         return ApiResult.ok(response);
     }
 
@@ -933,20 +951,26 @@ public class OpsGrowthService {
             return guard;
         }
         String key = normalizeEarnMilestoneKey(milestoneKey);
-        BigDecimal oldThreshold = earnMilestoneThreshold(key);
-        BigDecimal oldReward = earnMilestoneReward(key);
+        List<Map<String, Object>> rows = earnMilestones();
+        Optional<Map<String, Object>> current = earnMilestoneRow(rows, key);
+        if (current.isEmpty()) {
+            return validation("EARN_MILESTONE_BUSINESS_ROW_NOT_FOUND");
+        }
+        BigDecimal oldThreshold = earnMilestoneThreshold(current.get());
+        BigDecimal oldReward = earnMilestoneReward(current.get());
         BigDecimal newThreshold = bounded(request.thresholdUsd(), BigDecimal.ONE, new BigDecimal("100000000"));
         BigDecimal newReward = bounded(request.rewardNex(), BigDecimal.ZERO, new BigDecimal("100000000"));
-        if (!earnMilestonesRemainOrdered(key, newThreshold)) {
+        if (!earnMilestonesRemainOrdered(rows, key, newThreshold)) {
             return validation("EARN_MILESTONE_THRESHOLD_ORDER_INVALID");
         }
         if ((newReward.compareTo(oldReward) > 0 || newThreshold.compareTo(oldThreshold) < 0) && coverageBelowRedline()) {
             return coverageRedline();
         }
-        String thresholdKey = earnThresholdConfigKey(key);
-        String rewardKey = earnRewardConfigKey(key);
-        configFacade.upsertAdminValue(thresholdKey, newThreshold.toPlainString(), "NUMBER", "growth", "H6 earn milestone");
-        configFacade.upsertAdminValue(rewardKey, newReward.toPlainString(), "NUMBER", "growth", "H6 earn milestone");
+        ensureGrowthBusinessTables();
+        if (questEventMapper.isEmpty()
+                || questEventMapper.get().updateEarnMilestoneRule(key, newThreshold, newReward) <= 0) {
+            return validation("EARN_MILESTONE_BUSINESS_TABLE_UPDATE_FAILED");
+        }
         audit("H6_EARN_MILESTONE_CHANGED", "EARN_MILESTONE", key, request.operator(), Map.of(
                 "key", key,
                 "oldThresholdUsd", oldThreshold,
@@ -956,7 +980,13 @@ public class OpsGrowthService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = checkIn().getData();
-        response.put("updated", Map.of("key", key, "thresholdKey", thresholdKey, "rewardKey", rewardKey));
+        response.put("updated", Map.of(
+                "key", key,
+                "source", "nx_earning_milestone_rule",
+                "oldThresholdUsd", oldThreshold,
+                "newThresholdUsd", newThreshold,
+                "oldRewardNex", oldReward,
+                "newRewardNex", newReward));
         return ApiResult.ok(response);
     }
 
@@ -1001,7 +1031,7 @@ public class OpsGrowthService {
         response.put("sources", List.of(
                 "nx_config_item:" + WITHDRAW_MIN_BALANCE_KEY,
                 "nx_config_item:" + WITHDRAW_HOLD_DAYS_KEY,
-                "nx_config_item:" + WITHDRAW_STAKING_DISCLOSURE_GATE_KEY));
+                "nx_emergency_control_setting:" + WITHDRAW_STAKING_DISCLOSURE_GATE_KEY));
         return ApiResult.ok(response);
     }
 
@@ -1202,141 +1232,95 @@ public class OpsGrowthService {
     }
 
     private Map<String, Object> questStats() {
-        return readJsonMap(QUEST_H3_STATS_KEY, defaultQuestStats());
-    }
-
-    private Map<String, Object> defaultQuestStats() {
-        return row(
-                "dayOneRate24h", "71%",
-                "dayOneRateGrace", "18%",
-                "weeklyDone", "184K",
-                "t1Done", "38K",
-                "t2Done", "146K",
-                "weeklyNex", "2.4M NEX",
-                "phaseBonusP3", weeklyMultiplier("P3"),
-                "monthlyInflight", 31240);
+        if (dayOneTaskRows().isEmpty() && weeklyTier1Rows().isEmpty() && weeklyTier2Rows().isEmpty()
+                && monthlyMissionRows().isEmpty() && !StringUtils.hasText(weeklyMultiplier("P3"))) {
+            return Map.of();
+        }
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("dayOneTaskCount", dayOneTaskRows().size());
+        stats.put("weeklyTier1Count", weeklyTier1Rows().size());
+        stats.put("weeklyTier2Count", weeklyTier2Rows().size());
+        stats.put("monthlyMissionCount", monthlyMissionRows().size());
+        stats.put("phaseBonusP3", weeklyMultiplier("P3"));
+        return stats;
     }
 
     private Map<String, Object> eventStats() {
         List<Map<String, Object>> events = questEventsList();
-        Map<String, Object> stats = readJsonMap(EVENT_H4_STATS_KEY, defaultEventStats());
+        Map<String, Object> stats = new LinkedHashMap<>();
         long ongoing = events.stream().filter(row -> "ongoing".equals(row.get("state"))).count();
         String featured = events.stream()
                 .filter(row -> Boolean.TRUE.equals(row.get("featured")))
                 .map(row -> row.get("name").toString())
                 .findFirst()
                 .orElse("--");
-        Object wheelTodaySpend = stats.remove("wheelTodaySpend");
-        String wheelBudget = questConfig("wheel.guards.budget");
-        if (wheelTodaySpend == null && stats.containsKey("wheelToday")) {
-            String existingWheelToday = String.valueOf(stats.get("wheelToday"));
-            if (StringUtils.hasText(existingWheelToday)) {
-                wheelTodaySpend = existingWheelToday.contains("/")
-                        ? existingWheelToday.substring(0, existingWheelToday.indexOf('/')).trim()
-                        : existingWheelToday;
-            }
-        }
+        int join = events.stream().mapToInt(row -> intValue(row.get("joinCount"), 0)).sum();
+        int done = events.stream().mapToInt(row -> intValue(row.get("doneCount"), 0)).sum();
+        int claim = events.stream().mapToInt(row -> intValue(row.get("claimCount"), 0)).sum();
         stats.put("ongoing", ongoing);
         stats.put("featuredEv", featured);
-        if (wheelTodaySpend != null || StringUtils.hasText(wheelBudget)) {
-            stats.put("wheelToday", (wheelTodaySpend == null ? "" : wheelTodaySpend) +
-                    (StringUtils.hasText(wheelBudget) ? " / " + wheelBudget : ""));
-        }
+        stats.put("trackJoin", join);
+        stats.put("trackDone", done);
+        stats.put("trackClaim", claim);
         return stats;
     }
 
-    private Map<String, Object> defaultEventStats() {
-        return row(
-                "trackJoin", "12.4K",
-                "trackDone", "3.1K",
-                "trackClaim", "2.8K",
-                "wheelTodaySpend", "$642",
-                "geoBlocked", 2);
+    private List<Map<String, Object>> dayOneTasks() {
+        return dayOneTaskRows();
     }
 
-    private List<Map<String, Object>> dayOneTasks() {
-        return dayOneTaskRows().stream()
-                .map(row -> {
-                    Map<String, Object> copy = new LinkedHashMap<>(row);
-                    int id = Integer.parseInt(copy.get("id").toString());
-                    copy.put("reward", questConfig("dayOne.tasks." + id + ".reward"));
-                    return copy;
-                })
-                .toList();
+    private String dayOneWindow() {
+        List<Map<String, Object>> rows = dayOneTaskRows();
+        if (rows.isEmpty()) {
+            return "";
+        }
+        return rows.size() + " 个首日任务定义来自 nx_mission";
     }
 
     private List<Map<String, Object>> dayOneTaskRows() {
-        return readJsonRows(QUEST_DAY_ONE_TASKS_KEY, defaultDayOneTasks());
-    }
-
-    private List<Map<String, Object>> defaultDayOneTasks() {
-        return List.of(
-                row("id", 0, "task", "绑卡", "href", "topup?kyc=1", "reward", "50 NEX", "status", "active", "completionType", "event", "completionEvent", "kyc.card_bound"),
-                row("id", 1, "task", "逛收益页", "href", "/earn", "reward", "30 NEX", "status", "active", "completionType", "visit", "completionEvent", ""),
-                row("id", 2, "task", "逛商城", "href", "/store", "reward", "50 NEX", "status", "active", "completionType", "visit", "completionEvent", ""),
-                row("id", 3, "task", "看回报率", "href", "/store/roi", "reward", "100 NEX", "status", "active", "completionType", "visit", "completionEvent", ""),
-                row("id", 4, "task", "设资料", "href", "/me/profile", "reward", "80 NEX", "status", "active", "completionType", "event", "completionEvent", "profile.completed"),
-                row("id", 5, "task", "邀请好友", "href", "/team/invite", "reward", "200 NEX + $1", "status", "active", "completionType", "event", "completionEvent", "referral.sent"));
+        return growthRows(mapper -> mapper.missionRows("DAY_ONE"));
     }
 
     private List<Map<String, Object>> dayOneStates() {
-        return readJsonRows(QUEST_DAY_ONE_STATES_KEY, defaultDayOneStates());
+        return defaultDayOneStates();
     }
 
     private List<Map<String, Object>> defaultDayOneStates() {
         return List.of(
-                row("st", "active", "label", "24h 内 6 项完成领 500", "tone", "ok"),
-                row("st", "grace", "label", "72h 内 200", "tone", "warn"),
-                row("st", "expired", "label", "0,首页让位", "tone", "dim"));
+                row("st", "active", "label", "ACTIVE", "tone", "ok"),
+                row("st", "grace", "label", "GRACE", "tone", "warn"),
+                row("st", "expired", "label", "EXPIRED", "tone", "dim"));
     }
 
     private List<Map<String, Object>> weeklyTier1() {
-        List<Map<String, Object>> rows = weeklyTier1Rows();
-        for (int i = 0; i < rows.size(); i++) {
-            rows.get(i).put("reward", questConfig("weekly.tier1." + i + ".reward"));
-        }
-        return rows;
+        return weeklyTier1Rows();
     }
 
     private List<Map<String, Object>> weeklyTier1Rows() {
-        return readJsonRows(QUEST_WEEKLY_TIER1_ROWS_KEY, defaultWeeklyTier1());
-    }
-
-    private List<Map<String, Object>> defaultWeeklyTier1() {
-        return new ArrayList<>(List.of(
-                row("cond", "NEX 持有达标", "reward", "3,000", "status", "active", "completionType", "event", "completionEvent", "stake.locked"),
-                row("cond", "买 Genesis", "reward", "2,500", "status", "active", "completionType", "event", "completionEvent", "genesis.bought"),
-                row("cond", "加购硬件", "reward", "2,000", "status", "active", "completionType", "event", "completionEvent", "device.bought"),
-                row("cond", "换新升级", "reward", "1,800", "status", "active", "completionType", "event", "completionEvent", "device.tradein"),
-                row("cond", "S1→Pro", "reward", "1,500", "status", "active", "completionType", "event", "completionEvent", "device.upgraded"),
-                row("cond", "收益加速档位", "reward", "800", "status", "active", "completionType", "event", "completionEvent", "cloudshare.bought"),
-                row("cond", "首购设备", "reward", "1,000 + $10", "status", "active", "completionType", "event", "completionEvent", "device.first_bought"),
-                row("cond", "充值", "reward", "100", "status", "active", "completionType", "event", "completionEvent", "wallet.deposited"),
-                row("cond", "兑底质押", "reward", "250", "status", "active", "completionType", "event", "completionEvent", "stake.small")));
+        return growthRows(mapper -> mapper.missionRows("WEEKLY_T1"));
     }
 
     private List<Map<String, Object>> weeklyTier2() {
-        List<Map<String, Object>> rows = weeklyTier2Rows();
-        for (int i = 0; i < rows.size(); i++) {
-            rows.get(i).put("reward", questConfig("weekly.tier2." + i + ".reward"));
-        }
-        return rows;
+        return weeklyTier2Rows();
     }
 
     private List<Map<String, Object>> weeklyTier2Rows() {
-        return readJsonRows(QUEST_WEEKLY_TIER2_ROWS_KEY, defaultWeeklyTier2());
+        return growthRows(mapper -> mapper.missionRows("WEEKLY_T2"));
     }
 
-    private List<Map<String, Object>> defaultWeeklyTier2() {
-        return new ArrayList<>(List.of(
-                row("cond", "邀请好友", "reward", "200 + $2", "status", "active", "completionType", "event", "completionEvent", "referral.sent"),
-                row("cond", "复投", "reward", "120", "status", "active", "completionType", "event", "completionEvent", "reinvest.done"),
-                row("cond", "小额质押", "reward", "150", "status", "active", "completionType", "event", "completionEvent", "stake.small"),
-                row("cond", "兑换", "reward", "80", "status", "active", "completionType", "event", "completionEvent", "exchange.done"),
-                row("cond", "小充", "reward", "100", "status", "active", "completionType", "event", "completionEvent", "wallet.deposited"),
-                row("cond", "逛商城", "reward", "50", "status", "active", "completionType", "visit", "completionEvent", ""),
-                row("cond", "跑单 50 次", "reward", "80", "status", "active", "completionType", "event", "completionEvent", "device.jobs_50"),
-                row("cond", "看 Genesis", "reward", "60", "status", "active", "completionType", "visit", "completionEvent", "")));
+    private List<Map<String, Object>> weeklyTaskRows() {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        rows.addAll(weeklyTier1Rows());
+        rows.addAll(weeklyTier2Rows());
+        return rows;
+    }
+
+    private String rewardSummary(List<Map<String, Object>> rows) {
+        return rows.stream()
+                .map(row -> stringValue(row.get("reward"), ""))
+                .filter(StringUtils::hasText)
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(" / "));
     }
 
     private List<Map<String, Object>> weeklyMultipliers() {
@@ -1355,72 +1339,23 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> monthlyMissions() {
-        return monthlyMissionRows().stream()
-                .map(row -> {
-                    Map<String, Object> copy = new LinkedHashMap<>(row);
-                    String id = copy.get("id").toString();
-                    copy.put("reward", questConfig("monthly." + id + ".reward"));
-                    return copy;
-                })
-                .toList();
+        return monthlyMissionRows();
     }
 
     private List<Map<String, Object>> monthlyMissionRows() {
-        return readJsonRows(QUEST_MONTHLY_ROWS_KEY, defaultMonthlyMissions());
-    }
-
-    private List<Map<String, Object>> defaultMonthlyMissions() {
-        return List.of(
-                row("id", "mc0", "theme", "地基建设者", "age", "0-2 月", "reward", "1,500", "goals", "累计赚 200 · 绑卡 · 邀 1 人", "status", "active"),
-                row("id", "mc1", "theme", "网络架构师", "age", "2-4 月", "reward", "2,500", "goals", "累计 1,500 · 直推 3 · 周任务 ×4", "status", "active"),
-                row("id", "mc2", "theme", "进阶之路", "age", "4-6 月", "reward", "4,000", "goals", "累计 5,000 · 设备升级 · 加购", "status", "active"),
-                row("id", "mc3", "theme", "钻石段位", "age", "6-9 月", "reward", "6,000", "goals", "累计 15,000 · V4 · 团队 GV", "status", "active"),
-                row("id", "mc4", "theme", "创始人之约", "age", "9+ 月", "reward", "10,000 + 勋章", "goals", "累计 40,000 · NEX 持有 · Genesis", "status", "active"));
+        return growthRows(GrowthQuestEventMapper::monthlyMissions);
     }
 
     private Map<String, Object> promoBanner() {
-        Map<String, Object> banner = readJsonMap(QUEST_PROMO_BANNER_KEY, defaultPromoBanner());
-        for (String key : List.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDevice", "targetDaily", "status")) {
-            String configKey = questConfigStorageKey("promoBanner." + key);
-            configFacade.activeValue(configKey).ifPresent(value -> banner.put(key, value));
-        }
-        return banner;
-    }
-
-    private Map<String, Object> defaultPromoBanner() {
-        return row(
-                "baseReward", "800",
-                "multiplier", "1.5",
-                "countdownDays", "4",
-                "countdownHours", "12",
-                "targetDevice", "自动(用户最高设备)",
-                "targetDaily", "7.00",
-                "status", "active");
+        return growthMap(GrowthQuestEventMapper::promoBanner);
     }
 
     private List<Map<String, Object>> taskMonitor() {
-        return readJsonRows(QUEST_TASK_MONITOR_KEY, defaultTaskMonitor());
-    }
-
-    private List<Map<String, Object>> defaultTaskMonitor() {
-        return List.of(
-                row("label", "首日", "note", "进窗 28,940 · 24h 领 71% · 宽限领 18% · 流失 11%"),
-                row("label", "每周", "note", "派发 96K 人 · 一档完成 38K · 二档完成 146K 项"),
-                row("label", "月度", "note", "在途 31,240 · 本月可领 4,120 · 已领 3,880"));
+        return growthRows(GrowthQuestEventMapper::taskMonitor);
     }
 
     private List<Map<String, Object>> taskContracts() {
-        return readJsonRows(QUEST_TASK_CONTRACTS_KEY, defaultTaskContracts());
-    }
-
-    private List<Map<String, Object>> defaultTaskContracts() {
-        return List.of(
-                row("taskId", 0, "taskKey", "h3.day_one.card_bound", "serverEvent", "quest.task_completed", "downstream", "kyc.card_bound", "b3", true, "retentionOnly", false, "day7", "绑卡后留存 + 充值前置", "bi", "l_quest_funnel.card_bound", "sample24h", 4820, "anomalyPct", "0.4%"),
-                row("taskId", 1, "taskKey", "h3.day_one.earn_visit", "serverEvent", "quest.task_completed", "downstream", "page.earn.viewed", "b3", false, "retentionOnly", true, "day7", "收益页回访", "bi", "l_quest_funnel.earn_visit", "sample24h", 7940, "anomalyPct", "0.8%"),
-                row("taskId", 2, "taskKey", "h3.day_one.store_visit", "serverEvent", "quest.task_completed", "downstream", "page.store.viewed", "b3", true, "retentionOnly", false, "day7", "设备转化前置", "bi", "l_quest_funnel.store_visit", "sample24h", 7680, "anomalyPct", "0.6%"),
-                row("taskId", 3, "taskKey", "h3.day_one.roi_visit", "serverEvent", "quest.task_completed", "downstream", "page.store_roi.viewed", "b3", true, "retentionOnly", false, "day7", "ROI 认知转化", "bi", "l_quest_funnel.roi_visit", "sample24h", 6920, "anomalyPct", "0.7%"),
-                row("taskId", 4, "taskKey", "h3.day_one.profile_completed", "serverEvent", "quest.task_completed", "downstream", "profile.completed", "b3", false, "retentionOnly", true, "day7", "账户完整度留存", "bi", "l_quest_funnel.profile_completed", "sample24h", 5310, "anomalyPct", "0.5%"),
-                row("taskId", 5, "taskKey", "h3.day_one.referral_sent", "serverEvent", "quest.task_completed", "downstream", "referral.sent", "b3", true, "retentionOnly", false, "day7", "邀请链路激活", "bi", "l_quest_funnel.referral_sent", "sample24h", 2270, "anomalyPct", "1.1%"));
+        return growthRows(GrowthQuestEventMapper::taskContracts);
     }
 
     private Map<String, Object> phaseMultiplierReadonly() {
@@ -1447,11 +1382,7 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> questEventRows() {
-        List<Map<String, Object>> businessRows = businessQuestEventRows();
-        if (!businessRows.isEmpty()) {
-            return businessRows;
-        }
-        return readJsonRows(EVENT_ROWS_KEY, defaultQuestEvents());
+        return businessQuestEventRows();
     }
 
     private List<Map<String, Object>> businessQuestEventRows() {
@@ -1469,26 +1400,18 @@ public class OpsGrowthService {
                     event.put("featured", truthy(row.get("featured")));
                     event.put("trackable", truthy(row.get("trackable")));
                     event.put("condition", stringValue(row.get("condition"), ""));
-                    event.put("geo", stringValue(row.get("geo"), "全区"));
+                    event.put("geo", stringValue(row.get("geo"), ""));
+                    event.put("joinCount", intValue(row.get("joinCount"), 0));
+                    event.put("doneCount", intValue(row.get("doneCount"), 0));
+                    event.put("claimCount", intValue(row.get("claimCount"), 0));
                     return event;
                 })
                 .filter(row -> StringUtils.hasText(String.valueOf(row.get("id"))))
                 .toList();
     }
 
-    private List<Map<String, Object>> defaultQuestEvents() {
-        return List.of(
-                row("id", "pro-7d", "name", "Pro 限时升级 7 天", "kind", "discount", "state", "ongoing", "reward", "2,000 NEX", "featured", true, "trackable", true, "condition", "持有 Pro 或以上(设备域)", "geo", "全区"),
-                row("id", "ref-5", "name", "邀 5 人得 Pro", "kind", "referral", "state", "ongoing", "reward", "5,000 NEX", "featured", false, "trackable", true, "condition", "直推数 >= 5(团队域)", "geo", "全区"),
-                row("id", "spring-wheel", "name", "春日转盘(日重置)", "kind", "wheel", "state", "ongoing", "reward", "见奖池", "featured", false, "trackable", false, "condition", "-", "geo", "全区"),
-                row("id", "onboard-7d", "name", "新人 7 日引导", "kind", "onboarding", "state", "ongoing", "reward", "200 NEX", "featured", false, "trackable", true, "condition", "7 天内完成 4 项", "geo", "全区"),
-                row("id", "regional-pk", "name", "区域算力 PK", "kind", "regional", "state", "upcoming", "reward", "-", "featured", false, "trackable", false, "condition", "-", "geo", "全区"),
-                row("id", "anniv-wheel", "name", "周年转盘", "kind", "wheel", "state", "ended", "reward", "见奖池", "featured", false, "trackable", false, "condition", "-", "geo", "全区"),
-                row("id", "nex-div", "name", "NEX 持有者分红", "kind", "holding", "state", "ongoing", "reward", "见奖池", "featured", false, "trackable", true, "condition", "NEX 余额 >= 1,000(代币域)", "geo", "2 国屏蔽"));
-    }
-
     private List<Map<String, Object>> eventStateLegend() {
-        return readJsonRows(EVENT_STATES_KEY, defaultEventStateLegend());
+        return defaultEventStateLegend();
     }
 
     private List<Map<String, Object>> defaultEventStateLegend() {
@@ -1499,19 +1422,7 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> wheelTiers() {
-        return readJsonRows(WHEEL_TIERS_KEY, defaultWheelTiers());
-    }
-
-    private List<Map<String, Object>> defaultWheelTiers() {
-        return List.of(
-                row("tier", "安慰奖", "reward", "+5 NEX", "prob", new BigDecimal("38"), "real", false, "kind", "平台内"),
-                row("tier", "微 NEX", "reward", "+10 NEX", "prob", new BigDecimal("24"), "real", false, "kind", "平台内"),
-                row("tier", "小 NEX", "reward", "+30 NEX", "prob", new BigDecimal("18"), "real", false, "kind", "平台内"),
-                row("tier", "中 NEX", "reward", "+50 NEX", "prob", new BigDecimal("11"), "real", false, "kind", "平台内"),
-                row("tier", "小额现金", "reward", "$1", "prob", new BigDecimal("5"), "real", true, "kind", "真实流出"),
-                row("tier", "购机抵扣券", "reward", "$50 券(只抵购机)", "prob", new BigDecimal("3"), "real", false, "kind", "转化导向"),
-                row("tier", "中额现金", "reward", "$20", "prob", new BigDecimal("0.9"), "real", true, "kind", "真实流出"),
-                row("tier", "大奖", "reward", "$500", "prob", new BigDecimal("0.1"), "real", true, "kind", "真实流出"));
+        return growthRows(GrowthQuestEventMapper::wheelTiers);
     }
 
     private BigDecimal wheelEvUsd() {
@@ -1525,50 +1436,42 @@ public class OpsGrowthService {
         return new BigDecimal(value.toPlainString());
     }
 
-    private List<Map<String, Object>> wheelGuards() {
-        List<Map<String, Object>> rows = readJsonRows(WHEEL_GUARDS_KEY, defaultWheelGuards());
-        rows.forEach(row -> {
-            Object key = row.get("key");
-            if (key != null && WHEEL_GUARD_KEYS.contains(key.toString())) {
-                row.put("value", questConfig("wheel.guards." + key));
-            }
-        });
-        return rows;
+    private String wheelPoolSignature() {
+        List<Map<String, Object>> tiers = wheelTiers();
+        if (tiers.isEmpty()) {
+            return "";
+        }
+        return tiers.size() + " 档 · EV $" + wheelEvUsd().toPlainString() + "/spin";
     }
 
-    private List<Map<String, Object>> defaultWheelGuards() {
-        return List.of(
-                row("key", "budget", "label", "日派彩预算", "value", "$2,000", "note", "到顶当日只发 NEX/券"),
-                row("key", "cap", "label", "单奖日库存", "value", "$500×5 · $20×50 · 券×200", "note", ""),
-                row("key", "kill", "label", "真实奖总开关", "value", "开", "note", "应急一键停发真钱档"));
+    private List<Map<String, Object>> wheelGuards() {
+        return growthRows(GrowthQuestEventMapper::wheelGuards);
     }
 
     private List<Map<String, Object>> trackables() {
-        return readJsonRows(EVENT_TRACKABLES_KEY, defaultTrackables());
-    }
-
-    private List<Map<String, Object>> defaultTrackables() {
-        return List.of(
-                row("id", "pro-7d", "name", "Pro 限时升级", "cond", "持有 Pro 或以上(设备域)", "join", "8,420", "done", "1,240", "claim", "1,180", "geo", "全区"),
-                row("id", "ref-5", "name", "邀 5 人得 Pro", "cond", "直推数 >= 5(团队域)", "join", "2,180", "done", "312", "claim", "290", "geo", "全区"),
-                row("id", "onboard-7d", "name", "新人 7 日引导", "cond", "7 天内完成 4 项", "join", "11,400", "done", "1,890", "claim", "1,640", "geo", "全区"),
-                row("id", "nex-div", "name", "NEX 持有者分红", "cond", "NEX 余额 >= 1,000(代币域)", "join", "3,840", "done", "660", "claim", "594", "geo", "2 国屏蔽"));
+        return questEventsList().stream()
+                .filter(event -> truthy(event.get("trackable")))
+                .map(event -> row(
+                        "id", event.get("id"),
+                        "name", event.get("name"),
+                        "cond", event.get("condition"),
+                        "join", intValue(event.get("joinCount"), 0),
+                        "done", intValue(event.get("doneCount"), 0),
+                        "claim", intValue(event.get("claimCount"), 0),
+                        "geo", event.get("geo")))
+                .toList();
     }
 
     private Map<String, Object> trialStats() {
-        if (!readTimeSeedPolicy.enabled()) {
+        Map<String, Object> row = growthMap(GrowthQuestEventMapper::trialStats);
+        if (row.isEmpty()) {
             return Map.of();
         }
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("activeSessions", 11273);
-        stats.put("inTrial", 9840);
-        stats.put("inGrace", 1180);
-        stats.put("inExtended", 253);
-        stats.put("trialBuyRate", "22.4%");
-        stats.put("bindCardRate", "61.2%");
-        stats.put("earlyBuyRate", "38%");
-        stats.put("reviveRate", "9%");
-        stats.put("k2Blocked", 17);
+        stats.put("activeSessions", intValue(row.get("activeSessions"), 0));
+        stats.put("inTrial", intValue(row.get("inTrial"), 0));
+        stats.put("inGrace", intValue(row.get("inGrace"), 0));
+        stats.put("inExtended", intValue(row.get("inExtended"), 0));
         return stats;
     }
 
@@ -1582,73 +1485,35 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> trialParams() {
-        return defaultTrialParams().stream()
+        return growthRows(GrowthQuestEventMapper::listTrialPolicies).stream()
                 .map(row -> {
-                    String key = row.get("key").toString();
                     Map<String, Object> copy = new LinkedHashMap<>(row);
-                    copy.put("cur", trialParamCurrentValue(key, row.get("cur").toString()));
+                    if (truthy(copy.get("serverOnly"))) {
+                        copy.put("cur", "•••(server only)");
+                    }
                     return copy;
                 })
                 .toList();
-    }
-
-    private List<Map<String, Object>> defaultTrialParams() {
-        return List.of(
-                trialParam("trialDays", "试用天数", "仅影响新开 trial", "3", false, "newonly", false),
-                trialParam("graceDays", "宽限期", "仅影响新开 trial", "7", false, "newonly", false),
-                trialParam("extensionDays", "延长天数", "仅影响新开 trial", "3", false, "newonly", false),
-                trialParam("price", "试用机价", "对应机型 stellarbox-s1(改机型走治理)", "$1,299", true, "newonly", false),
-                trialParam("shadow", "每日影子收益", "", "$38.52 + 65 NEX", false, "newonly", false),
-                trialParam("offsetCap", "收益抵扣购机款上限", "抵扣是折扣不是负债;超出部分购后才入余额", "$50", false, "live", false),
-                trialParam("disc", "提前购买折扣 / 折扣上限", "", "15% / $20", false, "live", false),
-                trialParam("hq", "高质量延长触发线", "", "$100", false, "live", false),
-                trialParam("failRate", "扣款失败概率", "平台内部参数,不外泄到用户界面", "•••(server only)", true, "live", true),
-                trialParam("trialCooldown", "再试用冷却 / 本阶段开放", "开放与否随 H1 阶段调度", "30 天 / 开放", false, "live", false),
-                trialParam("push", "auto-push(延迟 / 冷却 / 单会话上限)", "", "1.5s / 24h / 1 次", false, "live", false),
-                trialParam("autoCharge", "期末自动扣款", "关掉=停止自动扣款,直接影响资金", "开", true, "live", false));
-    }
-
-    private Map<String, Object> trialParam(
-            String key,
-            String name,
-            String sub,
-            String current,
-            boolean hot,
-            String section,
-            boolean serverOnly) {
-        Map<String, Object> param = new LinkedHashMap<>();
-        param.put("key", key);
-        param.put("name", name);
-        param.put("sub", sub);
-        param.put("cur", current);
-        param.put("hot", hot);
-        param.put("section", section);
-        param.put("serverOnly", serverOnly);
-        return param;
     }
 
     private String trialParamCurrentValue(String key, String fallback) {
         if ("failRate".equals(key)) {
             return "•••(server only)";
         }
-        return configFacade.activeValue(trialParamConfigKey(key))
-                .filter(StringUtils::hasText)
-                .orElse("");
+        if (questEventMapper.isEmpty()) {
+            return "";
+        }
+        try {
+            return Optional.ofNullable(questEventMapper.get().trialPolicyValue(key))
+                    .filter(StringUtils::hasText)
+                    .orElse("");
+        } catch (RuntimeException ex) {
+            return "";
+        }
     }
 
     private List<Map<String, Object>> trialGates() {
-        return List.of(
-                trialGate("资格统一裁决", "冷却/阶段未开/养号都开不了"),
-                trialGate("30 天冷却", "K2 簇命中跨号生效,绕不过"),
-                trialGate("K2 循环阻断", "养号信号实时关闭资格"),
-                trialGate("扣款幂等", "Idempotency-Key 24h dedup · 重复请求只生效一次"));
-    }
-
-    private Map<String, Object> trialGate(String gate, String note) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("gate", gate);
-        row.put("note", note);
-        return row;
+        return growthRows(GrowthQuestEventMapper::trialGates);
     }
 
     private List<Map<String, Object>> trialStates() {
@@ -1671,24 +1536,7 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> trialSessions() {
-        return List.of();
-    }
-
-    private List<Map<String, Object>> defaultTrialSessions() {
-        return List.of(
-                trialSession("usr_9921", "active", "$115 + 195 NEX", "tok_88a2"),
-                trialSession("usr_2231", "grace", "$231 + 390 NEX", "tok_71f0"),
-                trialSession("usr_8807", "extended", "$308 + 520 NEX", "tok_8a3f(CL-318)"),
-                trialSession("usr_77D4", "cancelled", "归零", "tok_9912"));
-    }
-
-    private Map<String, Object> trialSession(String sid, String state, String shadow, String cardToken) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("sid", sid);
-        row.put("state", state);
-        row.put("shadow", shadow);
-        row.put("cardTok", cardToken);
-        return row;
+        return growthRows(mapper -> mapper.trialSessions(100));
     }
 
     private boolean trialAutoPushKilled() {
@@ -1706,8 +1554,8 @@ public class OpsGrowthService {
     }
 
     private boolean trialKillSwitchEnabled() {
-        return configFacade.activeValue(TRIAL_KILLSWITCH_KEY)
-                .or(() -> configFacade.activeValue(TRIAL_LEGACY_KILLSWITCH_KEY))
+        return controlValue(TRIAL_KILLSWITCH_KEY)
+                .or(() -> controlValue(TRIAL_LEGACY_KILLSWITCH_KEY))
                 .map(value -> {
                     String normalized = value.trim().toLowerCase(Locale.ROOT);
                     return "enabled".equals(normalized)
@@ -1775,116 +1623,45 @@ public class OpsGrowthService {
         };
     }
 
-    private String trialParamConfigKey(String key) {
-        return TRIAL_PARAM_PREFIX + normalizeTrialParamKey(key);
-    }
-
     private String normalizeTrialSessionId(String sessionId) {
         String sid = requireText(sessionId, "Trial session id is required");
         if (!sid.matches("[A-Za-z0-9_-]+")) {
             throw new IllegalArgumentException("TRIAL_SESSION_ID_INVALID");
         }
-        boolean configured = configFacade.activeValue(trialSessionConfigKey(sid, "state"))
-                .filter(StringUtils::hasText)
-                .isPresent();
-        if (!configured) {
+        if (questEventMapper.isEmpty() || questEventMapper.get().trialSession(sid) == null) {
             throw new IllegalArgumentException("TRIAL_SESSION_NOT_FOUND");
         }
         return sid;
     }
 
     private String trialSessionState(String sid) {
-        return configFacade.activeValue(trialSessionConfigKey(sid, "state"))
-                .filter(StringUtils::hasText)
-                .map(value -> value.trim().toLowerCase(Locale.ROOT))
+        if (questEventMapper.isEmpty()) {
+            return "idle";
+        }
+        return Optional.ofNullable(questEventMapper.get().trialSession(sid))
+                .map(row -> stringValue(row.get("state"), "idle").toLowerCase(Locale.ROOT))
                 .orElse("idle");
     }
 
-    private String trialSessionConfigKey(String sid, String field) {
-        return TRIAL_SESSION_PREFIX + sid + "." + field;
-    }
-
     private Map<String, Object> checkInStats() {
-        BigDecimal lucky15Pct = configDecimal(CHECKIN_LUCKY_15_PCT_KEY, new BigDecimal("15"));
-        BigDecimal lucky2Pct = configDecimal(CHECKIN_LUCKY_2_PCT_KEY, new BigDecimal("5"));
-        Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("todaySign", 0);
-        stats.put("signRate", "0%");
-        stats.put("lucky15Actual", "0%");
-        stats.put("lucky2Actual", "0%");
+        BigDecimal lucky15Pct = currentCheckInRuleNumber("p15");
+        BigDecimal lucky2Pct = currentCheckInRuleNumber("p2");
+        Map<String, Object> stats = new LinkedHashMap<>(growthMap(GrowthQuestEventMapper::checkInStats));
         stats.put("lucky15Config", lucky15Pct.stripTrailingZeros().toPlainString() + "%");
         stats.put("lucky2Config", lucky2Pct.stripTrailingZeros().toPlainString() + "%");
-        stats.put("weekRevive", 0);
-        stats.put("weekMsTrigger", 0);
-        stats.put("weekMsNex", "0 NEX");
         return stats;
     }
 
     private List<Map<String, Object>> checkInRules() {
-        return List.of(
-                checkInRule("baseline", "每日基础 NEX", "", formatSignedNex(configDecimal(CHECKIN_REWARD_KEY, new BigDecimal("2"))), false),
-                checkInRule("bonus7", "连续 7 天加奖", "", formatSignedNex(configDecimal(CHECKIN_STREAK_BONUS_KEY, new BigDecimal("5"))), false),
-                checkInRule("p15", "幸运 1.5× 概率", "两档概率合计 ≤ 100%,超了直接拒",
-                        formatPercentNumber(configDecimal(CHECKIN_LUCKY_15_PCT_KEY, new BigDecimal("15"))), true),
-                checkInRule("p2", "幸运 2× 概率", "",
-                        formatPercentNumber(configDecimal(CHECKIN_LUCKY_2_PCT_KEY, new BigDecimal("5"))), true),
-                checkInRule("broken", "断签阈值", "超过没签连胜归零(可用复活卡)",
-                        configDecimal(CHECKIN_BROKEN_HOURS_KEY, new BigDecimal("48")).stripTrailingZeros().toPlainString() + " 小时", false),
-                checkInRule("saver", "复活卡默认持有 / 恢复上限", "恢复到 min(历史最长连胜, 上限)",
-                        configFacade.activeValue(CHECKIN_REVIVE_CARDS_KEY).orElse(""), false));
-    }
-
-    private Map<String, Object> checkInRule(String key, String name, String sub, String current, boolean hot) {
-        Map<String, Object> rule = new LinkedHashMap<>();
-        rule.put("key", key);
-        rule.put("name", name);
-        rule.put("sub", sub);
-        rule.put("cur", current);
-        rule.put("hot", hot);
-        return rule;
+        return growthRows(GrowthQuestEventMapper::checkInRules);
     }
 
     private List<Map<String, Object>> streakMilestones() {
-        return defaultStreakMilestones().stream()
-                .filter(row -> configFacade.activeValue(CHECKIN_STREAK_MS_PREFIX + row.get("id") + ".reward")
-                        .filter(StringUtils::hasText)
-                        .isPresent())
-                .map(row -> {
-                    int id = Integer.parseInt(row.get("id").toString());
-                    Map<String, Object> copy = new LinkedHashMap<>(row);
-                    copy.put("reward", configFacade.activeValue(CHECKIN_STREAK_MS_PREFIX + id + ".reward")
-                            .orElse(""));
-                    return copy;
-                })
-                .toList();
-    }
-
-    private List<Map<String, Object>> defaultStreakMilestones() {
-        return List.of(
-                streakMilestone(0, "3 天", "+5 NEX", "nex"),
-                streakMilestone(1, "7 天", "+15 NEX", "nex"),
-                streakMilestone(2, "14 天", "+$1", "usdt"),
-                streakMilestone(3, "21 天", "+100 NEX", "nex"),
-                streakMilestone(4, "30 天", "转盘票 ×1", "spin"),
-                streakMilestone(5, "60 天", "+$10", "usdt"),
-                streakMilestone(6, "100 天", "连胜大师徽章", "badge"));
-    }
-
-    private Map<String, Object> defaultStreakMilestone(int milestoneId) {
-        return defaultStreakMilestones().get(milestoneId);
-    }
-
-    private Map<String, Object> streakMilestone(int id, String day, String reward, String kind) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("id", id);
-        row.put("day", day);
-        row.put("reward", reward);
-        row.put("kind", kind);
-        return row;
+        return growthRows(GrowthQuestEventMapper::streakMilestones);
     }
 
     private List<Map<String, Object>> streakDistribution() {
-        return List.of();
+        return growthRows(GrowthQuestEventMapper::streakDistribution);
     }
 
     private Map<String, Object> streakDistribution(String day, String count, int height) {
@@ -1896,79 +1673,11 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> powerUps() {
-        return defaultPowerUps().stream()
-                .filter(row -> {
-                    int id = Integer.parseInt(row.get("id").toString());
-                    return configFacade.activeValue(CHECKIN_POWER_UP_PREFIX + id + ".day").filter(StringUtils::hasText).isPresent()
-                            && configFacade.activeValue(CHECKIN_POWER_UP_PREFIX + id + ".note").filter(StringUtils::hasText).isPresent();
-                })
-                .map(row -> {
-                    int id = Integer.parseInt(row.get("id").toString());
-                    Map<String, Object> copy = new LinkedHashMap<>(row);
-                    copy.put("day", configDecimal(CHECKIN_POWER_UP_PREFIX + id + ".day",
-                            new BigDecimal(row.get("day").toString())).intValue());
-                    copy.put("note", configFacade.activeValue(CHECKIN_POWER_UP_PREFIX + id + ".note").orElse(""));
-                    return copy;
-                })
-                .toList();
-    }
-
-    private List<Map<String, Object>> defaultPowerUps() {
-        return List.of(
-                powerUp(0, 7, "7 天 · 版税加成", "兑现在团队费率(F2)", "F2"),
-                powerUp(1, 14, "14 天 · 历史权益迁移提示", "Premium 已下线,仅保留迁移说明和历史兼容,不再兑付订阅", "MIGRATION"),
-                powerUp(2, 30, "30 天 · 下次质押 +2% 年化", "兑现在质押(G1)", "G1"),
-                powerUp(3, 60, "60 天 · Genesis 白名单优先", "兑现在 Genesis(G4)", "G4"));
-    }
-
-    private Map<String, Object> defaultPowerUp(int powerUpId) {
-        return defaultPowerUps().get(powerUpId);
-    }
-
-    private Map<String, Object> powerUp(int id, int day, String label, String sub, String downstream) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("id", id);
-        row.put("day", day);
-        row.put("label", label);
-        row.put("sub", sub);
-        row.put("downstream", downstream);
-        return row;
+        return growthRows(GrowthQuestEventMapper::powerUps);
     }
 
     private List<Map<String, Object>> earnMilestones() {
-        return defaultEarnMilestones().stream()
-                .filter(row -> {
-                    String key = row.get("key").toString();
-                    return configFacade.activeValue(earnThresholdConfigKey(key)).filter(StringUtils::hasText).isPresent()
-                            && configFacade.activeValue(earnRewardConfigKey(key)).filter(StringUtils::hasText).isPresent();
-                })
-                .map(row -> {
-                    String key = row.get("key").toString();
-                    Map<String, Object> copy = new LinkedHashMap<>(row);
-                    copy.put("threshold", earnMilestoneThreshold(key));
-                    copy.put("nex", earnMilestoneReward(key));
-                    return copy;
-                })
-                .toList();
-    }
-
-    private List<Map<String, Object>> defaultEarnMilestones() {
-        return List.of(
-                earnMilestone(0, "earn-100", 100, 100, 912),
-                earnMilestone(1, "earn-500", 500, 250, 624),
-                earnMilestone(2, "earn-1000", 1000, 500, 388),
-                earnMilestone(3, "earn-5000", 5000, 1500, 210),
-                earnMilestone(4, "earn-10000", 10000, 3000, 80));
-    }
-
-    private Map<String, Object> earnMilestone(int id, String key, int threshold, int nex, int weekTrigger) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("id", id);
-        row.put("key", key);
-        row.put("threshold", threshold);
-        row.put("nex", nex);
-        row.put("weekTrigger", weekTrigger);
-        return row;
+        return growthRows(GrowthQuestEventMapper::earnMilestones);
     }
 
     private Map<String, Object> tickInterval() {
@@ -1984,18 +1693,13 @@ public class OpsGrowthService {
     private Map<String, Object> phaseConfig() {
         Optional<String> raw = configFacade.activeValue(PHASE_CONFIG_KEY).filter(StringUtils::hasText);
         if (raw.isEmpty()) {
-            return fallbackMap(defaultPhaseConfig());
+            return Map.of();
         }
         try {
             return objectMapper.readValue(raw.get(), new TypeReference<Map<String, Object>>() {
             });
         } catch (JsonProcessingException ex) {
-            Map<String, Object> fallback = new LinkedHashMap<>();
-            fallback.put("calendar", "12_MONTH");
-            fallback.put("activePhase", "P1");
-            fallback.put("activeDialCount", 8);
-            fallback.put("invalidSource", PHASE_CONFIG_KEY);
-            return fallbackMap(fallback);
+            return Map.of("invalidSource", PHASE_CONFIG_KEY);
         }
     }
 
@@ -2031,60 +1735,58 @@ public class OpsGrowthService {
         ensureWithdrawGateSeedData();
     }
 
+    private void ensureGrowthBusinessTables() {
+        questEventMapper.ifPresent(mapper -> {
+            mapper.createGrowthTrialPolicyTable();
+            mapper.createGrowthTrialGateTable();
+            mapper.createGrowthCheckinRuleTable();
+            mapper.createGrowthWheelTierTable();
+            mapper.createGrowthWheelGuardTable();
+            mapper.createGrowthPromoBannerTable();
+        });
+    }
+
+    private List<Map<String, Object>> growthRows(Function<GrowthQuestEventMapper, List<Map<String, Object>>> reader) {
+        if (questEventMapper.isEmpty()) {
+            return List.of();
+        }
+        try {
+            List<Map<String, Object>> rows = reader.apply(questEventMapper.get());
+            return rows == null ? List.of() : rows;
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
+    }
+
+    private Map<String, Object> growthMap(Function<GrowthQuestEventMapper, Map<String, Object>> reader) {
+        if (questEventMapper.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            Map<String, Object> row = reader.apply(questEventMapper.get());
+            return row == null ? Map.of() : row;
+        } catch (RuntimeException ex) {
+            return Map.of();
+        }
+    }
+
     private void ensureTrialSeedData() {
         if (readTimeBusinessSeedsDisabled()) {
             return;
         }
-        for (Map<String, Object> param : defaultTrialParams()) {
-            String key = param.get("key").toString();
-            String value = trialParamSeedValue(key, param.get("cur").toString());
-            seedIfMissing(trialParamConfigKey(key), value, trialParamValueType(key), "growth", "H2 trial parameter seed");
-        }
-        for (Map<String, Object> session : defaultTrialSessions()) {
-            String sid = session.get("sid").toString();
-            seedIfMissing(trialSessionConfigKey(sid, "state"), session.get("state").toString(), "STRING", "growth", "H2 trial session seed");
-        }
         seedIfMissing(TRIAL_AUTO_PUSH_KILLED_KEY, "false", "BOOLEAN", "growth", "H2 auto-push seed");
-    }
-
-    private String trialParamSeedValue(String key, String fallback) {
-        if ("failRate".equals(key)) {
-            return "4.1";
-        }
-        if (isTrialDayParam(key)) {
-            return legacyTrialDaysValue(key).orElse(fallback);
-        }
-        return fallback;
-    }
-
-    private Optional<String> legacyTrialDaysValue(String key) {
-        Optional<String> legacy = configFacade.activeValue(TRIAL_PARAM_PREFIX + "days").filter(StringUtils::hasText);
-        if (legacy.isEmpty()) {
-            return Optional.empty();
-        }
-        List<String> numbers = new ArrayList<>();
-        Matcher matcher = Pattern.compile("\\d+").matcher(legacy.get());
-        while (matcher.find()) {
-            numbers.add(matcher.group());
-        }
-        int index = switch (key) {
-            case "trialDays" -> 0;
-            case "graceDays" -> 1;
-            case "extensionDays" -> 2;
-            default -> -1;
-        };
-        if (index < 0 || index >= numbers.size()) {
-            return Optional.empty();
-        }
-        try {
-            return Optional.of(normalizeTrialDayParam(key, numbers.get(index)).toPlainString());
-        } catch (IllegalArgumentException ex) {
-            return Optional.empty();
-        }
     }
 
     private String trialParamValueType(String key) {
         return "failRate".equals(key) || isTrialDayParam(key) ? "NUMBER" : "STRING";
+    }
+
+    private boolean trialParamHot(String key) {
+        return Set.of("price", "failRate", "autoCharge").contains(key);
+    }
+
+    private String trialParamSection(String key) {
+        return Set.of("trialDays", "graceDays", "extensionDays", "price", "shadow").contains(key) ? "newonly" : "live";
     }
 
     private void ensureQuestEventSeedData() {
@@ -2094,65 +1796,17 @@ public class OpsGrowthService {
         if (!readTimeSeedPolicy.enabled()) {
             return;
         }
-        seedJsonIfMissing(QUEST_H3_STATS_KEY, defaultQuestStats(), "growth", "H3 stats seed");
-        seedJsonIfMissing(EVENT_H4_STATS_KEY, defaultEventStats(), "growth", "H4 stats seed");
-        seedJsonIfMissing(QUEST_DAY_ONE_TASKS_KEY, defaultDayOneTasks(), "growth", "H3 day-one task rows seed");
-        seedJsonIfMissing(QUEST_DAY_ONE_STATES_KEY, defaultDayOneStates(), "growth", "H3 day-one state seed");
-        seedJsonIfMissing(QUEST_WEEKLY_TIER1_ROWS_KEY, defaultWeeklyTier1(), "growth", "H3 weekly tier1 rows seed");
-        seedJsonIfMissing(QUEST_WEEKLY_TIER2_ROWS_KEY, defaultWeeklyTier2(), "growth", "H3 weekly tier2 rows seed");
-        seedJsonIfMissing(QUEST_MONTHLY_ROWS_KEY, defaultMonthlyMissions(), "growth", "H3 monthly mission rows seed");
-        seedJsonIfMissing(QUEST_TASK_MONITOR_KEY, defaultTaskMonitor(), "growth", "H3 task monitor seed");
-        seedJsonIfMissing(QUEST_TASK_CONTRACTS_KEY, defaultTaskContracts(), "growth", "H3 task contract seed");
-        seedJsonIfMissing(QUEST_PROMO_BANNER_KEY, defaultPromoBanner(), "growth", "H3 promo banner seed");
-        seedJsonIfMissing(EVENT_ROWS_KEY, defaultQuestEvents(), "growth", "H4 event rows seed");
-        seedJsonIfMissing(EVENT_STATES_KEY, defaultEventStateLegend(), "growth", "H4 event state seed");
-        seedJsonIfMissing(WHEEL_TIERS_KEY, defaultWheelTiers(), "growth", "H4 wheel tiers seed");
-        seedJsonIfMissing(WHEEL_GUARDS_KEY, defaultWheelGuards(), "growth", "H4 wheel guard rows seed");
-        seedJsonIfMissing(EVENT_TRACKABLES_KEY, defaultTrackables(), "growth", "H4 event trackable seed");
-        backfillJsonRows(QUEST_DAY_ONE_TASKS_KEY, defaultDayOneTasks(), "H3 day-one task rows backfill");
-        backfillJsonRows(QUEST_WEEKLY_TIER1_ROWS_KEY, defaultWeeklyTier1(), "H3 weekly tier1 rows backfill");
-        backfillJsonRows(QUEST_WEEKLY_TIER2_ROWS_KEY, defaultWeeklyTier2(), "H3 weekly tier2 rows backfill");
-        backfillJsonRows(QUEST_MONTHLY_ROWS_KEY, defaultMonthlyMissions(), "H3 monthly mission rows backfill");
-        backfillJsonRows(QUEST_TASK_CONTRACTS_KEY, defaultTaskContracts(), "H3 task contract rows backfill");
-        backfillJsonMap(QUEST_PROMO_BANNER_KEY, defaultPromoBanner(), "H3 promo banner backfill");
-
         seedIfMissing(questConfigStorageKey("dayOne.windowMs"), defaultQuestConfigValue("dayOne.windowMs"), "STRING", "growth", "H3 day-one seed");
         seedIfMissing(questConfigStorageKey("dayOne.triReward"), defaultQuestConfigValue("dayOne.triReward"), "STRING", "growth", "H3 day-one seed");
-        for (Map<String, Object> task : dayOneTaskRows()) {
-            String key = "dayOne.tasks." + task.get("id") + ".reward";
-            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 day-one task seed");
-        }
-        for (int i = 0; i < weeklyTier1Rows().size(); i++) {
-            String key = "weekly.tier1." + i + ".reward";
-            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly tier1 seed");
-        }
-        for (int i = 0; i < weeklyTier2Rows().size(); i++) {
-            String key = "weekly.tier2." + i + ".reward";
-            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly tier2 seed");
-        }
         seedIfMissing(questConfigStorageKey("weekly.champBonus"), defaultQuestConfigValue("weekly.champBonus"), "STRING", "growth", "H3 weekly champion seed");
         for (String phase : List.of("P1", "P2", "P3", "P4", "P5", "P6")) {
             String key = "weekly.mult." + phase;
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 weekly multiplier seed");
         }
-        for (Map<String, Object> mission : monthlyMissionRows()) {
-            String key = "monthly." + mission.get("id") + ".reward";
-            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H3 monthly mission seed");
-        }
-        for (String field : List.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDevice", "targetDaily", "status")) {
-            String key = "promoBanner." + field;
-            seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), questValueType(key), "growth", "H3 promo banner seed");
-        }
         seedIfMissing(questConfigStorageKey("wheel.pool"), defaultQuestConfigValue("wheel.pool"), "STRING", "growth", "H4 wheel seed");
         for (String guard : WHEEL_GUARD_KEYS) {
             String key = "wheel.guards." + guard;
             seedIfMissing(questConfigStorageKey(key), defaultQuestConfigValue(key), "STRING", "growth", "H4 wheel guard seed");
-        }
-        for (Map<String, Object> event : questEventRows()) {
-            String id = event.get("id").toString();
-            seedIfMissing(EVENT_PREFIX + id + ".status", event.get("state").toString(), "STRING", "growth", "H4 event seed");
-            seedIfMissing(EVENT_PREFIX + id + ".reward", event.get("reward").toString(), "STRING", "growth", "H4 event seed");
-            seedIfMissing(EVENT_PREFIX + id + ".featured", event.get("featured").toString(), "BOOLEAN", "growth", "H4 event seed");
         }
     }
 
@@ -2167,18 +1821,6 @@ public class OpsGrowthService {
         seedIfMissing(CHECKIN_LUCKY_2_PCT_KEY, "5", "NUMBER", "growth", "H5 check-in seed");
         seedIfMissing(CHECKIN_BROKEN_HOURS_KEY, "48", "NUMBER", "growth", "H5 check-in seed");
         seedIfMissing(CHECKIN_REVIVE_CARDS_KEY, "1 张 / 30 天", "STRING", "growth", "H5 check-in seed");
-        for (Map<String, Object> milestone : defaultStreakMilestones()) {
-            seedIfMissing(CHECKIN_STREAK_MS_PREFIX + milestone.get("id") + ".reward", milestone.get("reward").toString(), "STRING", "growth", "H5 streak milestone seed");
-        }
-        for (Map<String, Object> powerUp : defaultPowerUps()) {
-            seedIfMissing(CHECKIN_POWER_UP_PREFIX + powerUp.get("id") + ".day", powerUp.get("day").toString(), "NUMBER", "growth", "H5 power-up seed");
-            seedIfMissing(CHECKIN_POWER_UP_PREFIX + powerUp.get("id") + ".note", powerUp.get("sub").toString(), "STRING", "growth", "H5 power-up seed");
-        }
-        for (Map<String, Object> milestone : defaultEarnMilestones()) {
-            String key = milestone.get("key").toString();
-            seedIfMissing(earnThresholdConfigKey(key), milestone.get("threshold").toString(), "NUMBER", "growth", "H6 earn milestone seed");
-            seedIfMissing(earnRewardConfigKey(key), milestone.get("nex").toString(), "NUMBER", "growth", "H6 earn milestone seed");
-        }
         seedIfMissing(EARN_TICK_INTERVAL_KEY, "4", "NUMBER", "growth", "H6 tick interval seed");
     }
 
@@ -2261,11 +1903,7 @@ public class OpsGrowthService {
     }
 
     private String jsonRowIdentityField(String key) {
-        return switch (key) {
-            case QUEST_DAY_ONE_TASKS_KEY, QUEST_MONTHLY_ROWS_KEY -> "id";
-            case QUEST_TASK_CONTRACTS_KEY -> "taskId";
-            default -> "";
-        };
+        return "";
     }
 
     private void backfillJsonMap(String key, Map<String, Object> defaults, String remark) {
@@ -2489,8 +2127,14 @@ public class OpsGrowthService {
         for (int month = 1; month <= totalMonths; month++) {
             Map<String, Object> dials = new LinkedHashMap<>();
             for (String key : PHASE_DIAL_KEYS) {
-                BigDecimal value = configDecimal(monthDialConfigKey(month, key), defaultPhaseMonthDialValue(month, key));
-                dials.put(key, displayPhaseDialValue(key, value));
+                String configKey = monthDialConfigKey(month, key);
+                if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isPresent()) {
+                    BigDecimal value = configDecimal(configKey, BigDecimal.ZERO);
+                    dials.put(key, displayPhaseDialValue(key, value));
+                }
+            }
+            if (dials.isEmpty()) {
+                continue;
             }
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("month", month);
@@ -2521,31 +2165,11 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> phaseOverrides() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
-        return List.of(
-                phaseOverride("2026-W18", "2026-W18 批次", "加速 +1 月(测试 P4 转化)· 命中 24,880 人"),
-                phaseOverride("demo", "demo 批次(42 人)", "钉在 P6(投资人演示)· 长期"));
-    }
-
-    private Map<String, Object> phaseOverride(String id, String cohort, String description) {
-        Map<String, Object> override = new LinkedHashMap<>();
-        override.put("id", id);
-        override.put("cohort", cohort);
-        override.put("description", description);
-        override.put("disabled", parseBooleanValue(configFacade.activeValue(OVERRIDE_PREFIX + id + ".disabled").orElse("false")));
-        return override;
+        return List.of();
     }
 
     private List<Map<String, Object>> phaseAttribution() {
-        if (!readTimeSeedPolicy.enabled()) {
-            return List.of();
-        }
-        return List.of(
-                Map.of("phase", "P1 引爆(月1-2)", "first", "5.4%", "reinvest", "18%", "weekly", "$1.9M", "d7", "64.1%", "cur", false),
-                Map.of("phase", "P2 扩张(月3-4)", "first", "6.2%", "reinvest", "21%", "weekly", "$2.6M", "d7", "61.0%", "cur", false),
-                Map.of("phase", "P3 收紧(月5-7)· 当前", "first", "6.8%", "reinvest", "26.9%", "weekly", "$2.1M", "d7", "58.2%", "cur", true));
+        return List.of();
     }
 
     private Map<String, Object> coverage() {
@@ -2618,10 +2242,13 @@ public class OpsGrowthService {
         if (voucherMapper.isEmpty()) {
             return new ArrayList<>();
         }
-        voucherMapper.get().ensureTable();
-        return voucherMapper.get().listVouchers().stream()
-                .map(this::voucherRowFromBusinessTable)
-                .toList();
+        try {
+            return voucherMapper.get().listVouchers().stream()
+                    .map(this::voucherRowFromBusinessTable)
+                    .toList();
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
     }
 
     private List<Map<String, Object>> voucherSkuOptions() {
@@ -2705,12 +2332,16 @@ public class OpsGrowthService {
     }
 
     private boolean disclosureGateActive(String key) {
-        return configFacade.activeValue(key)
+        return controlValue(key)
                 .map(value -> switch (value.trim().toLowerCase(Locale.ROOT)) {
                     case "enabled", "enable", "on", "true", "1", "blocked", "required" -> true;
                     default -> false;
                 })
                 .orElse(false);
+    }
+
+    private Optional<String> controlValue(String key) {
+        return emergencyRepository.settingValue(key);
     }
 
     private Map<String, Object> normalizeVoucher(GrowthVoucherRequest request, String enforcedId) {
@@ -2964,22 +2595,17 @@ public class OpsGrowthService {
         };
     }
 
-    private String checkInConfigKey(String key) {
+    private String checkInRewardRuleKey(String key) {
         return switch (key) {
-            case "baseRewardNex" -> CHECKIN_REWARD_KEY;
-            case "streakBonusNex" -> CHECKIN_STREAK_BONUS_KEY;
-            case "luckyMultiplierMax" -> CHECKIN_LUCKY_MULTIPLIER_KEY;
+            case "baseRewardNex" -> "baseline";
+            case "streakBonusNex" -> "bonus7";
+            case "luckyMultiplierMax" -> "luckyMultiplierMax";
             default -> throw new IllegalArgumentException("Unsupported H5 check-in key");
         };
     }
 
     private BigDecimal currentCheckInValue(String key) {
-        return switch (key) {
-            case "baseRewardNex" -> configDecimal(CHECKIN_REWARD_KEY, new BigDecimal("0.25"));
-            case "streakBonusNex" -> configDecimal(CHECKIN_STREAK_BONUS_KEY, BigDecimal.ONE);
-            case "luckyMultiplierMax" -> configDecimal(CHECKIN_LUCKY_MULTIPLIER_KEY, new BigDecimal("2"));
-            default -> throw new IllegalArgumentException("Unsupported H5 check-in key");
-        };
+        return checkInRuleNumber(checkInRewardRuleKey(key));
     }
 
     private BigDecimal normalizeCheckInValue(String key, String raw) {
@@ -3051,49 +2677,12 @@ public class OpsGrowthService {
                 .replace("H3.", "")
                 .replace("H4.", "")
                 .replace("event.", "");
-        if (key.matches("dayOne\\.tasks\\.\\d+\\.reward")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            if (!dayOneTaskExists(idx)) {
-                throw new IllegalArgumentException("QUEST_DAY_ONE_TASK_INVALID");
-            }
-            return key;
-        }
-        if (key.matches("dayOne\\.\\d+\\.reward")) {
-            int idx = Integer.parseInt(key.split("\\.")[1]);
-            if (!dayOneTaskExists(idx)) {
-                throw new IllegalArgumentException("QUEST_DAY_ONE_TASK_INVALID");
-            }
-            return "dayOne.tasks." + idx + ".reward";
-        }
-        if (key.matches("weekly\\.t1\\.\\d+")) {
-            int idx = Integer.parseInt(key.substring("weekly.t1.".length()));
-            return normalizeWeeklyRewardKey("weekly.tier1", idx, weeklyTier1Rows().size());
-        }
-        if (key.matches("weekly\\.tier1\\.\\d+\\.reward")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return normalizeWeeklyRewardKey("weekly.tier1", idx, weeklyTier1Rows().size());
-        }
-        if (key.matches("weekly\\.t2\\.\\d+")) {
-            int idx = Integer.parseInt(key.substring("weekly.t2.".length()));
-            return normalizeWeeklyRewardKey("weekly.tier2", idx, weeklyTier2Rows().size());
-        }
-        if (key.matches("weekly\\.tier2\\.\\d+\\.reward")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return normalizeWeeklyRewardKey("weekly.tier2", idx, weeklyTier2Rows().size());
-        }
         if (key.startsWith("weekly.mult.")) {
             String phase = key.substring("weekly.mult.".length()).replace(" 当前", "").trim();
             if (!phase.matches("P[1-6]")) {
                 throw new IllegalArgumentException("QUEST_WEEKLY_MULT_INVALID");
             }
             return "weekly.mult." + phase;
-        }
-        if (key.matches("monthly\\.[A-Za-z0-9_-]+\\.reward")) {
-            String id = key.split("\\.")[1];
-            if (!monthlyMissionExists(id)) {
-                throw new IllegalArgumentException("QUEST_MONTHLY_MISSION_INVALID");
-            }
-            return key;
         }
         if (Set.of("dayOne.windowMs", "dayOne.triReward", "weekly.champBonus", "wheel.pool").contains(key)) {
             return key;
@@ -3108,37 +2697,7 @@ public class OpsGrowthService {
             }
             return key;
         }
-        if (key.startsWith("promoBanner.")) {
-            String field = key.substring("promoBanner.".length());
-            if (!Set.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDevice", "targetDaily", "status").contains(field)) {
-                throw new IllegalArgumentException("QUEST_PROMO_BANNER_FIELD_INVALID");
-            }
-            return key;
-        }
         throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
-    }
-
-    private String normalizeWeeklyRewardKey(String prefix, int idx, int max) {
-        if (idx < 0 || idx >= max) {
-            throw new IllegalArgumentException("QUEST_WEEKLY_REWARD_INVALID");
-        }
-        return prefix + "." + idx + ".reward";
-    }
-
-    private boolean dayOneTaskExists(int id) {
-        return dayOneTaskRows().stream()
-                .map(row -> row.get("id"))
-                .filter(value -> value != null)
-                .map(Object::toString)
-                .anyMatch(String.valueOf(id)::equals);
-    }
-
-    private boolean monthlyMissionExists(String id) {
-        return monthlyMissionRows().stream()
-                .map(row -> row.get("id"))
-                .filter(value -> value != null)
-                .map(Object::toString)
-                .anyMatch(id::equals);
     }
 
     private String normalizeQuestValue(String key, String raw) {
@@ -3178,30 +2737,11 @@ public class OpsGrowthService {
     }
 
     private String questConfigStorageKey(String key) {
-        if (key.startsWith("dayOne.tasks.")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return QUEST_PREFIX + "day_one.task." + idx + ".reward";
-        }
-        if (key.startsWith("weekly.tier1.")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return QUEST_PREFIX + "weekly.t1." + idx + ".reward";
-        }
-        if (key.startsWith("weekly.tier2.")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return QUEST_PREFIX + "weekly.t2." + idx + ".reward";
-        }
         if (key.startsWith("weekly.mult.")) {
             return QUEST_PREFIX + "weekly.mult." + key.substring("weekly.mult.".length());
         }
-        if (key.startsWith("monthly.")) {
-            String id = key.split("\\.")[1];
-            return QUEST_PREFIX + "monthly." + id + ".reward";
-        }
         if (key.startsWith("wheel.guards.")) {
             return WHEEL_PREFIX + "guard." + key.substring("wheel.guards.".length());
-        }
-        if (key.startsWith("promoBanner.")) {
-            return QUEST_PREFIX + "promo_banner." + key.substring("promoBanner.".length());
         }
         return switch (key) {
             case "dayOne.windowMs" -> QUEST_PREFIX + "day_one.window_ms";
@@ -3213,18 +2753,6 @@ public class OpsGrowthService {
     }
 
     private String defaultQuestConfigValue(String key) {
-        if (key.startsWith("dayOne.tasks.")) {
-            String id = key.split("\\.")[2];
-            return rewardFromRowWithId(dayOneTaskRows(), id, "QUEST_DAY_ONE_TASK_INVALID");
-        }
-        if (key.startsWith("weekly.tier1.")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return rewardFromRowAt(weeklyTier1Rows(), idx, "QUEST_WEEKLY_REWARD_INVALID");
-        }
-        if (key.startsWith("weekly.tier2.")) {
-            int idx = Integer.parseInt(key.split("\\.")[2]);
-            return rewardFromRowAt(weeklyTier2Rows(), idx, "QUEST_WEEKLY_REWARD_INVALID");
-        }
         if (key.startsWith("weekly.mult.")) {
             return switch (key.substring("weekly.mult.".length())) {
                 case "P1", "P2" -> "1.0×";
@@ -3235,10 +2763,6 @@ public class OpsGrowthService {
                 default -> throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
             };
         }
-        if (key.startsWith("monthly.")) {
-            String id = key.split("\\.")[1];
-            return rewardFromRowWithId(monthlyMissionRows(), id, "QUEST_MONTHLY_MISSION_INVALID");
-        }
         if (key.startsWith("wheel.guards.")) {
             return switch (key.substring("wheel.guards.".length())) {
                 case "budget" -> "$2,000";
@@ -3246,13 +2770,6 @@ public class OpsGrowthService {
                 case "kill" -> "开";
                 default -> throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
             };
-        }
-        if (key.startsWith("promoBanner.")) {
-            Object value = readJsonMap(QUEST_PROMO_BANNER_KEY, defaultPromoBanner()).get(key.substring("promoBanner.".length()));
-            if (value == null) {
-                throw new IllegalArgumentException("QUEST_CONFIG_KEY_INVALID");
-            }
-            return value.toString();
         }
         return switch (key) {
             case "dayOne.windowMs" -> "24h 全额 / 72h 宽限";
@@ -3263,36 +2780,12 @@ public class OpsGrowthService {
         };
     }
 
-    private String rewardFromRowAt(List<Map<String, Object>> rows, int idx, String errorCode) {
-        if (idx < 0 || idx >= rows.size()) {
-            throw new IllegalArgumentException(errorCode);
-        }
-        Object reward = rows.get(idx).get("reward");
-        if (reward == null) {
-            throw new IllegalArgumentException(errorCode);
-        }
-        return reward.toString();
-    }
-
-    private String rewardFromRowWithId(List<Map<String, Object>> rows, String id, String errorCode) {
-        return rows.stream()
-                .filter(row -> id.equals(String.valueOf(row.get("id"))))
-                .findFirst()
-                .map(row -> row.get("reward"))
-                .filter(value -> value != null)
-                .map(Object::toString)
-                .orElseThrow(() -> new IllegalArgumentException(errorCode));
-    }
-
     private boolean amplifiesQuestValue(String key, String oldValue, String newValue) {
         if (key.startsWith("weekly.mult.")) {
             return numericToken(newValue).compareTo(numericToken(oldValue)) > 0;
         }
         if (key.equals("wheel.pool")) {
             return !oldValue.equals(newValue);
-        }
-        if (key.equals("promoBanner.baseReward") || key.equals("promoBanner.multiplier")) {
-            return numericToken(newValue).compareTo(numericToken(oldValue)) > 0;
         }
         if (key.contains("reward") || key.equals("dayOne.triReward") || key.equals("weekly.champBonus")) {
             return rewardFlow(newValue).compareTo(rewardFlow(oldValue)) > 0;
@@ -3306,9 +2799,6 @@ public class OpsGrowthService {
         }
         if (key.equals("wheel.pool")) {
             return "H4_WHEEL_POOL_CHANGED";
-        }
-        if (key.startsWith("promoBanner.")) {
-            return "H3_PROMO_BANNER_CHANGED";
         }
         return "H3_QUEST_CONFIG_CHANGED";
     }
@@ -3399,6 +2889,20 @@ public class OpsGrowthService {
         }
     }
 
+    private int intValue(Object raw, int fallback) {
+        if (raw instanceof Number number) {
+            return number.intValue();
+        }
+        if (raw == null || !StringUtils.hasText(raw.toString())) {
+            return fallback;
+        }
+        try {
+            return new BigDecimal(raw.toString().replace(",", "")).intValue();
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
+    }
+
     private BigDecimal voucherNumberValue(Object raw) {
         if (raw instanceof BigDecimal value) {
             return value;
@@ -3460,37 +2964,17 @@ public class OpsGrowthService {
 
     private String eventStatus(String eventId) {
         Map<String, Object> row = eventRow(eventId);
-        if (isBusinessEventRow(row)) {
-            return row.get("state").toString();
-        }
-        return configFacade.activeValue(EVENT_PREFIX + eventId + ".status")
-                .orElse(row.get("state").toString());
+        return row.get("state").toString();
     }
 
     private String eventReward(String eventId) {
         Map<String, Object> row = eventRow(eventId);
-        if (isBusinessEventRow(row)) {
-            return row.get("reward").toString();
-        }
-        return configFacade.activeValue(EVENT_PREFIX + eventId + ".reward")
-                .orElse(row.get("reward").toString());
+        return row.get("reward").toString();
     }
 
     private boolean eventFeatured(String eventId) {
         Map<String, Object> row = eventRow(eventId);
-        if (isBusinessEventRow(row)) {
-            return truthy(row.get("featured"));
-        }
-        return configFacade.activeValue(EVENT_PREFIX + eventId + ".featured")
-                .map(value -> Boolean.TRUE.equals(parseBooleanValue(value)))
-                .orElse(Boolean.TRUE.equals(row.get("featured")));
-    }
-
-    private boolean isBusinessEventRow(Map<String, Object> row) {
-        return questEventMapper.isPresent()
-                && row != null
-                && row.get("id") != null
-                && questEventMapper.get().countById(row.get("id").toString()) > 0;
+        return truthy(row.get("featured"));
     }
 
     private Map<String, Object> eventRow(String eventId) {
@@ -3504,6 +2988,23 @@ public class OpsGrowthService {
         return configFacade.activeValue(key)
                 .flatMap(value -> Optional.ofNullable(parseDecimal(value, fallback)))
                 .orElse(BigDecimal.ZERO);
+    }
+
+    private List<String> sunsetExclusions() {
+        Optional<String> raw = configFacade.activeValue(SUNSET_EXCLUSIONS_KEY).filter(StringUtils::hasText);
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+        List<String> values = new ArrayList<>();
+        for (String item : raw.get().split("[,;，；\\r\\n]+")) {
+            if (StringUtils.hasText(item)) {
+                String trimmed = item.trim();
+                if (!values.contains(trimmed)) {
+                    values.add(trimmed);
+                }
+            }
+        }
+        return values;
     }
 
     private BigDecimal parseDecimal(String raw) {
@@ -3576,31 +3077,45 @@ public class OpsGrowthService {
         };
     }
 
-    private String checkInRuleConfigKey(String key) {
-        return switch (key) {
-            case "baseline" -> CHECKIN_REWARD_KEY;
-            case "bonus7" -> CHECKIN_STREAK_BONUS_KEY;
-            case "p15" -> CHECKIN_LUCKY_15_PCT_KEY;
-            case "p2" -> CHECKIN_LUCKY_2_PCT_KEY;
-            case "broken" -> CHECKIN_BROKEN_HOURS_KEY;
-            case "saver" -> CHECKIN_REVIVE_CARDS_KEY;
-            default -> throw new IllegalArgumentException("Unsupported H5 check-in rule");
-        };
-    }
-
     private String checkInRuleValueType(String key) {
         return "saver".equals(key) ? "STRING" : "NUMBER";
     }
 
-    private BigDecimal currentCheckInRuleNumber(String key) {
+    private boolean checkInRuleHot(String key) {
+        return Set.of("p15", "p2", "luckyMultiplierMax").contains(key);
+    }
+
+    private int checkInRuleSortOrder(String key) {
         return switch (key) {
-            case "baseline" -> configDecimal(CHECKIN_REWARD_KEY, new BigDecimal("2"));
-            case "bonus7" -> configDecimal(CHECKIN_STREAK_BONUS_KEY, new BigDecimal("5"));
-            case "p15" -> configDecimal(CHECKIN_LUCKY_15_PCT_KEY, new BigDecimal("15"));
-            case "p2" -> configDecimal(CHECKIN_LUCKY_2_PCT_KEY, new BigDecimal("5"));
-            case "broken" -> configDecimal(CHECKIN_BROKEN_HOURS_KEY, new BigDecimal("48"));
-            default -> throw new IllegalArgumentException("Unsupported H5 numeric check-in rule");
+            case "baseline" -> 10;
+            case "bonus7" -> 20;
+            case "luckyMultiplierMax" -> 25;
+            case "p15" -> 30;
+            case "p2" -> 40;
+            case "broken" -> 50;
+            case "saver" -> 60;
+            default -> 100;
         };
+    }
+
+    private BigDecimal currentCheckInRuleNumber(String key) {
+        return checkInRuleNumber(key);
+    }
+
+    private BigDecimal checkInRuleNumber(String key) {
+        if (questEventMapper.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        String value;
+        try {
+            value = questEventMapper.get().checkInRuleValue(key);
+        } catch (RuntimeException ex) {
+            return BigDecimal.ZERO;
+        }
+        if (!StringUtils.hasText(value)) {
+            return BigDecimal.ZERO;
+        }
+        return parseDecimal(value, BigDecimal.ZERO);
     }
 
     private BigDecimal normalizeCheckInRuleNumber(String key, String raw) {
@@ -3616,10 +3131,10 @@ public class OpsGrowthService {
     private BigDecimal luckyProbabilitySum(String key, BigDecimal newValue) {
         BigDecimal lucky15 = "p15".equals(key)
                 ? newValue
-                : configDecimal(CHECKIN_LUCKY_15_PCT_KEY, new BigDecimal("15"));
+                : currentCheckInRuleNumber("p15");
         BigDecimal lucky2 = "p2".equals(key)
                 ? newValue
-                : configDecimal(CHECKIN_LUCKY_2_PCT_KEY, new BigDecimal("5"));
+                : currentCheckInRuleNumber("p2");
         return lucky15.add(lucky2);
     }
 
@@ -3671,36 +3186,35 @@ public class OpsGrowthService {
     }
 
     private String normalizeEarnMilestoneKey(String key) {
-        String normalized = requireText(key, "Earn milestone key is required");
-        boolean exists = defaultEarnMilestones().stream()
-                .anyMatch(row -> normalized.equals(row.get("key")));
-        if (!exists) {
-            throw new IllegalArgumentException("Unsupported H6 earn milestone");
-        }
-        return normalized;
+        return requireText(key, "Earn milestone key is required");
     }
 
-    private BigDecimal earnMilestoneThreshold(String key) {
-        return configDecimal(earnThresholdConfigKey(key), defaultEarnMilestoneNumber(key, "threshold"));
+    private Optional<Map<String, Object>> indexedBusinessRow(List<Map<String, Object>> rows, int id) {
+        return rows.stream()
+                .filter(row -> row.get("id") != null)
+                .filter(row -> String.valueOf(id).equals(String.valueOf(row.get("id"))))
+                .findFirst();
     }
 
-    private BigDecimal earnMilestoneReward(String key) {
-        return configDecimal(earnRewardConfigKey(key), defaultEarnMilestoneNumber(key, "nex"));
+    private Optional<Map<String, Object>> earnMilestoneRow(List<Map<String, Object>> rows, String key) {
+        return rows.stream()
+                .filter(row -> key.equals(String.valueOf(row.get("key"))))
+                .findFirst();
     }
 
-    private BigDecimal defaultEarnMilestoneNumber(String key, String field) {
-        return defaultEarnMilestones().stream()
-                .filter(row -> key.equals(row.get("key")))
-                .findFirst()
-                .map(row -> new BigDecimal(row.get(field).toString()))
-                .orElseThrow(() -> new IllegalArgumentException("Unsupported H6 earn milestone"));
+    private BigDecimal earnMilestoneThreshold(Map<String, Object> row) {
+        return rowDecimal(row, "threshold");
     }
 
-    private boolean earnMilestonesRemainOrdered(String targetKey, BigDecimal targetThreshold) {
+    private BigDecimal earnMilestoneReward(Map<String, Object> row) {
+        return rowDecimal(row, "nex");
+    }
+
+    private boolean earnMilestonesRemainOrdered(List<Map<String, Object>> rows, String targetKey, BigDecimal targetThreshold) {
         BigDecimal previous = null;
-        for (Map<String, Object> row : defaultEarnMilestones()) {
-            String key = row.get("key").toString();
-            BigDecimal threshold = key.equals(targetKey) ? targetThreshold : earnMilestoneThreshold(key);
+        for (Map<String, Object> row : rows) {
+            String key = String.valueOf(row.get("key"));
+            BigDecimal threshold = key.equals(targetKey) ? targetThreshold : earnMilestoneThreshold(row);
             if (previous != null && threshold.compareTo(previous) <= 0) {
                 return false;
             }
@@ -3709,12 +3223,32 @@ public class OpsGrowthService {
         return true;
     }
 
-    private String earnThresholdConfigKey(String key) {
-        return EARN_MS_PREFIX + key + ".threshold_usd";
+    private BigDecimal rowDecimal(Map<String, Object> row, String field) {
+        Object value = row.get(field);
+        if (value instanceof BigDecimal decimal) {
+            return decimal.stripTrailingZeros();
+        }
+        if (value instanceof Number number) {
+            return new BigDecimal(number.toString()).stripTrailingZeros();
+        }
+        if (value != null && StringUtils.hasText(value.toString())) {
+            return parseDecimal(value.toString()).stripTrailingZeros();
+        }
+        return BigDecimal.ZERO;
     }
 
-    private String earnRewardConfigKey(String key) {
-        return EARN_MS_PREFIX + key + ".reward_nex";
+    private String rewardTypeFromReward(String reward) {
+        String normalized = reward == null ? "" : reward.toUpperCase(Locale.ROOT);
+        if (normalized.contains("USDT") || normalized.contains("$")) {
+            return "USDT";
+        }
+        if (normalized.contains("SPIN") || normalized.contains("转盘")) {
+            return "SPIN";
+        }
+        if (normalized.contains("BADGE") || normalized.contains("徽章")) {
+            return "BADGE";
+        }
+        return "NEX";
     }
 
     private String formatSignedNex(BigDecimal value) {

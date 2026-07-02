@@ -6,8 +6,6 @@ import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
-import ffdd.opsconsole.platform.domain.PlatformConfigItem;
-import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
@@ -18,7 +16,15 @@ import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
+import ffdd.opsconsole.platform.infrastructure.AdminRbacActionEntity;
+import ffdd.opsconsole.platform.infrastructure.AdminRbacGrantEntity;
 import ffdd.opsconsole.platform.infrastructure.AdminRoleOptionEntity;
+import ffdd.opsconsole.platform.infrastructure.AdminSecurityBaselineEntity;
+import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
+import ffdd.opsconsole.platform.mapper.AdminRbacActionMapper;
+import ffdd.opsconsole.platform.mapper.AdminRbacGrantMapper;
+import ffdd.opsconsole.platform.mapper.AdminSecurityBaselineMapper;
 import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -26,8 +32,6 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,19 +53,9 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsAdminAccountService {
-    private static final String GROUP_ACCOUNT = "admin_a1_account";
-    private static final String GROUP_ROLE = "admin_a1_role";
-    private static final String GROUP_SECURITY = "admin_a1_security";
-    private static final String GROUP_RBAC = "admin_a1_rbac";
-    private static final Set<String> ACTIVE_GROUPS = Set.of(GROUP_ACCOUNT, GROUP_ROLE, GROUP_SECURITY, GROUP_RBAC);
     private static final List<String> GRANT_OPTIONS = List.of("-", "R", "M", "C");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Pattern ACTION_CODE_PATTERN = Pattern.compile("\\(([A-Za-z][A-Za-z0-9_-]*)\\)");
-    private static final Pattern ROLE_REGISTRATION_PATTERN =
-            Pattern.compile("^a1\\.role\\.([a-z][a-z0-9_-]*)\\.registered$");
-    private static final Pattern SECURITY_BASELINE_REGISTRATION_PATTERN =
-            Pattern.compile("^a1\\.security\\.baseline\\.([a-z][a-z0-9_-]*)\\.registered$");
-    private static final String RBAC_ACTION_PREFIX = "a1.rbac.action.";
     private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super", "risk");
     private static final Map<String, String> ROLE_CODE_TO_KEY = Map.of(
             "SUPER_ADMIN", "super",
@@ -81,18 +75,20 @@ public class OpsAdminAccountService {
             "growth", "GROWTH",
             "support", "SUPPORT",
             "audit", "AUDITOR");
-    private final PlatformConfigRepository configRepository;
     private final AuditLogService auditLogService;
     private final AdminMapper adminMapper;
     private final AdminRoleRelationMapper roleRelationMapper;
     private final OpsOptionsMapper roleMapper;
+    private final AdminAccountStateMapper accountStateMapper;
+    private final AdminRbacActionMapper rbacActionMapper;
+    private final AdminRbacGrantMapper rbacGrantMapper;
+    private final AdminSecurityBaselineMapper securityBaselineMapper;
     private final PasswordEncoder passwordEncoder;
     private final AdminSessionRegistry adminSessionRegistry;
     private final OpsAuditCenterService auditCenterService;
 
     public ApiResult<AdminAccountOverview> overview() {
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
-        List<AdminAccountOverview.OperatorRecord> operators = operators(configs);
+        List<AdminAccountOverview.OperatorRecord> operators = operators();
         int active = (int) operators.stream().filter(operator -> "enabled".equals(operator.status())).count();
         int activeSessions = operators.stream().mapToInt(AdminAccountOverview.OperatorRecord::sessions).sum();
         AdminAccountOverview.AdminAccountStats stats = new AdminAccountOverview.AdminAccountStats(
@@ -105,10 +101,10 @@ public class OpsAdminAccountService {
 
         return ApiResult.ok(new AdminAccountOverview(
                 stats,
-                roleDefinitions(configs),
+                roleDefinitions(),
                 operators,
-                rbacActions(configs),
-                securityBaselines(configs)));
+                rbacActions(),
+                securityBaselines()));
     }
 
     @Transactional
@@ -129,8 +125,7 @@ public class OpsAdminAccountService {
         if (adminByEmail(email).isPresent()) {
             return ApiResult.fail(409, "ADMIN_EMAIL_EXISTS");
         }
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
-        String role = normalizeRole(request.role(), configs);
+        String role = normalizeRole(request.role());
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
@@ -165,20 +160,16 @@ public class OpsAdminAccountService {
         }
         syncPrimaryRoleRelation(adminId, role);
 
-        String accountId = String.valueOf(adminId);
-        String prefix = "a1.account." + accountId;
         String credentialStatus = "mail".equals(deliver) ? "MAIL_DISPATCHED" : "HANDOFF_PENDING";
-        save(prefix + ".tfa", "true", GROUP_ACCOUNT, "A1 account 2FA");
-        save(prefix + ".lastLogin", "", GROUP_ACCOUNT, "A1 account last login");
-        save(prefix + ".credentialDeliveryStatus", credentialStatus, GROUP_ACCOUNT, "A1 credential delivery");
-        save(prefix + ".createdAt", LocalDateTime.now().format(ISO), GROUP_ACCOUNT, "A1 account created at");
+        accountStateMapper.upsertCreatedState(adminId, credentialStatus);
+        String accountId = String.valueOf(adminId);
 
         audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,
                 Map.of("role", role, "credentialDeliveryStatus", credentialStatus,
                         "initialPasswordProvided", StringUtils.hasText(initialPassword)));
         AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
         linkA2Proposal(idempotencyKey, "运营账号创建(A1)", operatorLabel(created), "—",
-                role + " / " + credentialStatus, request.operator(), currentOperatorRole(configs), "acct",
+                role + " / " + credentialStatus, request.operator(), currentOperatorRole(), "acct",
                 false, false, "超管", request.reason());
         return ApiResult.ok(created);
     }
@@ -197,15 +188,14 @@ public class OpsAdminAccountService {
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
-        String nextRole = normalizeRole(request.role(), configs);
+        String nextRole = normalizeRole(request.role());
         if (nextRole == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
         if ("super".equals(current.role())
                 && "enabled".equals(current.status())
                 && !"super".equals(nextRole)
-                && effectiveSupers(operators(configs)) - 1 < minEffectiveSupers(configs)) {
+                && effectiveSupers(operators()) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "MIN_EFFECTIVE_SUPER_REQUIRED");
         }
 
@@ -219,7 +209,7 @@ public class OpsAdminAccountService {
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromRole", current.role(), "toRole", nextRole));
         linkA2Proposal(idempotencyKey, "运营账号改角色(A1)", operatorLabel(current), current.role(), nextRole,
-                request.operator(), currentOperatorRole(configs), "acct", false, false, "超管", request.reason());
+                request.operator(), currentOperatorRole(), "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -233,9 +223,8 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
         String normalizedAccountId = StringUtils.hasText(accountId) ? accountId.trim() : accountId;
-        AdminAccountOverview.OperatorRecord current = operators(configs).stream()
+        AdminAccountOverview.OperatorRecord current = operators().stream()
                 .filter(operator -> operator.id().equals(normalizedAccountId))
                 .findFirst()
                 .orElse(null);
@@ -249,7 +238,7 @@ public class OpsAdminAccountService {
         if ("disabled".equals(nextStatus)
                 && "super".equals(current.role())
                 && "enabled".equals(current.status())
-                && effectiveSupers(operators(configs)) - 1 < minEffectiveSupers(configs)) {
+                && effectiveSupers(operators()) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "MIN_EFFECTIVE_SUPER_REQUIRED");
         }
 
@@ -259,16 +248,15 @@ public class OpsAdminAccountService {
         patch.setStatus("enabled".equals(nextStatus) ? 1 : 0);
         adminMapper.updateById(patch);
 
-        String prefix = "a1.account." + current.id();
         if ("disabled".equals(nextStatus)) {
             adminSessionRegistry.revokeSessions(adminId);
-            save(prefix + ".killedAt", LocalDateTime.now().format(ISO), GROUP_ACCOUNT, "A1 account sessions revoked");
+            accountStateMapper.upsertSessionsRevokedAt(adminId, LocalDateTime.now());
         }
         audit("enabled".equals(nextStatus) ? "A1_OPERATOR_ENABLED" : "A1_OPERATOR_DISABLED",
                 "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromStatus", current.status(), "toStatus", nextStatus));
         linkA2Proposal(idempotencyKey, "enabled".equals(nextStatus) ? "运营账号启用(A1)" : "运营账号禁用(A1)",
-                operatorLabel(current), current.status(), nextStatus, request.operator(), currentOperatorRole(configs),
+                operatorLabel(current), current.status(), nextStatus, request.operator(), currentOperatorRole(),
                 "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
@@ -287,11 +275,12 @@ public class OpsAdminAccountService {
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
-        save("a1.account." + current.id() + ".tfaResetAt", LocalDateTime.now().format(ISO), GROUP_ACCOUNT, "A1 2FA reset");
+        Long adminId = parseAccountId(current.id()).orElseThrow();
+        accountStateMapper.upsertTfaResetAt(adminId, LocalDateTime.now());
         audit("A1_OPERATOR_2FA_RESET", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("tfaRequired", true));
         linkA2Proposal(idempotencyKey, "运营账号重置双因子(A1)", operatorLabel(current), "已绑定", "待重新绑定",
-                request.operator(), currentOperatorRole(loadConfigMap(ACTIVE_GROUPS)), "acct", false, false, "超管",
+                request.operator(), currentOperatorRole(), "acct", false, false, "超管",
                 request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
@@ -306,8 +295,7 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
-        List<AdminAccountOverview.OperatorRecord> operators = operators(configs);
+        List<AdminAccountOverview.OperatorRecord> operators = operators();
         String normalizedAccountId = StringUtils.hasText(accountId) ? accountId.trim() : accountId;
         AdminAccountOverview.OperatorRecord current = operators.stream()
                 .filter(operator -> operator.id().equals(normalizedAccountId))
@@ -321,10 +309,11 @@ public class OpsAdminAccountService {
         if (authorization != null) {
             return failLike(authorization);
         }
-        String now = LocalDateTime.now().format(ISO);
+        LocalDateTime revokedAt = LocalDateTime.now();
+        String now = revokedAt.format(ISO);
         Long adminId = parseAccountId(current.id()).orElseThrow();
         int revoked = adminSessionRegistry.revokeSessions(adminId);
-        save("a1.account." + current.id() + ".killedAt", now, GROUP_ACCOUNT, "A1 sessions revoked");
+        accountStateMapper.upsertSessionsRevokedAt(adminId, revokedAt);
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("killedAt", now, "revokedSessions", revoked));
         linkA2Proposal(idempotencyKey, "运营账号强制登出(A1)", operatorLabel(current),
@@ -343,10 +332,10 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
+        ensureA1BusinessTables();
         String key = normalizeText(baselineKey, "BASELINE_KEY_REQUIRED").toLowerCase(Locale.ROOT);
         String value = normalizeText(request.value(), "BASELINE_VALUE_REQUIRED");
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
-        AdminAccountOverview.SecurityBaseline baseline = securityBaseline(key, configs).orElse(null);
+        AdminAccountOverview.SecurityBaseline baseline = securityBaseline(key).orElse(null);
         if (baseline == null) {
             return ApiResult.fail(404, "SECURITY_BASELINE_NOT_FOUND");
         }
@@ -364,8 +353,6 @@ public class OpsAdminAccountService {
             if (idle < 15 || idle > 60 || abs < 4 || abs > 12) {
                 return ApiResult.fail(422, "SESSION_LIMIT_OUT_OF_RANGE");
             }
-            save("a1.security.sessionIdle", String.valueOf(idle), GROUP_SECURITY, "A1 session idle");
-            save("a1.security.sessionAbs", String.valueOf(abs), GROUP_SECURITY, "A1 session absolute");
         } else if ("lock".equals(key)) {
             Matcher matcher = Pattern.compile("(\\d+)\\s*次?\\s*/\\s*(\\d+)\\s*min?", Pattern.CASE_INSENSITIVE)
                     .matcher(value);
@@ -377,15 +364,13 @@ public class OpsAdminAccountService {
             if (count < 3 || count > 10 || minutes < 5 || minutes > 60) {
                 return ApiResult.fail(422, "LOCK_LIMIT_OUT_OF_RANGE");
             }
-            save("a1.security.lockShortCnt", String.valueOf(count), GROUP_SECURITY, "A1 lock short count");
-            save("a1.security.lockShortMin", String.valueOf(minutes), GROUP_SECURITY, "A1 lock short minutes");
         }
-        save("a1.security.baseline." + key + ".value", value, GROUP_SECURITY, "A1 security baseline value");
+        securityBaselineMapper.upsertValue(key, value);
         audit("A1_SECURITY_BASELINE_CHANGED", "A1_SECURITY_BASELINE", key, request.operator(), request.reason(), idempotencyKey,
                 Map.of("value", value));
         linkA2Proposal(idempotencyKey, "安全基线调整(A1)", baseline.name(), baseline.value(), value,
-                request.operator(), currentOperatorRole(configs), "param", false, false, "超管", request.reason());
-        return ApiResult.ok(securityBaseline(key, loadConfigMap(ACTIVE_GROUPS)).orElseThrow());
+                request.operator(), currentOperatorRole(), "param", false, false, "超管", request.reason());
+        return ApiResult.ok(securityBaseline(key).orElseThrow());
     }
 
     @Transactional
@@ -398,8 +383,8 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
-        AdminAccountOverview.RbacAction action = rbacActions(configs).stream()
+        ensureA1BusinessTables();
+        AdminAccountOverview.RbacAction action = rbacActions().stream()
                 .filter(item -> item.id().equals(actionId))
                 .findFirst()
                 .orElse(null);
@@ -409,7 +394,7 @@ public class OpsAdminAccountService {
         List<String> grants = request.grants() == null ? List.of() : request.grants().stream()
                 .map(grant -> grant == null ? "" : grant.trim().toUpperCase(Locale.ROOT))
                 .toList();
-        List<String> roleKeys = roleKeys(configs);
+        List<String> roleKeys = roleKeys();
         if (grants.size() != roleKeys.size() || grants.stream().anyMatch(grant -> !GRANT_OPTIONS.contains(grant))) {
             return ApiResult.fail(422, "RBAC_GRANT_INVALID");
         }
@@ -429,14 +414,14 @@ public class OpsAdminAccountService {
         }
 
         for (int index = 0; index < roleKeys.size(); index++) {
-            save("a1.rbac." + roleKeys.get(index) + "." + action.id(), grants.get(index), GROUP_RBAC, "A1 RBAC grant changed");
+            rbacGrantMapper.upsertGrant(action.id(), roleKeys.get(index), grants.get(index));
         }
         audit("A1_RBAC_GRANT_CHANGED", "A1_RBAC_ACTION", action.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("grants", grants));
         linkA2Proposal(idempotencyKey, "RBAC 授权调整(A1)", action.action(), String.join("/", action.grants()),
-                String.join("/", grants), request.operator(), currentOperatorRole(configs), "param", false, false,
+                String.join("/", grants), request.operator(), currentOperatorRole(), "param", false, false,
                 "超管", request.reason());
-        return ApiResult.ok(rbacAction(action.id(), loadConfigMap(ACTIVE_GROUPS)).orElseThrow());
+        return ApiResult.ok(rbacAction(action.id()).orElseThrow());
     }
 
     @Transactional
@@ -449,27 +434,31 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
-        Map<String, PlatformConfigItem> configs = loadConfigMap(ACTIVE_GROUPS);
+        ensureA1BusinessTables();
         String action = normalizeText(request.action(), "RBAC_ACTION_REQUIRED");
         String domainGroup = normalizeDomainGroup(request.domainGroup());
-        String actionId = uniqueActionId(slugFor(action), configs);
-        save(RBAC_ACTION_PREFIX + actionId, action, GROUP_RBAC, "A1 RBAC action registered");
-        save(RBAC_ACTION_PREFIX + actionId + ".domainGroup", domainGroup, GROUP_RBAC, "A1 RBAC action domain group");
-        save(RBAC_ACTION_PREFIX + actionId + ".sort", String.valueOf((rbacActions(configs).size() + 1) * 10), GROUP_RBAC,
-                "A1 RBAC action sort");
-        for (String role : roleKeys(configs)) {
-            save("a1.rbac." + role + "." + actionId, defaultGrant(role), GROUP_RBAC, "A1 RBAC default grant");
+        String actionId = uniqueActionId(slugFor(action));
+        rbacActionMapper.upsertAction(actionId, action, domainGroup, (rbacActions().size() + 1) * 10);
+        for (String role : roleKeys()) {
+            rbacGrantMapper.upsertGrant(actionId, role, defaultGrant(role));
         }
         audit("A1_RBAC_ACTION_REGISTERED", "A1_RBAC_ACTION", actionId, request.operator(), request.reason(), idempotencyKey,
                 Map.of("action", action, "domainGroup", domainGroup));
-        AdminAccountOverview.RbacAction created = rbacAction(actionId, loadConfigMap(ACTIVE_GROUPS)).orElseThrow();
+        AdminAccountOverview.RbacAction created = rbacAction(actionId).orElseThrow();
         linkA2Proposal(idempotencyKey, "RBAC 动作登记(A1)", created.action(), "—", domainGroup,
-                request.operator(), currentOperatorRole(configs), "param", false, false, "超管", request.reason());
+                request.operator(), currentOperatorRole(), "param", false, false, "超管", request.reason());
         return ApiResult.ok(created);
     }
 
     private int pendingA1OperationTickets() {
         return auditCenterService.pendingOperationCountByActionMarker("(A1)");
+    }
+
+    private void ensureA1BusinessTables() {
+        accountStateMapper.createAccountStateTable();
+        rbacActionMapper.createActionTable();
+        rbacGrantMapper.createGrantTable();
+        securityBaselineMapper.createSecurityBaselineTable();
     }
 
     private void linkA2Proposal(
@@ -506,8 +495,8 @@ public class OpsAdminAccountService {
         }
     }
 
-    private String currentOperatorRole(Map<String, PlatformConfigItem> configs) {
-        return authenticatedOperator(operators(configs))
+    private String currentOperatorRole() {
+        return authenticatedOperator(operators())
                 .map(AdminAccountOverview.OperatorRecord::role)
                 .orElse("super");
     }
@@ -520,24 +509,21 @@ public class OpsAdminAccountService {
         return name;
     }
 
-    private List<AdminAccountOverview.RoleDefinition> roleDefinitions(Map<String, PlatformConfigItem> configs) {
+    private List<AdminAccountOverview.RoleDefinition> roleDefinitions() {
         return roleRows().stream()
-                .map(role -> roleDefinition(role, configs))
+                .map(this::roleDefinition)
                 .toList();
     }
 
-    private AdminAccountOverview.RoleDefinition roleDefinition(
-            AdminRoleOptionEntity row,
-            Map<String, PlatformConfigItem> configs) {
+    private AdminAccountOverview.RoleDefinition roleDefinition(AdminRoleOptionEntity row) {
         String role = roleKey(row.getRoleCode());
-        String prefix = "a1.role." + role + ".";
         return new AdminAccountOverview.RoleDefinition(
                 role,
-                text(configs, prefix + "name", firstText(row.getRoleName(), role)),
-                text(configs, prefix + "avatar", defaultRoleAvatar(role)),
-                text(configs, prefix + "color", defaultRoleColor(role)),
-                text(configs, prefix + "description", defaultRoleDescription(role)),
-                text(configs, prefix + "scope", defaultRoleScope(role)));
+                firstText(row.getRoleName(), role),
+                defaultRoleAvatar(role),
+                defaultRoleColor(role),
+                defaultRoleDescription(role),
+                defaultRoleScope(role));
     }
 
     private List<AdminRoleOptionEntity> roleRows() {
@@ -553,138 +539,129 @@ public class OpsAdminAccountService {
                 .toList();
     }
 
-    private List<AdminAccountOverview.OperatorRecord> operators(Map<String, PlatformConfigItem> configs) {
+    private List<AdminAccountOverview.OperatorRecord> operators() {
         List<AdminEntity> admins = adminRows();
         return admins.stream()
-                .map(admin -> operatorRecord(admin, configs))
+                .map(this::operatorRecord)
                 .sorted(Comparator.comparing(record -> parseAccountId(record.id()).orElse(Long.MAX_VALUE)))
                 .toList();
     }
 
-    private AdminAccountOverview.OperatorRecord operatorRecord(AdminEntity admin, Map<String, PlatformConfigItem> configs) {
+    private AdminAccountOverview.OperatorRecord operatorRecord(AdminEntity admin) {
         String id = String.valueOf(admin.getId());
-        String prefix = "a1.account." + id + ".";
+        AdminAccountStateEntity state = accountStateMapper.selectActiveByAdminId(admin.getId());
         boolean enabled = Integer.valueOf(1).equals(admin.getStatus());
-        String role = roleFromRelation(admin.getId()).orElseGet(() -> defaultRole(admin, configs));
+        String role = roleFromRelation(admin.getId()).orElseGet(() -> defaultRole(admin));
         int sessions = enabled ? adminSessionRegistry.countActiveSessions(admin.getId()) : 0;
         return new AdminAccountOverview.OperatorRecord(
                 id,
                 firstText(admin.getNickname(), admin.getUsername(), id),
                 StringUtils.hasText(admin.getEmail()) ? admin.getEmail().trim() : "",
                 role,
-                Boolean.parseBoolean(text(configs, prefix + "tfa", "true")),
+                state == null || !Integer.valueOf(0).equals(state.getTfaRequired()),
                 enabled ? "enabled" : "disabled",
-                text(configs, prefix + "lastLogin", admin.getUpdatedAt() == null ? "" : admin.getUpdatedAt().format(ISO)),
+                state != null && state.getLastLoginAt() != null
+                        ? state.getLastLoginAt().format(ISO)
+                        : admin.getUpdatedAt() == null ? "" : admin.getUpdatedAt().format(ISO),
                 sessions,
-                text(configs, prefix + "tfaResetAt", null),
-                text(configs, prefix + "credentialDeliveryStatus", "ACTIVE"));
+                state != null && state.getTfaResetAt() != null ? state.getTfaResetAt().format(ISO) : null,
+                firstText(state == null ? null : state.getCredentialDeliveryStatus(), "ACTIVE"));
     }
 
-    private List<AdminAccountOverview.RbacAction> rbacActions(Map<String, PlatformConfigItem> configs) {
-        Map<String, AdminAccountOverview.RbacAction> actions = new LinkedHashMap<>();
-        configs.entrySet().stream()
-                .filter(entry -> entry.getKey().startsWith(RBAC_ACTION_PREFIX))
-                .filter(entry -> !entry.getKey().substring(RBAC_ACTION_PREFIX.length()).contains("."))
-                .sorted(Comparator.comparingInt(entry -> {
-                    String id = entry.getKey().substring(RBAC_ACTION_PREFIX.length());
-                    return number(configs, RBAC_ACTION_PREFIX + id + ".sort", 9999);
-                }))
-                .map(entry -> {
-                    String id = entry.getKey().substring(RBAC_ACTION_PREFIX.length());
-                    return withGrantOverrides(new AdminAccountOverview.RbacAction(
-                            id,
-                            entry.getValue().configValue(),
-                            text(configs, RBAC_ACTION_PREFIX + id + ".domainGroup", ""),
-                            roleKeys(configs).stream().map(this::defaultGrant).toList()), configs);
-                })
-                .forEach(action -> actions.put(action.id(), action));
-        return new ArrayList<>(actions.values());
-    }
-
-    private Optional<AdminAccountOverview.RbacAction> rbacAction(String actionId, Map<String, PlatformConfigItem> configs) {
-        return rbacActions(configs).stream().filter(action -> action.id().equals(actionId)).findFirst();
-    }
-
-    private AdminAccountOverview.RbacAction withGrantOverrides(
-            AdminAccountOverview.RbacAction action, Map<String, PlatformConfigItem> configs) {
-        List<String> grants = new ArrayList<>();
-        List<String> roleKeys = roleKeys(configs);
-        for (int index = 0; index < roleKeys.size(); index++) {
-            String role = roleKeys.get(index);
-            String fallback = index < action.grants().size() ? action.grants().get(index) : defaultGrant(role);
-            String grant = text(configs, "a1.rbac." + role + "." + action.id(), fallback);
-            grants.add(GRANT_OPTIONS.contains(grant) ? grant : fallback);
+    private List<AdminAccountOverview.RbacAction> rbacActions() {
+        List<AdminRbacActionEntity> actionRows = rbacActionMapper.selectList(new LambdaQueryWrapper<AdminRbacActionEntity>()
+                .eq(AdminRbacActionEntity::getStatus, 1)
+                .eq(AdminRbacActionEntity::getIsDeleted, 0)
+                .orderByAsc(AdminRbacActionEntity::getSortOrder)
+                .orderByAsc(AdminRbacActionEntity::getId));
+        if (actionRows == null || actionRows.isEmpty()) {
+            return List.of();
         }
-        return new AdminAccountOverview.RbacAction(action.id(), action.action(), action.domainGroup(), grants);
+        actionRows = actionRows.stream()
+                .filter(row -> row != null && StringUtils.hasText(row.getActionId()))
+                .toList();
+        if (actionRows.isEmpty()) {
+            return List.of();
+        }
+        List<String> actionIds = actionRows.stream()
+                .map(AdminRbacActionEntity::getActionId)
+                .toList();
+        List<AdminRbacGrantEntity> grantRows = rbacGrantMapper.selectList(new LambdaQueryWrapper<AdminRbacGrantEntity>()
+                .in(AdminRbacGrantEntity::getActionId, actionIds)
+                .eq(AdminRbacGrantEntity::getStatus, 1)
+                .eq(AdminRbacGrantEntity::getIsDeleted, 0));
+        Map<String, Map<String, String>> grantMap = (grantRows == null ? List.<AdminRbacGrantEntity>of() : grantRows).stream()
+                .filter(row -> StringUtils.hasText(row.getActionId())
+                        && StringUtils.hasText(row.getRoleKey())
+                        && StringUtils.hasText(row.getGrantValue()))
+                .collect(Collectors.groupingBy(
+                        AdminRbacGrantEntity::getActionId,
+                        LinkedHashMap::new,
+                        Collectors.toMap(
+                                row -> roleKey(row.getRoleKey()),
+                                AdminRbacGrantEntity::getGrantValue,
+                                (left, right) -> right,
+                                LinkedHashMap::new)));
+        List<String> roles = roleKeys();
+        return actionRows.stream()
+                .map(row -> rbacAction(row, roles, grantMap.getOrDefault(row.getActionId(), Map.of())))
+                .toList();
     }
 
-    private List<AdminAccountOverview.SecurityBaseline> securityBaselines(Map<String, PlatformConfigItem> configs) {
-        Map<String, AdminAccountOverview.SecurityBaseline> baselines = new LinkedHashMap<>();
-        configs.keySet().stream()
-                .map(SECURITY_BASELINE_REGISTRATION_PATTERN::matcher)
-                .filter(Matcher::matches)
-                .map(matcher -> matcher.group(1))
-                .map(key -> securityBaseline(key, configs))
-                .flatMap(Optional::stream)
-                .sorted(Comparator.comparingInt(item -> number(
-                        configs,
-                        "a1.security.baseline." + item.key() + ".sort",
-                        9999)))
-                .forEach(baseline -> baselines.put(baseline.key(), baseline));
-        return new ArrayList<>(baselines.values());
+    private Optional<AdminAccountOverview.RbacAction> rbacAction(String actionId) {
+        return rbacActions().stream().filter(action -> action.id().equals(actionId)).findFirst();
     }
 
-    private Optional<AdminAccountOverview.SecurityBaseline> securityBaseline(String key, Map<String, PlatformConfigItem> configs) {
-        String prefix = "a1.security.baseline." + key + ".";
-        if (!"true".equalsIgnoreCase(text(configs, prefix + "registered", "false"))) {
+    private AdminAccountOverview.RbacAction rbacAction(
+            AdminRbacActionEntity action,
+            List<String> roleKeys,
+            Map<String, String> grantsByRole) {
+        List<String> grants = roleKeys.stream()
+                .map(role -> normalizedGrant(grantsByRole.get(role), defaultGrant(role)))
+                .toList();
+        return new AdminAccountOverview.RbacAction(
+                action.getActionId(),
+                action.getActionName(),
+                action.getDomainGroup(),
+                grants);
+    }
+
+    private String normalizedGrant(String grant, String fallback) {
+        String normalized = StringUtils.hasText(grant) ? grant.trim().toUpperCase(Locale.ROOT) : fallback;
+        return GRANT_OPTIONS.contains(normalized) ? normalized : fallback;
+    }
+
+    private List<AdminAccountOverview.SecurityBaseline> securityBaselines() {
+        List<AdminSecurityBaselineEntity> rows = securityBaselineMapper.selectList(
+                new LambdaQueryWrapper<AdminSecurityBaselineEntity>()
+                        .eq(AdminSecurityBaselineEntity::getStatus, 1)
+                        .eq(AdminSecurityBaselineEntity::getIsDeleted, 0)
+                        .orderByAsc(AdminSecurityBaselineEntity::getSortOrder)
+                        .orderByAsc(AdminSecurityBaselineEntity::getId));
+        if (rows == null) {
+            return List.of();
+        }
+        return rows.stream()
+                .filter(row -> row != null && StringUtils.hasText(row.getBaselineKey()))
+                .map(this::securityBaseline)
+                .toList();
+    }
+
+    private Optional<AdminAccountOverview.SecurityBaseline> securityBaseline(String key) {
+        if (!StringUtils.hasText(key)) {
             return Optional.empty();
         }
-        String configuredValue = text(configs, prefix + "value", "");
-        return Optional.of(withSecurityValue(new AdminAccountOverview.SecurityBaseline(
-                key,
-                text(configs, prefix + "label", key),
-                text(configs, prefix + "description", ""),
-                configuredValue,
-                Boolean.parseBoolean(text(configs, prefix + "locked", "false"))), configs));
+        return Optional.ofNullable(securityBaselineMapper.selectActiveByKey(key.trim().toLowerCase(Locale.ROOT)))
+                .map(this::securityBaseline);
     }
 
-    private AdminAccountOverview.SecurityBaseline withSecurityValue(
-            AdminAccountOverview.SecurityBaseline baseline, Map<String, PlatformConfigItem> configs) {
-        String value = switch (baseline.key()) {
-            case "session" -> sessionValue(configs, baseline.value());
-            case "lock" -> lockValue(configs, baseline.value());
-            default -> baseline.value();
-        };
+    private AdminAccountOverview.SecurityBaseline securityBaseline(AdminSecurityBaselineEntity row) {
         return new AdminAccountOverview.SecurityBaseline(
-                baseline.key(),
-                baseline.name(),
-                baseline.sub(),
-                value,
-                baseline.locked());
-    }
-
-    private String sessionValue(Map<String, PlatformConfigItem> configs, String configuredValue) {
-        if (configs.containsKey("a1.security.sessionIdle") || configs.containsKey("a1.security.sessionAbs")) {
-            return text(configs, "a1.security.sessionIdle", "30") + "min / " + text(configs, "a1.security.sessionAbs", "8") + "h";
-        }
-        return configuredValue;
-    }
-
-    private String lockValue(Map<String, PlatformConfigItem> configs, String configuredValue) {
-        if (configs.containsKey("a1.security.lockShortCnt") || configs.containsKey("a1.security.lockShortMin")) {
-            return text(configs, "a1.security.lockShortCnt", "5") + " 次/"
-                    + text(configs, "a1.security.lockShortMin", "15") + "min · 15 次/24h";
-        }
-        return configuredValue;
-    }
-
-    private Map<String, PlatformConfigItem> loadConfigMap(Collection<String> groups) {
-        return configRepository.findActiveByGroups(groups).stream()
-                .collect(Collectors.toMap(
-                        PlatformConfigItem::configKey,
-                        item -> item,
-                        (left, right) -> left,
-                        LinkedHashMap::new));
+                roleKey(row.getBaselineKey()),
+                firstText(row.getLabel(), row.getBaselineKey()),
+                firstText(row.getDescription()),
+                firstText(row.getBaselineValue()),
+                Integer.valueOf(1).equals(row.getLocked()));
     }
 
     private AdminAccountOverview.OperatorRecord requireOperator(String accountId) {
@@ -699,7 +676,7 @@ public class OpsAdminAccountService {
         if (parseAccountId(normalized).isEmpty()) {
             return Optional.empty();
         }
-        return operators(loadConfigMap(ACTIVE_GROUPS)).stream()
+        return operators().stream()
                 .filter(operator -> operator.id().equals(normalized))
                 .findFirst();
     }
@@ -736,23 +713,10 @@ public class OpsAdminAccountService {
         if (!SESSION_REVOKE_ROLES.contains(actor.role())) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
         }
-        if ("super".equals(target.role()) && !disabledE2eShiftSuper(target)) {
+        if ("super".equals(target.role())) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
         }
         return null;
-    }
-
-    private boolean disabledE2eShiftSuper(AdminAccountOverview.OperatorRecord target) {
-        return "disabled".equals(target.status())
-                && StringUtils.hasText(target.email())
-                && target.email().startsWith("e2e_")
-                && target.email().endsWith("@nexion.io");
-    }
-
-    private void save(String key, String value, String group, String remark) {
-        PlatformConfigItem existing = configRepository.findActiveByKey(key).orElseGet(() ->
-                new PlatformConfigItem(null, key, value, "STRING", group, "ADMIN", remark, 1, null, null));
-        configRepository.save(existing.withValue(value, group, remark, 1));
     }
 
     private void audit(
@@ -851,8 +815,8 @@ public class OpsAdminAccountService {
         }
     }
 
-    private List<String> roleKeys(Map<String, PlatformConfigItem> configs) {
-        return roleDefinitions(configs).stream()
+    private List<String> roleKeys() {
+        return roleDefinitions().stream()
                 .map(AdminAccountOverview.RoleDefinition::key)
                 .toList();
     }
@@ -863,11 +827,11 @@ public class OpsAdminAccountService {
         }
         return Optional.ofNullable(roleRelationMapper.activeRoleCode(adminId))
                 .map(this::roleKey)
-                .filter(role -> roleKeys(loadConfigMap(ACTIVE_GROUPS)).contains(role));
+                .filter(role -> roleKeys().contains(role));
     }
 
-    private String defaultRole(AdminEntity admin, Map<String, PlatformConfigItem> configs) {
-        List<String> keys = roleKeys(configs);
+    private String defaultRole(AdminEntity admin) {
+        List<String> keys = roleKeys();
         if (Integer.valueOf(1).equals(admin.getSuperAdmin())) {
             return keys.contains("super") || keys.isEmpty() ? "super" : keys.get(0);
         }
@@ -896,12 +860,12 @@ public class OpsAdminAccountService {
         return value.trim();
     }
 
-    private String normalizeRole(String role, Map<String, PlatformConfigItem> configs) {
+    private String normalizeRole(String role) {
         if (!StringUtils.hasText(role)) {
             return null;
         }
         String normalized = roleKey(role);
-        return roleKeys(configs).contains(normalized) ? normalized : null;
+        return roleKeys().contains(normalized) ? normalized : null;
     }
 
     private String roleKey(String roleOrCode) {
@@ -1022,8 +986,8 @@ public class OpsAdminAccountService {
                 .count();
     }
 
-    private int minEffectiveSupers(Map<String, PlatformConfigItem> configs) {
-        return number(configs, "a1.security.minEffectiveSupers", 2);
+    private int minEffectiveSupers() {
+        return 2;
     }
 
     private boolean writes(List<String> grants, List<String> roleKeys, String... roles) {
@@ -1040,8 +1004,8 @@ public class OpsAdminAccountService {
         return "audit".equals(role) ? "R" : "-";
     }
 
-    private String uniqueActionId(String base, Map<String, PlatformConfigItem> configs) {
-        Set<String> existing = rbacActions(configs).stream().map(AdminAccountOverview.RbacAction::id).collect(Collectors.toSet());
+    private String uniqueActionId(String base) {
+        Set<String> existing = rbacActions().stream().map(AdminAccountOverview.RbacAction::id).collect(Collectors.toSet());
         if (!existing.contains(base)) {
             return base;
         }
@@ -1061,16 +1025,4 @@ public class OpsAdminAccountService {
         return StringUtils.hasText(slug) ? slug : "action_" + System.currentTimeMillis();
     }
 
-    private String text(Map<String, PlatformConfigItem> configs, String key, String fallback) {
-        PlatformConfigItem item = configs.get(key);
-        return item == null || !StringUtils.hasText(item.configValue()) ? fallback : item.configValue();
-    }
-
-    private int number(Map<String, PlatformConfigItem> configs, String key, int fallback) {
-        try {
-            return Integer.parseInt(text(configs, key, String.valueOf(fallback)).replaceAll("[^0-9-]", ""));
-        } catch (NumberFormatException ex) {
-            return fallback;
-        }
-    }
 }

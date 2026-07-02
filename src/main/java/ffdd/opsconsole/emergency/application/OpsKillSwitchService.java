@@ -7,10 +7,10 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest;
 import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
 import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
-import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -63,7 +63,7 @@ public class OpsKillSwitchService {
                     List.of("监管点名 / 法务事件(事由必填)→ ", "人工经应急快速通道发起", "(机器不替监管判定)", "", ""),
                     "触发方式", "人工 · 应急快速通道", false, "", ""));
 
-    private final PlatformConfigFacade configFacade;
+    private final EmergencyControlRepository emergencyRepository;
     private final TreasuryCoverageFacade coverageFacade;
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
@@ -91,7 +91,7 @@ public class OpsKillSwitchService {
         response.put("emergencySla", emergencySlaRows(coverage));
         response.put("autoRules", autoRuleRows());
         response.put("executionModel", "single confirm-with-reason plus broadcast and A2 audit");
-        response.put("sources", List.of("nx_config_item:killswitch.*", "nx_config_item:ops.J.emergency.*", "nx_config_item:emergency.autorule.*", "B1 treasury coverage facade"));
+        response.put("sources", List.of("nx_emergency_control_setting:killswitch.*", "nx_emergency_control_setting:ops.J.emergency.*", "nx_emergency_control_setting:emergency.autorule.*", "B1 treasury coverage facade"));
         return ApiResult.ok(response);
     }
 
@@ -110,8 +110,8 @@ public class OpsKillSwitchService {
         if (enable && !before && seed.coveragePrecheckRequired() && coverageBelowRedline()) {
             return coverageRedline();
         }
-        writeGate(normalizedKey, enable);
-        writeEmergencyFlag(normalizedKey, false);
+        writeGate(normalizedKey, enable, request.operator());
+        writeEmergencyFlag(normalizedKey, false, request.operator());
         writeLastChange(normalizedKey, request.operator());
         audit("J1_KILLSWITCH_TOGGLED", normalizedKey, request.operator(), Map.of(
                 "switchKey", normalizedKey,
@@ -140,8 +140,8 @@ public class OpsKillSwitchService {
                 return retiredFeature();
             }
             boolean before = gateEnabled(key);
-            writeGate(key, false);
-            writeEmergencyFlag(key, true);
+            writeGate(key, false, request.operator());
+            writeEmergencyFlag(key, true, request.operator());
             writeLastChange(key, request.operator());
             changed.add(Map.of("key", key, "before", before, "after", false));
         }
@@ -165,7 +165,7 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EMERGENCY_SLA_READONLY");
         }
         String value = normalizeConfigValue(request.value(), "EMERGENCY_SLA_VALUE_REQUIRED");
-        configFacade.upsertAdminValue(emergencySlaConfigKey(seed.id()), value, "NUMBER", GROUP_EMERGENCY, "J1 emergency SLA parameter");
+        emergencyRepository.upsertSetting(emergencySlaConfigKey(seed.id()), value, "NUMBER", GROUP_EMERGENCY, "J1 emergency SLA parameter", request.operator());
         audit("J1_EMERGENCY_SLA_CHANGED", seed.id(), request.operator(), Map.of(
                 "paramKey", seed.id(),
                 "value", value,
@@ -186,7 +186,7 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "AUTO_RULE_READONLY");
         }
         String value = normalizeConfigValue(request.value(), "AUTO_RULE_VALUE_REQUIRED");
-        configFacade.upsertAdminValue(autoRuleConfigKey(seed.id()), value, "STRING", GROUP_AUTORULE, "J1 auto trigger rule threshold");
+        emergencyRepository.upsertSetting(autoRuleConfigKey(seed.id()), value, "STRING", GROUP_AUTORULE, "J1 auto trigger rule threshold", request.operator());
         audit("J1_AUTO_RULE_CHANGED", seed.id(), request.operator(), Map.of(
                 "ruleId", seed.id(),
                 "value", value,
@@ -290,8 +290,7 @@ public class OpsKillSwitchService {
     }
 
     private boolean gateEnabled(String key) {
-        Optional<String> value = configFacade.activeValue(configKey(key))
-                .or(() -> configFacade.activeValue(legacyConfigKey(key)));
+        Optional<String> value = activeValue(configKey(key));
         return value.map(raw -> {
                     String normalized = raw.trim().toLowerCase(Locale.ROOT);
                 return "enabled".equals(normalized) || "enable".equals(normalized) || "on".equals(normalized) || "true".equals(normalized) || "1".equals(normalized);
@@ -299,17 +298,17 @@ public class OpsKillSwitchService {
                 .orElse(false);
     }
 
-    private void writeGate(String key, boolean enabled) {
-        configFacade.upsertAdminValue(configKey(key), enabled ? "enabled" : "disabled", "STRING", GROUP_KILL_SWITCH, "J1 active kill switch");
+    private void writeGate(String key, boolean enabled, String operator) {
+        emergencyRepository.upsertSetting(configKey(key), enabled ? "enabled" : "disabled", "STRING", GROUP_KILL_SWITCH, "J1 active kill switch", operator);
     }
 
-    private void writeEmergencyFlag(String key, boolean emergency) {
-        configFacade.upsertAdminValue(emergencyFlagConfigKey(key), String.valueOf(emergency), "BOOLEAN", GROUP_KILL_SWITCH, "J1 emergency kill switch marker");
+    private void writeEmergencyFlag(String key, boolean emergency, String operator) {
+        emergencyRepository.upsertSetting(emergencyFlagConfigKey(key), String.valueOf(emergency), "BOOLEAN", GROUP_KILL_SWITCH, "J1 emergency kill switch marker", operator);
     }
 
     private void writeLastChange(String key, String operator) {
         String actor = StringUtils.hasText(operator) ? operator.trim() : "system";
-        configFacade.upsertAdminValue(lastChangeConfigKey(key), "刚刚 · " + actor + " / 执行门槛", "STRING", GROUP_KILL_SWITCH, "J1 kill switch latest change");
+        emergencyRepository.upsertSetting(lastChangeConfigKey(key), "刚刚 · " + actor + " / 执行门槛", "STRING", GROUP_KILL_SWITCH, "J1 kill switch latest change", actor);
     }
 
     private void ensureSeedData() {
@@ -345,12 +344,12 @@ public class OpsKillSwitchService {
             return;
         }
         if (activeValue(key).isEmpty()) {
-            configFacade.upsertAdminValue(key, value, valueType, group, remark);
+            emergencyRepository.upsertSetting(key, value, valueType, group, remark, "system");
         }
     }
 
     private Optional<String> activeValue(String configKey) {
-        return configFacade.activeValue(configKey);
+        return emergencyRepository.settingValue(configKey);
     }
 
     private List<Map<String, Object>> emergencySlaRows(TreasuryCoverageSnapshot coverage) {
@@ -376,16 +375,9 @@ public class OpsKillSwitchService {
 
     private List<Map<String, Object>> autoRuleRows() {
         return AUTO_RULE_SEEDS.stream()
-                .filter(seed -> activeValue(autoRuleConfigKey(seed.id())).filter(StringUtils::hasText).isPresent()
-                        || ("tamperCluster".equals(seed.id())
-                        && activeValue("emergency.tamper.alert.threshold").filter(StringUtils::hasText).isPresent()))
+                .filter(seed -> activeValue(autoRuleConfigKey(seed.id())).filter(StringUtils::hasText).isPresent())
                 .map(seed -> {
-            String threshold = "tamperCluster".equals(seed.id())
-                    ? activeValue("emergency.tamper.alert.threshold").map(value -> value + " 次 / 24h")
-                    .orElseGet(() -> activeValue(autoRuleConfigKey(seed.id()))
-                            .orElse(""))
-                    : activeValue(autoRuleConfigKey(seed.id()))
-                    .orElse("");
+            String threshold = activeValue(autoRuleConfigKey(seed.id())).orElse("");
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
             row.put("nm", seed.name());

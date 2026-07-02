@@ -1,7 +1,6 @@
 package ffdd.opsconsole.treasury.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -10,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
@@ -35,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
@@ -42,39 +43,14 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsTreasuryService {
-    private static final TypeReference<List<Map<String, Object>>> LIST_MAP_TYPE = new TypeReference<>() {
-    };
-    private static final TypeReference<List<BigDecimal>> DECIMAL_LIST_TYPE = new TypeReference<>() {
-    };
     private static final int DEFAULT_DAYS = 7;
     private static final int MAX_DAYS = 90;
-    private static final String RESERVE_CONFIG_KEY = "wallet.dual-ledger.reserve-usd";
-    private static final String NEX_USD_RATE_CONFIG_KEY = "wallet.dual-ledger.nex-usd-rate";
     private static final String REDLINE_CONFIG_KEY = "wallet.dual-ledger.redline-pct";
     private static final String HEALTHY_CONFIG_KEY = "wallet.dual-ledger.healthy-pct";
     private static final String RUN_RISK_CONFIG_KEY = "wallet.dual-ledger.run-risk-pct";
     private static final String SCOPE_CONFIG_KEY = "wallet.dual-ledger.scope";
-    private static final String B_LIQUIDITY_RUNWAY_KEY = "treasury.b.liquidity.runway";
-    private static final String B_LIQUIDITY_FLOW_KEY = "treasury.b.liquidity.flow";
-    private static final String B_FUNNEL_STAGES_KEY = "treasury.b.funnel.stages";
-    private static final String B_FUNNEL_TRANSITIONS_KEY = "treasury.b.funnel.transitions";
-    private static final String B_FUNNEL_COHORT_KEY = "treasury.b.funnel.cohort";
-    private static final String B_FUNNEL_CHANNELS_KEY = "treasury.b.funnel.channels";
-    private static final String B_FUNNEL_DAILY_KEY = "treasury.b.funnel.daily";
-    private static final String B_FUNNEL_DAILY_TARGET_KEY = "treasury.b.funnel.daily-target";
-    private static final String B_RHYTHM_PHASES_KEY = "treasury.b.rhythm.phases";
-    private static final String B_RHYTHM_INFLOW_KEY = "treasury.b.rhythm.inflow";
-    private static final String B_RHYTHM_BUDGET_KEY = "treasury.b.rhythm.budget";
-    private static final String B_RHYTHM_RATIO_KEY = "treasury.b.rhythm.ratio";
-    private static final String B_RHYTHM_HEALTHY_RATIO_KEY = "treasury.b.rhythm.healthy-ratio";
-    private static final String B_RISK_FEED_KEY = "treasury.b.risk.feed";
-    private static final String B_RISK_PRESSURE_KEY = "treasury.b.risk.pressure";
-    private static final String B_RISK_PRESSURE_TIGHT_KEY = "treasury.b.risk.pressure-tight-pct";
-    private static final String B_RISK_RULES_KEY = "treasury.b.risk.rules";
-    private static final String B_RISK_SEVERITY_KEY = "treasury.b.risk.severity";
-    private static final String B_RISK_VOLUME_KEY = "treasury.b.risk.volume";
     private static final String B_ALERT_COVERAGE_ID = "coverage-redline";
-    private static final String B_ALERT_COVERAGE_ACK_KEY = "treasury.b.alert.coverage-redline.ack";
+    private static final String B_ALERT_COVERAGE_ACK_KEY = "wallet.dual-ledger.alert.coverage-redline.ack";
     private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
     private static final String B_RESERVE_INJECTION_IDEMPOTENCY_SCOPE = "TREASURY_B_RESERVE_INJECTION";
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
@@ -85,6 +61,7 @@ public class OpsTreasuryService {
             new GateSeed("trial", "试用闸"));
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
+    private final EmergencyControlRepository emergencyRepository;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
     private final Clock clock;
@@ -137,8 +114,8 @@ public class OpsTreasuryService {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
-        BigDecimal reserveUsd = requiredConfigDecimal(RESERVE_CONFIG_KEY);
-        BigDecimal nexUsdRate = requiredConfigDecimal(NEX_USD_RATE_CONFIG_KEY);
+        BigDecimal reserveUsd = safe(ledgerRepository.currentReserveUsd());
+        BigDecimal nexUsdRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
         BigDecimal redlinePct = requiredConfigDecimal(REDLINE_CONFIG_KEY);
         BigDecimal healthyPct = requiredConfigDecimal(HEALTHY_CONFIG_KEY);
         BigDecimal runRiskPct = requiredConfigDecimal(RUN_RISK_CONFIG_KEY);
@@ -175,7 +152,16 @@ public class OpsTreasuryService {
                 "service", "nexion-backend",
                 "domain", "B",
                 "generatedAt", now,
-                "sources", List.of("nx_user_wallet", "nx_wallet_ledger", "nx_withdrawal_order", "nx_staking_position", "nx_nex_lock_order", "nx_config_item", "H1 growth rhythm facade"));
+                "sources", List.of(
+                        "nx_treasury_reserve_ledger",
+                        "nx_price_index:NEX_USDT",
+                        "nx_user_wallet",
+                        "nx_wallet_ledger",
+                        "nx_withdrawal_order",
+                        "nx_staking_position",
+                        "nx_nex_lock_order",
+                        "nx_config_item:wallet.dual-ledger.safety-thresholds",
+                        "H1 growth rhythm facade"));
         response.put("h1Rhythm", GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).summary());
         response.put("snapshot", section(
                 "reserveUsd", money(reserveUsd),
@@ -192,7 +178,7 @@ public class OpsTreasuryService {
                 "coverageSeries", coverageSeries(now, reserveUsd, liabilitiesUsd),
                 "scope", scope));
         response.put("accounts", accounts.stream().map(this::scaleAccount).toList());
-        response.put("maturity7d", maturity7d(queueBacklogUsd, stakingInterestUsd));
+        response.put("maturity7d", maturity7d());
         response.put("prev", section(
                 "reserveUsd", money(reserveUsd.subtract(prevNetFlow24hUsd)),
                 "netFlow24hUsd", money(prevNetFlow24hUsd),
@@ -209,13 +195,14 @@ public class OpsTreasuryService {
                 "domain", "B",
                 "generatedAt", LocalDateTime.now(clock),
                 "sources", List.of(
-                        "nx_config_item:treasury.b.*",
                         "nx_user_wallet",
                         "nx_wallet_ledger",
                         "nx_withdrawal_order",
                         "nx_staking_position",
-                        "nx_config_item:killswitch.*",
-                        "nx_config_item:emergency.killswitch.*"));
+                        "nx_deposit_order",
+                        "nx_exchange_order",
+                        "nx_emergency_control_setting:killswitch.*",
+                        "nx_emergency_control_setting:emergency.killswitch.*"));
         response.put("warnings", warnings);
         response.put("dualLedger", dualLedger);
         response.put("alerts", section(
@@ -301,14 +288,9 @@ public class OpsTreasuryService {
             String voucherNo,
             String reason,
             String operator) {
-        BigDecimal oldReserve = configDecimal(RESERVE_CONFIG_KEY, dualLedgerProperties.getReserveUsd());
+        BigDecimal oldReserve = safe(ledgerRepository.currentReserveUsd()).setScale(2, RoundingMode.HALF_UP);
         BigDecimal newReserve = oldReserve.add(amount).setScale(2, RoundingMode.HALF_UP);
-        configFacade.upsertAdminValue(
-                RESERVE_CONFIG_KEY,
-                newReserve.toPlainString(),
-                "NUMBER",
-                "wallet",
-                "B1 treasury reserve injection");
+        ledgerRepository.recordReserveInjection(voucherNo, amount, reason, operator, idempotencyKey);
         audit("B1_TREASURY_RESERVE_INJECTION", "TREASURY_RESERVE", voucherNo, operator, section(
                 "voucherNo", voucherNo,
                 "amount", amount,
@@ -512,8 +494,8 @@ public class OpsTreasuryService {
                     return row;
                 })
                 .toList();
-        List<Map<String, Object>> runway = readJsonRows(B_LIQUIDITY_RUNWAY_KEY, warnings);
-        List<BigDecimal> flow = readDecimalList(B_LIQUIDITY_FLOW_KEY, warnings);
+        List<Map<String, Object>> runway = liquidityRunwayFromLedger(snapshot);
+        List<BigDecimal> flow = netFlowSeries(8);
         BigDecimal runwayTotalWan = runway.stream()
                 .map(row -> decimal(row.get("valueWan")))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -523,17 +505,21 @@ public class OpsTreasuryService {
                 "runway", runway,
                 "runwayTotalWan", runwayTotalWan,
                 "flow", flowRows(flow),
-                "sources", List.of("nx_config_item:" + B_LIQUIDITY_RUNWAY_KEY, "nx_config_item:" + B_LIQUIDITY_FLOW_KEY, "B1 dualLedger"));
+                "sources", List.of("B1 dualLedger", "nx_wallet_ledger", "nx_withdrawal_order", "nx_staking_position", "nx_nex_lock_order"));
         return response;
     }
 
     private Map<String, Object> funnelDashboard(List<Map<String, Object>> warnings) {
-        List<Map<String, Object>> stages = readJsonRows(B_FUNNEL_STAGES_KEY, warnings);
-        List<Map<String, Object>> transitions = readJsonRows(B_FUNNEL_TRANSITIONS_KEY, warnings);
-        List<BigDecimal> cohort = readDecimalList(B_FUNNEL_COHORT_KEY, warnings);
-        List<Map<String, Object>> channels = readJsonRows(B_FUNNEL_CHANNELS_KEY, warnings);
-        List<BigDecimal> daily = readDecimalList(B_FUNNEL_DAILY_KEY, warnings);
-        BigDecimal dailyTarget = readDecimalSeed(B_FUNNEL_DAILY_TARGET_KEY, warnings);
+        LocalDateTime since = LocalDateTime.now(clock).minusDays(30);
+        List<Map<String, Object>> stages = funnelStagesFromOrders(since);
+        List<Map<String, Object>> transitions = funnelTransitions(stages);
+        List<BigDecimal> cohort = netFlowSeries(8);
+        List<Map<String, Object>> channels = funnelChannelsFromOrders(since);
+        List<BigDecimal> daily = dailyDepositSeries(8);
+        BigDecimal dailyTarget = daily.isEmpty()
+                ? BigDecimal.ZERO
+                : daily.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
+                .divide(new BigDecimal(daily.size()), 2, RoundingMode.HALF_UP);
         BigDecimal first = stages.isEmpty() ? BigDecimal.ZERO : decimal(stages.get(0).get("ct"));
         BigDecimal last = stages.isEmpty() ? BigDecimal.ZERO : decimal(stages.get(stages.size() - 1).get("ct"));
         Map<String, Object> bottleneck = transitions.stream()
@@ -550,21 +536,19 @@ public class OpsTreasuryService {
                 "overallConversionPct", pctScale(pct(last, first)),
                 "bottleneck", bottleneck,
                 "sources", List.of(
-                        "nx_config_item:" + B_FUNNEL_STAGES_KEY,
-                        "nx_config_item:" + B_FUNNEL_TRANSITIONS_KEY,
-                        "nx_config_item:" + B_FUNNEL_COHORT_KEY,
-                        "nx_config_item:" + B_FUNNEL_CHANNELS_KEY,
-                        "nx_config_item:" + B_FUNNEL_DAILY_KEY,
-                        "nx_config_item:" + B_FUNNEL_DAILY_TARGET_KEY));
+                        "nx_deposit_order",
+                        "nx_exchange_order",
+                        "nx_withdrawal_order",
+                        "nx_wallet_ledger"));
     }
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> rhythmDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
-        List<Map<String, Object>> phaseNodes = readJsonRows(B_RHYTHM_PHASES_KEY, warnings);
-        List<BigDecimal> inflow = readDecimalList(B_RHYTHM_INFLOW_KEY, warnings);
-        List<Map<String, Object>> budget = readJsonRows(B_RHYTHM_BUDGET_KEY, warnings);
-        List<BigDecimal> ratio = readDecimalList(B_RHYTHM_RATIO_KEY, warnings);
-        BigDecimal healthyRatio = readDecimalSeed(B_RHYTHM_HEALTHY_RATIO_KEY, warnings);
+        List<Map<String, Object>> phaseNodes = rhythmPhaseNodesFromH1(dualLedger);
+        List<BigDecimal> inflow = netFlowSeries(8);
+        List<Map<String, Object>> budget = liabilityBudgetFromDualLedger(dualLedger);
+        List<BigDecimal> ratio = coverageRatioSeries(dualLedger);
+        BigDecimal healthyRatio = decimal(((Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of())).get("healthyPct"));
         Map<String, Object> h1Rhythm = (Map<String, Object>) dualLedger.getOrDefault("h1Rhythm", Map.of());
         BigDecimal currentRatio = ratio.isEmpty() ? BigDecimal.ZERO : ratio.get(ratio.size() - 1);
         return section(
@@ -578,25 +562,21 @@ public class OpsTreasuryService {
                 "suggestion", currentRatio.compareTo(healthyRatio) >= 0 ? "维持扩张" : "切入收紧",
                 "sources", List.of(
                         "nx_config_item:H1.rhythm.*",
-                        "nx_config_item:" + B_RHYTHM_PHASES_KEY,
-                        "nx_config_item:" + B_RHYTHM_INFLOW_KEY,
-                        "nx_config_item:" + B_RHYTHM_BUDGET_KEY,
-                        "nx_config_item:" + B_RHYTHM_RATIO_KEY,
-                        "nx_config_item:" + B_RHYTHM_HEALTHY_RATIO_KEY));
+                        "B1 dualLedger",
+                        "nx_wallet_ledger"));
     }
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> riskRadarDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
         Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
-        List<Map<String, Object>> configuredFeed = readJsonRows(B_RISK_FEED_KEY, warnings);
         List<Map<String, Object>> feed = new ArrayList<>();
         feed.add(dynamicCoverageFeed(snapshot));
-        feed.addAll(configuredFeed);
-        List<BigDecimal> pressure = readDecimalList(B_RISK_PRESSURE_KEY, warnings);
-        List<Map<String, Object>> rules = readJsonRows(B_RISK_RULES_KEY, warnings);
-        List<Map<String, Object>> severity = readJsonRows(B_RISK_SEVERITY_KEY, warnings);
-        List<Map<String, Object>> volume = readJsonRows(B_RISK_VOLUME_KEY, warnings);
-        BigDecimal pressureTightPct = readDecimalSeed(B_RISK_PRESSURE_TIGHT_KEY, warnings);
+        LocalDateTime since = LocalDateTime.now(clock).minusDays(7);
+        List<BigDecimal> pressure = ledgerRepository.riskPressureSeries(since);
+        List<Map<String, Object>> rules = ledgerRepository.riskRuleBuckets(since);
+        List<Map<String, Object>> severity = ledgerRepository.riskSeverityBuckets(since);
+        List<Map<String, Object>> volume = ledgerRepository.riskVolumeBuckets(since);
+        BigDecimal pressureTightPct = decimal(snapshot.get("runRiskPct"));
         BigDecimal reserveUsd = decimal(snapshot.get("reserveUsd"));
         BigDecimal queueBacklogUsd = decimal(snapshot.get("queueBacklogUsd"));
         BigDecimal bankRunRatio = pctScale(pct(queueBacklogUsd, reserveUsd));
@@ -615,15 +595,11 @@ public class OpsTreasuryService {
                 "volume", volume,
                 "bankRunRatio", bankRunRatio,
                 "sources", List.of(
-                        "nx_config_item:killswitch.*",
-                        "nx_config_item:emergency.killswitch.*",
-                        "nx_config_item:" + B_RISK_FEED_KEY,
-                        "nx_config_item:" + B_RISK_PRESSURE_KEY,
-                        "nx_config_item:" + B_RISK_PRESSURE_TIGHT_KEY,
-                        "nx_config_item:" + B_RISK_RULES_KEY,
-                        "nx_config_item:" + B_RISK_SEVERITY_KEY,
-                        "nx_config_item:" + B_RISK_VOLUME_KEY,
-                        "B1 dualLedger"));
+                        "nx_emergency_control_setting:killswitch.*",
+                        "nx_emergency_control_setting:emergency.killswitch.*",
+                        "B1 dualLedger",
+                        "nx_withdrawal_order",
+                        "nx_risk_decision"));
     }
 
     private List<Map<String, Object>> riskGates() {
@@ -633,12 +609,12 @@ public class OpsTreasuryService {
             String configKey = "killswitch." + key;
             String emergencyKey = "emergency.killswitch." + key;
             String sourceKey = null;
-            String configured = configFacade.activeValue(configKey).filter(StringUtils::hasText).orElse(null);
+            String configured = controlValue(configKey).filter(StringUtils::hasText).orElse(null);
             if (StringUtils.hasText(configured)) {
                 sourceKey = configKey;
             }
             if (!StringUtils.hasText(configured)) {
-                configured = configFacade.activeValue(emergencyKey).filter(StringUtils::hasText).orElse(null);
+                configured = controlValue(emergencyKey).filter(StringUtils::hasText).orElse(null);
                 if (StringUtils.hasText(configured)) {
                     sourceKey = emergencyKey;
                 }
@@ -654,6 +630,10 @@ public class OpsTreasuryService {
         return gates;
     }
 
+    private Optional<String> controlValue(String key) {
+        return emergencyRepository.settingValue(key);
+    }
+
     private Map<String, Object> dynamicCoverageFeed(Map<String, Object> snapshot) {
         BigDecimal reserve = decimal(snapshot.get("reserveUsd"));
         BigDecimal queue = decimal(snapshot.get("queueBacklogUsd"));
@@ -667,75 +647,6 @@ public class OpsTreasuryService {
                 "href", "/overview/dual-ledger");
     }
 
-    private List<Map<String, Object>> readJsonRows(String key, List<Map<String, Object>> warnings) {
-        return configFacade.activeValue(key)
-                .filter(StringUtils::hasText)
-                .map(raw -> {
-                    try {
-                        return objectMapper.readValue(raw, LIST_MAP_TYPE);
-                    } catch (JsonProcessingException ex) {
-                        warnConfig(warnings, key, "B_CONFIG_JSON_INVALID", "Configured JSON is invalid; existing value was not overwritten.");
-                        return List.<Map<String, Object>>of();
-                    }
-                })
-                .orElse(List.of());
-    }
-
-    private List<BigDecimal> readDecimalList(String key, List<Map<String, Object>> warnings) {
-        return configFacade.activeValue(key)
-                .filter(StringUtils::hasText)
-                .map(raw -> {
-                    try {
-                        return objectMapper.readValue(raw, DECIMAL_LIST_TYPE);
-                    } catch (JsonProcessingException ex) {
-                        warnConfig(warnings, key, "B_CONFIG_JSON_INVALID", "Configured numeric array is invalid; existing value was not overwritten.");
-                        return List.<BigDecimal>of();
-                    }
-                })
-                .orElse(List.of());
-    }
-
-    private BigDecimal readDecimalSeed(String key, List<Map<String, Object>> warnings) {
-        return configFacade.activeValue(key)
-                .filter(StringUtils::hasText)
-                .map(raw -> {
-                    try {
-                        return new BigDecimal(raw.trim());
-                    } catch (RuntimeException ex) {
-                        warnConfig(warnings, key, "B_CONFIG_NUMBER_INVALID", "Configured number is invalid; existing value was not overwritten.");
-                        return BigDecimal.ZERO;
-                    }
-                })
-                .orElse(BigDecimal.ZERO);
-    }
-
-    private void warnConfig(List<Map<String, Object>> warnings, String key, String code, String message) {
-        warnings.add(section("key", key, "code", code, "message", message));
-    }
-
-    private void seedJsonIfAbsent(String key, Object fallback, String remark) {
-        // Intentionally empty: read paths must not seed treasury configuration.
-    }
-
-    private void seedJson(String key, Object value, String remark) {
-        // Intentionally empty: read paths must not seed treasury configuration.
-    }
-
-    private List<Map<String, Object>> defaultLiquidityRunway() {
-        return List.of(
-                section("day", "D+1", "valueWan", new BigDecimal("38")),
-                section("day", "D+2", "valueWan", new BigDecimal("52")),
-                section("day", "D+3", "valueWan", new BigDecimal("47")),
-                section("day", "D+4", "valueWan", new BigDecimal("61")),
-                section("day", "D+5", "valueWan", new BigDecimal("55")),
-                section("day", "D+6", "valueWan", new BigDecimal("73")),
-                section("day", "D+7", "valueWan", new BigDecimal("49")));
-    }
-
-    private List<BigDecimal> defaultLiquidityFlow() {
-        return decimalList("4", "6", "8", "9", "10", "11", "11", "12");
-    }
-
     private List<Map<String, Object>> flowRows(List<BigDecimal> flow) {
         List<Map<String, Object>> rows = new ArrayList<>();
         for (int i = 0; i < flow.size(); i++) {
@@ -744,112 +655,108 @@ public class OpsTreasuryService {
         return rows;
     }
 
-    private List<Map<String, Object>> defaultFunnelStages() {
+    private List<Map<String, Object>> liquidityRunwayFromLedger(Map<String, Object> snapshot) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        rows.add(section("day", "withdraw_queue", "valueWan", wan(decimal(snapshot.get("queueBacklogUsd"))), "source", "nx_withdrawal_order"));
+        rows.add(section("day", "liabilities", "valueWan", wan(decimal(snapshot.get("liabilitiesUsd"))), "source", "B1 dualLedger liabilities"));
+        rows.add(section("day", "reserve", "valueWan", wan(decimal(snapshot.get("reserveUsd"))), "source", "nx_treasury_reserve_ledger"));
+        return rows.stream()
+                .filter(row -> decimal(row.get("valueWan")).compareTo(BigDecimal.ZERO) > 0)
+                .toList();
+    }
+
+    private List<BigDecimal> netFlowSeries(int points) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<BigDecimal> flow = new ArrayList<>();
+        for (int i = points - 1; i >= 0; i--) {
+            LocalDateTime start = now.minusDays(i + 1L);
+            LocalDateTime end = now.minusDays(i);
+            flow.add(wan(safe(ledgerRepository.sumNetUsdtFlowBetween(start, end))));
+        }
+        return flow;
+    }
+
+    private List<Map<String, Object>> funnelStagesFromOrders(LocalDateTime since) {
         return List.of(
-                section("key", "reg", "nm", "注册", "ct", 1240, "lc", "L1", "color", "var(--brand)"),
-                section("key", "bind", "nm", "绑卡", "ct", 769, "lc", "L2", "conv", "62.0%", "color", "color-mix(in srgb, var(--brand) 78%, #fff)"),
-                section("key", "buy", "nm", "首购", "ct", 223, "lc", "L3→L4", "conv", "29.0%", "bad", true, "color", "var(--cyan)"),
-                section("key", "rebuy", "nm", "复购", "ct", 78, "lc", "L5", "conv", "35.0%", "color", "color-mix(in srgb, var(--cyan) 70%, #fff)"),
-                section("key", "cash", "nm", "提现", "ct", 41, "lc", "L5", "conv", "52.6%", "color", "var(--success)"));
+                funnelStage("deposit", "入金", ledgerRepository.countDeposits(since, null), "nx_deposit_order", "var(--brand)"),
+                funnelStage("exchange", "兑换", ledgerRepository.countExchanges(since, null), "nx_exchange_order", "var(--cyan)"),
+                funnelStage("withdraw", "提现", ledgerRepository.countWithdrawals(since, null), "nx_withdrawal_order", "var(--warning)"),
+                funnelStage("ledger", "账本流水", ledgerRepository.countLedgers(since, null), "nx_wallet_ledger", "var(--success)"));
     }
 
-    private List<Map<String, Object>> defaultFunnelTransitions() {
-        return List.of(
-                section("from", "reg", "to", "bind", "a", "注册→绑卡", "v", "62.0%", "flow", "1,240 → 769", "note", "$1 KYC express", "noteKind", "muted"),
-                section("from", "bind", "to", "buy", "a", "绑卡→首购", "v", "29.0%", "vColor", "var(--brand-2)", "flow", "769 → 223", "note", "环比 -2.4pt", "noteKind", "dn", "bad", true),
-                section("from", "buy", "to", "rebuy", "a", "首购→复购", "v", "35.0%", "flow", "223 → 78", "note", "达标 +1.1pt", "noteKind", "up"),
-                section("from", "rebuy", "to", "cash", "a", "复购→提现", "v", "52.6%", "flow", "78 → 41", "note", "高价值留存样本"),
-                section("from", "reg", "to", "cash", "a", "整体转化", "v", "3.3%", "flow", "1,240 → 41", "note", "L1-L5 全链路"));
+    private Map<String, Object> funnelStage(String key, String name, long count, String source, String color) {
+        return section("key", key, "nm", name, "ct", count, "lc", source, "color", color);
     }
 
-    private List<BigDecimal> defaultFunnelCohort() {
-        return decimalList("100", "86", "74", "68", "61", "57", "54", "52");
-    }
-
-    private List<Map<String, Object>> defaultFunnelChannels() {
-        return List.of(
-                section("nm", "Affiliate", "v", 41, "c", "var(--brand)", "q", "高 ROAS"),
-                section("nm", "KOL", "v", 26, "c", "var(--cyan)", "q", "首购偏低"),
-                section("nm", "Organic", "v", 18, "c", "var(--success)", "q", "复购稳定"),
-                section("nm", "Referral", "v", 15, "c", "var(--warning)", "q", "返佣敏感"));
-    }
-
-    private List<BigDecimal> defaultFunnelDaily() {
-        return decimalList("17.2", "16.8", "18.1", "19.0", "18.4", "17.6", "18.2", "18.0");
-    }
-
-    private List<Map<String, Object>> defaultRhythmPhases() {
-        return List.of(
-                section("code", "P1", "name", "拉新", "intensity", 55),
-                section("code", "P2", "name", "成长", "intensity", 78),
-                section("code", "P3", "name", "扩张", "intensity", 92),
-                section("code", "P4", "name", "稳态", "intensity", 70),
-                section("code", "P5", "name", "收紧", "intensity", 40),
-                section("code", "P6", "name", "收场", "intensity", 18));
-    }
-
-    private List<BigDecimal> defaultRhythmInflow() {
-        return decimalList("62", "84", "118", "142", "168", "190", "205", "198");
-    }
-
-    private List<Map<String, Object>> defaultRhythmBudget() {
-        return List.of(
-                section("nm", "获客", "v", 38, "c", "var(--brand)"),
-                section("nm", "奖励", "v", 27, "c", "var(--cyan)"),
-                section("nm", "安全", "v", 20, "c", "var(--warning)"),
-                section("nm", "储备", "v", 15, "c", "var(--success)"));
-    }
-
-    private List<BigDecimal> defaultRhythmRatio() {
-        return decimalList("1.62", "1.58", "1.55", "1.53", "1.51", "1.49", "1.45", "1.42");
-    }
-
-    private List<Map<String, Object>> defaultRiskFeed() {
-        return List.of(
-                section("sev", "p1", "t", "套利检测命中 cluster-k2-018 · 触发提现延迟", "m", "K2 套利检测 · 6m 前", "href", "/risk/arbitrage"),
-                section("sev", "p2", "t", "24h 资金净流入保持正向 · 扩张节奏允许", "m", "B2 流动性 · 14m 前", "href", "/overview/liquidity"),
-                section("sev", "p1", "t", "提现队列中存在 KYC 复审样本", "m", "D2/K5 · 18m 前", "href", "/finance/withdrawals"),
-                section("sev", "p2", "t", "B5 规则压力低于收紧阈值", "m", "B5 风险雷达 · 28m 前", "href", "/overview/risk-radar"),
-                section("sev", "p2", "t", "风险评分均值低于人工覆盖线", "m", "K4 风险评分 · 31m 前", "href", "/risk/risk-score"));
-    }
-
-    private List<BigDecimal> defaultRiskPressure() {
-        return decimalList("9", "12", "18", "24", "28", "30", "31", "32");
-    }
-
-    private List<Map<String, Object>> defaultRiskRules() {
-        return List.of(
-                section("nm", "多账户", "ct", 9, "sev", "P1", "dom", "K1"),
-                section("nm", "套利", "ct", 4, "sev", "P1", "dom", "K2"),
-                section("nm", "提现规则", "ct", 7, "sev", "P2", "dom", "K3"),
-                section("nm", "KYC 复审", "ct", 5, "sev", "P1", "dom", "K5"));
-    }
-
-    private List<Map<String, Object>> defaultRiskSeverity() {
-        return List.of(
-                section("nm", "P0", "v", 1, "c", "var(--danger)"),
-                section("nm", "P1", "v", 11, "c", "var(--warning)"),
-                section("nm", "P2", "v", 23, "c", "var(--cyan)"),
-                section("nm", "P3", "v", 37, "c", "var(--success)"));
-    }
-
-    private List<Map<String, Object>> defaultRiskVolume() {
-        return List.of(
-                section("label", "D-6", "count", 3),
-                section("label", "D-5", "count", 4),
-                section("label", "D-4", "count", 6),
-                section("label", "D-3", "count", 5),
-                section("label", "D-2", "count", 7),
-                section("label", "D-1", "count", 6),
-                section("label", "今日", "count", 9));
-    }
-
-    private List<BigDecimal> decimalList(String... values) {
-        List<BigDecimal> rows = new ArrayList<>();
-        for (String value : values) {
-            rows.add(new BigDecimal(value));
+    private List<Map<String, Object>> funnelTransitions(List<Map<String, Object>> stages) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int i = 1; i < stages.size(); i++) {
+            Map<String, Object> from = stages.get(i - 1);
+            Map<String, Object> to = stages.get(i);
+            BigDecimal fromCount = decimal(from.get("ct"));
+            BigDecimal toCount = decimal(to.get("ct"));
+            BigDecimal conversion = pctScale(pct(toCount, fromCount));
+            rows.add(section(
+                    "from", from.get("key"),
+                    "to", to.get("key"),
+                    "a", from.get("nm") + "→" + to.get("nm"),
+                    "v", conversion + "%",
+                    "flow", fromCount.toPlainString() + " → " + toCount.toPlainString(),
+                    "bad", fromCount.compareTo(BigDecimal.ZERO) > 0 && conversion.compareTo(new BigDecimal("30")) < 0));
         }
         return rows;
+    }
+
+    private List<Map<String, Object>> funnelChannelsFromOrders(LocalDateTime since) {
+        return List.of(
+                section("nm", "入金订单", "v", ledgerRepository.countDeposits(since, null), "c", "var(--brand)", "source", "nx_deposit_order"),
+                section("nm", "兑换订单", "v", ledgerRepository.countExchanges(since, null), "c", "var(--cyan)", "source", "nx_exchange_order"),
+                section("nm", "提现订单", "v", ledgerRepository.countWithdrawals(since, null), "c", "var(--warning)", "source", "nx_withdrawal_order"),
+                section("nm", "账本流水", "v", ledgerRepository.countLedgers(since, null), "c", "var(--success)", "source", "nx_wallet_ledger"));
+    }
+
+    private List<BigDecimal> dailyDepositSeries(int points) {
+        return netFlowSeries(points);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> rhythmPhaseNodesFromH1(Map<String, Object> dualLedger) {
+        Map<String, Object> h1Rhythm = (Map<String, Object>) dualLedger.getOrDefault("h1Rhythm", Map.of());
+        String currentPhase = String.valueOf(h1Rhythm.getOrDefault("currentPhase", ""));
+        if (!StringUtils.hasText(currentPhase)) {
+            return List.of();
+        }
+        return List.of(section(
+                "code", currentPhase,
+                "name", currentPhase,
+                "intensity", decimal(h1Rhythm.get("phaseProgressPct")),
+                "source", "H1 growth rhythm facade"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> liabilityBudgetFromDualLedger(Map<String, Object> dualLedger) {
+        List<Map<String, Object>> accounts = (List<Map<String, Object>>) dualLedger.getOrDefault("accounts", List.of());
+        return accounts.stream()
+                .map(account -> section(
+                        "nm", account.get("label"),
+                        "v", wan(decimal(account.get("amount"))),
+                        "source", account.get("source")))
+                .toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<BigDecimal> coverageRatioSeries(Map<String, Object> dualLedger) {
+        Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
+        Object series = snapshot.get("coverageSeries");
+        if (series instanceof List<?> list) {
+            return list.stream().map(this::decimal).toList();
+        }
+        BigDecimal coverage = decimal(snapshot.get("coverageRatio"));
+        return coverage.compareTo(BigDecimal.ZERO) > 0 ? List.of(coverage) : List.of();
+    }
+
+    private BigDecimal wan(BigDecimal value) {
+        return money(safe(value)).divide(new BigDecimal("10000"), 2, RoundingMode.HALF_UP);
     }
 
     private boolean enabledFromConfig(String value) {
@@ -958,8 +865,6 @@ public class OpsTreasuryService {
     }
 
     private void ensureD3ConfigDefaults() {
-        seedConfigIfAbsent(RESERVE_CONFIG_KEY, money(dualLedgerProperties.getReserveUsd()).toPlainString(), "NUMBER", "wallet", "D3 treasury reserve");
-        seedConfigIfAbsent(NEX_USD_RATE_CONFIG_KEY, safe(dualLedgerProperties.getNexUsdRate()).toPlainString(), "NUMBER", "wallet", "D3 NEX USD rate");
         seedConfigIfAbsent(REDLINE_CONFIG_KEY, safe(dualLedgerProperties.getRedlinePct()).toPlainString(), "NUMBER", "wallet", "D3 coverage redline");
         seedConfigIfAbsent(HEALTHY_CONFIG_KEY, safe(dualLedgerProperties.getHealthyPct()).toPlainString(), "NUMBER", "wallet", "D3 healthy coverage");
         seedConfigIfAbsent(RUN_RISK_CONFIG_KEY, safe(dualLedgerProperties.getRunRiskPct()).toPlainString(), "NUMBER", "wallet", "D3 run risk threshold");
@@ -1116,17 +1021,15 @@ public class OpsTreasuryService {
         return series;
     }
 
-    private List<Map<String, Object>> maturity7d(BigDecimal queueBacklogUsd, BigDecimal stakingInterestUsd) {
-        List<Map<String, Object>> rows = new ArrayList<>();
-        BigDecimal withdrawDaily = safe(queueBacklogUsd).divide(BigDecimal.valueOf(7), 6, RoundingMode.HALF_UP);
-        BigDecimal interestDaily = safe(stakingInterestUsd).divide(BigDecimal.valueOf(7), 6, RoundingMode.HALF_UP);
-        for (int i = 0; i < 7; i++) {
-            rows.add(section(
-                    "day", "D+" + (i + 1),
-                    "withdrawUsd", money(withdrawDaily),
-                    "interestUsd", money(interestDaily)));
-        }
-        return rows;
+    private List<Map<String, Object>> maturity7d() {
+        LocalDateTime startAt = LocalDateTime.now(clock).toLocalDate().atStartOfDay();
+        LocalDateTime endAt = startAt.plusDays(8);
+        return ledgerRepository.maturityBuckets(startAt, endAt).stream()
+                .map(row -> section(
+                        "day", String.valueOf(row.get("day")),
+                        "withdrawUsd", money(decimal(row.get("withdrawUsd"))),
+                        "interestUsd", money(decimal(row.get("interestUsd")))))
+                .toList();
     }
 
     private Map<String, Object> account(String key, String label, BigDecimal amount, String source) {

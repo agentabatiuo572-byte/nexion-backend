@@ -151,7 +151,7 @@ class OpsSupportTicketServiceTest {
     }
 
     @Test
-    void loadConfigUsesPersistedPlatformConfigAndAgentState() {
+    void loadConfigIgnoresPersistedPlatformConfigBusinessState() {
         configFacade.values.put("content.support.load.defaultCap", "6");
         configFacade.values.put("content.support.load.agent.agent-1.cap", "5");
         configFacade.values.put("content.support.load.agent.agent-1.busy", "true");
@@ -160,8 +160,13 @@ class OpsSupportTicketServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().get("loadConfig")).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
-                .containsEntry("defaultCap", 6);
-        assertThat(result.getData().get("agentState").toString()).contains("agent-1", "cap=5", "busy=true");
+                .containsEntry("defaultCap", 0)
+                .containsEntry("burstCap", 0)
+                .containsEntry("warnPct", 0);
+        assertThat(result.getData().get("agentState")).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .isEmpty();
+        assertThat(result.getData().get("sources")).asList()
+                .containsExactly("nx_support_ticket", "nx_conversation");
     }
 
     @Test

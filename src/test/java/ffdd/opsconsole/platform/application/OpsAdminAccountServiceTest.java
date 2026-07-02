@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -23,7 +24,15 @@ import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
+import ffdd.opsconsole.platform.infrastructure.AdminRbacActionEntity;
+import ffdd.opsconsole.platform.infrastructure.AdminRbacGrantEntity;
 import ffdd.opsconsole.platform.infrastructure.AdminRoleOptionEntity;
+import ffdd.opsconsole.platform.infrastructure.AdminSecurityBaselineEntity;
+import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
+import ffdd.opsconsole.platform.mapper.AdminRbacActionMapper;
+import ffdd.opsconsole.platform.mapper.AdminRbacGrantMapper;
+import ffdd.opsconsole.platform.mapper.AdminSecurityBaselineMapper;
 import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -36,6 +45,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,20 +61,32 @@ class OpsAdminAccountServiceTest {
     private final AdminMapper adminMapper = mock(AdminMapper.class);
     private final AdminRoleRelationMapper roleRelationMapper = mock(AdminRoleRelationMapper.class);
     private final OpsOptionsMapper roleMapper = mock(OpsOptionsMapper.class);
+    private final AdminAccountStateMapper accountStateMapper = mock(AdminAccountStateMapper.class);
+    private final AdminRbacActionMapper rbacActionMapper = mock(AdminRbacActionMapper.class);
+    private final AdminRbacGrantMapper rbacGrantMapper = mock(AdminRbacGrantMapper.class);
+    private final AdminSecurityBaselineMapper securityBaselineMapper = mock(AdminSecurityBaselineMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
     private final List<AdminEntity> admins = new ArrayList<>();
     private final Map<Long, String> roleRelations = new LinkedHashMap<>();
+    private final Map<Long, AdminAccountStateEntity> accountStates = new LinkedHashMap<>();
+    private final Map<String, AdminRbacActionEntity> rbacActionRows = new LinkedHashMap<>();
+    private final Map<String, Map<String, AdminRbacGrantEntity>> rbacGrantRows = new LinkedHashMap<>();
+    private final Map<String, AdminSecurityBaselineEntity> securityBaselineRows = new LinkedHashMap<>();
     private final OpsAdminAccountService service =
-            new OpsAdminAccountService(repository, auditLogService, adminMapper, roleRelationMapper, roleMapper, passwordEncoder,
+            new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
+                    accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
                     adminSessionRegistry, auditCenterService);
 
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
         repository.clear();
-        registerTestRoles();
+        accountStates.clear();
+        rbacActionRows.clear();
+        rbacGrantRows.clear();
+        securityBaselineRows.clear();
         registerTestRbacActions();
         registerTestSecurityBaselines();
 
@@ -86,6 +108,55 @@ class OpsAdminAccountServiceTest {
         when(roleRelationMapper.ensurePrimaryRole(any(Long.class), any(String.class))).thenAnswer(invocation -> {
             roleRelations.put(invocation.getArgument(0), invocation.getArgument(1));
             return 1;
+        });
+        when(accountStateMapper.selectActiveByAdminId(any(Long.class)))
+                .thenAnswer(invocation -> accountStates.get(invocation.getArgument(0)));
+        when(accountStateMapper.upsertCreatedState(any(Long.class), any(String.class))).thenAnswer(invocation -> {
+            upsertAccountState(invocation.getArgument(0), state -> {
+                state.setTfaRequired(1);
+                state.setCredentialDeliveryStatus(invocation.getArgument(1));
+            });
+            return 1;
+        });
+        when(accountStateMapper.upsertTfaResetAt(any(Long.class), any(LocalDateTime.class))).thenAnswer(invocation -> {
+            upsertAccountState(invocation.getArgument(0), state -> {
+                state.setTfaRequired(1);
+                state.setTfaResetAt(invocation.getArgument(1));
+            });
+            return 1;
+        });
+        when(accountStateMapper.upsertSessionsRevokedAt(any(Long.class), any(LocalDateTime.class))).thenAnswer(invocation -> {
+            upsertAccountState(invocation.getArgument(0), state -> state.setSessionsRevokedAt(invocation.getArgument(1)));
+            return 1;
+        });
+        when(rbacActionMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(rbacActionRows.values()));
+        when(rbacActionMapper.upsertAction(any(String.class), any(String.class), any(String.class), anyInt()))
+                .thenAnswer(invocation -> {
+                    putRbacAction(
+                            invocation.getArgument(0),
+                            invocation.getArgument(1),
+                            invocation.getArgument(2),
+                            invocation.getArgument(3));
+                    return 1;
+                });
+        when(rbacGrantMapper.selectList(any())).thenAnswer(invocation -> rbacGrantRows.values().stream()
+                .flatMap(row -> row.values().stream())
+                .toList());
+        when(rbacGrantMapper.upsertGrant(any(String.class), any(String.class), any(String.class))).thenAnswer(invocation -> {
+            putRbacGrant(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2));
+            return 1;
+        });
+        when(securityBaselineMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(securityBaselineRows.values()));
+        when(securityBaselineMapper.selectActiveByKey(any(String.class)))
+                .thenAnswer(invocation -> securityBaselineRows.get(invocation.getArgument(0)));
+        when(securityBaselineMapper.upsertValue(any(String.class), any(String.class))).thenAnswer(invocation -> {
+            AdminSecurityBaselineEntity row = securityBaselineRows.get(invocation.getArgument(0));
+            if (row != null) {
+                row.setBaselineValue(invocation.getArgument(1));
+                row.setUpdatedAt(LocalDateTime.now());
+                return 1;
+            }
+            return 0;
         });
         when(adminMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(admins));
         when(adminMapper.selectOne(any())).thenReturn(null);
@@ -142,7 +213,7 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void overviewReturnsAdminTableAndConfigBackedA1Data() {
+    void overviewReturnsAdminTableAndBusinessTableBackedA1Data() {
         ApiResult<AdminAccountOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
@@ -161,6 +232,9 @@ class OpsAdminAccountServiceTest {
     @Test
     void overviewDoesNotInventA1RoleRbacOrSecurityConfigWhenDbHasNoConfigRows() {
         repository.clear();
+        rbacActionRows.clear();
+        rbacGrantRows.clear();
+        securityBaselineRows.clear();
 
         ApiResult<AdminAccountOverview> result = service.overview();
 
@@ -230,6 +304,11 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getData().role()).isEqualTo("risk");
         assertThat(repository.items).doesNotContainKey("a1.account.5.role");
         assertThat(repository.items).doesNotContainKey("a1.account.5.registered");
+        assertThat(repository.items).doesNotContainKey("a1.account.5.tfa");
+        assertThat(repository.items).doesNotContainKey("a1.account.5.credentialDeliveryStatus");
+        assertThat(repository.items).doesNotContainKey("a1.account.5.createdAt");
+        assertThat(accountStates.get(5L).getTfaRequired()).isEqualTo(1);
+        assertThat(accountStates.get(5L).getCredentialDeliveryStatus()).isEqualTo("MAIL_DISPATCHED");
         assertThat(admins).extracting(AdminEntity::getEmail).contains("risk-new@nexion.io");
         assertThat(result.getData().toString()).doesNotContain("NX-");
         verify(roleRelationMapper).ensurePrimaryRole(5L, "RISK");
@@ -265,6 +344,7 @@ class OpsAdminAccountServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().credentialDeliveryStatus()).isEqualTo("HANDOFF_PENDING");
+        assertThat(accountStates.get(5L).getCredentialDeliveryStatus()).isEqualTo("HANDOFF_PENDING");
         AdminEntity created = admins.stream()
                 .filter(admin -> "finance-shift@nexion.io".equals(admin.getEmail()))
                 .findFirst()
@@ -300,8 +380,10 @@ class OpsAdminAccountServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().value()).isEqualTo("45min / 10h");
-        assertThat(repository.items.get("a1.security.sessionIdle").configValue()).isEqualTo("45");
-        assertThat(repository.items.get("a1.security.sessionAbs").configValue()).isEqualTo("10");
+        assertThat(securityBaselineRows.get("session").getBaselineValue()).isEqualTo("45min / 10h");
+        assertThat(repository.items).doesNotContainKey("a1.security.sessionIdle");
+        assertThat(repository.items).doesNotContainKey("a1.security.sessionAbs");
+        assertThat(repository.items).doesNotContainKey("a1.security.baseline.session.value");
         verify(auditLogService).record(any(AuditLogWriteRequest.class));
     }
 
@@ -331,6 +413,23 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
+    void updateRbacGrantsWritesBusinessGrantTableNotNxConfigItem() {
+        AdminRbacGrantUpdateRequest request = new AdminRbacGrantUpdateRequest(
+                List.of("C", "R", "-", "M", "-", "-", "R", "R"),
+                "tighten risk grants",
+                "superadmin");
+
+        ApiResult<AdminAccountOverview.RbacAction> result =
+                service.updateRbacGrants("idem-rbac-write", "balance_adjust", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(rbacGrantRows.get("balance_adjust").get("risk").getGrantValue()).isEqualTo("M");
+        assertThat(rbacGrantRows.get("balance_adjust").get("config").getGrantValue()).isEqualTo("R");
+        assertThat(repository.items).doesNotContainKey("a1.rbac.risk.balance_adjust");
+        assertThat(repository.items).doesNotContainKey("a1.rbac.config.balance_adjust");
+    }
+
+    @Test
     void revokeSessionsDeletesRedisBackedAdminSessionsAndAudits() {
         authenticateAs(1L);
         when(adminSessionRegistry.revokeSessions(4L)).thenReturn(2);
@@ -350,7 +449,7 @@ class OpsAdminAccountServiceTest {
     @Test
     void revokeSessionsAllowsRiskOperatorForNonSuperTarget() {
         admins.add(admin(5L, "support.ops", "客服专员", "support@nexion.io", 0, 1));
-        repository.put("a1.account.5.role", "support", "admin_a1_account");
+        roleRelations.put(5L, "SUPPORT");
         authenticateAs(4L);
         when(adminSessionRegistry.revokeSessions(5L)).thenReturn(1);
         AdminAccountActionRequest request = new AdminAccountActionRequest("suspected support console misuse", "risk.lead");
@@ -362,17 +461,17 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void revokeSessionsAllowsDisabledE2eSuperShiftCleanup() {
-        admins.add(admin(6L, "e2e_pa_2606290801", "Agent-1 平台审计值班", "e2e_pa_2606290801@nexion.io", 1, 0));
+    void revokeSessionsRejectsDisabledSuperTarget() {
+        admins.add(admin(6L, "ops.shift", "平台审计值班", "ops.shift@nexion.io", 1, 0));
         authenticateAs(1L);
-        when(adminSessionRegistry.revokeSessions(6L)).thenReturn(1);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("cleanup disabled e2e shift", "superadmin");
+        AdminAccountActionRequest request = new AdminAccountActionRequest("super cleanup requires account-disable flow", "superadmin");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result =
                 service.revokeSessions("idem-session-e2e-cleanup", "6", request);
 
-        assertThat(result.getCode()).isZero();
-        verify(adminSessionRegistry).revokeSessions(6L);
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
+        verify(adminSessionRegistry, never()).revokeSessions(6L);
     }
 
     @Test
@@ -390,7 +489,7 @@ class OpsAdminAccountServiceTest {
     @Test
     void revokeSessionsRejectsNonSuperAndNonRiskOperator() {
         admins.add(admin(5L, "finance.ops", "财务专员", "finance-ops@nexion.io", 0, 1));
-        repository.put("a1.account.5.role", "finance", "admin_a1_account");
+        roleRelations.put(5L, "FINANCE");
         authenticateAs(5L);
         AdminAccountActionRequest request = new AdminAccountActionRequest("finance should not force logout", "finance.ops");
 
@@ -423,31 +522,10 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().id()).isEqualTo("e3");
         assertThat(result.getData().grants()).containsExactly("-", "-", "-", "-", "-", "-", "-", "R");
-        assertThat(repository.items).containsKey("a1.rbac.action.e3");
+        assertThat(rbacActionRows).containsKey("e3");
+        assertThat(rbacGrantRows.get("e3")).hasSize(8);
+        assertThat(repository.items).doesNotContainKey("a1.rbac.action.e3");
         verify(auditLogService).record(any(AuditLogWriteRequest.class));
-    }
-
-    private void registerTestRoles() {
-        registerTestRole("super", "超级管理员", "SA", "red", "平台 Owner，保留所有危急操作。", "全域：资金、风控、内容、配置、审计", 10);
-        registerTestRole("config", "配置运营", "OA", "blue", "运营配置、平台参数与跨域配置变更。", "A/C/E/F/G/H/I/J/M 配置", 20);
-        registerTestRole("finance", "资金运营", "FI", "green", "资金、账务、提现与覆盖率。", "D/C/B 资金域", 30);
-        registerTestRole("risk", "风控运营", "RK", "orange", "风控模型、KYC、账户限制与熔断。", "C/K/J 风控域", 40);
-        registerTestRole("content", "内容运营", "CT", "purple", "文案、课程、风险披露与公告。", "I/公告/课程", 50);
-        registerTestRole("growth", "增长运营", "GR", "blue", "活动、Phase dial、权益与触达。", "H/权益/触达", 60);
-        registerTestRole("support", "客服运营", "CS", "cyan", "用户查询、工单协同与只读辅助。", "C/D 只读与协助", 60);
-        registerTestRole("audit", "审计只读", "AU", "gray", "审计与合规观察，禁止写操作。", "A2/审计/报表", 70);
-    }
-
-    private void registerTestRole(
-            String key, String name, String avatar, String color, String description, String scope, int sort) {
-        String prefix = "a1.role." + key + ".";
-        repository.put(prefix + "registered", "true", "admin_a1_role");
-        repository.put(prefix + "name", name, "admin_a1_role");
-        repository.put(prefix + "avatar", avatar, "admin_a1_role");
-        repository.put(prefix + "color", color, "admin_a1_role");
-        repository.put(prefix + "description", description, "admin_a1_role");
-        repository.put(prefix + "scope", scope, "admin_a1_role");
-        repository.put(prefix + "sort", String.valueOf(sort), "admin_a1_role");
     }
 
     private void registerTestRbacActions() {
@@ -457,13 +535,53 @@ class OpsAdminAccountServiceTest {
     }
 
     private void registerTestAction(String id, String action, String domainGroup, int sort, List<String> grants) {
-        repository.put("a1.rbac.action." + id, action, "admin_a1_rbac");
-        repository.put("a1.rbac.action." + id + ".domainGroup", domainGroup, "admin_a1_rbac");
-        repository.put("a1.rbac.action." + id + ".sort", String.valueOf(sort), "admin_a1_rbac");
+        putRbacAction(id, action, domainGroup, sort);
         List<String> roles = List.of("super", "config", "finance", "risk", "content", "growth", "support", "audit");
         for (int i = 0; i < roles.size(); i++) {
-            repository.put("a1.rbac." + roles.get(i) + "." + id, grants.get(i), "admin_a1_rbac");
+            putRbacGrant(id, roles.get(i), grants.get(i));
         }
+    }
+
+    private void upsertAccountState(Long adminId, Consumer<AdminAccountStateEntity> mutator) {
+        AdminAccountStateEntity state = accountStates.computeIfAbsent(adminId, id -> {
+            AdminAccountStateEntity created = new AdminAccountStateEntity();
+            created.setId(id);
+            created.setAdminId(id);
+            created.setTfaRequired(1);
+            created.setCredentialDeliveryStatus("ACTIVE");
+            created.setIsDeleted(0);
+            return created;
+        });
+        mutator.accept(state);
+        state.setUpdatedAt(LocalDateTime.now());
+    }
+
+    private void putRbacAction(String id, String action, String domainGroup, int sort) {
+        AdminRbacActionEntity row = new AdminRbacActionEntity();
+        row.setId((long) rbacActionRows.size() + 1);
+        row.setActionId(id);
+        row.setActionName(action);
+        row.setDomainGroup(domainGroup);
+        row.setSortOrder(sort);
+        row.setStatus(1);
+        row.setIsDeleted(0);
+        rbacActionRows.put(id, row);
+    }
+
+    private void putRbacGrant(String actionId, String roleKey, String grantValue) {
+        Map<String, AdminRbacGrantEntity> grants =
+                rbacGrantRows.computeIfAbsent(actionId, ignored -> new LinkedHashMap<>());
+        AdminRbacGrantEntity row = grants.computeIfAbsent(roleKey, role -> {
+            AdminRbacGrantEntity created = new AdminRbacGrantEntity();
+            created.setId((long) grants.size() + 1);
+            created.setActionId(actionId);
+            created.setRoleKey(role);
+            created.setStatus(1);
+            created.setIsDeleted(0);
+            return created;
+        });
+        row.setGrantValue(grantValue);
+        row.setUpdatedAt(LocalDateTime.now());
     }
 
     private List<AdminRoleOptionEntity> testRoleRows() {
@@ -493,13 +611,17 @@ class OpsAdminAccountServiceTest {
     }
 
     private void registerTestSecurity(String key, String label, String description, String value, boolean locked, int sort) {
-        String prefix = "a1.security.baseline." + key + ".";
-        repository.put(prefix + "registered", "true", "admin_a1_security");
-        repository.put(prefix + "label", label, "admin_a1_security");
-        repository.put(prefix + "description", description, "admin_a1_security");
-        repository.put(prefix + "value", value, "admin_a1_security");
-        repository.put(prefix + "locked", String.valueOf(locked), "admin_a1_security");
-        repository.put(prefix + "sort", String.valueOf(sort), "admin_a1_security");
+        AdminSecurityBaselineEntity row = new AdminSecurityBaselineEntity();
+        row.setId((long) securityBaselineRows.size() + 1);
+        row.setBaselineKey(key);
+        row.setLabel(label);
+        row.setDescription(description);
+        row.setBaselineValue(value);
+        row.setLocked(locked ? 1 : 0);
+        row.setSortOrder(sort);
+        row.setStatus(1);
+        row.setIsDeleted(0);
+        securityBaselineRows.put(key, row);
     }
 
     private AdminEntity admin(Long id, String username, String nickname, String email, int superAdmin, int status) {

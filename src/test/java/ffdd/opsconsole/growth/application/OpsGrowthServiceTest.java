@@ -3,9 +3,12 @@ package ffdd.opsconsole.growth.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -14,10 +17,12 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -25,6 +30,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,19 +41,132 @@ import org.mockito.ArgumentCaptor;
 
 class OpsGrowthServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final GrowthQuestEventMapper questEventMapper = mock(GrowthQuestEventMapper.class);
+    private final List<Map<String, Object>> trialPolicies = new ArrayList<>();
+    private final List<Map<String, Object>> trialSessions = new ArrayList<>();
+    private final List<Map<String, Object>> checkInRules = new ArrayList<>();
+    private final Map<String, Object> checkInStats = new LinkedHashMap<>();
+    private final List<Map<String, Object>> streakMilestones = new ArrayList<>();
+    private final List<Map<String, Object>> powerUps = new ArrayList<>();
+    private final List<Map<String, Object>> earnMilestones = new ArrayList<>();
+    private final Map<String, List<Map<String, Object>>> missionRows = new LinkedHashMap<>();
+    private final List<Map<String, Object>> monthlyMissions = new ArrayList<>();
+    private final List<Map<String, Object>> taskMonitor = new ArrayList<>();
+    private final List<Map<String, Object>> taskContracts = new ArrayList<>();
+    private final Map<String, Object> promoBanner = new LinkedHashMap<>();
+    private final List<Map<String, Object>> wheelTiers = new ArrayList<>();
+    {
+        when(questEventMapper.listEvents()).thenReturn(List.of());
+        when(questEventMapper.countById(anyString())).thenReturn(0L);
+        when(questEventMapper.listTrialPolicies()).thenAnswer(ignored -> trialPolicies);
+        when(questEventMapper.trialPolicyValue(anyString())).thenAnswer(invocation -> findValue(trialPolicies, "key", invocation.getArgument(0), "cur"));
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            trialPolicies.removeIf(row -> key.equals(row.get("key")));
+            trialPolicies.add(row(
+                    "key", key,
+                    "name", key,
+                    "sub", "",
+                    "cur", invocation.getArgument(1),
+                    "hot", invocation.getArgument(3),
+                    "section", invocation.getArgument(4),
+                    "serverOnly", invocation.getArgument(5)));
+            return 1;
+        }).when(questEventMapper).upsertTrialPolicyValue(anyString(), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+        when(questEventMapper.trialSessions(anyInt())).thenAnswer(invocation -> trialSessions.stream().limit((Integer) invocation.getArgument(0)).toList());
+        when(questEventMapper.trialSession(anyString())).thenAnswer(invocation -> findRow(trialSessions, "sid", invocation.getArgument(0)));
+        doAnswer(invocation -> {
+            String sid = invocation.getArgument(0);
+            String status = invocation.getArgument(1);
+            Map<String, Object> row = findRow(trialSessions, "sid", sid);
+            if (row == null) {
+                return 0;
+            }
+            row.put("state", status.toLowerCase());
+            return 1;
+        }).when(questEventMapper).updateTrialSessionStatus(anyString(), anyString());
+        when(questEventMapper.trialStats()).thenAnswer(ignored -> trialSessions.isEmpty()
+                ? Map.of()
+                : Map.of("activeSessions", trialSessions.size(), "inTrial", trialSessions.size(), "inGrace", 0, "inExtended", 0));
+        when(questEventMapper.checkInStats()).thenAnswer(ignored -> checkInStats);
+        when(questEventMapper.checkInRules()).thenAnswer(ignored -> checkInRules);
+        when(questEventMapper.checkInRuleValue(anyString())).thenAnswer(invocation -> findValue(checkInRules, "key", invocation.getArgument(0), "cur"));
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            checkInRules.removeIf(row -> key.equals(row.get("key")));
+            checkInRules.add(row(
+                    "key", key,
+                    "name", key,
+                    "sub", "",
+                    "cur", invocation.getArgument(1),
+                    "hot", invocation.getArgument(3)));
+            return 1;
+        }).when(questEventMapper).upsertCheckInRuleValue(anyString(), anyString(), anyString(), anyBoolean(), anyInt());
+        when(questEventMapper.streakMilestones()).thenAnswer(ignored -> streakMilestones);
+        doAnswer(invocation -> {
+            int id = invocation.getArgument(0);
+            Map<String, Object> existing = findRow(streakMilestones, "id", String.valueOf(id));
+            if (existing == null) {
+                return 0;
+            }
+            existing.put("reward", invocation.getArgument(1, String.class));
+            existing.put("kind", invocation.getArgument(2, String.class).toLowerCase());
+            return 1;
+        }).when(questEventMapper).updateStreakMilestoneReward(anyInt(), anyString(), anyString(), any(BigDecimal.class));
+        when(questEventMapper.streakDistribution()).thenReturn(List.of());
+        when(questEventMapper.powerUps()).thenAnswer(ignored -> powerUps);
+        doAnswer(invocation -> {
+            int id = invocation.getArgument(0);
+            Map<String, Object> existing = findRow(powerUps, "id", String.valueOf(id));
+            if (existing == null) {
+                return 0;
+            }
+            existing.put("day", invocation.getArgument(1));
+            return 1;
+        }).when(questEventMapper).updatePowerUpDay(anyInt(), anyInt());
+        doAnswer(invocation -> {
+            int id = invocation.getArgument(0);
+            Map<String, Object> existing = findRow(powerUps, "id", String.valueOf(id));
+            if (existing == null) {
+                return 0;
+            }
+            existing.put("sub", invocation.getArgument(1));
+            return 1;
+        }).when(questEventMapper).updatePowerUpNote(anyInt(), anyString());
+        when(questEventMapper.earnMilestones()).thenAnswer(ignored -> earnMilestones);
+        doAnswer(invocation -> {
+            String key = invocation.getArgument(0);
+            Map<String, Object> existing = findRow(earnMilestones, "key", key);
+            if (existing == null) {
+                return 0;
+            }
+            existing.put("threshold", invocation.getArgument(1));
+            existing.put("nex", invocation.getArgument(2));
+            return 1;
+        }).when(questEventMapper).updateEarnMilestoneRule(anyString(), any(BigDecimal.class), any(BigDecimal.class));
+        when(questEventMapper.missionRows(anyString())).thenAnswer(invocation -> missionRows.getOrDefault(invocation.getArgument(0), List.of()));
+        when(questEventMapper.monthlyMissions()).thenAnswer(ignored -> monthlyMissions);
+        when(questEventMapper.taskMonitor()).thenAnswer(ignored -> taskMonitor);
+        when(questEventMapper.taskContracts()).thenAnswer(ignored -> taskContracts);
+        when(questEventMapper.promoBanner()).thenAnswer(ignored -> promoBanner);
+        when(questEventMapper.wheelTiers()).thenAnswer(ignored -> wheelTiers);
+        when(questEventMapper.wheelGuards()).thenReturn(List.of());
+    }
     private final OpsGrowthService service =
             new OpsGrowthService(
                     configFacade,
+                    emergencyRepository,
                     coverageFacade,
                     ledgerPostingFacade,
                     auditLogService,
                     new ObjectMapper(),
                     ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                     Optional.empty(),
-                    Optional.empty(),
+                    Optional.of(questEventMapper),
                     Optional.empty());
 
     @Test
@@ -67,12 +186,16 @@ class OpsGrowthServiceTest {
         assertThat(result.getData().get("streakDistribution")).asList().isEmpty();
         assertThat(result.getData().get("powerUps")).asList().hasSize(4);
         assertThat(result.getData().get("earnMilestones")).asList().hasSize(5);
+        assertThat(result.getData().get("stats"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("todaySign", 12)
+                .containsEntry("weekMsNex", "180 NEX");
         assertThat(result.getData()).containsKeys("tickInterval", "coverage");
     }
 
     @Test
     void trialsMasksServerOnlyFailureRateAndReturnsRuntimeRows() {
-        configFacade.values.put("growth.trial.param.failRate", "4.1");
+        seedTrialPolicies();
 
         ApiResult<Map<String, Object>> result = service.trials();
 
@@ -81,7 +204,7 @@ class OpsGrowthServiceTest {
                 .containsEntry("domain", "H2")
                 .containsEntry("autoPushKilled", false);
         assertThat(result.getData().toString()).doesNotContain("4.1");
-        assertThat(result.getData().get("params")).asList().hasSize(12);
+        assertThat(result.getData().get("params")).asList().hasSize(5);
         assertThat(result.getData().get("sessions")).asList().isEmpty();
         assertThat(result.getData().get("serverOnlyFields")).asList().contains("failRate");
 
@@ -100,13 +223,14 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateTrialParamWritesConfigAuditsAndStillMasksFailureRate() {
+        seedTrialPolicies();
         ApiResult<Map<String, Object>> result = service.updateTrialParam(
                 "idem-h2-param",
                 "failRate",
                 new GrowthConfigUpdateRequest("failRate", "6.5", "tune failure", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.trial.param.failRate", "6.5");
+        assertThat(configFacade.values).doesNotContainKey("growth.trial.param.failRate");
         assertThat(result.getData().toString()).doesNotContain("6.5");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -117,6 +241,7 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateTrialDayParamsWritesSeparateNumericConfigItems() {
+        seedTrialPolicies();
         ApiResult<Map<String, Object>> result = service.updateTrialParam(
                 "idem-h2-trial-days",
                 "trialDays",
@@ -124,7 +249,7 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values)
-                .containsEntry("growth.trial.param.trialDays", "5")
+                .doesNotContainKey("growth.trial.param.trialDays")
                 .doesNotContainKey("growth.trial.param.days");
 
         @SuppressWarnings("unchecked")
@@ -152,7 +277,7 @@ class OpsGrowthServiceTest {
 
     @Test
     void cancelTrialSessionWritesTerminalStateAndAudit() {
-        configFacade.values.put("growth.trial.session.usr_9921.state", "active");
+        seedTrialSession("usr_9921", "active");
 
         ApiResult<Map<String, Object>> result = service.cancelTrialSession(
                 "idem-h2-cancel",
@@ -160,9 +285,7 @@ class OpsGrowthServiceTest {
                 new GrowthConfigUpdateRequest("cancel", "cancelled", "risk case", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values)
-                .containsEntry("growth.trial.session.usr_9921.state", "cancelled")
-                .containsKey("growth.trial.session.usr_9921.cancelled_at");
+        assertThat(findRow(trialSessions, "sid", "usr_9921")).containsEntry("state", "cancelled");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -171,7 +294,7 @@ class OpsGrowthServiceTest {
 
     @Test
     void chargeTerminalTrialSessionReturns409() {
-        configFacade.values.put("growth.trial.session.usr_77D4.state", "redeemed");
+        seedTrialSession("usr_77D4", "redeemed");
 
         ApiResult<Map<String, Object>> result = service.chargeTrialSession(
                 "idem-h2-charge",
@@ -184,8 +307,8 @@ class OpsGrowthServiceTest {
 
     @Test
     void chargeTrialSessionPostsD4LedgerEntry() {
-        configFacade.values.put("growth.trial.param.price", "$1,299");
-        configFacade.values.put("growth.trial.session.usr_9921.state", "active");
+        seedTrialPolicies();
+        seedTrialSession("usr_9921", "active");
 
         ApiResult<Map<String, Object>> result = service.chargeTrialSession(
                 "idem-h2-charge",
@@ -207,8 +330,8 @@ class OpsGrowthServiceTest {
 
     @Test
     void j1TrialKillSwitchBlocksTrialChargeAndIsVisibleInOverview() {
-        configFacade.values.put("killswitch.trial", "disabled");
-        configFacade.values.put("growth.trial.session.usr_9921.state", "active");
+        emergencyRepository.settings.put("killswitch.trial", "disabled");
+        seedTrialSession("usr_9921", "active");
 
         ApiResult<Map<String, Object>> overview = service.trials();
         ApiResult<Map<String, Object>> result = service.chargeTrialSession(
@@ -223,7 +346,7 @@ class OpsGrowthServiceTest {
                 .containsEntry("configKey", "killswitch.trial");
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("TRIAL_KILL_SWITCH_DISABLED");
-        assertThat(configFacade.values).containsEntry("growth.trial.session.usr_9921.state", "active");
+        assertThat(findRow(trialSessions, "sid", "usr_9921")).containsEntry("state", "active");
         assertThat(ledgerPostingFacade.entries).isEmpty();
     }
 
@@ -305,12 +428,13 @@ class OpsGrowthServiceTest {
                 .doesNotContainKey("growth.quest.day_one.tasks")
                 .doesNotContainKey("growth.event.rows")
                 .doesNotContainKey("growth.wheel.tiers");
-        assertThat(result.getData()).containsEntry("dayOneWindow", "48h 全额 / 96h 宽限");
+        assertThat(result.getData()).containsEntry("dayOneWindow", "");
         assertThat(result.getData().get("dayOneTasks")).asList().isEmpty();
     }
 
     @Test
-    void questEventsReadsH3H4RowsFromConfigItems() {
+    void questEventsReadsH3ConfigAndH4EventBusinessRows() {
+        seedQuestBusinessRows();
         configFacade.values.put("growth.quest.day_one.tasks",
                 "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\",\"completionType\":\"event\"}]");
         configFacade.values.put("growth.quest.weekly.t1.rows",
@@ -323,10 +447,16 @@ class OpsGrowthServiceTest {
                 "[{\"label\":\"DB 监控\",\"note\":\"来自 nx_config_item\"}]");
         configFacade.values.put("growth.quest.task_contracts",
                 "[{\"taskId\":0,\"taskKey\":\"db.task\",\"serverEvent\":\"db.server\",\"downstream\":\"db.downstream\",\"b3\":true,\"retentionOnly\":false,\"day7\":\"DB Day7\",\"bi\":\"db.bi\",\"sample24h\":1,\"anomalyPct\":\"0.1%\"}]");
+        configFacade.values.put("growth.quest.day_one.window_ms", "配置窗口不应生效");
+        configFacade.values.put("growth.quest.day_one.tri_reward", "配置首日奖励不应生效");
+        configFacade.values.put("growth.quest.weekly.champ_bonus", "配置周冠军不应生效");
         configFacade.values.put("growth.quest.promo_banner",
-                "{\"baseReward\":\"900\",\"multiplier\":\"1.2\",\"countdownDays\":\"3\",\"countdownHours\":\"6\",\"targetDevice\":\"DB 设备\",\"targetDaily\":\"8.00\",\"status\":\"paused\"}");
+                "{\"baseReward\":\"配置横幅不应生效\",\"multiplier\":\"9.9\",\"countdownDays\":\"9\",\"countdownHours\":\"9\",\"targetDevice\":\"配置设备\",\"targetDaily\":\"99.00\",\"status\":\"config\"}");
         configFacade.values.put("growth.event.rows",
-                "[{\"id\":\"db-event\",\"name\":\"DB 活动\",\"kind\":\"db\",\"state\":\"ongoing\",\"reward\":\"55\",\"featured\":true,\"trackable\":true,\"condition\":\"DB 条件\",\"geo\":\"全区\"}]");
+                "[{\"id\":\"mock-event\",\"name\":\"配置活动不应生效\",\"kind\":\"db\",\"state\":\"ongoing\",\"reward\":\"55\",\"featured\":true,\"trackable\":true,\"condition\":\"DB 条件\",\"geo\":\"全区\"}]");
+        seedQuestEvents(
+                "{\"id\":\"db-event\",\"name\":\"DB 活动\",\"kind\":\"db\",\"state\":\"ongoing\",\"reward\":\"55\",\"featured\":true,\"trackable\":true,\"condition\":\"DB 条件\",\"geo\":\"全区\"}");
+        configFacade.values.put("growth.wheel.pool_signature", "配置转盘奖池不应生效");
         configFacade.values.put("growth.wheel.tiers",
                 "[{\"tier\":\"DB 奖\",\"reward\":\"$10\",\"prob\":100,\"real\":true,\"kind\":\"真实流出\"}]");
         configFacade.values.put("growth.event.trackables",
@@ -335,6 +465,11 @@ class OpsGrowthServiceTest {
         ApiResult<Map<String, Object>> result = service.questEvents();
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("dayOneWindow", "1 个首日任务定义来自 nx_mission")
+                .containsEntry("dayOneTriReward", "11 NEX")
+                .containsEntry("weeklyChampionBonus", "22 / 33")
+                .containsEntry("wheelSignature", "1 档 · EV $10/spin");
         assertThat(result.getData().get("dayOneTasks")).asList()
                 .hasSize(1)
                 .first()
@@ -358,7 +493,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getData().get("taskMonitor")).asList()
                 .singleElement()
                 .extracting(row -> ((Map<?, ?>) row).get("note"))
-                .isEqualTo("来自 nx_config_item");
+                .isEqualTo("来自 nx_mission");
         assertThat(result.getData().get("taskContracts")).asList()
                 .hasSize(1)
                 .first()
@@ -372,6 +507,7 @@ class OpsGrowthServiceTest {
                 .singleElement()
                 .extracting(row -> ((Map<?, ?>) row).get("name"))
                 .isEqualTo("DB 活动");
+        assertThat(result.getData().get("events").toString()).doesNotContain("配置活动不应生效");
         assertThat(result.getData().get("wheelTiers")).asList()
                 .singleElement()
                 .extracting(row -> ((Map<?, ?>) row).get("tier"))
@@ -385,16 +521,15 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateQuestConfigWritesAllowedConfigAndAudits() {
-        configFacade.values.put("growth.quest.day_one.tasks",
-                "[{\"id\":0,\"task\":\"DB 首日任务\",\"href\":\"/db/day-one\",\"reward\":\"11 NEX\",\"completionType\":\"event\"}]");
+        seedQuestBusinessRows();
 
         ApiResult<Map<String, Object>> result = service.updateQuestConfig(
                 "idem-h3-config",
-                "dayOne.tasks.0.reward",
-                new GrowthConfigUpdateRequest("reward", "80 NEX", "adjust day one", "superadmin"));
+                "weekly.mult.P3",
+                new GrowthConfigUpdateRequest("weekly.mult.P3", "1.3x", "adjust weekly multiplier", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.quest.day_one.task.0.reward", "80 NEX");
+        assertThat(configFacade.values).containsEntry("growth.quest.weekly.mult.P3", "1.3×");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -404,19 +539,19 @@ class OpsGrowthServiceTest {
 
     @Test
     void raisingQuestRewardBelowB1RedlineReturns422() {
-        configFacade.values.put("growth.quest.day_one.task.0.reward", "50 NEX");
+        configFacade.values.put("growth.quest.weekly.mult.P3", "1.0×");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> result = service.updateQuestConfig(
                 "idem-h3-redline",
-                "dayOne.tasks.0.reward",
-                new GrowthConfigUpdateRequest("reward", "500 NEX", "raise reward", "superadmin"));
+                "weekly.mult.P3",
+                new GrowthConfigUpdateRequest("weekly.mult.P3", "2.0x", "raise multiplier", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
     }
 
     @Test
-    void updateQuestEventStatusWritesConfigAndAudit() {
+    void updateQuestEventStatusWritesBusinessTableAndAudit() {
         seedQuestEvents(
                 "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"draft\",\"reward\":\"10 NEX\",\"featured\":false}");
 
@@ -426,7 +561,8 @@ class OpsGrowthServiceTest {
                 new GrowthConfigUpdateRequest("status", "ongoing", "launch event", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.event.regional-pk.status", "ongoing");
+        assertThat(configFacade.values).doesNotContainKey("growth.event.regional-pk.status");
+        verify(questEventMapper).updateStatus(anyString(), anyInt(), any());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -435,7 +571,7 @@ class OpsGrowthServiceTest {
 
     @Test
     void trialKillSwitchBlocksH4EventMutations() {
-        configFacade.values.put("killswitch.trial", "disabled");
+        emergencyRepository.settings.put("killswitch.trial", "disabled");
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
                 "idem-h4-status-killed",
@@ -449,7 +585,7 @@ class OpsGrowthServiceTest {
 
     @Test
     void trialKillSwitchDoesNotBlockH3ConfigUpdates() {
-        configFacade.values.put("killswitch.trial", "disabled");
+        emergencyRepository.settings.put("killswitch.trial", "disabled");
 
         ApiResult<Map<String, Object>> result = service.updateQuestConfig(
                 "idem-h3-config-killed-trial",
@@ -487,7 +623,8 @@ class OpsGrowthServiceTest {
                 new GrowthConfigUpdateRequest("featured", "disabled", "pause hero placement", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.event.pro-7d.featured", "false");
+        assertThat(configFacade.values).doesNotContainKey("growth.event.pro-7d.featured");
+        verify(questEventMapper).updateFeatured(anyString(), any(), any());
     }
 
     @Test
@@ -519,7 +656,7 @@ class OpsGrowthServiceTest {
 
     @Test
     void luckyProbabilitySumAboveOneHundredReturns422() {
-        configFacade.values.put("growth.checkin.lucky_2_pct", "10");
+        seedCheckInConfiguredRows();
 
         ApiResult<Map<String, Object>> result = service.updateCheckInRule(
                 "idem-h5-lucky",
@@ -532,13 +669,16 @@ class OpsGrowthServiceTest {
 
     @Test
     void updateStreakMilestoneWritesConfigAndAudit() {
+        seedCheckInConfiguredRows();
+
         ApiResult<Map<String, Object>> result = service.updateStreakMilestone(
                 "idem-h5-ms",
                 1,
                 new GrowthConfigUpdateRequest("reward", "+20 NEX", "adjust streak", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.checkin.streak_milestone.1.reward", "+20 NEX");
+        assertThat(configFacade.values).doesNotContainKey("growth.checkin.streak_milestone.1.reward");
+        assertThat(findRow(streakMilestones, "id", "1")).containsEntry("reward", "+20 NEX");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -548,13 +688,16 @@ class OpsGrowthServiceTest {
 
     @Test
     void updatePowerUpWritesThresholdAndAudit() {
+        seedCheckInConfiguredRows();
+
         ApiResult<Map<String, Object>> result = service.updatePowerUp(
                 "idem-h5-pu",
                 2,
                 new GrowthConfigUpdateRequest("day", "35", "adjust power up", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.checkin.power_up.2.day", "35");
+        assertThat(configFacade.values).doesNotContainKey("growth.checkin.power_up.2.day");
+        assertThat(findRow(powerUps, "id", "2")).containsEntry("day", 35);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -563,6 +706,8 @@ class OpsGrowthServiceTest {
 
     @Test
     void unorderedEarnMilestoneThresholdReturns422() {
+        seedEarnMilestones();
+
         ApiResult<Map<String, Object>> result = service.updateEarnMilestone(
                 "idem-h6-order",
                 "earn-500",
@@ -585,8 +730,13 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values)
-                .containsEntry("growth.earn_milestone.earn-500.threshold_usd", "700")
-                .containsEntry("growth.earn_milestone.earn-500.reward_nex", "300");
+                .doesNotContainKeys(
+                        "growth.earn_milestone.earn-500.threshold_usd",
+                        "growth.earn_milestone.earn-500.reward_nex");
+        Map<String, Object> updated = findRow(earnMilestones, "key", "earn-500");
+        assertThat(updated)
+                .containsEntry("threshold", new BigDecimal("700").stripTrailingZeros())
+                .containsEntry("nex", new BigDecimal("300").stripTrailingZeros());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -633,7 +783,7 @@ class OpsGrowthServiceTest {
 
     @Test
     void withdrawGateReadsI4DisclosureGateAsBlocked() {
-        configFacade.values.put("disclosure.gate.staking", "true");
+        emergencyRepository.settings.put("disclosure.gate.staking", "true");
 
         ApiResult<Map<String, Object>> result = service.withdrawGate();
 
@@ -644,7 +794,7 @@ class OpsGrowthServiceTest {
         assertThat(detailMap(result.getData().get("disclosureGate"))).containsEntry("staking", true);
         assertThat(result.getData().get("sources"))
                 .asList()
-                .contains("nx_config_item:disclosure.gate.staking");
+                .contains("nx_emergency_control_setting:disclosure.gate.staking");
     }
 
     @Test
@@ -671,12 +821,24 @@ class OpsGrowthServiceTest {
         assertThat(result.getData()).containsKey("coverage");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
-                .contains("Premium", "NEX v2", "Points");
+                .isEmpty();
         assertThat(configFacade.values)
                 .doesNotContainKeys(
                         "platform.phase.config",
                         "growth.phase.month.7.withdrawNexMinBalance",
                         "growth.withdraw_nex_gate.min_balance_nex");
+    }
+
+    @Test
+    void phaseOverviewReadsSunsetExclusionsFromConfig() {
+        configFacade.values.put("growth.sunset.exclusions", "Premium, NEX v2; Points");
+
+        ApiResult<Map<String, Object>> result = service.phases();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("sunsetExclusions"))
+                .asList()
+                .containsExactly("Premium", "NEX v2", "Points");
     }
 
     @Test
@@ -702,6 +864,7 @@ class OpsGrowthServiceTest {
     void disabledReadTimeSeedsDoNotExposeH1DemoRhythmOrPhaseRows() {
         OpsGrowthService realOnlyService = new OpsGrowthService(
                 new FakePlatformConfigFacade(),
+                new FakeEmergencyControlRepository(),
                 coverageFacade,
                 ledgerPostingFacade,
                 mock(AuditLogService.class),
@@ -734,6 +897,7 @@ class OpsGrowthServiceTest {
     void disabledReadTimeSeedsDoNotExposeH2OrH5DemoStats() {
         OpsGrowthService realOnlyService = new OpsGrowthService(
                 new FakePlatformConfigFacade(),
+                new FakeEmergencyControlRepository(),
                 coverageFacade,
                 ledgerPostingFacade,
                 mock(AuditLogService.class),
@@ -828,10 +992,46 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void h2ToH7ReadModelsDoNotCreateRuntimeTables() {
+        service.trials();
+        service.questEvents();
+        service.checkIn();
+
+        verify(questEventMapper, never()).createGrowthTrialPolicyTable();
+        verify(questEventMapper, never()).createGrowthTrialGateTable();
+        verify(questEventMapper, never()).createGrowthCheckinRuleTable();
+        verify(questEventMapper, never()).createGrowthWheelTierTable();
+        verify(questEventMapper, never()).createGrowthWheelGuardTable();
+        verify(questEventMapper, never()).createGrowthPromoBannerTable();
+        verify(questEventMapper, never()).addEventQuestGeoScopeColumn();
+
+        GrowthVoucherMapper voucherMapper = mock(GrowthVoucherMapper.class);
+        when(voucherMapper.listVouchers()).thenReturn(List.of());
+        OpsGrowthService voucherService = new OpsGrowthService(
+                configFacade,
+                emergencyRepository,
+                coverageFacade,
+                ledgerPostingFacade,
+                auditLogService,
+                new ObjectMapper(),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.of(voucherMapper));
+
+        ApiResult<Map<String, Object>> vouchers = voucherService.vouchers();
+
+        assertThat(vouchers.getCode()).isZero();
+        assertThat(vouchers.getData().get("vouchers")).asList().isEmpty();
+        verify(voucherMapper, never()).ensureTable();
+    }
+
+    @Test
     void vouchersReadAndPersistCrudToBusinessTable() {
         GrowthVoucherMapper voucherMapper = mock(GrowthVoucherMapper.class);
         OpsGrowthService h7Service = new OpsGrowthService(
                 configFacade,
+                emergencyRepository,
                 coverageFacade,
                 ledgerPostingFacade,
                 auditLogService,
@@ -928,6 +1128,7 @@ class OpsGrowthServiceTest {
     private OpsGrowthService serviceWithConfig(FakePlatformConfigFacade config, OpsReadTimeSeedPolicy seedPolicy) {
         return new OpsGrowthService(
                 config,
+                emergencyRepository,
                 coverageFacade,
                 ledgerPostingFacade,
                 auditLogService,
@@ -943,48 +1144,268 @@ class OpsGrowthServiceTest {
         return (Map<String, Object>) detail;
     }
 
+    private static Map<String, Object> findRow(List<Map<String, Object>> rows, String key, String value) {
+        return rows.stream()
+                .filter(row -> value.equals(String.valueOf(row.get(key))))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static String findValue(List<Map<String, Object>> rows, String keyField, String key, String valueField) {
+        Map<String, Object> row = findRow(rows, keyField, key);
+        return row == null ? null : String.valueOf(row.get(valueField));
+    }
+
+    @SuppressWarnings("unchecked")
     private void seedQuestEvents(String... rows) {
-        configFacade.values.put("growth.event.rows", "[" + String.join(",", rows) + "]");
+        ObjectMapper mapper = new ObjectMapper();
+        List<Map<String, Object>> events = new ArrayList<>();
+        try {
+            for (String raw : rows) {
+                events.add(new LinkedHashMap<>(mapper.readValue(raw, Map.class)));
+            }
+        } catch (Exception ex) {
+            throw new IllegalArgumentException(ex);
+        }
+        when(questEventMapper.listEvents()).thenReturn(events);
+        for (Map<String, Object> event : events) {
+            when(questEventMapper.countById(String.valueOf(event.get("id")))).thenReturn(1L);
+        }
+        doAnswer(invocation -> {
+            String eventId = invocation.getArgument(0);
+            int status = invocation.getArgument(1);
+            events.stream()
+                    .filter(event -> eventId.equals(event.get("id")))
+                    .findFirst()
+                    .ifPresent(event -> event.put("state", status == 0 ? "upcoming" : status == 2 ? "ended" : "ongoing"));
+            return 1;
+        }).when(questEventMapper).updateStatus(anyString(), anyInt(), any());
+        doAnswer(invocation -> {
+            String eventId = invocation.getArgument(0);
+            String badge = invocation.getArgument(1);
+            events.stream()
+                    .filter(event -> eventId.equals(event.get("id")))
+                    .findFirst()
+                    .ifPresent(event -> event.put("featured", "FEATURED".equals(badge)));
+            return 1;
+        }).when(questEventMapper).updateFeatured(anyString(), any(), any());
+        doAnswer(invocation -> {
+            String eventId = invocation.getArgument(0);
+            String reward = invocation.getArgument(1);
+            events.stream()
+                    .filter(event -> eventId.equals(event.get("id")))
+                    .findFirst()
+                    .ifPresent(event -> event.put("reward", reward));
+            return 1;
+        }).when(questEventMapper).updateReward(anyString(), anyString(), any(), any());
     }
 
     private void seedEarnMilestones() {
-        configFacade.values.put("growth.earn_milestone.earn-100.threshold_usd", "100");
-        configFacade.values.put("growth.earn_milestone.earn-100.reward_nex", "100");
-        configFacade.values.put("growth.earn_milestone.earn-500.threshold_usd", "500");
-        configFacade.values.put("growth.earn_milestone.earn-500.reward_nex", "250");
-        configFacade.values.put("growth.earn_milestone.earn-1000.threshold_usd", "1000");
-        configFacade.values.put("growth.earn_milestone.earn-1000.reward_nex", "500");
-        configFacade.values.put("growth.earn_milestone.earn-5000.threshold_usd", "5000");
-        configFacade.values.put("growth.earn_milestone.earn-5000.reward_nex", "1500");
-        configFacade.values.put("growth.earn_milestone.earn-10000.threshold_usd", "10000");
-        configFacade.values.put("growth.earn_milestone.earn-10000.reward_nex", "3000");
+        earnMilestones.clear();
+        earnMilestones.add(row("id", 0, "key", "earn-100", "threshold", 100, "nex", 100, "weekTrigger", 912));
+        earnMilestones.add(row("id", 1, "key", "earn-500", "threshold", 500, "nex", 250, "weekTrigger", 624));
+        earnMilestones.add(row("id", 2, "key", "earn-1000", "threshold", 1000, "nex", 500, "weekTrigger", 388));
+        earnMilestones.add(row("id", 3, "key", "earn-5000", "threshold", 5000, "nex", 1500, "weekTrigger", 210));
+        earnMilestones.add(row("id", 4, "key", "earn-10000", "threshold", 10000, "nex", 3000, "weekTrigger", 80));
     }
 
     private void seedCheckInConfiguredRows() {
-        configFacade.values.put("growth.checkin.reward_nex", "2");
-        configFacade.values.put("growth.checkin.streak_bonus_nex", "5");
-        configFacade.values.put("growth.checkin.lucky_multiplier_max", "2");
-        configFacade.values.put("growth.checkin.lucky_1_5_pct", "15");
-        configFacade.values.put("growth.checkin.lucky_2_pct", "5");
-        configFacade.values.put("growth.checkin.broken_hours", "48");
-        configFacade.values.put("growth.checkin.revive_cards", "1 card / 30 days");
+        checkInStats.clear();
+        checkInStats.putAll(row(
+                "todaySign", 12,
+                "signRate", "60%",
+                "lucky15Actual", "16.7%",
+                "lucky2Actual", "8.3%",
+                "weekRevive", 3,
+                "weekMsTrigger", 9,
+                "weekMsNex", "180 NEX"));
+        checkInRules.clear();
+        checkInRules.add(row("key", "baseline", "name", "每日基础 NEX", "sub", "", "cur", "2", "hot", false));
+        checkInRules.add(row("key", "bonus7", "name", "连续 7 天加奖", "sub", "", "cur", "5", "hot", false));
+        checkInRules.add(row("key", "luckyMultiplierMax", "name", "幸运倍率上限", "sub", "", "cur", "2", "hot", true));
+        checkInRules.add(row("key", "p15", "name", "幸运 1.5x 概率", "sub", "", "cur", "15", "hot", true));
+        checkInRules.add(row("key", "p2", "name", "幸运 2x 概率", "sub", "", "cur", "5", "hot", true));
+        checkInRules.add(row("key", "broken", "name", "断签阈值", "sub", "", "cur", "48", "hot", false));
+        streakMilestones.clear();
+        for (int i = 0; i < 7; i++) {
+            streakMilestones.add(row("id", i, "day", (i + 1) + " 天", "reward", "+" + (i + 1) + " NEX", "kind", "nex"));
+        }
+        powerUps.clear();
+        for (int i = 0; i < 4; i++) {
+            powerUps.add(row("id", i, "day", (i + 1) * 7, "label", "power " + i, "sub", "business row", "downstream", "H5"));
+        }
+    }
 
-        String[] streakRewards = {"+5 NEX", "+15 NEX", "+1 USD", "+100 NEX", "wheel ticket x1", "+10 USD",
-                "streak master badge"};
-        for (int i = 0; i < streakRewards.length; i++) {
-            configFacade.values.put("growth.checkin.streak_milestone." + i + ".reward", streakRewards[i]);
+    private void seedTrialPolicies() {
+        trialPolicies.clear();
+        trialPolicies.add(row("key", "trialDays", "name", "trialDays", "sub", "", "cur", "3", "hot", false, "section", "newonly", "serverOnly", false));
+        trialPolicies.add(row("key", "graceDays", "name", "graceDays", "sub", "", "cur", "7", "hot", false, "section", "newonly", "serverOnly", false));
+        trialPolicies.add(row("key", "extensionDays", "name", "extensionDays", "sub", "", "cur", "3", "hot", false, "section", "newonly", "serverOnly", false));
+        trialPolicies.add(row("key", "price", "name", "price", "sub", "", "cur", "$1,299", "hot", true, "section", "newonly", "serverOnly", false));
+        trialPolicies.add(row("key", "failRate", "name", "failRate", "sub", "", "cur", "4.1", "hot", true, "section", "live", "serverOnly", true));
+    }
+
+    private void seedTrialSession(String sid, String state) {
+        trialSessions.removeIf(row -> sid.equals(row.get("sid")));
+        trialSessions.add(row("sid", sid, "state", state, "shadow", "$1299", "cardTok", sid));
+    }
+
+    private void seedQuestBusinessRows() {
+        missionRows.put("DAY_ONE", new ArrayList<>(List.of(row("id", 0, "task", "DB 首日任务", "href", "/db/day-one", "reward", "11 NEX", "completionType", "event"))));
+        missionRows.put("WEEKLY_T1", new ArrayList<>(List.of(row("cond", "DB 一档", "reward", "22"))));
+        missionRows.put("WEEKLY_T2", new ArrayList<>(List.of(row("cond", "DB 二档", "reward", "33"))));
+        monthlyMissions.clear();
+        monthlyMissions.add(row("id", "mcx", "theme", "DB 月度", "age", "1 月", "reward", "44", "goals", "DB 目标"));
+        taskMonitor.clear();
+        taskMonitor.add(row("label", "DB 监控", "note", "来自 nx_mission"));
+        taskContracts.clear();
+        taskContracts.add(row("taskId", 0, "taskKey", "db.task", "serverEvent", "db.server", "downstream", "db.downstream", "b3", true, "retentionOnly", false, "day7", "DB Day7", "bi", "db.bi", "sample24h", 1, "anomalyPct", "0.1%"));
+        promoBanner.clear();
+        promoBanner.putAll(row("baseReward", "900", "multiplier", "1.2", "countdownDays", 3, "countdownHours", 6,
+                "targetDevice", "DB 设备", "targetDaily", "8.00", "status", "paused"));
+        wheelTiers.clear();
+        wheelTiers.add(row("tier", "DB 奖", "reward", "$10", "prob", 100, "real", true, "kind", "真实流出"));
+    }
+
+    private static Map<String, Object> row(Object... values) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        for (int i = 0; i < values.length; i += 2) {
+            row.put(String.valueOf(values[i]), values[i + 1]);
+        }
+        return row;
+    }
+
+    private static final class FakeEmergencyControlRepository implements EmergencyControlRepository {
+        private final Map<String, String> settings = new LinkedHashMap<>();
+
+        @Override
+        public void ensureTables() {
         }
 
-        int[] powerUpDays = {7, 14, 30, 60};
-        String[] powerUpNotes = {
-                "redeem in team rate F2",
-                "Premium is sunset; keep migration note only",
-                "redeem in staking G1",
-                "redeem in Genesis G4"
-        };
-        for (int i = 0; i < powerUpDays.length; i++) {
-            configFacade.values.put("growth.checkin.power_up." + i + ".day", String.valueOf(powerUpDays[i]));
-            configFacade.values.put("growth.checkin.power_up." + i + ".note", powerUpNotes[i]);
+        @Override
+        public List<Map<String, Object>> geoCountryPolicies() {
+            return List.of();
+        }
+
+        @Override
+        public void upsertGeoCountryPolicy(String countryCode, String countryName, String status, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointCatalogs() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> geoEndpointCatalog(String endpointKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointPolicies() {
+            return List.of();
+        }
+
+        @Override
+        public void replaceGeoEndpointPolicies(String endpointKey, String endpointPath, String label, String biz, String domain,
+                                               List<String> countryCodes, String source, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoHits() {
+            return List.of();
+        }
+
+        @Override
+        public Map<String, Integer> geoEndpointHits() {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEdgeMetrics() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<String> settingValue(String settingKey) {
+            return Optional.ofNullable(settings.get(settingKey));
+        }
+
+        @Override
+        public void upsertSetting(String settingKey, String settingValue, String valueType, String groupCode, String remark, String operator) {
+            settings.put(settingKey, settingValue);
+        }
+
+        @Override
+        public Map<String, Object> tamperTrend(LocalDateTime now) {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperPaths() {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperAccounts() {
+            return List.of();
+        }
+
+        @Override
+        public void createTamperReport(String reportId, String window, boolean masked, String status,
+                                       Map<String, Object> payload, String operator, String reason) {
+        }
+
+        @Override
+        public List<Map<String, Object>> playbooks() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> playbook(String code) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void createPlaybook(String code, String name, String scene, boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   boolean drillRequired, boolean draft, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void updatePlaybook(String code, String name, String scene, Boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   Boolean drillRequired, String summary, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator) {
+        }
+
+        @Override
+        public Optional<Map<String, Object>> executionByIdempotencyKey(String code, String idempotencyKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> execution(String executionId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> executions(int limit) {
+            return List.of();
+        }
+
+        @Override
+        public void createExecution(Map<String, Object> row) {
+        }
+
+        @Override
+        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
+                                            List<Map<String, Object>> rollbackActions) {
         }
     }
 

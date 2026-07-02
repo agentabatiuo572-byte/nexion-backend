@@ -43,6 +43,11 @@ class OpsEventCenterServiceTest {
         when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(new AuditLogRecord()));
         when(auditLogService.topActions(any(AuditStatsQueryRequest.class)))
                 .thenReturn(List.of(new AuditStatsBucket("A4_EVENT_PARAM_CHANGED", 3L)));
+        when(auditLogService.countActionsByPrefixes(any(AuditStatsQueryRequest.class), any()))
+                .thenReturn(List.of(
+                        new AuditStatsBucket("app", 120L),
+                        new AuditStatsBucket("admin", 80L),
+                        new AuditStatsBucket("nex", 40L)));
     }
 
     @Test

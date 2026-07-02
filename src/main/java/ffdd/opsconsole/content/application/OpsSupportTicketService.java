@@ -310,50 +310,20 @@ public class OpsSupportTicketService {
     }
 
     private Map<String, Object> loadConfigView() {
-        Map<String, String> values = configFacade.activeValuesByGroup(LOAD_GROUP);
-        int defaultCap = intValue(values, "defaultCap", 0);
         Map<String, Object> loadConfig = new LinkedHashMap<>();
-        loadConfig.put("autoBalance", boolValue(values, "autoBalance", false));
-        loadConfig.put("defaultCap", defaultCap);
-        loadConfig.put("burstCap", intValue(values, "burstCap", 0));
-        loadConfig.put("warnPct", intValue(values, "warnPct", 0));
-        loadConfig.put("quietHourBalance", boolValue(values, "quietHourBalance", false));
-        loadConfig.put("overflowQueue", textValue(values, "overflowQueue", ""));
-
-        Map<String, Map<String, Object>> agentState = new LinkedHashMap<>();
-        String agentPrefix = LOAD_PREFIX + "agent.";
-        values.forEach((key, value) -> {
-            if (!key.startsWith(agentPrefix)) {
-                return;
-            }
-            String suffix = key.substring(agentPrefix.length());
-            int split = suffix.lastIndexOf('.');
-            if (split <= 0 || split >= suffix.length() - 1) {
-                return;
-            }
-            String agentId = suffix.substring(0, split);
-            String field = suffix.substring(split + 1);
-            if (!isSafeAgentKey(agentId)) {
-                return;
-            }
-            Map<String, Object> state = agentState.computeIfAbsent(agentId, ignored -> new LinkedHashMap<>());
-            if ("cap".equals(field)) {
-                state.put("cap", boundedInt(parseInt(value), 0, 40, defaultCap));
-            } else if ("busy".equals(field)) {
-                state.put("busy", Boolean.parseBoolean(value));
-            }
-        });
-        agentState.values().forEach(state -> {
-            state.putIfAbsent("cap", loadConfig.get("defaultCap"));
-            state.putIfAbsent("busy", false);
-        });
+        loadConfig.put("autoBalance", false);
+        loadConfig.put("defaultCap", 0);
+        loadConfig.put("burstCap", 0);
+        loadConfig.put("warnPct", 0);
+        loadConfig.put("quietHourBalance", false);
+        loadConfig.put("overflowQueue", "");
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "M1");
         response.put("loadConfig", loadConfig);
-        response.put("agentState", agentState);
-        response.put("lastRebalanceAt", values.get(LOAD_PREFIX + "lastRebalanceAt"));
-        response.put("sources", List.of("nx_config_item:" + LOAD_GROUP, "nx_support_ticket", "nx_conversation"));
+        response.put("agentState", Map.of());
+        response.put("lastRebalanceAt", "");
+        response.put("sources", List.of("nx_support_ticket", "nx_conversation"));
         return response;
     }
 

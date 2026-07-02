@@ -45,7 +45,6 @@ public class OpsSessionTemplateService {
             new SessionCategorySeed("advisor", "专属顾问", "conversations.roleAdvisor", true, "增长 / 客服坐席", false),
             new SessionCategorySeed("support", "普通客服", "conversations.roleSupport", true, "客服坐席", false),
             new SessionCategorySeed("ai", "Nova AI 顾问", "conversations.roleAi", true, "Nova 自动(配置见 I2)", true));
-    private static final List<String> AUDIENCE_OPTIONS = List.of("全量", "SFC 辖区 · 未重确认", "近 30 天提现偏高", "注册 ≤14 天", "P3 阶段活跃");
     private static final List<SessionSegmentField> SEGMENT_FIELDS = List.of(
             new SessionSegmentField("vrank", "V 等级", List.of(">=", "<=", "="), List.of("V0", "V1", "V2", "V3", "V4", "V5"), null),
             new SessionSegmentField("balance", "账户余额", List.of(">=", "<="), List.of(), "USDT"),
@@ -77,7 +76,7 @@ public class OpsSessionTemplateService {
                 CATEGORY_SEEDS.stream().map(this::categoryView).toList(),
                 advisorPolicy(),
                 workbenchPolicy(),
-                AUDIENCE_OPTIONS,
+                audienceOptions(),
                 SEGMENT_FIELDS,
                 CTA_OPTIONS,
                 SCRIPT_GROUPS,
@@ -127,7 +126,7 @@ public class OpsSessionTemplateService {
             String idempotencyKey,
             SessionAdvisorPolicyUpdateRequest request) {
         String normalizedField = normalizeField(field);
-        if (!List.of("enabled", "delayMs", "cooldownHours", "maxPerSession", "audience").contains(normalizedField)) {
+        if (!List.of("enabled", "delayMs", "cooldownHours", "maxPerSession").contains(normalizedField)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_POLICY_FIELD_UNSUPPORTED");
         }
         ApiResult<SessionAdvisorPolicyView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
@@ -228,7 +227,7 @@ public class OpsSessionTemplateService {
         if (guard != null) {
             return guard;
         }
-        String audience = requireOption(request.audience(), AUDIENCE_OPTIONS, "SESSION_SCRIPT_AUDIENCE_UNSUPPORTED");
+        String audience = normalizeAudience(request.audience());
         SessionScriptView current = templateRepository.findScript(scriptId.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "SESSION_SCRIPT_NOT_FOUND");
@@ -295,7 +294,7 @@ public class OpsSessionTemplateService {
                 intConfig(policyKey("delayMs"), 0),
                 intConfig(policyKey("cooldownHours"), 0),
                 intConfig(policyKey("maxPerSession"), 0),
-                configValue(policyKey("audience"), ""));
+                advisorPolicyAudience());
     }
 
     private SessionWorkbenchPolicyView workbenchPolicy() {
@@ -356,7 +355,7 @@ public class OpsSessionTemplateService {
         String text = requireText(request.text(), "SESSION_SCRIPT_TEXT_REQUIRED", 400);
         rejectJsonOrUrlText(text, "SESSION_SCRIPT_TEXT_INVALID");
         String ctaPath = requireCtaPath(request.ctaPath());
-        String audience = requireOption(request.audience(), AUDIENCE_OPTIONS, "SESSION_SCRIPT_AUDIENCE_UNSUPPORTED");
+        String audience = normalizeAudience(request.audience());
         String status = normalizeScriptStatus(request.status());
         if (!SCRIPT_STATUSES.contains(status)) {
             throw new IllegalArgumentException("SESSION_SCRIPT_STATUS_UNSUPPORTED");
@@ -387,9 +386,26 @@ public class OpsSessionTemplateService {
             case "delayMs" -> String.valueOf(parseIntRange(value, 0, 60_000, "SESSION_POLICY_DELAY_INVALID"));
             case "cooldownHours" -> String.valueOf(parseIntRange(value, 1, 720, "SESSION_POLICY_COOLDOWN_INVALID"));
             case "maxPerSession" -> String.valueOf(parseIntRange(value, 0, 20, "SESSION_POLICY_MAX_INVALID"));
-            case "audience" -> requireOption(value, AUDIENCE_OPTIONS, "SESSION_POLICY_AUDIENCE_UNSUPPORTED");
             default -> throw new IllegalArgumentException("SESSION_POLICY_FIELD_UNSUPPORTED");
         };
+    }
+
+    private String advisorPolicyAudience() {
+        return templateRepository.listScripts().stream()
+                .map(SessionScriptView::audience)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .findFirst()
+                .orElse("");
+    }
+
+    private List<String> audienceOptions() {
+        return templateRepository.listScripts().stream()
+                .map(SessionScriptView::audience)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     private String normalizeWorkbenchPolicyValue(String field, String value) {
@@ -417,6 +433,10 @@ public class OpsSessionTemplateService {
                 .filter(option -> option.equals(normalized))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(message));
+    }
+
+    private String normalizeAudience(String value) {
+        return requireText(value, "SESSION_SCRIPT_AUDIENCE_REQUIRED", 80);
     }
 
     private String requireText(String value, String message, int maxLength) {
@@ -507,7 +527,6 @@ public class OpsSessionTemplateService {
     private String valueType(String field) {
         return switch (field) {
             case "enabled" -> "BOOLEAN";
-            case "audience" -> "STRING";
             default -> "NUMBER";
         };
     }

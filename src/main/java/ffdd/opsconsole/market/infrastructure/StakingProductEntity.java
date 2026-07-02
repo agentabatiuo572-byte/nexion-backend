@@ -17,6 +17,9 @@ public class StakingProductEntity extends BaseEntity {
     private BigDecimal apyBps;
     private BigDecimal earlyPenaltyBps;
     private BigDecimal minAmount;
+    private BigDecimal rewardMultiplier;
+    private Integer ticketPerOrder;
+    private String presetAmounts;
     private Integer sortOrder;
     private String status;
 }

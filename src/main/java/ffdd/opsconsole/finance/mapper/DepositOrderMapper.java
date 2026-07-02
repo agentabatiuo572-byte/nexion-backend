@@ -5,12 +5,33 @@ import ffdd.opsconsole.finance.domain.DepositAggregateView;
 import ffdd.opsconsole.finance.domain.DepositFlowView;
 import ffdd.opsconsole.finance.infrastructure.DepositOrderEntity;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_deposit_reconciliation_writeoff (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              channel_code VARCHAR(64) NOT NULL,
+              reconcile_date DATE NOT NULL,
+              operator VARCHAR(64) NOT NULL,
+              reason VARCHAR(255) NOT NULL,
+              idempotency_key VARCHAR(128) NOT NULL,
+              status VARCHAR(32) NOT NULL DEFAULT 'RECONCILED',
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_deposit_reconcile_writeoff (channel_code, reconcile_date),
+              UNIQUE KEY uk_deposit_reconcile_idem (idempotency_key),
+              KEY idx_deposit_reconcile_status (status, created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createReconciliationWriteoffTable();
 
     @Select("""
             SELECT chain_name AS channel,
@@ -24,6 +45,32 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
              GROUP BY chain_name
             """)
     List<DepositAggregateView> aggregateToday();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_deposit_reconciliation_writeoff
+             WHERE is_deleted = 0
+               AND status = 'RECONCILED'
+               AND channel_code = #{channelCode}
+               AND reconcile_date = #{reconcileDate}
+            """)
+    long countReconciliationWriteoff(@Param("channelCode") String channelCode,
+                                     @Param("reconcileDate") LocalDate reconcileDate);
+
+    @Insert("""
+            INSERT INTO nx_deposit_reconciliation_writeoff (
+              channel_code, reconcile_date, operator, reason, idempotency_key, status,
+              created_at, updated_at, is_deleted
+            ) VALUES (
+              #{channelCode}, #{reconcileDate}, #{operator}, #{reason}, #{idempotencyKey}, 'RECONCILED',
+              NOW(), NOW(), 0
+            )
+            """)
+    int insertReconciliationWriteoff(@Param("channelCode") String channelCode,
+                                     @Param("reconcileDate") LocalDate reconcileDate,
+                                     @Param("operator") String operator,
+                                     @Param("reason") String reason,
+                                     @Param("idempotencyKey") String idempotencyKey);
 
     @Select("""
             <script>

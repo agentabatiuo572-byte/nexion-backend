@@ -8,7 +8,9 @@ import ffdd.opsconsole.finance.domain.DepositOpsRepository;
 import ffdd.opsconsole.finance.mapper.DepositOrderMapper;
 import ffdd.opsconsole.finance.mapper.PaymentRecordMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -20,6 +22,11 @@ import org.springframework.stereotype.Repository;
 public class MybatisDepositOpsRepository implements DepositOpsRepository {
     private final DepositOrderMapper depositOrderMapper;
     private final PaymentRecordMapper paymentRecordMapper;
+
+    @PostConstruct
+    void ensureSchema() {
+        depositOrderMapper.createReconciliationWriteoffTable();
+    }
 
     @Override
     public List<DepositAggregateView> aggregateToday() {
@@ -43,6 +50,21 @@ public class MybatisDepositOpsRepository implements DepositOpsRepository {
     public BigDecimal cardPaidAmountToday() {
         BigDecimal amount = paymentRecordMapper.cardPaidAmountToday();
         return amount == null ? BigDecimal.ZERO : amount;
+    }
+
+    @Override
+    public boolean hasReconciliationWriteoff(String channelCode, LocalDate reconcileDate) {
+        return depositOrderMapper.countReconciliationWriteoff(channelCode, reconcileDate) > 0;
+    }
+
+    @Override
+    public void writeoffReconciliation(
+            String channelCode,
+            LocalDate reconcileDate,
+            String operator,
+            String reason,
+            String idempotencyKey) {
+        depositOrderMapper.insertReconciliationWriteoff(channelCode, reconcileDate, operator, reason, idempotencyKey);
     }
 
     @Override

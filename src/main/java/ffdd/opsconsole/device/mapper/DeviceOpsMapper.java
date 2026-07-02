@@ -36,7 +36,14 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             r.gpu_power_w AS gpuPowerW,
             r.paused_reason AS pausedReason,
             r.active_task_no AS activeTaskNo,
-            r.heartbeat_at AS heartbeatAt
+            r.heartbeat_at AS heartbeatAt,
+            (
+              SELECT COUNT(*)
+                FROM nx_user_device s
+               WHERE s.is_deleted = 0
+                 AND s.user_id = d.user_id
+                 AND s.id <= d.id
+            ) AS userDeviceSlotNo
             """;
 
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0")

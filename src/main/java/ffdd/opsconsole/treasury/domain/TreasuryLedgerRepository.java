@@ -3,6 +3,7 @@ package ffdd.opsconsole.treasury.domain;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public interface TreasuryLedgerRepository {
@@ -37,6 +38,22 @@ public interface TreasuryLedgerRepository {
     BigDecimal sumPendingCommissionUsdt();
 
     BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt);
+
+    List<Map<String, Object>> maturityBuckets(LocalDateTime startAt, LocalDateTime endAt);
+
+    List<BigDecimal> riskPressureSeries(LocalDateTime since);
+
+    List<Map<String, Object>> riskRuleBuckets(LocalDateTime since);
+
+    List<Map<String, Object>> riskSeverityBuckets(LocalDateTime since);
+
+    List<Map<String, Object>> riskVolumeBuckets(LocalDateTime since);
+
+    BigDecimal currentReserveUsd();
+
+    Optional<BigDecimal> latestNexUsdtPrice();
+
+    void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey);
 
     long countLedgerBills(String type, Long userId, String keyword);
 

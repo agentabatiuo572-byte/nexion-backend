@@ -10,6 +10,8 @@ public interface NexMarketRepository {
 
     Optional<String> latestNexSparkline();
 
+    List<NexPricePointView> latestNexPricePoints(int limit);
+
     void publishNexUsdtPrice(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt);
 
     void ensureNexMarketSeedData(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt);
@@ -20,7 +22,25 @@ public interface NexMarketRepository {
 
     Optional<GenesisSeriesView> activeGenesisSeries();
 
+    Optional<GenesisPolicyView> activeGenesisPolicy();
+
+    boolean updateGenesisTotalSupply(int totalSupply);
+
+    boolean updateGenesisPrice(BigDecimal priceUsdt);
+
+    boolean updateGenesisDailyDividendRate(BigDecimal dailyDividendRatePct);
+
+    boolean updateGenesisRoyalty(BigDecimal royaltyPct);
+
+    boolean updateGenesisDividendBaseFormula(String formula);
+
     GenesisSecondaryStatsView genesisSecondaryStats(LocalDateTime since);
+
+    BigDecimal genesisAccrualUsd();
+
+    Optional<String> latestGenesisDividendRerunBatchNo();
+
+    boolean genesisDividendBatchRerunExists(String batchNo);
 
     long genesisHoldingCount();
 
@@ -55,6 +75,18 @@ public interface NexMarketRepository {
     List<StakingPositionView> stakingPositionsByStatus(String status, int limit);
 
     void ensureRepurchaseSeedData();
+
+    Optional<StakingProductView> repurchaseProduct();
+
+    boolean updateRepurchaseApy(BigDecimal apyPct);
+
+    boolean updateRepurchasePenalty(BigDecimal penaltyPct);
+
+    boolean updateRepurchaseRewardMultiplier(BigDecimal multiplier);
+
+    boolean updateRepurchaseTicketPerOrder(int ticketPerOrder);
+
+    boolean updateRepurchasePresetAmounts(String presetAmounts);
 
     RepurchaseStatsView repurchaseStatsSince(LocalDateTime since);
 

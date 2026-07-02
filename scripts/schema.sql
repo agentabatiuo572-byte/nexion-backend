@@ -175,6 +175,24 @@ CREATE TABLE IF NOT EXISTS nx_price_index (
   KEY idx_price_index_metric (metric_code, status, sampled_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_treasury_reserve_ledger (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  reserve_no VARCHAR(64) NOT NULL,
+  voucher_no VARCHAR(96) NOT NULL,
+  direction VARCHAR(16) NOT NULL,
+  amount_usd DECIMAL(24,6) NOT NULL DEFAULT 0,
+  reason VARCHAR(512) NULL,
+  operator VARCHAR(64) NULL,
+  idempotency_key VARCHAR(128) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'CONFIRMED',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_treasury_reserve_no (reserve_no),
+  UNIQUE KEY uk_treasury_reserve_voucher (voucher_no),
+  KEY idx_treasury_reserve_status (status, direction, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_price_index' AND COLUMN_NAME = 'volume_24h_usdt') = 0,
   'ALTER TABLE nx_price_index ADD COLUMN volume_24h_usdt DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER delta_percent',
   'SELECT 1');
@@ -393,6 +411,68 @@ CREATE TABLE IF NOT EXISTS nx_admin_role_relation (
   UNIQUE KEY uk_admin_role_relation (admin_id, role_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_admin_account_state (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  admin_id BIGINT NOT NULL,
+  tfa_required TINYINT NOT NULL DEFAULT 1,
+  last_login_at DATETIME NULL,
+  tfa_reset_at DATETIME NULL,
+  sessions_revoked_at DATETIME NULL,
+  credential_delivery_status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_account_state_admin (admin_id),
+  KEY idx_admin_account_state_delivery (credential_delivery_status),
+  CONSTRAINT fk_admin_account_state_admin
+    FOREIGN KEY (admin_id) REFERENCES nx_admin(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_rbac_action (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  action_id VARCHAR(96) NOT NULL,
+  action_name VARCHAR(160) NOT NULL,
+  domain_group VARCHAR(64) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 9999,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_rbac_action_code (action_id),
+  KEY idx_admin_rbac_action_status_sort (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_rbac_grant (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  action_id VARCHAR(96) NOT NULL,
+  role_key VARCHAR(64) NOT NULL,
+  grant_value VARCHAR(8) NOT NULL,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_rbac_grant_action_role (action_id, role_key),
+  KEY idx_admin_rbac_grant_role (role_key, status),
+  CONSTRAINT fk_admin_rbac_grant_action
+    FOREIGN KEY (action_id) REFERENCES nx_admin_rbac_action(action_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_security_baseline (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  baseline_key VARCHAR(64) NOT NULL,
+  label VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NOT NULL DEFAULT '',
+  baseline_value VARCHAR(128) NOT NULL,
+  locked TINYINT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 9999,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_security_baseline_key (baseline_key),
+  KEY idx_admin_security_baseline_status_sort (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_admin_role_permission (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   role_id BIGINT NOT NULL,
@@ -607,6 +687,9 @@ CREATE TABLE IF NOT EXISTS nx_staking_product (
   apy_bps DECIMAL(18,6) NOT NULL,
   early_penalty_bps DECIMAL(18,6) NOT NULL DEFAULT 0,
   min_amount DECIMAL(18,6) NOT NULL,
+  reward_multiplier DECIMAL(18,6) NOT NULL DEFAULT 0,
+  ticket_per_order INT NOT NULL DEFAULT 0,
+  preset_amounts VARCHAR(255) NOT NULL DEFAULT '',
   sort_order INT NOT NULL DEFAULT 0,
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -618,6 +701,21 @@ CREATE TABLE IF NOT EXISTS nx_staking_product (
   CONSTRAINT chk_staking_product_positive_apy CHECK (apy_bps > 0),
   CONSTRAINT chk_staking_product_positive_min CHECK (min_amount > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_staking_product' AND COLUMN_NAME = 'reward_multiplier') = 0,
+  'ALTER TABLE nx_staking_product ADD COLUMN reward_multiplier DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER min_amount',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_staking_product' AND COLUMN_NAME = 'ticket_per_order') = 0,
+  'ALTER TABLE nx_staking_product ADD COLUMN ticket_per_order INT NOT NULL DEFAULT 0 AFTER reward_multiplier',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_staking_product' AND COLUMN_NAME = 'preset_amounts') = 0,
+  'ALTER TABLE nx_staking_product ADD COLUMN preset_amounts VARCHAR(255) NOT NULL DEFAULT '''' AFTER ticket_per_order',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_staking_position (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -668,6 +766,22 @@ CREATE TABLE IF NOT EXISTS nx_deposit_order (
   KEY idx_deposit_user_time (user_id, created_at),
   KEY idx_deposit_status_time (status, created_at),
   CONSTRAINT chk_deposit_positive_amount CHECK (amount > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_deposit_reconciliation_writeoff (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  channel_code VARCHAR(64) NOT NULL,
+  reconcile_date DATE NOT NULL,
+  operator VARCHAR(64) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'RECONCILED',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_deposit_reconcile_writeoff (channel_code, reconcile_date),
+  UNIQUE KEY uk_deposit_reconcile_idem (idempotency_key),
+  KEY idx_deposit_reconcile_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_deposit_order' AND INDEX_NAME = 'uk_deposit_chain_tx_asset') = 0,
@@ -1136,6 +1250,8 @@ CREATE TABLE IF NOT EXISTS nx_genesis_series (
   sale_start_at DATETIME NULL,
   sale_end_at DATETIME NULL,
   royalty_bps INT NOT NULL DEFAULT 0,
+  daily_dividend_rate_pct DECIMAL(10,6) NOT NULL DEFAULT 0,
+  dividend_base_formula VARCHAR(255) NOT NULL DEFAULT '',
   cover_url VARCHAR(512) NULL,
   metadata_json VARCHAR(2048) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1146,6 +1262,16 @@ CREATE TABLE IF NOT EXISTS nx_genesis_series (
   CONSTRAINT chk_genesis_series_supply CHECK (total_supply > 0 AND sold_supply >= 0 AND sold_supply <= total_supply),
   CONSTRAINT chk_genesis_series_price CHECK (price_usdt > 0 AND royalty_bps >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_genesis_series' AND COLUMN_NAME = 'daily_dividend_rate_pct') = 0,
+  'ALTER TABLE nx_genesis_series ADD COLUMN daily_dividend_rate_pct DECIMAL(10,6) NOT NULL DEFAULT 0 AFTER royalty_bps',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_genesis_series' AND COLUMN_NAME = 'dividend_base_formula') = 0,
+  'ALTER TABLE nx_genesis_series ADD COLUMN dividend_base_formula VARCHAR(255) NOT NULL DEFAULT '''' AFTER daily_dividend_rate_pct',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_genesis_order (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1587,6 +1713,103 @@ CREATE TABLE IF NOT EXISTS nx_trial_claim (
   UNIQUE KEY uk_trial_claim_no (claim_no),
   KEY idx_trial_claim_user (user_id, status, created_at),
   KEY idx_trial_claim_device (user_device_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_growth_trial_policy (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  policy_key VARCHAR(64) NOT NULL,
+  policy_name VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NULL,
+  current_value VARCHAR(128) NOT NULL DEFAULT '',
+  value_type VARCHAR(32) NOT NULL DEFAULT 'STRING',
+  hot TINYINT NOT NULL DEFAULT 0,
+  section VARCHAR(32) NOT NULL DEFAULT 'live',
+  server_only TINYINT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 100,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_growth_trial_policy_key (policy_key),
+  KEY idx_growth_trial_policy_order (is_deleted, sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_growth_trial_gate (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  gate_key VARCHAR(64) NOT NULL,
+  gate_name VARCHAR(128) NOT NULL,
+  note VARCHAR(512) NULL,
+  sort_order INT NOT NULL DEFAULT 100,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_growth_trial_gate_key (gate_key),
+  KEY idx_growth_trial_gate_order (status, sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_growth_checkin_rule (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  rule_key VARCHAR(64) NOT NULL,
+  rule_name VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NULL,
+  current_value VARCHAR(128) NOT NULL DEFAULT '',
+  value_type VARCHAR(32) NOT NULL DEFAULT 'STRING',
+  hot TINYINT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 100,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_growth_checkin_rule_key (rule_key),
+  KEY idx_growth_checkin_rule_order (is_deleted, sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_tier (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  tier_name VARCHAR(128) NOT NULL,
+  reward_name VARCHAR(128) NOT NULL,
+  probability_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
+  real_outflow TINYINT NOT NULL DEFAULT 0,
+  reward_kind VARCHAR(64) NOT NULL DEFAULT '',
+  sort_order INT NOT NULL DEFAULT 100,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_growth_wheel_tier_name (tier_name),
+  KEY idx_growth_wheel_tier_order (status, sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_guard (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  guard_key VARCHAR(64) NOT NULL,
+  guard_label VARCHAR(128) NOT NULL,
+  guard_value VARCHAR(255) NOT NULL DEFAULT '',
+  note VARCHAR(512) NULL,
+  sort_order INT NOT NULL DEFAULT 100,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_growth_wheel_guard_key (guard_key),
+  KEY idx_growth_wheel_guard_order (status, sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_growth_promo_banner (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  banner_code VARCHAR(64) NOT NULL,
+  base_reward VARCHAR(64) NULL,
+  multiplier VARCHAR(32) NULL,
+  countdown_days INT NULL,
+  countdown_hours INT NULL,
+  target_device VARCHAR(128) NULL,
+  target_daily VARCHAR(64) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  sort_order INT NOT NULL DEFAULT 100,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_growth_promo_banner_code (banner_code),
+  KEY idx_growth_promo_banner_status (status, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'source_order_no') = 0,
@@ -2174,6 +2397,24 @@ CREATE TABLE IF NOT EXISTS nx_v_rank_config (
   UNIQUE KEY uk_v_rank_code (rank_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_v_rank_reward_rule (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  reward_id VARCHAR(64) NOT NULL,
+  rank_code VARCHAR(16) NOT NULL,
+  reward_type VARCHAR(32) NOT NULL,
+  amount DECIMAL(18,6) NULL,
+  voucher_id VARCHAR(64) NULL,
+  sku_id VARCHAR(64) NULL,
+  custom_label VARCHAR(255) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_v_rank_reward_rule_id (reward_id),
+  KEY idx_v_rank_reward_rule_rank (rank_code, status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_v_rank_reward_fulfillment (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -2582,6 +2823,7 @@ CREATE TABLE IF NOT EXISTS nx_event_quest (
   quest_code VARCHAR(64) NOT NULL,
   quest_name VARCHAR(128) NOT NULL,
   description VARCHAR(512) NULL,
+  geo_scope VARCHAR(64) NOT NULL DEFAULT '',
   starts_at DATETIME NULL,
   ends_at DATETIME NULL,
   target_type VARCHAR(64) NOT NULL,
@@ -3473,6 +3715,194 @@ CREATE TABLE IF NOT EXISTS nx_support_ticket_attachment (
   KEY idx_support_attachment_message (message_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_nova_channel (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  channel_key VARCHAR(64) NOT NULL,
+  channel_name VARCHAR(128) NOT NULL,
+  trigger_rule VARCHAR(255) NOT NULL,
+  tick_rule VARCHAR(64) NOT NULL,
+  cooldown_rule VARCHAR(64) NOT NULL,
+  phase_keyed VARCHAR(128) NOT NULL DEFAULT '',
+  ctr_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
+  target_ctr_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
+  enabled TINYINT NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 1000,
+  operator VARCHAR(128) NULL,
+  reason VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_nova_channel_key (channel_key),
+  KEY idx_nova_channel_order (is_deleted, sort_order, channel_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_nova_channel' AND COLUMN_NAME = 'target_ctr_pct') = 0,
+  'ALTER TABLE nx_nova_channel ADD COLUMN target_ctr_pct DECIMAL(8,4) NOT NULL DEFAULT 0 AFTER ctr_pct',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_nova_template (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  channel_key VARCHAR(64) NOT NULL,
+  template_name VARCHAR(128) NOT NULL,
+  cta VARCHAR(255) NOT NULL,
+  version VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  operator VARCHAR(128) NULL,
+  reason VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_nova_template_channel (channel_key),
+  KEY idx_nova_template_status (is_deleted, status, channel_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_nova_social_distribution (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  dist_key VARCHAR(64) NOT NULL,
+  dist_name VARCHAR(128) NOT NULL,
+  pct INT NOT NULL DEFAULT 0,
+  color VARCHAR(64) NOT NULL DEFAULT '',
+  operator VARCHAR(128) NULL,
+  reason VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_nova_social_dist_key (dist_key),
+  KEY idx_nova_social_dist_order (is_deleted, dist_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_nova_social_pool (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  pool_key VARCHAR(64) NOT NULL,
+  pool_name VARCHAR(128) NOT NULL,
+  description VARCHAR(512) NOT NULL DEFAULT '',
+  item_count INT NOT NULL DEFAULT 0,
+  operator VARCHAR(128) NULL,
+  reason VARCHAR(512) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_nova_social_pool_key (pool_key),
+  KEY idx_nova_social_pool_order (is_deleted, pool_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_control_setting (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  setting_key VARCHAR(96) NOT NULL,
+  setting_value VARCHAR(512) NOT NULL,
+  value_type VARCHAR(32) NOT NULL DEFAULT 'STRING',
+  group_code VARCHAR(64) NOT NULL DEFAULT 'emergency',
+  remark VARCHAR(512) NULL,
+  operator VARCHAR(64) NULL,
+  status TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_emergency_control_setting_key (setting_key),
+  KEY idx_emergency_control_setting_group (group_code, status, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_geo_country_policy (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  country_code VARCHAR(2) NOT NULL,
+  country_name VARCHAR(128) NULL,
+  policy_status VARCHAR(32) NOT NULL,
+  reason VARCHAR(500) NULL,
+  operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_geo_country_policy (country_code),
+  KEY idx_geo_country_policy_status (policy_status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_geo_endpoint_catalog (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  endpoint_key VARCHAR(64) NOT NULL,
+  endpoint_path VARCHAR(255) NOT NULL,
+  label VARCHAR(128) NOT NULL,
+  biz VARCHAR(128) NOT NULL,
+  domain_code VARCHAR(16) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  sort_order INT NOT NULL DEFAULT 100,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_geo_endpoint_catalog_key (endpoint_key),
+  KEY idx_geo_endpoint_catalog_status (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_geo_endpoint_policy (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  endpoint_key VARCHAR(64) NOT NULL,
+  endpoint_path VARCHAR(255) NOT NULL,
+  label VARCHAR(128) NOT NULL,
+  biz VARCHAR(128) NOT NULL,
+  domain_code VARCHAR(16) NOT NULL,
+  country_code VARCHAR(2) NOT NULL,
+  policy_source VARCHAR(32) NOT NULL,
+  reason VARCHAR(500) NULL,
+  operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_geo_endpoint_country (endpoint_key, country_code),
+  KEY idx_geo_endpoint_policy_endpoint (endpoint_key, is_deleted),
+  KEY idx_geo_endpoint_policy_country (country_code, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_geo_block_event (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  country_code VARCHAR(2) NOT NULL,
+  country_name VARCHAR(128) NULL,
+  endpoint_key VARCHAR(64) NULL,
+  source VARCHAR(64) NULL,
+  event_count INT NOT NULL DEFAULT 1,
+  recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_geo_event_country_time (country_code, recorded_at),
+  KEY idx_geo_event_endpoint_time (endpoint_key, recorded_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_tamper_event (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  event_no VARCHAR(96) NULL,
+  user_id BIGINT NULL,
+  user_no VARCHAR(32) NULL,
+  path_key VARCHAR(64) NOT NULL,
+  path_name VARCHAR(128) NOT NULL,
+  description VARCHAR(500) NULL,
+  cluster_code VARCHAR(64) NULL,
+  k4_delta INT NOT NULL DEFAULT 0,
+  event_count INT NOT NULL DEFAULT 1,
+  occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_tamper_event_path_time (path_key, occurred_at),
+  KEY idx_tamper_event_user_time (user_id, user_no, occurred_at),
+  KEY idx_tamper_event_cluster (cluster_code, occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_tamper_report (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  report_id VARCHAR(96) NOT NULL,
+  window_label VARCHAR(32) NOT NULL,
+  masked TINYINT NOT NULL DEFAULT 1,
+  status VARCHAR(32) NOT NULL DEFAULT 'READY',
+  payload_json JSON NULL,
+  operator VARCHAR(64) NULL,
+  reason VARCHAR(500) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_emergency_tamper_report_id (report_id),
+  KEY idx_emergency_tamper_report_time (created_at, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_emergency_tamper_gate (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   gate_key VARCHAR(64) NOT NULL,
@@ -3488,6 +3918,72 @@ CREATE TABLE IF NOT EXISTS nx_emergency_tamper_gate (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_emergency_tamper_gate (gate_key),
   KEY idx_emergency_tamper_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_sop_playbook (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  scene VARCHAR(64) NOT NULL,
+  emergency_track TINYINT NOT NULL DEFAULT 0,
+  sla VARCHAR(64) NOT NULL,
+  state VARCHAR(32) NOT NULL DEFAULT 'todo',
+  owner VARCHAR(64) NOT NULL,
+  last_drill_at DATETIME NULL,
+  notify_campaign_no VARCHAR(96) NULL,
+  notify_template VARCHAR(255) NULL,
+  rollback_plan VARCHAR(500) NULL,
+  drill_required TINYINT NOT NULL DEFAULT 1,
+  draft TINYINT NOT NULL DEFAULT 1,
+  summary VARCHAR(500) NULL,
+  created_by VARCHAR(64) NULL,
+  updated_by VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_emergency_sop_playbook_code (code),
+  KEY idx_emergency_sop_playbook_state (state, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_sop_action (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  playbook_code VARCHAR(64) NOT NULL,
+  step_order INT NOT NULL,
+  domain_code VARCHAR(16) NOT NULL,
+  action_text VARCHAR(500) NOT NULL,
+  approve_required TINYINT NOT NULL DEFAULT 0,
+  ref_code VARCHAR(96) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_emergency_sop_action_step (playbook_code, step_order),
+  KEY idx_emergency_sop_action_code (playbook_code, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_emergency_sop_execution (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  execution_id VARCHAR(96) NOT NULL,
+  playbook_code VARCHAR(64) NOT NULL,
+  playbook_name VARCHAR(128) NOT NULL,
+  trigger_reason VARCHAR(500) NOT NULL,
+  execution_mode VARCHAR(32) NOT NULL,
+  step_status_json JSON NULL,
+  operator VARCHAR(64) NULL,
+  role_gate VARCHAR(64) NULL,
+  idempotency_key VARCHAR(128) NULL,
+  notification_json JSON NULL,
+  domain_action_json JSON NULL,
+  rollback_plan VARCHAR(500) NULL,
+  rollback_status VARCHAR(32) NULL,
+  rollback_at DATETIME NULL,
+  rollback_reason VARCHAR(500) NULL,
+  rollback_action_json JSON NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_emergency_sop_execution_id (execution_id),
+  UNIQUE KEY uk_emergency_sop_execution_idem (playbook_code, idempotency_key),
+  KEY idx_emergency_sop_execution_code_time (playbook_code, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_emergency_sop_step (

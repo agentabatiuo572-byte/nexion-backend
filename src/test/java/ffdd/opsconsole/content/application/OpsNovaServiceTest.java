@@ -5,6 +5,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.domain.NovaChannelView;
+import ffdd.opsconsole.content.domain.NovaRepository;
+import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
+import ffdd.opsconsole.content.domain.NovaSocialPoolView;
+import ffdd.opsconsole.content.domain.NovaTemplateView;
 import ffdd.opsconsole.content.dto.NovaChannelStatusRequest;
 import ffdd.opsconsole.content.dto.NovaChannelUpsertRequest;
 import ffdd.opsconsole.content.dto.NovaDeleteRequest;
@@ -12,11 +17,10 @@ import ffdd.opsconsole.content.dto.NovaDistributionUpdateRequest;
 import ffdd.opsconsole.content.dto.NovaPoolUpdateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
-import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
-import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,12 +29,11 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class OpsNovaServiceTest {
-    private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeNovaRepository novaRepository = new FakeNovaRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsNovaService service = new OpsNovaService(
-            configFacade,
-            auditLogService,
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            novaRepository,
+            auditLogService);
 
     @Test
     void overviewReturnsEmptyWhenNoBackendConfigExists() {
@@ -40,17 +43,18 @@ class OpsNovaServiceTest {
         assertThat(result.getData().channels()).isEmpty();
         assertThat(result.getData().templates()).isEmpty();
         assertThat(result.getData().stats().onlineChannels()).isZero();
-        assertThat(result.getData().sources()).contains("nx_config_item");
+        assertThat(result.getData().sources())
+                .containsExactly(
+                        "nx_nova_channel",
+                        "nx_nova_template",
+                        "nx_nova_social_distribution",
+                        "nx_nova_social_pool",
+                        "nx_notification");
     }
 
     @Test
-    void disabledReadTimeSeedsDoNotExposeNovaSeedRows() {
-        OpsNovaService realOnlyService = new OpsNovaService(
-                new FakePlatformConfigFacade(),
-                auditLogService,
-                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-
-        var result = realOnlyService.overview();
+    void overviewDoesNotExposeStaticNovaSeedRows() {
+        var result = service.overview();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().channels()).isEmpty();
@@ -59,6 +63,26 @@ class OpsNovaServiceTest {
         assertThat(result.getData().socialPools()).isEmpty();
         assertThat(result.getData().eventDriven()).isEmpty();
         assertThat(result.getData().stats().totalChannels()).isZero();
+    }
+
+    @Test
+    void overviewStatsComeFromRepositoryBusinessAggregates() {
+        novaRepository.stats.put("todayDelivered", 42L);
+        novaRepository.stats.put("avgCtr", new BigDecimal("18.75"));
+        novaRepository.stats.put("ctrTarget", 25);
+        novaRepository.stats.put("onlineChannels", 2);
+        novaRepository.stats.put("totalChannels", 3);
+        novaRepository.stats.put("weeklySocial", 88L);
+
+        var result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().stats().todayDelivered()).isEqualTo("42");
+        assertThat(result.getData().stats().ctr()).isEqualTo("18.8%");
+        assertThat(result.getData().stats().ctrTarget()).isEqualTo(25);
+        assertThat(result.getData().stats().onlineChannels()).isEqualTo(2);
+        assertThat(result.getData().stats().totalChannels()).isEqualTo(3);
+        assertThat(result.getData().stats().weeklySocial()).isEqualTo("88");
     }
 
     @Test
@@ -74,9 +98,9 @@ class OpsNovaServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().key()).isEqualTo("weeklyRecap");
-        assertThat(configFacade.values).containsEntry("nova.channel.weeklyRecap.name", "Weekly recap");
-        assertThat(configFacade.values).containsEntry("nova.channel.weeklyRecap.trigger", "每周任务完成后触发");
-        assertThat(configFacade.values).containsEntry("nova.channel.weeklyRecap.on", "true");
+        assertThat(novaRepository.channel("weeklyRecap")).get()
+                .extracting(NovaChannelView::name, NovaChannelView::trigger, NovaChannelView::enabled)
+                .containsExactly("Weekly recap", "每周任务完成后触发", true);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -107,7 +131,9 @@ class OpsNovaServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().enabled()).isFalse();
-        assertThat(configFacade.values).containsEntry("nova.channel.welcome.on", "false");
+        assertThat(novaRepository.channel("welcome")).get()
+                .extracting(NovaChannelView::enabled)
+                .isEqualTo(false);
     }
 
     @Test
@@ -134,7 +160,9 @@ class OpsNovaServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("DRAFT");
-        assertThat(configFacade.values).containsEntry("nova.template.weeklyRecap.status", "DRAFT");
+        assertThat(novaRepository.template("weeklyRecap")).get()
+                .extracting(NovaTemplateView::status)
+                .isEqualTo("DRAFT");
     }
 
     @Test
@@ -154,7 +182,9 @@ class OpsNovaServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("ARCHIVED");
-        assertThat(configFacade.values).containsEntry("nova.template.market.status", "ARCHIVED");
+        assertThat(novaRepository.template("market")).get()
+                .extracting(NovaTemplateView::status)
+                .isEqualTo("ARCHIVED");
     }
 
     @Test
@@ -195,7 +225,9 @@ class OpsNovaServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).extracting("pct").containsExactly(25, 25, 20, 20, 10);
-        assertThat(configFacade.values).containsEntry("nova.social.dist.aiClient.pct", "20");
+        assertThat(novaRepository.distribution).anySatisfy(item ->
+                assertThat(item).extracting(NovaSocialDistributionItem::key, NovaSocialDistributionItem::pct)
+                        .containsExactly("aiClient", 20));
     }
 
     @Test
@@ -207,7 +239,9 @@ class OpsNovaServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().count()).isEqualTo(40);
-        assertThat(configFacade.values).containsEntry("nova.social.pool.CITIES.count", "40");
+        assertThat(novaRepository.socialPool("CITIES")).get()
+                .extracting(NovaSocialPoolView::count)
+                .isEqualTo(40);
     }
 
     private static NovaChannelUpsertRequest channelRequest(String key) {
@@ -223,22 +257,107 @@ class OpsNovaServiceTest {
                 "新增周报推送通道");
     }
 
-    private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
-        private final Map<String, String> values = new LinkedHashMap<>();
+    private static final class FakeNovaRepository implements NovaRepository {
+        private final Map<String, NovaChannelView> channels = new LinkedHashMap<>();
+        private final Map<String, NovaTemplateView> templates = new LinkedHashMap<>();
+        private final List<NovaSocialDistributionItem> distribution = new ArrayList<>();
+        private final Map<String, NovaSocialPoolView> pools = new LinkedHashMap<>();
+        private final Map<String, Object> stats = new LinkedHashMap<>();
 
         @Override
-        public Optional<String> activeValue(String configKey) {
-            return Optional.ofNullable(values.get(configKey));
+        public void ensureTables() {
         }
 
         @Override
-        public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
-            values.put(configKey, configValue);
+        public List<NovaChannelView> channels() {
+            return List.copyOf(channels.values());
         }
 
         @Override
-        public Map<String, String> activeValuesByGroup(String configGroup) {
-            return Map.copyOf(values);
+        public Map<String, Object> stats() {
+            return Map.copyOf(stats);
+        }
+
+        @Override
+        public Optional<NovaChannelView> channel(String key) {
+            return Optional.ofNullable(channels.get(key));
+        }
+
+        @Override
+        public int nextChannelOrder() {
+            return channels.size() * 10 + 10;
+        }
+
+        @Override
+        public void createChannel(String key, String name, String trigger, String tick, String cooldown,
+                                  BigDecimal ctr, boolean enabled, int sortOrder, String operator, String reason) {
+            channels.put(key, new NovaChannelView(key, name, trigger, tick, cooldown, "", ctr, enabled));
+        }
+
+        @Override
+        public void updateChannel(String key, String name, String trigger, String tick, String cooldown,
+                                  BigDecimal ctr, boolean enabled, String operator, String reason) {
+            channels.put(key, new NovaChannelView(key, name, trigger, tick, cooldown, "", ctr, enabled));
+        }
+
+        @Override
+        public void updateChannelStatus(String key, boolean enabled, String operator, String reason) {
+            NovaChannelView current = channels.get(key);
+            channels.put(key, new NovaChannelView(
+                    current.key(), current.name(), current.trigger(), current.tick(), current.cooldown(),
+                    current.phaseKeyed(), current.ctr(), enabled));
+        }
+
+        @Override
+        public void deleteChannel(String key, String operator, String reason) {
+            channels.remove(key);
+        }
+
+        @Override
+        public List<NovaTemplateView> templates() {
+            return List.copyOf(templates.values());
+        }
+
+        @Override
+        public Optional<NovaTemplateView> template(String channel) {
+            return Optional.ofNullable(templates.get(channel));
+        }
+
+        @Override
+        public void createTemplate(String channel, String name, String cta, String version, String operator, String reason) {
+            templates.put(channel, new NovaTemplateView(channel, name, cta, version, "DRAFT"));
+        }
+
+        @Override
+        public void updateTemplateStatus(String channel, String status, String operator, String reason) {
+            NovaTemplateView current = templates.get(channel);
+            templates.put(channel, new NovaTemplateView(current.channel(), current.name(), current.cta(), current.version(), status));
+        }
+
+        @Override
+        public List<NovaSocialDistributionItem> socialDistribution() {
+            return List.copyOf(distribution);
+        }
+
+        @Override
+        public void upsertDistribution(String key, String name, int pct, String color, String operator, String reason) {
+            distribution.removeIf(item -> item.key().equals(key));
+            distribution.add(new NovaSocialDistributionItem(key, name, pct, color));
+        }
+
+        @Override
+        public List<NovaSocialPoolView> socialPools() {
+            return List.copyOf(pools.values());
+        }
+
+        @Override
+        public Optional<NovaSocialPoolView> socialPool(String key) {
+            return Optional.ofNullable(pools.get(key));
+        }
+
+        @Override
+        public void upsertPool(String key, String name, String description, int count, String operator, String reason) {
+            pools.put(key, new NovaSocialPoolView(key, name, description, count));
         }
     }
 }

@@ -5,11 +5,13 @@ import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.market.domain.NexMarketRepository;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.domain.GenesisNodeView;
+import ffdd.opsconsole.market.domain.GenesisPolicyView;
 import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
 import ffdd.opsconsole.market.domain.GenesisSeriesView;
 import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
 import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
+import ffdd.opsconsole.market.domain.NexPricePointView;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.market.mapper.ExchangeOrderMapper;
@@ -49,6 +51,11 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public List<NexPricePointView> latestNexPricePoints(int limit) {
+        return mapper.latestNexPricePoints(Math.max(1, Math.min(200, limit)));
+    }
+
+    @Override
     public void publishNexUsdtPrice(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt) {
         mapper.insertNexUsdtPrice(
                 priceUsdt.setScale(8, RoundingMode.HALF_UP),
@@ -78,12 +85,69 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public Optional<GenesisPolicyView> activeGenesisPolicy() {
+        ensureGenesisPolicyColumns();
+        return Optional.ofNullable(genesisMapper.activePolicy());
+    }
+
+    @Override
+    public boolean updateGenesisTotalSupply(int totalSupply) {
+        ensureGenesisPolicyColumns();
+        return genesisMapper.updateActiveTotalSupply(totalSupply) > 0;
+    }
+
+    @Override
+    public boolean updateGenesisPrice(BigDecimal priceUsdt) {
+        ensureGenesisPolicyColumns();
+        return genesisMapper.updateActivePrice(priceUsdt.setScale(6, RoundingMode.HALF_UP)) > 0;
+    }
+
+    @Override
+    public boolean updateGenesisDailyDividendRate(BigDecimal dailyDividendRatePct) {
+        ensureGenesisPolicyColumns();
+        return genesisMapper.updateActiveDailyDividendRate(dailyDividendRatePct.setScale(6, RoundingMode.HALF_UP)) > 0;
+    }
+
+    @Override
+    public boolean updateGenesisRoyalty(BigDecimal royaltyPct) {
+        ensureGenesisPolicyColumns();
+        int royaltyBps = royaltyPct.multiply(BigDecimal.valueOf(100)).setScale(0, RoundingMode.HALF_UP).intValue();
+        return genesisMapper.updateActiveRoyaltyBps(royaltyBps) > 0;
+    }
+
+    @Override
+    public boolean updateGenesisDividendBaseFormula(String formula) {
+        ensureGenesisPolicyColumns();
+        return genesisMapper.updateActiveDividendBaseFormula(formula) > 0;
+    }
+
+    @Override
     public GenesisSecondaryStatsView genesisSecondaryStats(LocalDateTime since) {
         GenesisSecondaryStatsView value = genesisMapper.secondaryStats(since);
         if (value == null) {
             return new GenesisSecondaryStatsView(BigDecimal.ZERO, BigDecimal.ZERO, 0L, 0L);
         }
         return value;
+    }
+
+    @Override
+    public BigDecimal genesisAccrualUsd() {
+        BigDecimal value = genesisMapper.genesisAccrualUsd();
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    @Override
+    public Optional<String> latestGenesisDividendRerunBatchNo() {
+        String bizNo = genesisMapper.latestGenesisDividendRerunBizNo();
+        if (bizNo == null || !bizNo.startsWith("G4-DIVIDEND-") || !bizNo.endsWith("-RERUN")) {
+            return Optional.empty();
+        }
+        return Optional.of(bizNo.substring("G4-DIVIDEND-".length(), bizNo.length() - "-RERUN".length()));
+    }
+
+    @Override
+    public boolean genesisDividendBatchRerunExists(String batchNo) {
+        return genesisMapper.countGenesisDividendRerun(batchNo) > 0;
     }
 
     @Override
@@ -144,6 +208,7 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
 
     @Override
     public List<StakingProductView> stakingProducts() {
+        ensureRepurchasePolicyColumns();
         return stakingMapper.listProductsWithMetrics(CANONICAL_STAKING_PRODUCT_CODES);
     }
 
@@ -174,6 +239,44 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public Optional<StakingProductView> repurchaseProduct() {
+        ensureRepurchasePolicyColumns();
+        return Optional.ofNullable(stakingMapper.repurchaseProduct(CANONICAL_REPURCHASE_PRODUCT_CODES));
+    }
+
+    @Override
+    public boolean updateRepurchaseApy(BigDecimal apyPct) {
+        ensureRepurchasePolicyColumns();
+        BigDecimal bps = apyPct.multiply(BigDecimal.valueOf(100)).setScale(6, RoundingMode.HALF_UP);
+        return stakingMapper.updateRepurchaseApy(CANONICAL_REPURCHASE_PRODUCT_CODES, bps) > 0;
+    }
+
+    @Override
+    public boolean updateRepurchasePenalty(BigDecimal penaltyPct) {
+        ensureRepurchasePolicyColumns();
+        BigDecimal bps = penaltyPct.multiply(BigDecimal.valueOf(100)).setScale(6, RoundingMode.HALF_UP);
+        return stakingMapper.updateRepurchasePenalty(CANONICAL_REPURCHASE_PRODUCT_CODES, bps) > 0;
+    }
+
+    @Override
+    public boolean updateRepurchaseRewardMultiplier(BigDecimal multiplier) {
+        ensureRepurchasePolicyColumns();
+        return stakingMapper.updateRepurchaseRewardMultiplier(CANONICAL_REPURCHASE_PRODUCT_CODES, multiplier.setScale(6, RoundingMode.HALF_UP)) > 0;
+    }
+
+    @Override
+    public boolean updateRepurchaseTicketPerOrder(int ticketPerOrder) {
+        ensureRepurchasePolicyColumns();
+        return stakingMapper.updateRepurchaseTicketPerOrder(CANONICAL_REPURCHASE_PRODUCT_CODES, ticketPerOrder) > 0;
+    }
+
+    @Override
+    public boolean updateRepurchasePresetAmounts(String presetAmounts) {
+        ensureRepurchasePolicyColumns();
+        return stakingMapper.updateRepurchasePresetAmounts(CANONICAL_REPURCHASE_PRODUCT_CODES, presetAmounts) > 0;
+    }
+
+    @Override
     public RepurchaseStatsView repurchaseStatsSince(LocalDateTime since) {
         RepurchaseStatsView value = stakingMapper.repurchaseStatsSince(since, CANONICAL_REPURCHASE_PRODUCT_CODES);
         if (value == null) {
@@ -190,6 +293,27 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     @Override
     public List<RepurchaseAmountBucketView> repurchaseAmountBuckets() {
         return stakingMapper.repurchaseAmountBuckets(CANONICAL_REPURCHASE_PRODUCT_CODES);
+    }
+
+    private void ensureGenesisPolicyColumns() {
+        if (genesisMapper.genesisSeriesColumnCount("daily_dividend_rate_pct") == 0) {
+            genesisMapper.addDailyDividendRateColumn();
+        }
+        if (genesisMapper.genesisSeriesColumnCount("dividend_base_formula") == 0) {
+            genesisMapper.addDividendBaseFormulaColumn();
+        }
+    }
+
+    private void ensureRepurchasePolicyColumns() {
+        if (stakingMapper.stakingProductColumnCount("reward_multiplier") == 0) {
+            stakingMapper.addRewardMultiplierColumn();
+        }
+        if (stakingMapper.stakingProductColumnCount("ticket_per_order") == 0) {
+            stakingMapper.addTicketPerOrderColumn();
+        }
+        if (stakingMapper.stakingProductColumnCount("preset_amounts") == 0) {
+            stakingMapper.addPresetAmountsColumn();
+        }
     }
 
 }

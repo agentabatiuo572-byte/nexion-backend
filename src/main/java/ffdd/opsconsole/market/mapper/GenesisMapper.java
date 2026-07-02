@@ -2,6 +2,7 @@ package ffdd.opsconsole.market.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.market.domain.GenesisNodeView;
+import ffdd.opsconsole.market.domain.GenesisPolicyView;
 import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
 import ffdd.opsconsole.market.domain.GenesisSeriesView;
 import ffdd.opsconsole.market.infrastructure.GenesisSeriesEntity;
@@ -10,8 +11,24 @@ import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_genesis_series'
+               AND COLUMN_NAME = #{columnName}
+            """)
+    int genesisSeriesColumnCount(@Param("columnName") String columnName);
+
+    @Update("ALTER TABLE nx_genesis_series ADD COLUMN daily_dividend_rate_pct DECIMAL(10,6) NOT NULL DEFAULT 0 AFTER royalty_bps")
+    void addDailyDividendRateColumn();
+
+    @Update("ALTER TABLE nx_genesis_series ADD COLUMN dividend_base_formula VARCHAR(255) NOT NULL DEFAULT '' AFTER daily_dividend_rate_pct")
+    void addDividendBaseFormulaColumn();
+
     @Select("""
             SELECT COUNT(1)
               FROM nx_genesis_series
@@ -45,6 +62,76 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
     GenesisSeriesView activeSeries();
 
     @Select("""
+            SELECT total_supply AS totalSupply,
+                   sold_supply AS soldSupply,
+                   price_usdt AS priceUsdt,
+                   daily_dividend_rate_pct AS dailyDividendRatePct,
+                   royalty_bps / 100 AS royaltyPct,
+                   dividend_base_formula AS dividendBaseFormula
+              FROM nx_genesis_series
+             WHERE is_deleted = 0
+               AND UPPER(status) = 'ACTIVE'
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    GenesisPolicyView activePolicy();
+
+    @Update("""
+            UPDATE nx_genesis_series
+               SET total_supply = #{totalSupply},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(status) = 'ACTIVE'
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    int updateActiveTotalSupply(@Param("totalSupply") int totalSupply);
+
+    @Update("""
+            UPDATE nx_genesis_series
+               SET price_usdt = #{priceUsdt},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(status) = 'ACTIVE'
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    int updateActivePrice(@Param("priceUsdt") BigDecimal priceUsdt);
+
+    @Update("""
+            UPDATE nx_genesis_series
+               SET daily_dividend_rate_pct = #{dailyDividendRatePct},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(status) = 'ACTIVE'
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    int updateActiveDailyDividendRate(@Param("dailyDividendRatePct") BigDecimal dailyDividendRatePct);
+
+    @Update("""
+            UPDATE nx_genesis_series
+               SET royalty_bps = #{royaltyBps},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(status) = 'ACTIVE'
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    int updateActiveRoyaltyBps(@Param("royaltyBps") int royaltyBps);
+
+    @Update("""
+            UPDATE nx_genesis_series
+               SET dividend_base_formula = #{formula},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(status) = 'ACTIVE'
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    int updateActiveDividendBaseFormula(@Param("formula") String formula);
+
+    @Select("""
             SELECT COALESCE(MIN(CASE WHEN UPPER(status) = 'LISTED' THEN acquired_price_usdt END), 0) AS floorUsdt,
                    (
                      SELECT COALESCE(SUM(o.amount_usdt), 0)
@@ -59,6 +146,37 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
              WHERE is_deleted = 0
             """)
     GenesisSecondaryStatsView secondaryStats(@Param("since") LocalDateTime since);
+
+    @Select("""
+            SELECT COALESCE(SUM(amount), 0)
+              FROM nx_wallet_ledger
+             WHERE is_deleted = 0
+               AND asset = 'USDT'
+               AND direction = 'IN'
+               AND status IN ('SUCCESS', 'PENDING')
+               AND biz_type = 'GENESIS_DIVIDEND'
+            """)
+    BigDecimal genesisAccrualUsd();
+
+    @Select("""
+            SELECT biz_no
+              FROM nx_wallet_ledger
+             WHERE is_deleted = 0
+               AND biz_type = 'GENESIS_DIVIDEND'
+               AND biz_no LIKE 'G4-DIVIDEND-%-RERUN'
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+            """)
+    String latestGenesisDividendRerunBizNo();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_wallet_ledger
+             WHERE is_deleted = 0
+               AND biz_type = 'GENESIS_DIVIDEND'
+               AND biz_no = CONCAT('G4-DIVIDEND-', #{batchNo}, '-RERUN')
+            """)
+    long countGenesisDividendRerun(@Param("batchNo") String batchNo);
 
     @Select("""
             SELECT h.id,

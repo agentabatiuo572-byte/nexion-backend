@@ -52,11 +52,13 @@ Common placeholders:
 
 ## Database
 
-Initialize or refresh local schema and seed data with:
+Initialize or refresh local schema and system baseline data with:
 
 ```powershell
 & '<mysql-bin>\mysql.exe' -h 127.0.0.1 -P 3306 -u <mysql-user> '-p<mysql-password>' -e "source D:/workspace/nexion-backend/scripts/schema.sql; source D:/workspace/nexion-backend/scripts/seed.sql;"
 ```
+
+`scripts/seed.sql` is limited to the local system baseline: admin login, RBAC, navigation, and platform configuration. It does not create business records.
 
 The schema keeps existing business tables and adds the Ops Console tables needed by the monolith, such as user impersonation sessions, risk signals, weekly market curves, emergency gates, and BI reports.
 

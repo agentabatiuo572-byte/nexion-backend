@@ -16,6 +16,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -50,6 +51,7 @@ class OpsTreasuryServiceTest {
 
     private final FakeTreasuryLedgerRepository ledgerRepository = new FakeTreasuryLedgerRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final Map<String, String> idempotencyHashes = new LinkedHashMap<>();
@@ -64,6 +66,7 @@ class OpsTreasuryServiceTest {
         OpsTreasuryService service = new OpsTreasuryService(
                 ledgerRepository,
                 configFacade,
+                emergencyRepository,
                 auditLogService,
                 idempotencyService,
                 CLOCK,
@@ -191,10 +194,9 @@ class OpsTreasuryServiceTest {
 
         assertThat((Map<String, Object>) dualLedger.get("snapshot"))
                 .containsEntry("liabilitiesUsd", new BigDecimal("0.00"));
-        assertThat(configFacade.values).containsKeys(
-                "wallet.dual-ledger.reserve-usd",
-                "wallet.dual-ledger.redline-pct",
-                "wallet.dual-ledger.scope");
+        assertThat(configFacade.values)
+                .doesNotContainKeys("wallet.dual-ledger.reserve-usd", "wallet.dual-ledger.nex-usd-rate")
+                .containsKeys("wallet.dual-ledger.redline-pct", "wallet.dual-ledger.scope");
     }
 
     @Test
@@ -207,13 +209,14 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void bDomainDashboardReadsExistingConfigRowsWithoutSeedingThem() {
+    void bDomainDashboardIgnoresTreasuryBConfigRowsAndUsesBusinessAggregates() {
         ledgerRepository.usdtAvailable = new BigDecimal("1000");
         ledgerRepository.withdrawalQueue = new BigDecimal("120");
         ledgerRepository.activeQueueCount = 2L;
         ledgerRepository.avgRiskScore = new BigDecimal("36.4");
-        configFacade.values.put("killswitch.withdraw", "disabled");
-        configFacade.values.put("emergency.killswitch.exchange", "off");
+        ledgerRepository.countValue = 10L;
+        emergencyRepository.settings.put("killswitch.withdraw", "disabled");
+        emergencyRepository.settings.put("emergency.killswitch.exchange", "off");
         configFacade.values.put("treasury.b.liquidity.runway", "[{\"day\":\"D0\",\"cash\":\"1,000\",\"need\":\"120\",\"gap\":\"880\"}]");
         configFacade.values.put("treasury.b.funnel.stages", "[{\"key\":\"reg\",\"label\":\"注册\",\"count\":10},{\"key\":\"cash\",\"label\":\"入金\",\"count\":3}]");
         configFacade.values.put("treasury.b.risk.rules", "[{\"dom\":\"manual\",\"state\":\"on\",\"on\":true}]");
@@ -229,7 +232,9 @@ class OpsTreasuryServiceTest {
         Map<String, Object> funnel = (Map<String, Object>) dashboard.get("funnel");
         assertThat((List<Map<String, Object>>) funnel.get("stages"))
                 .extracting(row -> row.get("key"))
-                .contains("reg", "cash");
+                .contains("deposit", "exchange", "withdraw", "ledger")
+                .doesNotContain("reg", "cash");
+        assertThat(funnel.toString()).doesNotContain("注册");
         Map<String, Object> riskRadar = (Map<String, Object>) dashboard.get("riskRadar");
         assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
                 .anySatisfy(gate -> {
@@ -252,27 +257,23 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void bDomainDashboardReportsCorruptConfigWithoutOverwriting() {
+    void bDomainDashboardIgnoresCorruptTreasuryBConfigWithoutOverwriting() {
         configFacade.values.put("treasury.b.funnel.stages", "{bad-json");
         configFacade.values.put("treasury.b.funnel.daily-target", "oops");
 
         Map<String, Object> dashboard = service.bDomainDashboard().getData();
 
-        assertThat((List<Map<String, Object>>) dashboard.get("warnings"))
-                .anySatisfy(warning -> assertThat(warning)
-                        .containsEntry("key", "treasury.b.funnel.stages")
-                        .containsEntry("code", "B_CONFIG_JSON_INVALID"))
-                .anySatisfy(warning -> assertThat(warning)
-                        .containsEntry("key", "treasury.b.funnel.daily-target")
-                        .containsEntry("code", "B_CONFIG_NUMBER_INVALID"));
+        assertThat((List<Map<String, Object>>) dashboard.get("warnings")).isEmpty();
         assertThat(configFacade.values)
                 .containsEntry("treasury.b.funnel.stages", "{bad-json")
                 .containsEntry("treasury.b.funnel.daily-target", "oops");
         assertThat(configFacade.upsertedKeys)
                 .doesNotContain("treasury.b.funnel.stages", "treasury.b.funnel.daily-target");
         Map<String, Object> funnel = (Map<String, Object>) dashboard.get("funnel");
-        assertThat((List<Map<String, Object>>) funnel.get("stages")).isEmpty();
-        assertThat(funnel).containsEntry("dailyTarget", BigDecimal.ZERO);
+        assertThat((List<Map<String, Object>>) funnel.get("stages"))
+                .extracting(row -> row.get("key"))
+                .contains("deposit", "exchange", "withdraw", "ledger");
+        assertThat((BigDecimal) funnel.get("dailyTarget")).isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test
@@ -283,7 +284,7 @@ class OpsTreasuryServiceTest {
         ApiResult<Map<String, Object>> result = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("treasury.b.alert.coverage-redline.ack", "true");
+        assertThat(configFacade.values).containsEntry("wallet.dual-ledger.alert.coverage-redline.ack", "true");
         assertThat((Map<String, Object>) result.getData().get("alertAck"))
                 .containsEntry("alertId", "coverage-redline")
                 .containsEntry("acknowledged", true);
@@ -310,7 +311,7 @@ class OpsTreasuryServiceTest {
         assertThat(second.getCode()).isZero();
         verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
         assertThat(configFacade.upsertedKeys.stream()
-                .filter("treasury.b.alert.coverage-redline.ack"::equals)
+                .filter("wallet.dual-ledger.alert.coverage-redline.ack"::equals)
                 .count()).isEqualTo(1);
     }
 
@@ -334,7 +335,7 @@ class OpsTreasuryServiceTest {
         ApiResult<Map<String, Object>> result = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.httpStatus());
-        assertThat(configFacade.values).doesNotContainKey("treasury.b.alert.coverage-redline.ack");
+        assertThat(configFacade.values).doesNotContainKey("wallet.dual-ledger.alert.coverage-redline.ack");
         verifyNoInteractions(auditLogService);
     }
 
@@ -350,15 +351,16 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
-    void injectionUpdatesReserveConfigAndWritesAudit() {
-        configFacade.values.put("wallet.dual-ledger.reserve-usd", "5000");
+    void injectionWritesReserveLedgerAndAudit() {
         TreasuryInjectionRequest request =
                 new TreasuryInjectionRequest(new BigDecimal("250.129"), "V-20260617", "reserve top-up", "superadmin");
 
         ApiResult<Map<String, Object>> result = service.createInjection("idem-b1", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("wallet.dual-ledger.reserve-usd", "5250.13");
+        assertThat(configFacade.values).doesNotContainKey("wallet.dual-ledger.reserve-usd");
+        assertThat(ledgerRepository.reserveUsd).isEqualByComparingTo(new BigDecimal("5250.13"));
+        assertThat(ledgerRepository.reserveInjections).hasSize(1);
         assertThat((Map<String, Object>) result.getData().get("injection"))
                 .containsEntry("voucherNo", "V-20260617")
                 .containsEntry("newReserveUsd", new BigDecimal("5250.13"));
@@ -375,7 +377,6 @@ class OpsTreasuryServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void injectionReplaysDuplicateIdempotencyWithoutIncreasingReserveAgain() {
-        configFacade.values.put("wallet.dual-ledger.reserve-usd", "5000");
         TreasuryInjectionRequest request =
                 new TreasuryInjectionRequest(new BigDecimal("250.129"), "V-20260617", "reserve top-up", "superadmin");
 
@@ -384,20 +385,18 @@ class OpsTreasuryServiceTest {
 
         assertThat(first.getCode()).isZero();
         assertThat(second.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("wallet.dual-ledger.reserve-usd", "5250.13");
-        assertThat((Map<String, Object>) second.getData().get("injection"))
-                .containsEntry("voucherNo", "V-20260617")
-                .containsEntry("oldReserveUsd", new BigDecimal("5000"))
-                .containsEntry("newReserveUsd", new BigDecimal("5250.13"));
+        assertThat(ledgerRepository.reserveUsd).isEqualByComparingTo(new BigDecimal("5250.13"));
+        Map<String, Object> injection = (Map<String, Object>) second.getData().get("injection");
+        assertThat(injection).containsEntry("voucherNo", "V-20260617");
+        assertThat((BigDecimal) injection.get("oldReserveUsd")).isEqualByComparingTo(new BigDecimal("5000"));
+        assertThat((BigDecimal) injection.get("newReserveUsd")).isEqualByComparingTo(new BigDecimal("5250.13"));
         verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
-        assertThat(configFacade.upsertedKeys.stream()
-                .filter("wallet.dual-ledger.reserve-usd"::equals)
-                .count()).isEqualTo(1);
+        assertThat(ledgerRepository.reserveInjections).hasSize(1);
+        assertThat(configFacade.upsertedKeys).doesNotContain("wallet.dual-ledger.reserve-usd");
     }
 
     @Test
     void injectionRejectsIdempotencyPayloadMismatch() {
-        configFacade.values.put("wallet.dual-ledger.reserve-usd", "5000");
         TreasuryInjectionRequest request =
                 new TreasuryInjectionRequest(new BigDecimal("250.129"), "V-20260617", "reserve top-up", "superadmin");
         TreasuryInjectionRequest changed =
@@ -408,7 +407,7 @@ class OpsTreasuryServiceTest {
         assertThatThrownBy(() -> service.createInjection("idem-b1", changed))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
-        assertThat(configFacade.values).containsEntry("wallet.dual-ledger.reserve-usd", "5250.13");
+        assertThat(ledgerRepository.reserveUsd).isEqualByComparingTo(new BigDecimal("5250.13"));
         verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
     }
 
@@ -554,7 +553,7 @@ class OpsTreasuryServiceTest {
     @Test
     void ledgerAdjustmentRejectsCreditWhenBaseConfigWouldBreachRedline() {
         OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        configFacade.values.put("wallet.dual-ledger.reserve-usd", "0");
+        ledgerRepository.reserveUsd = BigDecimal.ZERO;
         ledgerRepository.usdtAvailable = new BigDecimal("100");
         TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
                 10001L,
@@ -584,8 +583,6 @@ class OpsTreasuryServiceTest {
         private final List<String> upsertedKeys = new ArrayList<>();
 
         private FakePlatformConfigFacade() {
-            values.put("wallet.dual-ledger.reserve-usd", "5000");
-            values.put("wallet.dual-ledger.nex-usd-rate", "0.17");
             values.put("wallet.dual-ledger.redline-pct", "85");
             values.put("wallet.dual-ledger.healthy-pct", "100");
             values.put("wallet.dual-ledger.run-risk-pct", "15");
@@ -604,6 +601,140 @@ class OpsTreasuryServiceTest {
         }
     }
 
+    private static final class FakeEmergencyControlRepository implements EmergencyControlRepository {
+        private final Map<String, String> settings = new LinkedHashMap<>();
+
+        @Override
+        public void ensureTables() {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoCountryPolicies() {
+            return List.of();
+        }
+
+        @Override
+        public void upsertGeoCountryPolicy(String countryCode, String countryName, String status, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointCatalogs() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> geoEndpointCatalog(String endpointKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointPolicies() {
+            return List.of();
+        }
+
+        @Override
+        public void replaceGeoEndpointPolicies(String endpointKey, String endpointPath, String label, String biz, String domain,
+                                               List<String> countryCodes, String source, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoHits() {
+            return List.of();
+        }
+
+        @Override
+        public Map<String, Integer> geoEndpointHits() {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEdgeMetrics() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<String> settingValue(String settingKey) {
+            return Optional.ofNullable(settings.get(settingKey));
+        }
+
+        @Override
+        public void upsertSetting(String settingKey, String settingValue, String valueType, String groupCode, String remark, String operator) {
+            settings.put(settingKey, settingValue);
+        }
+
+        @Override
+        public Map<String, Object> tamperTrend(LocalDateTime now) {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperPaths() {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperAccounts() {
+            return List.of();
+        }
+
+        @Override
+        public void createTamperReport(String reportId, String window, boolean masked, String status,
+                                       Map<String, Object> payload, String operator, String reason) {
+        }
+
+        @Override
+        public List<Map<String, Object>> playbooks() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> playbook(String code) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void createPlaybook(String code, String name, String scene, boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   boolean drillRequired, boolean draft, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void updatePlaybook(String code, String name, String scene, Boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   Boolean drillRequired, String summary, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator) {
+        }
+
+        @Override
+        public Optional<Map<String, Object>> executionByIdempotencyKey(String code, String idempotencyKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> execution(String executionId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> executions(int limit) {
+            return List.of();
+        }
+
+        @Override
+        public void createExecution(Map<String, Object> row) {
+        }
+
+        @Override
+        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
+                                            List<Map<String, Object>> rollbackActions) {
+        }
+    }
+
     private static final class FakeTreasuryLedgerRepository implements TreasuryLedgerRepository {
         private long countValue;
         private long activeQueueCount;
@@ -618,8 +749,11 @@ class OpsTreasuryServiceTest {
         private BigDecimal avgRiskScore = BigDecimal.ZERO;
         private BigDecimal pendingCommission = BigDecimal.ZERO;
         private BigDecimal netFlow = BigDecimal.ZERO;
+        private BigDecimal reserveUsd = new BigDecimal("5000");
+        private BigDecimal nexUsdRate = new BigDecimal("0.17");
         private final List<TreasuryLedgerBillView> bills = new ArrayList<>();
         private final List<Map<String, Object>> adjustments = new ArrayList<>();
+        private final List<Map<String, Object>> reserveInjections = new ArrayList<>();
         private String lastBillType;
         private Long lastBillUserId;
         private String lastBillKeyword;
@@ -702,6 +836,53 @@ class OpsTreasuryServiceTest {
         @Override
         public BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt) {
             return netFlow;
+        }
+
+        @Override
+        public List<Map<String, Object>> maturityBuckets(LocalDateTime startAt, LocalDateTime endAt) {
+            return List.of();
+        }
+
+        @Override
+        public List<BigDecimal> riskPressureSeries(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> riskRuleBuckets(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> riskSeverityBuckets(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> riskVolumeBuckets(LocalDateTime since) {
+            return List.of();
+        }
+
+        @Override
+        public BigDecimal currentReserveUsd() {
+            return reserveUsd;
+        }
+
+        @Override
+        public Optional<BigDecimal> latestNexUsdtPrice() {
+            return Optional.ofNullable(nexUsdRate);
+        }
+
+        @Override
+        public void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
+            BigDecimal normalized = amountUsd.setScale(2, java.math.RoundingMode.HALF_UP);
+            reserveUsd = reserveUsd.add(normalized);
+            reserveInjections.add(Map.of(
+                    "voucherNo", voucherNo,
+                    "amountUsd", normalized,
+                    "reason", reason,
+                    "operator", operator,
+                    "idempotencyKey", idempotencyKey));
         }
 
         @Override

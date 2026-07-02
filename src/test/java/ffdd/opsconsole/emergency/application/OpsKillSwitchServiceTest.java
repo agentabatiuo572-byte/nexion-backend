@@ -7,13 +7,14 @@ import static org.mockito.Mockito.verify;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
 import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
-import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,11 +23,11 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class OpsKillSwitchServiceTest {
-    private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsKillSwitchService service = new OpsKillSwitchService(
-            configFacade,
+            emergencyRepository,
             coverageFacade,
             auditLogService,
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
@@ -38,13 +39,13 @@ class OpsKillSwitchServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("activeGateCount", 5);
         assertThat(result.getData().get("retiredGates").toString()).contains("premium", "nexv2", "points");
-        assertThat(configFacade.values).isEmpty();
+        assertThat(emergencyRepository.settings).isEmpty();
     }
 
     @Test
     void disabledReadTimeSeedsExposeJ1EnumMatrixWithoutWritingConfig() {
         OpsKillSwitchService realOnlyService = new OpsKillSwitchService(
-                configFacade,
+                emergencyRepository,
                 coverageFacade,
                 mock(AuditLogService.class),
                 OpsReadTimeSeedPolicy.disabledForDirectConstruction());
@@ -61,12 +62,12 @@ class OpsKillSwitchServiceTest {
         assertThat(detailMap(result.getData().get("stats")))
                 .containsEntry("liveGateCount", 0L)
                 .containsEntry("killedGateCount", 5L);
-        assertThat(configFacade.values).isEmpty();
+        assertThat(emergencyRepository.settings).isEmpty();
     }
 
     @Test
     void restoreBelowB1RedlineReturns422() {
-        configFacade.values.put("killswitch.withdraw", "disabled");
+        emergencyRepository.settings.put("killswitch.withdraw", "disabled");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         var result = service.toggle(
@@ -79,7 +80,7 @@ class OpsKillSwitchServiceTest {
 
     @Test
     void restoreTrialDoesNotRequireB1Redline() {
-        configFacade.values.put("killswitch.trial", "disabled");
+        emergencyRepository.settings.put("killswitch.trial", "disabled");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         var result = service.toggle(
@@ -88,18 +89,18 @@ class OpsKillSwitchServiceTest {
                 new KillSwitchToggleRequest("enabled", "restore trial benefit gate", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("killswitch.trial", "enabled");
+        assertThat(emergencyRepository.settings).containsEntry("killswitch.trial", "enabled");
     }
 
     @Test
-    void disableActiveGateWritesConfigAndAudit() {
+    void disableActiveGateWritesControlSettingAndAudit() {
         var result = service.toggle(
                 "exchange",
                 "idem-j1",
                 new KillSwitchToggleRequest("disabled", "market incident", "risk-lead"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("killswitch.exchange", "disabled");
+        assertThat(emergencyRepository.settings).containsEntry("killswitch.exchange", "disabled");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -124,7 +125,7 @@ class OpsKillSwitchServiceTest {
                 new EmergencyDisableRequest(List.of("withdraw", "trial"), "incident response", "risk-lead"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values)
+        assertThat(emergencyRepository.settings)
                 .containsEntry("killswitch.withdraw", "disabled")
                 .containsEntry("killswitch.trial", "disabled");
     }
@@ -134,22 +135,137 @@ class OpsKillSwitchServiceTest {
         return (Map<String, Object>) detail;
     }
 
-    private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
-        private final Map<String, String> values = new LinkedHashMap<>();
+    private static final class FakeEmergencyControlRepository implements EmergencyControlRepository {
+        private final Map<String, String> settings = new LinkedHashMap<>();
 
         @Override
-        public Optional<String> activeValue(String configKey) {
-            return Optional.ofNullable(values.get(configKey));
+        public void ensureTables() {
         }
 
         @Override
-        public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
-            values.put(configKey, configValue);
+        public List<Map<String, Object>> geoCountryPolicies() {
+            return List.of();
         }
 
         @Override
-        public Map<String, String> activeValuesByGroup(String configGroup) {
-            return values;
+        public void upsertGeoCountryPolicy(String countryCode, String countryName, String status, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointCatalogs() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> geoEndpointCatalog(String endpointKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointPolicies() {
+            return List.of();
+        }
+
+        @Override
+        public void replaceGeoEndpointPolicies(String endpointKey, String endpointPath, String label, String biz, String domain,
+                                               List<String> countryCodes, String source, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoHits() {
+            return List.of();
+        }
+
+        @Override
+        public Map<String, Integer> geoEndpointHits() {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEdgeMetrics() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<String> settingValue(String settingKey) {
+            return Optional.ofNullable(settings.get(settingKey));
+        }
+
+        @Override
+        public void upsertSetting(String settingKey, String settingValue, String valueType, String groupCode, String remark, String operator) {
+            settings.put(settingKey, settingValue);
+        }
+
+        @Override
+        public Map<String, Object> tamperTrend(LocalDateTime now) {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperPaths() {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperAccounts() {
+            return List.of();
+        }
+
+        @Override
+        public void createTamperReport(String reportId, String window, boolean masked, String status,
+                                       Map<String, Object> payload, String operator, String reason) {
+        }
+
+        @Override
+        public List<Map<String, Object>> playbooks() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> playbook(String code) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void createPlaybook(String code, String name, String scene, boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   boolean drillRequired, boolean draft, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void updatePlaybook(String code, String name, String scene, Boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   Boolean drillRequired, String summary, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator) {
+        }
+
+        @Override
+        public Optional<Map<String, Object>> executionByIdempotencyKey(String code, String idempotencyKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> execution(String executionId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> executions(int limit) {
+            return List.of();
+        }
+
+        @Override
+        public void createExecution(Map<String, Object> row) {
+        }
+
+        @Override
+        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
+                                            List<Map<String, Object>> rollbackActions) {
         }
     }
 

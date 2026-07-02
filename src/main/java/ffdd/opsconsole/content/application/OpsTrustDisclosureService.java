@@ -183,13 +183,10 @@ public class OpsTrustDisclosureService {
     private TrustDisclosureOverview currentOverview() {
         List<TrustSectionView> sections = trustDisclosureRepository.listTrustSections();
         List<DisclosureJurisdictionView> jurisdictions = trustDisclosureRepository.listJurisdictions();
-        DisclosureJurisdictionView sfc = jurisdictions.stream()
-                .filter(row -> "SFC".equalsIgnoreCase(row.code()))
-                .findFirst()
-                .orElse(jurisdictions.isEmpty() ? null : jurisdictions.get(0));
-        List<DisclosureChapterView> chapters = sfc == null
+        DisclosureJurisdictionView activeJurisdiction = jurisdictions.isEmpty() ? null : jurisdictions.get(0);
+        List<DisclosureChapterView> chapters = activeJurisdiction == null
                 ? List.of()
-                : trustDisclosureRepository.listChapters(sfc.code(), sfc.version());
+                : trustDisclosureRepository.listChapters(activeJurisdiction.code(), activeJurisdiction.version());
         List<DisclosureGateActionView> gateActions = trustDisclosureRepository.listGateActions();
         return new TrustDisclosureOverview(
                 stats(sections, jurisdictions),
@@ -211,12 +208,14 @@ public class OpsTrustDisclosureService {
                 .mapToLong(row -> Math.round(row.affected() * Math.max(0, 100 - row.ackProgress()) / 100.0D))
                 .sum();
         long blocked = jurisdictions.stream().mapToLong(DisclosureJurisdictionView::blocked).sum();
-        double sfcAck = jurisdictions.stream()
-                .filter(row -> "SFC".equalsIgnoreCase(row.code()))
-                .mapToDouble(DisclosureJurisdictionView::ackProgress)
-                .findFirst()
-                .orElse(0D);
-        return new TrustDisclosureStats(sections.size(), jurisdictions.size(), staleAckUsers, blocked, sfcAck);
+        DisclosureJurisdictionView activeJurisdiction = jurisdictions.isEmpty() ? null : jurisdictions.get(0);
+        return new TrustDisclosureStats(
+                sections.size(),
+                jurisdictions.size(),
+                staleAckUsers,
+                blocked,
+                activeJurisdiction == null ? "" : activeJurisdiction.code(),
+                activeJurisdiction == null ? 0D : activeJurisdiction.ackProgress());
     }
 
     private String gateScope(List<DisclosureGateActionView> gateActions) {

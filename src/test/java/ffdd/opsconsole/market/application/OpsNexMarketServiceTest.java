@@ -10,11 +10,14 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.domain.GenesisNodeView;
+import ffdd.opsconsole.market.domain.GenesisPolicyView;
 import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
 import ffdd.opsconsole.market.domain.GenesisSeriesView;
 import ffdd.opsconsole.market.domain.NexMarketRepository;
+import ffdd.opsconsole.market.domain.NexPricePointView;
 import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
 import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
@@ -42,6 +45,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +57,7 @@ class OpsNexMarketServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeNexMarketRepository marketRepository = new FakeNexMarketRepository();
+    private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
@@ -68,6 +73,7 @@ class OpsNexMarketServiceTest {
                 configFacade,
                 coverageFacade,
                 marketRepository,
+                emergencyRepository,
                 ledgerPostingFacade,
                 riskKycReviewFacade,
                 auditLogService,
@@ -79,7 +85,15 @@ class OpsNexMarketServiceTest {
 
     @Test
     void overviewExposesSevenFrameCurveAndSunsetExclusions() {
-        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.17100000"));
+        marketRepository.pricePoints = pricePoints(
+                "0.17100000",
+                "0.17400000",
+                "0.17800000",
+                "0.18100000",
+                "0.18400000",
+                "0.18200000",
+                "0.17900000");
+        seedSunsetExclusions();
 
         ApiResult<Map<String, Object>> result = service.overview();
 
@@ -99,6 +113,7 @@ class OpsNexMarketServiceTest {
         configFacade.values.clear();
         marketRepository.latestPrice = Optional.empty();
         marketRepository.latestSparkline = Optional.empty();
+        marketRepository.pricePoints = List.of();
 
         ApiResult<Map<String, Object>> result = service.overview();
 
@@ -107,6 +122,7 @@ class OpsNexMarketServiceTest {
         assertThat(configFacade.values).isEmpty();
         assertThat((BigDecimal) result.getData().get("currentPrice")).isEqualByComparingTo("0");
         assertThat((List<?>) result.getData().get("frames")).isEmpty();
+        assertThat(result.getData().get("sunsetExclusions")).asList().isEmpty();
     }
 
     @Test
@@ -114,6 +130,7 @@ class OpsNexMarketServiceTest {
         configFacade.values.clear();
         marketRepository.latestPrice = Optional.empty();
         marketRepository.latestSparkline = Optional.empty();
+        marketRepository.pricePoints = List.of();
 
         ApiResult<Map<String, Object>> result = service.curveHistory();
 
@@ -121,16 +138,15 @@ class OpsNexMarketServiceTest {
         assertThat(marketRepository.marketSeeded).isFalse();
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> points = (List<Map<String, Object>>) result.getData().get("points");
-        assertThat(points).extracting(point -> ((BigDecimal) point.get("price")).stripTrailingZeros())
-                .containsExactly(BigDecimal.ZERO, BigDecimal.ZERO);
+        assertThat(points).isEmpty();
     }
 
     @Test
     void exchangeOverviewUsesServerOrdersConfigAndJ1Switch() {
         marketRepository.orders = List.of(exchange("EX-Q-1", "QUEUED"), exchange("EX-KYC-1", "KYC_REQUIRED"));
         configFacade.values.put("wallet.exchange.platform_daily_cap_usdt", "20000");
-        configFacade.values.put("emergency.killswitch.exchange", "off");
-        configFacade.values.put("emergency.geo.country.US", "blocked");
+        emergencyRepository.settings.put("emergency.killswitch.exchange", "off");
+        emergencyRepository.upsertGeoCountryPolicy("US", "美国", "blocked", "", "test");
 
         ApiResult<Map<String, Object>> result = service.exchangeOverview();
 
@@ -143,7 +159,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void exchangeOverviewReadsI4DisclosureGateAsBlocked() {
-        configFacade.values.put("disclosure.gate.exchange", "true");
+        emergencyRepository.settings.put("disclosure.gate.exchange", "true");
 
         ApiResult<Map<String, Object>> result = service.exchangeOverview();
 
@@ -206,7 +222,7 @@ class OpsNexMarketServiceTest {
     @Test
     void disabledReadTimeSeedsDoNotBackfillGeoBlockReason() {
         configFacade.values.clear();
-        configFacade.values.put("emergency.geo.country.US", "blocked");
+        emergencyRepository.upsertGeoCountryPolicy("US", "美国", "blocked", "", "test");
         OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
 
         ApiResult<Map<String, Object>> result = realOnlyService.exchangeOverview();
@@ -252,14 +268,14 @@ class OpsNexMarketServiceTest {
     @Test
     void restoringExchangeSwapBelowRedlineReturns422() {
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
-        configFacade.values.put("killswitch.exchange", "disabled");
+        emergencyRepository.settings.put("killswitch.exchange", "disabled");
 
         ApiResult<Map<String, Object>> result = service.updateExchangeSwapStatus(
                 "idem-g2-swap",
                 new ExchangeSwapStatusRequest(true, "restore exchange", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
-        assertThat(configFacade.values).containsEntry("killswitch.exchange", "disabled");
+        assertThat(emergencyRepository.settings).containsEntry("killswitch.exchange", "disabled");
     }
 
     @Test
@@ -341,7 +357,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void triggerExchangeKycReviewBlocksWhenI4DisclosureGateActive() {
-        configFacade.values.put("disclosure.gate.exchange", "true");
+        emergencyRepository.settings.put("disclosure.gate.exchange", "true");
         marketRepository.orders = List.of(exchange("EX-GATE-1", "QUEUED", new BigDecimal("8200.00")));
 
         ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
@@ -360,7 +376,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void triggerExchangeKycReviewBlocksWhenJ2EmergencyGeoBlockActive() {
-        configFacade.values.put("emergency.geo.j4.block.required", "true");
+        emergencyRepository.settings.put("emergency.geo.j4.block.required", "true");
         marketRepository.orders = List.of(exchange("EX-GEO-1", "QUEUED", new BigDecimal("8200.00")));
 
         ApiResult<Map<String, Object>> result = service.triggerExchangeKycReview(
@@ -461,9 +477,13 @@ class OpsNexMarketServiceTest {
     @Test
     void advancePersistsActiveDayAndFeedsDownstreamMarketSurfaces() {
         configFacade.values.put("wallet.nex_market.control.active_day_index", "2");
-        service.updateWeeklyCurve(
-                "idem-g3-seed",
-                new NexMarketCurveUpdateRequest(steppedFrames(), "seed stepped curve", "superadmin"));
+        marketRepository.pricePoints = pricePoints(
+                "0.10",
+                "0.11",
+                "0.12",
+                "0.13",
+                "0.14",
+                "0.15");
 
         ApiResult<Map<String, Object>> result = service.advanceCurrentFrame(
                 "idem-g3-advance",
@@ -573,11 +593,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void repurchaseOverviewExposesServerCanonicalConfigAndB1Coverage() {
-        configFacade.values.put("G.repurchase.apy", "35");
-        configFacade.values.put("G.repurchase.nurture", "1.5");
-        configFacade.values.put("G.repurchase.lottery", "1");
-        configFacade.values.put("G.repurchase.penalty", "15");
-        configFacade.values.put("G.repurchase.presets", "$100 / 200 / 500 / 1,000");
+        seedSunsetExclusions();
 
         ApiResult<Map<String, Object>> result = service.repurchaseOverview();
 
@@ -616,7 +632,6 @@ class OpsNexMarketServiceTest {
     @Test
     void raisingRepurchaseApyBelowCoverageRedlineReturns422() {
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
-        configFacade.values.put("G.repurchase.apy", "35");
 
         ApiResult<Map<String, Object>> result = service.updateRepurchaseParam(
                 "idem-g7-apy",
@@ -624,7 +639,7 @@ class OpsNexMarketServiceTest {
                 new NexMarketValueUpdateRequest("40", "raise repurchase apy", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
-        assertThat(configFacade.values).containsEntry("G.repurchase.apy", "35");
+        assertThat(marketRepository.repurchaseProduct().orElseThrow().apyBps()).isEqualByComparingTo("3500");
     }
 
     @Test
@@ -635,7 +650,7 @@ class OpsNexMarketServiceTest {
                 new NexMarketValueUpdateRequest("$100 / 300 / 500", "campaign presets", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("G.repurchase.presets", "$100 / 300 / 500");
+        assertThat(marketRepository.repurchaseProduct().orElseThrow().presetAmounts()).isEqualTo("$100 / 300 / 500");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -645,12 +660,8 @@ class OpsNexMarketServiceTest {
 
     @Test
     void genesisOverviewExposesServerCanonicalNodeLedgerAndJ1Switch() {
-        configFacade.values.put("J.killswitch.genesis", "off");
-        configFacade.values.put("G.genesis.supply", "1000");
-        configFacade.values.put("G.genesis.price", "9999");
-        configFacade.values.put("G.genesis.dividend", "0.1");
-        configFacade.values.put("G.genesis.royalty", "2.5");
-        configFacade.values.put("G.genesis.divBase", "platform daily volume * 0.1% / 1000 slots");
+        emergencyRepository.settings.put("J.killswitch.genesis", "off");
+        seedSunsetExclusions();
 
         ApiResult<Map<String, Object>> result = service.genesisOverview();
 
@@ -673,7 +684,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void genesisOverviewReadsJ1CanonicalKillSwitchKey() {
-        configFacade.values.put("killswitch.genesis", "disabled");
+        emergencyRepository.settings.put("killswitch.genesis", "disabled");
 
         ApiResult<Map<String, Object>> result = service.genesisOverview();
 
@@ -685,7 +696,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void genesisOverviewReadsI4DisclosureGateAsBlocked() {
-        configFacade.values.put("disclosure.gate.genesis", "true");
+        emergencyRepository.settings.put("disclosure.gate.genesis", "true");
 
         ApiResult<Map<String, Object>> result = service.genesisOverview();
 
@@ -727,6 +738,7 @@ class OpsNexMarketServiceTest {
     @Test
     void genesisOverviewDoesNotSeedMissingDbBeforeReadingSeriesAndNodeLedger() {
         marketRepository.genesisSeries = Optional.empty();
+        marketRepository.genesisPolicy = Optional.empty();
         marketRepository.genesisNodes = List.of();
         marketRepository.genesisSecondaryStats = new GenesisSecondaryStatsView(
                 BigDecimal.ZERO,
@@ -748,7 +760,6 @@ class OpsNexMarketServiceTest {
     @Test
     void raisingGenesisDividendBelowCoverageRedlineReturns422() {
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
-        configFacade.values.put("G.genesis.dividend", "0.1");
 
         ApiResult<Map<String, Object>> result = service.updateGenesisParam(
                 "idem-g4-dividend",
@@ -756,7 +767,7 @@ class OpsNexMarketServiceTest {
                 new NexMarketValueUpdateRequest("0.2", "raise genesis dividend", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
-        assertThat(configFacade.values).containsEntry("G.genesis.dividend", "0.1");
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().dailyDividendRatePct()).isEqualByComparingTo("0.1");
     }
 
     @Test
@@ -767,7 +778,7 @@ class OpsNexMarketServiceTest {
                 new NexMarketValueUpdateRequest("3.0", "secondary market policy", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("G.genesis.royalty", "3");
+        assertThat(marketRepository.activeGenesisPolicy().orElseThrow().royaltyPct()).isEqualByComparingTo("3");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -777,17 +788,13 @@ class OpsNexMarketServiceTest {
 
     @Test
     void rerunGenesisDividendBatchWritesMarkerAndAudits() {
-        configFacade.values.put("G.genesis.supply", "1000");
-        configFacade.values.put("G.genesis.dividend", "0.1");
-        configFacade.values.put("wallet.genesis.daily_volume_base_usdt", "100000");
-
         ApiResult<Map<String, Object>> result = service.rerunGenesisDividendBatch(
                 "idem-g4-rerun",
                 "GD-0611",
                 new NexMarketValueUpdateRequest("rerun", "retry failed payout rows", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("G.genesis.rerun.GD-0611", "done");
+        assertThat(configFacade.values.keySet()).noneMatch(key -> key.contains("rerun"));
         assertThat(ledgerPostingFacade.entries).hasSize(1);
         assertThat(ledgerPostingFacade.entries.get(0))
                 .containsEntry("bizNo", "G4-DIVIDEND-GD-0611-RERUN")
@@ -805,6 +812,11 @@ class OpsNexMarketServiceTest {
     @Test
     void rerunGenesisDividendBatchRejectsWhenNoPositiveLedgerAmountExists() {
         OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        marketRepository.genesisSecondaryStats = new GenesisSecondaryStatsView(
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                0L,
+                0L);
 
         ApiResult<Map<String, Object>> result = realOnlyService.rerunGenesisDividendBatch(
                 "idem-g4-rerun-empty",
@@ -813,14 +825,15 @@ class OpsNexMarketServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("G4_GENESIS_DIVIDEND_RERUN_AMOUNT_UNAVAILABLE");
-        assertThat(configFacade.values).doesNotContainKey("G.genesis.rerun.GD-EMPTY");
+        assertThat(configFacade.values.keySet()).noneMatch(key -> key.contains("GD-EMPTY"));
         assertThat(ledgerPostingFacade.entries).isEmpty();
     }
 
     @Test
     void stakingOverviewExposesServerCanonicalPoolsPositionsAndJ1Switch() {
-        configFacade.values.put("J.killswitch.staking", "off");
+        emergencyRepository.settings.put("J.killswitch.staking", "off");
         configFacade.values.put("G.staking.usdt180d.killed", "true");
+        seedSunsetExclusions();
 
         ApiResult<Map<String, Object>> result = service.stakingOverview();
 
@@ -840,7 +853,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void stakingOverviewReadsJ1CanonicalKillSwitchKey() {
-        configFacade.values.put("killswitch.staking", "disabled");
+        emergencyRepository.settings.put("killswitch.staking", "disabled");
 
         ApiResult<Map<String, Object>> result = service.stakingOverview();
 
@@ -852,7 +865,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void stakingOverviewReadsI4DisclosureGateAsBlocked() {
-        configFacade.values.put("disclosure.gate.staking", "true");
+        emergencyRepository.settings.put("disclosure.gate.staking", "true");
 
         ApiResult<Map<String, Object>> result = service.stakingOverview();
 
@@ -976,6 +989,16 @@ class OpsNexMarketServiceTest {
                 .collect(java.util.stream.Collectors.joining(",", "[", "]"));
     }
 
+    private static List<NexPricePointView> pricePoints(String... prices) {
+        LocalDateTime sampledAt = LocalDateTime.parse("2026-06-10T00:00:00");
+        return java.util.stream.IntStream.range(0, prices.length)
+                .mapToObj(index -> new NexPricePointView(
+                        new BigDecimal(prices[index]),
+                        BigDecimal.ZERO,
+                        sampledAt.plusDays(index)))
+                .toList();
+    }
+
     private static List<NexMarketCurveFrame> steppedFrames() {
         return java.util.stream.IntStream.range(0, 7)
                 .mapToObj(index -> new NexMarketCurveFrame(
@@ -1043,6 +1066,156 @@ class OpsNexMarketServiceTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
+    }
+
+    private void seedSunsetExclusions() {
+        configFacade.values.put("G.sunset.exclusions", "Premium, NEX v2, Points");
+    }
+
+    private static final class FakeEmergencyControlRepository implements EmergencyControlRepository {
+        private final Map<String, Map<String, Object>> countries = new LinkedHashMap<>();
+        private final Map<String, String> settings = new LinkedHashMap<>();
+
+        @Override
+        public void ensureTables() {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoCountryPolicies() {
+            return List.copyOf(countries.values());
+        }
+
+        @Override
+        public void upsertGeoCountryPolicy(String countryCode, String countryName, String status, String reason, String operator) {
+            countries.put(countryCode, Map.of(
+                    "cc", countryCode,
+                    "name", countryName,
+                    "status", status,
+                    "reason", reason == null ? "" : reason));
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointCatalogs() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> geoEndpointCatalog(String endpointKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEndpointPolicies() {
+            return List.of();
+        }
+
+        @Override
+        public void replaceGeoEndpointPolicies(String endpointKey, String endpointPath, String label, String biz, String domain,
+                                               List<String> countryCodes, String source, String reason, String operator) {
+        }
+
+        @Override
+        public List<Map<String, Object>> geoHits() {
+            return List.of();
+        }
+
+        @Override
+        public Map<String, Integer> geoEndpointHits() {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> geoEdgeMetrics() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<String> settingValue(String settingKey) {
+            return Optional.ofNullable(settings.get(settingKey));
+        }
+
+        @Override
+        public void upsertSetting(
+                String settingKey,
+                String settingValue,
+                String valueType,
+                String groupCode,
+                String remark,
+                String operator) {
+            settings.put(settingKey, settingValue);
+        }
+
+        @Override
+        public Map<String, Object> tamperTrend(LocalDateTime now) {
+            return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperPaths() {
+            return List.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> tamperAccounts() {
+            return List.of();
+        }
+
+        @Override
+        public void createTamperReport(String reportId, String window, boolean masked, String status,
+                                       Map<String, Object> payload, String operator, String reason) {
+        }
+
+        @Override
+        public List<Map<String, Object>> playbooks() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> playbook(String code) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void createPlaybook(String code, String name, String scene, boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   boolean drillRequired, boolean draft, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void updatePlaybook(String code, String name, String scene, Boolean emergency, String sla, String state,
+                                   String owner, String notifyCampaignNo, String notifyTemplate, String rollback,
+                                   Boolean drillRequired, String summary, List<Map<String, Object>> sequence,
+                                   String operator) {
+        }
+
+        @Override
+        public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator) {
+        }
+
+        @Override
+        public Optional<Map<String, Object>> executionByIdempotencyKey(String code, String idempotencyKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<Map<String, Object>> execution(String executionId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<Map<String, Object>> executions(int limit) {
+            return List.of();
+        }
+
+        @Override
+        public void createExecution(Map<String, Object> row) {
+        }
+
+        @Override
+        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
+                                            List<Map<String, Object>> rollbackActions) {
+        }
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
@@ -1129,13 +1302,17 @@ class OpsNexMarketServiceTest {
         private BigDecimal lastPrice;
         private Optional<BigDecimal> latestPrice = Optional.of(new BigDecimal("0.171"));
         private Optional<String> latestSparkline = Optional.empty();
+        private List<NexPricePointView> pricePoints = List.of();
         private List<ExchangeOrderView> orders = List.of();
         private List<StakingProductView> stakingProducts = defaultStakingProducts();
+        private StakingProductView repurchaseProduct = defaultRepurchaseProduct();
         private List<StakingPositionView> stakingPositions = defaultStakingPositions();
         private List<StakingPositionView> repurchasePositions = defaultRepurchasePositions();
         private Optional<GenesisSeriesView> genesisSeries = Optional.of(defaultGenesisSeries());
+        private Optional<GenesisPolicyView> genesisPolicy = Optional.of(defaultGenesisPolicy());
         private GenesisSecondaryStatsView genesisSecondaryStats = defaultGenesisSecondaryStats();
         private List<GenesisNodeView> genesisNodes = defaultGenesisNodes();
+        private final java.util.Set<String> genesisDividendReruns = new java.util.LinkedHashSet<>();
         private boolean marketSeeded;
         private boolean exchangeSeeded;
         private boolean stakingSeeded;
@@ -1155,10 +1332,21 @@ class OpsNexMarketServiceTest {
         }
 
         @Override
+        public List<NexPricePointView> latestNexPricePoints(int limit) {
+            return pricePoints.stream()
+                    .sorted(Comparator.comparing(NexPricePointView::sampledAt, Comparator.nullsLast(Comparator.naturalOrder())).reversed())
+                    .limit(limit)
+                    .toList();
+        }
+
+        @Override
         public void publishNexUsdtPrice(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt) {
             lastPrice = priceUsdt;
             latestPrice = Optional.of(priceUsdt);
             latestSparkline = Optional.ofNullable(sparklineJson);
+            List<NexPricePointView> rows = new ArrayList<>(pricePoints);
+            rows.add(new NexPricePointView(priceUsdt, deltaPercent, sampledAt));
+            pricePoints = rows;
         }
 
         @Override
@@ -1298,6 +1486,66 @@ class OpsNexMarketServiceTest {
         }
 
         @Override
+        public Optional<StakingProductView> repurchaseProduct() {
+            return Optional.ofNullable(repurchaseProduct);
+        }
+
+        @Override
+        public boolean updateRepurchaseApy(BigDecimal apyPct) {
+            repurchaseProduct = withRepurchaseProduct(
+                    apyPct.multiply(BigDecimal.valueOf(100)),
+                    repurchaseProduct.earlyPenaltyBps(),
+                    repurchaseProduct.rewardMultiplier(),
+                    repurchaseProduct.ticketPerOrder(),
+                    repurchaseProduct.presetAmounts());
+            return true;
+        }
+
+        @Override
+        public boolean updateRepurchasePenalty(BigDecimal penaltyPct) {
+            repurchaseProduct = withRepurchaseProduct(
+                    repurchaseProduct.apyBps(),
+                    penaltyPct.multiply(BigDecimal.valueOf(100)),
+                    repurchaseProduct.rewardMultiplier(),
+                    repurchaseProduct.ticketPerOrder(),
+                    repurchaseProduct.presetAmounts());
+            return true;
+        }
+
+        @Override
+        public boolean updateRepurchaseRewardMultiplier(BigDecimal multiplier) {
+            repurchaseProduct = withRepurchaseProduct(
+                    repurchaseProduct.apyBps(),
+                    repurchaseProduct.earlyPenaltyBps(),
+                    multiplier,
+                    repurchaseProduct.ticketPerOrder(),
+                    repurchaseProduct.presetAmounts());
+            return true;
+        }
+
+        @Override
+        public boolean updateRepurchaseTicketPerOrder(int ticketPerOrder) {
+            repurchaseProduct = withRepurchaseProduct(
+                    repurchaseProduct.apyBps(),
+                    repurchaseProduct.earlyPenaltyBps(),
+                    repurchaseProduct.rewardMultiplier(),
+                    ticketPerOrder,
+                    repurchaseProduct.presetAmounts());
+            return true;
+        }
+
+        @Override
+        public boolean updateRepurchasePresetAmounts(String presetAmounts) {
+            repurchaseProduct = withRepurchaseProduct(
+                    repurchaseProduct.apyBps(),
+                    repurchaseProduct.earlyPenaltyBps(),
+                    repurchaseProduct.rewardMultiplier(),
+                    repurchaseProduct.ticketPerOrder(),
+                    presetAmounts);
+            return true;
+        }
+
+        @Override
         public RepurchaseStatsView repurchaseStatsSince(LocalDateTime since) {
             long ordersMonth = repurchasePositions.stream()
                     .filter(position -> !position.lockedAt().isBefore(since))
@@ -1360,8 +1608,93 @@ class OpsNexMarketServiceTest {
         }
 
         @Override
+        public Optional<GenesisPolicyView> activeGenesisPolicy() {
+            return genesisSeries.isEmpty() ? Optional.empty() : genesisPolicy;
+        }
+
+        @Override
+        public boolean updateGenesisTotalSupply(int totalSupply) {
+            GenesisPolicyView current = genesisPolicy.orElse(defaultGenesisPolicy());
+            genesisPolicy = Optional.of(new GenesisPolicyView(
+                    totalSupply,
+                    current.soldSupply(),
+                    current.priceUsdt(),
+                    current.dailyDividendRatePct(),
+                    current.royaltyPct(),
+                    current.dividendBaseFormula()));
+            return true;
+        }
+
+        @Override
+        public boolean updateGenesisPrice(BigDecimal priceUsdt) {
+            GenesisPolicyView current = genesisPolicy.orElse(defaultGenesisPolicy());
+            genesisPolicy = Optional.of(new GenesisPolicyView(
+                    current.totalSupply(),
+                    current.soldSupply(),
+                    priceUsdt,
+                    current.dailyDividendRatePct(),
+                    current.royaltyPct(),
+                    current.dividendBaseFormula()));
+            return true;
+        }
+
+        @Override
+        public boolean updateGenesisDailyDividendRate(BigDecimal dailyDividendRatePct) {
+            GenesisPolicyView current = genesisPolicy.orElse(defaultGenesisPolicy());
+            genesisPolicy = Optional.of(new GenesisPolicyView(
+                    current.totalSupply(),
+                    current.soldSupply(),
+                    current.priceUsdt(),
+                    dailyDividendRatePct,
+                    current.royaltyPct(),
+                    current.dividendBaseFormula()));
+            return true;
+        }
+
+        @Override
+        public boolean updateGenesisRoyalty(BigDecimal royaltyPct) {
+            GenesisPolicyView current = genesisPolicy.orElse(defaultGenesisPolicy());
+            genesisPolicy = Optional.of(new GenesisPolicyView(
+                    current.totalSupply(),
+                    current.soldSupply(),
+                    current.priceUsdt(),
+                    current.dailyDividendRatePct(),
+                    royaltyPct,
+                    current.dividendBaseFormula()));
+            return true;
+        }
+
+        @Override
+        public boolean updateGenesisDividendBaseFormula(String formula) {
+            GenesisPolicyView current = genesisPolicy.orElse(defaultGenesisPolicy());
+            genesisPolicy = Optional.of(new GenesisPolicyView(
+                    current.totalSupply(),
+                    current.soldSupply(),
+                    current.priceUsdt(),
+                    current.dailyDividendRatePct(),
+                    current.royaltyPct(),
+                    formula));
+            return true;
+        }
+
+        @Override
         public GenesisSecondaryStatsView genesisSecondaryStats(LocalDateTime since) {
             return genesisSecondaryStats;
+        }
+
+        @Override
+        public BigDecimal genesisAccrualUsd() {
+            return BigDecimal.ZERO;
+        }
+
+        @Override
+        public Optional<String> latestGenesisDividendRerunBatchNo() {
+            return genesisDividendReruns.stream().reduce((first, second) -> second);
+        }
+
+        @Override
+        public boolean genesisDividendBatchRerunExists(String batchNo) {
+            return genesisDividendReruns.contains(batchNo);
         }
 
         @Override
@@ -1384,6 +1717,16 @@ class OpsNexMarketServiceTest {
                     new BigDecimal("9999"),
                     250,
                     "ACTIVE");
+        }
+
+        private static GenesisPolicyView defaultGenesisPolicy() {
+            return new GenesisPolicyView(
+                    1000,
+                    847,
+                    new BigDecimal("9999"),
+                    new BigDecimal("0.1"),
+                    new BigDecimal("2.5"),
+                    "24h Genesis completed volume * daily rate / active slots");
         }
 
         private static GenesisSecondaryStatsView defaultGenesisSecondaryStats() {
@@ -1435,6 +1778,49 @@ class OpsNexMarketServiceTest {
                     stakingProduct(4L, "USDT_365D", 365, "18000", "5000", "5000", "5000"));
         }
 
+        private static StakingProductView defaultRepurchaseProduct() {
+            return new StakingProductView(
+                    5L,
+                    "REPURCHASE_90D",
+                    "Repurchase · 90d",
+                    "USDT",
+                    90,
+                    new BigDecimal("3500"),
+                    new BigDecimal("1500"),
+                    new BigDecimal("100"),
+                    new BigDecimal("1.5"),
+                    1,
+                    "$100 / 200 / 500 / 1,000",
+                    50,
+                    "ACTIVE",
+                    new BigDecimal("16800"),
+                    6L);
+        }
+
+        private StakingProductView withRepurchaseProduct(
+                BigDecimal apyBps,
+                BigDecimal penaltyBps,
+                BigDecimal rewardMultiplier,
+                Integer ticketPerOrder,
+                String presetAmounts) {
+            return new StakingProductView(
+                    repurchaseProduct.id(),
+                    repurchaseProduct.productCode(),
+                    repurchaseProduct.productName(),
+                    repurchaseProduct.asset(),
+                    repurchaseProduct.termDays(),
+                    apyBps,
+                    penaltyBps,
+                    repurchaseProduct.minAmount(),
+                    rewardMultiplier,
+                    ticketPerOrder,
+                    presetAmounts,
+                    repurchaseProduct.sortOrder(),
+                    repurchaseProduct.status(),
+                    repurchaseProduct.lockedUsd(),
+                    repurchaseProduct.positionCount());
+        }
+
         private static StakingProductView stakingProduct(
                 long id,
                 String productCode,
@@ -1452,6 +1838,9 @@ class OpsNexMarketServiceTest {
                     new BigDecimal(apyBps),
                     new BigDecimal(penaltyBps),
                     new BigDecimal(minAmount),
+                    BigDecimal.ZERO,
+                    0,
+                    "",
                     (int) id * 10,
                     "ACTIVE",
                     new BigDecimal(lockedUsd),

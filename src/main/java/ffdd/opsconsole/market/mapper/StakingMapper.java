@@ -12,8 +12,27 @@ import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 public interface StakingMapper extends BaseMapper<StakingProductEntity> {
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_staking_product'
+               AND COLUMN_NAME = #{columnName}
+            """)
+    int stakingProductColumnCount(@Param("columnName") String columnName);
+
+    @Update("ALTER TABLE nx_staking_product ADD COLUMN reward_multiplier DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER min_amount")
+    void addRewardMultiplierColumn();
+
+    @Update("ALTER TABLE nx_staking_product ADD COLUMN ticket_per_order INT NOT NULL DEFAULT 0 AFTER reward_multiplier")
+    void addTicketPerOrderColumn();
+
+    @Update("ALTER TABLE nx_staking_product ADD COLUMN preset_amounts VARCHAR(255) NOT NULL DEFAULT '' AFTER ticket_per_order")
+    void addPresetAmountsColumn();
+
     @Select("""
             <script>
             SELECT COUNT(1)
@@ -53,6 +72,9 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
                    product.apy_bps AS apyBps,
                    product.early_penalty_bps AS earlyPenaltyBps,
                    product.min_amount AS minAmount,
+                   product.reward_multiplier AS rewardMultiplier,
+                   product.ticket_per_order AS ticketPerOrder,
+                   product.preset_amounts AS presetAmounts,
                    product.sort_order AS sortOrder,
                    UPPER(product.status) AS status,
                    COALESCE(SUM(CASE
@@ -80,12 +102,126 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
                       product.apy_bps,
                       product.early_penalty_bps,
                       product.min_amount,
+                      product.reward_multiplier,
+                      product.ticket_per_order,
+                      product.preset_amounts,
                       product.sort_order,
                       product.status
             ORDER BY product.sort_order ASC, product.term_days ASC, product.id ASC
             </script>
             """)
     List<StakingProductView> listProductsWithMetrics(@Param("productCodes") List<String> productCodes);
+
+    @Select("""
+            <script>
+            SELECT product.id,
+                   product.product_code AS productCode,
+                   product.name AS productName,
+                   product.asset,
+                   product.term_days AS termDays,
+                   product.apy_bps AS apyBps,
+                   product.early_penalty_bps AS earlyPenaltyBps,
+                   product.min_amount AS minAmount,
+                   product.reward_multiplier AS rewardMultiplier,
+                   product.ticket_per_order AS ticketPerOrder,
+                   product.preset_amounts AS presetAmounts,
+                   product.sort_order AS sortOrder,
+                   UPPER(product.status) AS status,
+                   COALESCE(SUM(CASE
+                     WHEN UPPER(sp.status) IN ('PENDING_LOCK', 'ACTIVE', 'MATURE_UNCLAIMED')
+                       THEN sp.amount_usdt
+                     ELSE 0
+                   END), 0) AS lockedUsd,
+                   COALESCE(SUM(CASE
+                     WHEN UPPER(sp.status) IN ('PENDING_LOCK', 'ACTIVE', 'MATURE_UNCLAIMED')
+                       THEN 1
+                     ELSE 0
+                   END), 0) AS positionCount
+              FROM nx_staking_product product
+              LEFT JOIN nx_staking_position sp
+                ON sp.product_id = product.id
+               AND sp.is_deleted = 0
+             WHERE product.is_deleted = 0
+               AND UPPER(product.product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>UPPER(#{productCode})</foreach>
+             GROUP BY product.id,
+                      product.product_code,
+                      product.name,
+                      product.asset,
+                      product.term_days,
+                      product.apy_bps,
+                      product.early_penalty_bps,
+                      product.min_amount,
+                      product.reward_multiplier,
+                      product.ticket_per_order,
+                      product.preset_amounts,
+                      product.sort_order,
+                      product.status
+             ORDER BY product.sort_order ASC, product.term_days ASC, product.id ASC
+             LIMIT 1
+            </script>
+            """)
+    StakingProductView repurchaseProduct(@Param("productCodes") List<String> productCodes);
+
+    @Update("""
+            <script>
+            UPDATE nx_staking_product
+               SET apy_bps = #{apyBps},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>UPPER(#{productCode})</foreach>
+            </script>
+            """)
+    int updateRepurchaseApy(@Param("productCodes") List<String> productCodes, @Param("apyBps") BigDecimal apyBps);
+
+    @Update("""
+            <script>
+            UPDATE nx_staking_product
+               SET early_penalty_bps = #{penaltyBps},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>UPPER(#{productCode})</foreach>
+            </script>
+            """)
+    int updateRepurchasePenalty(@Param("productCodes") List<String> productCodes, @Param("penaltyBps") BigDecimal penaltyBps);
+
+    @Update("""
+            <script>
+            UPDATE nx_staking_product
+               SET reward_multiplier = #{multiplier},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>UPPER(#{productCode})</foreach>
+            </script>
+            """)
+    int updateRepurchaseRewardMultiplier(@Param("productCodes") List<String> productCodes, @Param("multiplier") BigDecimal multiplier);
+
+    @Update("""
+            <script>
+            UPDATE nx_staking_product
+               SET ticket_per_order = #{ticketPerOrder},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>UPPER(#{productCode})</foreach>
+            </script>
+            """)
+    int updateRepurchaseTicketPerOrder(@Param("productCodes") List<String> productCodes, @Param("ticketPerOrder") int ticketPerOrder);
+
+    @Update("""
+            <script>
+            UPDATE nx_staking_product
+               SET preset_amounts = #{presetAmounts},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(product_code) IN
+               <foreach collection='productCodes' item='productCode' open='(' separator=',' close=')'>UPPER(#{productCode})</foreach>
+            </script>
+            """)
+    int updateRepurchasePresetAmounts(@Param("productCodes") List<String> productCodes, @Param("presetAmounts") String presetAmounts);
 
     @Select("""
             SELECT COALESCE(SUM(estimated_interest_usdt), 0)

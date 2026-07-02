@@ -48,39 +48,44 @@ public class OpsEventCenterService {
     private static final List<String> PENDING_DOMAINS = List.of("content", "notification", "disclosure", "learn");
     private static final List<String> SUNSET_DOMAINS = List.of("premium", "points", "nexv2");
 
-    private static final List<EventFamily> EVENT_FAMILIES = List.of(
-            family("acquisition", "① 获客漏斗", "注册前后身份拼接 + 渠道归因",
+    private static final List<EventFamilyDefinition> EVENT_FAMILY_DEFINITIONS = List.of(
+            familyDef("acquisition", "① 获客漏斗", "注册前后身份拼接 + 渠道归因",
                     "app.session_started · auth.register_completed · kyc.express_verified · device.first_yield_received",
-                    "部分(注册/验证类服务器发)", "1.4M",
+                    "部分(注册/验证类服务器发)",
+                    List.of("APP_", "AUTH_", "KYC_", "C1_", "C4_", "DEVICE_FIRST"),
                     row("app.session_started", "匿名设备首次会话"),
                     row("auth.register_started / completed", "注册链路开始与完成"),
                     row("kyc.express_verified", "KYC 快速验证通过"),
                     row("device.first_yield_received", "首笔设备收益到账")),
-            family("conversion", "② 转化", "商城浏览、下单、试用和邀请转化",
+            familyDef("conversion", "② 转化", "商城浏览、下单、试用和邀请转化",
                     "store.viewed · checkout.completed · trial.started · referral.invite_sent",
-                    "下单/试用服务器发", "620K",
+                    "下单/试用服务器发",
+                    List.of("E1_", "E2_", "E4_", "H2_", "REFERRAL_", "CHECKOUT_", "STORE_", "TRIAL_"),
                     row("store.viewed", "商城详情曝光"),
                     row("checkout.completed", "支付完成"),
                     row("trial.started", "试用开始"),
                     row("referral.invite_sent", "邀请发出")),
-            family("monetization", "③ 资金 / 资产", "钱包、提现、质押、兑换、Genesis 交易",
+            familyDef("monetization", "③ 资金 / 资产", "钱包、提现、质押、兑换、Genesis 交易",
                     "wallet.* · withdraw.* · staking.opened · exchange.swapped · genesis.purchased",
-                    "全部服务器发", "480K",
+                    "全部服务器发",
+                    List.of("D1_", "D2_", "D3_", "D4_", "G1_", "G2_", "G3_", "G4_", "G7_", "B1_", "WALLET_", "WITHDRAW_", "STAKING_", "EXCHANGE_", "GENESIS_"),
                     row("wallet.ledger_posted", "钱包流水落账"),
                     row("withdraw.requested / approved / paid", "提现全链路"),
                     row("staking.opened", "质押开仓"),
                     row("exchange.swapped", "兑换完成"),
                     row("genesis.purchased", "Genesis 购买完成")),
-            family("retention", "④ 留存", "日活、签到、任务和推送触达",
+            familyDef("retention", "④ 留存", "日活、签到、任务和推送触达",
                     "app.dau · daily.checkin · quest.completed · nova.push_clicked",
-                    "推送送达服务器发", "1.6M",
+                    "推送送达服务器发",
+                    List.of("H3_", "H4_", "H5_", "H6_", "I2_", "I3_", "I7_", "DAILY_", "QUEST_", "NOVA_", "NOTIFICATION_"),
                     row("app.dau", "日活跃(KPI #2 口径)"),
                     row("daily.checkin", "每日签到"),
                     row("quest.completed", "任务完成"),
                     row("nova.push_sent / push_clicked", "推送送达与点击(KPI #6)")),
-            family("risk", "⑤ 风控", "风险信号(服务器检测产出)",
+            familyDef("risk", "⑤ 风控", "风险信号(服务器检测产出)",
                     "risk.multi_account_flagged · risk.score_updated · auth.login_locked",
-                    "全部服务器发", "88K",
+                    "全部服务器发",
+                    List.of("K1_", "K2_", "K3_", "K4_", "K5_", "C5_", "C6_", "J2_", "J3_", "RISK_", "AUTH_LOGIN"),
                     row("risk.multi_account_flagged", "多账户关联命中"),
                     row("risk.arbitrage_suspected", "套利嫌疑"),
                     row("risk.trial_cycle_detected", "循环养号"),
@@ -88,9 +93,10 @@ public class OpsEventCenterService {
                     row("risk.score_updated", "风险分更新"),
                     row("risk.kyc_review_triggered", "大额复审触发"),
                     row("auth.login_locked", "登录锁定")),
-            family("phase_admin", "⑥ 节奏 / admin", "阶段切换 + 全部后台治理审计",
+            familyDef("phase_admin", "⑥ 节奏 / admin", "阶段切换 + 全部后台治理审计",
                     "phase.transitioned · phase.dial_changed · admin.*",
-                    "全部服务器发", "12K",
+                    "全部服务器发",
+                    List.of("A1_", "A2_", "A3_", "A4_", "H1_", "J1_", "J4_", "ADMIN_", "PHASE_"),
                     row("phase.transitioned", "阶段切换"),
                     row("phase.dial_changed", "dial 改动(同时落 A2 审计)"),
                     row("admin.*(全后台治理事件)", "各域高敏动作审计,命名在 A4 注册,落库在 A2")));
@@ -105,14 +111,14 @@ public class OpsEventCenterService {
             new EventCommonField("misc", "其余:身份三件套 / 归因来源 ref / 端信息", "locale · 平台 · 版本号", "必带"));
 
     private static final List<EventKpiFormula> KPI_FORMULAS = List.of(
-            new EventKpiFormula(1, "Day0 接入 >95%", "90 秒内拿到首笔收益的人 ÷ 注册数"),
-            new EventKpiFormula(2, "Day7 留存 >60%", "第 8 天还活跃的人 ÷ 当周注册群"),
-            new EventKpiFormula(3, "逛商城 >30%", "看过商城的人 ÷ 注册数"),
-            new EventKpiFormula(4, "下单 5-10%", "完成支付的人 ÷ 看过商城的人"),
-            new EventKpiFormula(5, "持有者推广 >40%", "发过邀请的设备持有者 ÷ 持有者总数"),
-            new EventKpiFormula(6, "Nova 点击率 >25%", "推送点击 ÷ 推送送达(只认服务器送达)"),
-            new EventKpiFormula(7, "佣金触发 >80%", "直推首单产生佣金的人 ÷ 直推总数"),
-            new EventKpiFormula(8, "Genesis 售罄 <14 天", "累计售出达 1,000 张用的天数"));
+            new EventKpiFormula(1, "Day0 接入", "90 秒内拿到首笔收益的人 ÷ 注册数"),
+            new EventKpiFormula(2, "Day7 留存", "第 8 天还活跃的人 ÷ 当周注册群"),
+            new EventKpiFormula(3, "逛商城", "看过商城的人 ÷ 注册数"),
+            new EventKpiFormula(4, "下单转化", "完成支付的人 ÷ 看过商城的人"),
+            new EventKpiFormula(5, "持有者推广", "发过邀请的设备持有者 ÷ 持有者总数"),
+            new EventKpiFormula(6, "Nova 点击率", "推送点击 ÷ 推送送达(只认服务器送达)"),
+            new EventKpiFormula(7, "佣金触发", "直推首单产生佣金的人 ÷ 直推总数"),
+            new EventKpiFormula(8, "Genesis 售罄天数", "累计售出达成售罄口径用的天数"));
 
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
@@ -134,7 +140,7 @@ public class OpsEventCenterService {
                         batchDone,
                         batches.size(),
                         schemaVersion()),
-                EVENT_FAMILIES,
+                eventFamilies(),
                 REGISTERED_DOMAINS,
                 PENDING_DOMAINS,
                 SUNSET_DOMAINS,
@@ -315,6 +321,28 @@ public class OpsEventCenterService {
         return auditLogService.list(request);
     }
 
+    private List<EventFamily> eventFamilies() {
+        List<String> prefixes = EVENT_FAMILY_DEFINITIONS.stream()
+                .flatMap(definition -> definition.actionPrefixes().stream())
+                .distinct()
+                .toList();
+        Map<String, Long> counts = new LinkedHashMap<>();
+        auditLogService.countActionsByPrefixes(statsQuery(1, 50), prefixes)
+                .forEach(bucket -> counts.put(bucket.getKey(), bucket.getCount()));
+        return EVENT_FAMILY_DEFINITIONS.stream()
+                .map(definition -> family(
+                        definition.key(),
+                        definition.title(),
+                        definition.sub(),
+                        definition.sample(),
+                        definition.serverAuth(),
+                        formatCount(definition.actionPrefixes().stream()
+                                .mapToLong(prefix -> counts.getOrDefault(prefix, 0L))
+                                .sum()),
+                        definition.events().toArray(EventDetailRow[]::new)))
+                .toList();
+    }
+
     private AuditStatsQueryRequest statsQuery(int days, int limit) {
         AuditStatsQueryRequest request = new AuditStatsQueryRequest();
         request.setDays(days);
@@ -420,8 +448,29 @@ public class OpsEventCenterService {
         return new EventFamily(key, title, sub, sample, serverAuth, todayCount, List.of(events));
     }
 
+    private static EventFamilyDefinition familyDef(
+            String key,
+            String title,
+            String sub,
+            String sample,
+            String serverAuth,
+            List<String> actionPrefixes,
+            EventDetailRow... events) {
+        return new EventFamilyDefinition(key, title, sub, sample, serverAuth, actionPrefixes, List.of(events));
+    }
+
     private static EventDetailRow row(String item, String desc) {
         return new EventDetailRow(item, desc);
+    }
+
+    private record EventFamilyDefinition(
+            String key,
+            String title,
+            String sub,
+            String sample,
+            String serverAuth,
+            List<String> actionPrefixes,
+            List<EventDetailRow> events) {
     }
 
     private static List<EventDomainItem> domains(String... names) {
