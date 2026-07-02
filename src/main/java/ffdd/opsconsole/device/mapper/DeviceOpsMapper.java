@@ -42,7 +42,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                 FROM nx_user_device s
                WHERE s.is_deleted = 0
                  AND s.user_id = d.user_id
-                 AND s.id <= d.id
+                 AND s.id &lt;= d.id
             ) AS userDeviceSlotNo
             """;
 
