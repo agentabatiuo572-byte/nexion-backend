@@ -49,9 +49,10 @@ class OpsSupportAgentServiceTest {
     void setUp() {
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
                 operator("1", "Root Admin", "super", "enabled"),
-                operator("2", "Support Agent", "support", "enabled"),
-                operator("3", "Disabled Support", "support", "disabled"),
+                operator("2", "Support Agent", "support_dedicated", "enabled"),
+                operator("3", "Disabled Support", "support_general", "disabled"),
                 operator("4", "Finance Agent", "finance", "enabled")))));
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("1", "Root Admin", "super", "enabled")));
     }
 
     @Test
@@ -73,11 +74,11 @@ class OpsSupportAgentServiceTest {
     @Test
     void agentsReturnPagedBackendRowsAndCurrentPageAssignments() {
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
-                operator("2", "Support Agent A", "support", "enabled"),
-                operator("5", "Support Agent B", "support", "enabled"),
-                operator("6", "Support Agent C", "support", "enabled"),
-                operator("7", "Support Agent D", "support", "enabled"),
-                operator("8", "Disabled Support", "support", "disabled")))));
+                operator("2", "Support Agent A", "support_general", "enabled"),
+                operator("5", "Support Agent B", "support_dedicated", "enabled"),
+                operator("6", "Support Agent C", "support_general", "enabled"),
+                operator("7", "Support Agent D", "support_dedicated", "enabled"),
+                operator("8", "Disabled Support", "support_general", "disabled")))));
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.updateProfile(2L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
         fake.updateProfile(5L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
@@ -166,6 +167,51 @@ class OpsSupportAgentServiceTest {
                 .contains("M5_SUPPORT_ADVISOR_USER_BOUND");
     }
 
+    @Test
+    void assignAdvisorRejectsNonSupervisorActor() {
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support_dedicated", "enabled")));
+        service.updateProfile(2L, "idem-profile", new SupportAgentProfileUpdateRequest(
+                "专属顾问",
+                List.of("advisor"),
+                List.of("高价值用户"),
+                8,
+                true,
+                true,
+                false,
+                "superadmin",
+                "调整顾问服务类型"));
+
+        var result = service.assignAdvisorUser(
+                2L,
+                "idem-assign-forbidden",
+                new SupportAgentAssignmentRequest(1001L, "PRIMARY", "support.agent", "绑定专属顾问用户"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_ASSIGNMENT_FORBIDDEN");
+    }
+
+    @Test
+    void assignAdvisorRejectsMissingBusinessUser() {
+        service.updateProfile(2L, "idem-profile", new SupportAgentProfileUpdateRequest(
+                "专属顾问",
+                List.of("advisor"),
+                List.of("高价值用户"),
+                8,
+                true,
+                true,
+                false,
+                "superadmin",
+                "调整顾问服务类型"));
+
+        var result = service.assignAdvisorUser(
+                2L,
+                "idem-assign-missing-user",
+                new SupportAgentAssignmentRequest(9999L, "PRIMARY", "superadmin", "绑定专属顾问用户"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_USER_NOT_FOUND");
+    }
+
     private static AdminAccountOverview adminOverview(List<AdminAccountOverview.OperatorRecord> operators) {
         return new AdminAccountOverview(
                 new AdminAccountOverview.AdminAccountStats(operators.size(), 1, 0, 0, 1, 0),
@@ -196,6 +242,7 @@ class OpsSupportAgentServiceTest {
     private static final class FakeSupportAgentRepository implements SupportAgentRepository {
         private final Map<Long, SupportAgentProfileRecord> profiles = new LinkedHashMap<>();
         private final List<SupportAgentAssignmentView> assignments = new ArrayList<>();
+        private final List<Long> users = List.of(1001L, 1006L);
         private final List<Long> seededAdminIds = new ArrayList<>();
         private long assignmentId = 1L;
 
@@ -264,6 +311,11 @@ class OpsSupportAgentServiceTest {
             return assignments.stream()
                     .filter(row -> row.agentAdminId().equals(agentAdminId) && "ACTIVE".equals(row.status()))
                     .count();
+        }
+
+        @Override
+        public boolean userExists(Long userId) {
+            return users.contains(userId);
         }
 
         @Override

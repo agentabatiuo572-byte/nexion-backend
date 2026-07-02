@@ -148,6 +148,14 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
     long countActiveAssignments(@Param("agentAdminId") Long agentAdminId);
 
     @Select("""
+            SELECT COUNT(1)
+              FROM nx_user
+             WHERE id=#{userId}
+               AND is_deleted=0
+            """)
+    long countActiveUser(@Param("userId") Long userId);
+
+    @Select("""
             <script>
             SELECT a.id,
                    a.agent_admin_id AS agentAdminId,
@@ -162,7 +170,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    a.reason,
                    DATE_FORMAT(a.updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
               FROM nx_support_agent_user_assignment a
-              LEFT JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
+              JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
              WHERE a.is_deleted=0
                AND a.status='ACTIVE'
              <choose>
@@ -231,7 +239,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    a.reason,
                    DATE_FORMAT(a.updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
               FROM nx_support_agent_user_assignment a
-              LEFT JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
+              JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
              WHERE a.agent_admin_id=#{agentAdminId}
                AND a.user_id=#{userId}
                AND a.assignment_type=#{assignmentType}
@@ -258,7 +266,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    a.reason,
                    DATE_FORMAT(a.updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
               FROM nx_support_agent_user_assignment a
-              LEFT JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
+              JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
              WHERE a.agent_admin_id=#{agentAdminId}
                AND a.id=#{assignmentId}
                AND a.is_deleted=0

@@ -56,25 +56,33 @@ public class OpsAdminAccountService {
     private static final List<String> GRANT_OPTIONS = List.of("-", "R", "M", "C");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Pattern ACTION_CODE_PATTERN = Pattern.compile("\\(([A-Za-z][A-Za-z0-9_-]*)\\)");
-    private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super", "risk");
-    private static final Map<String, String> ROLE_CODE_TO_KEY = Map.of(
-            "SUPER_ADMIN", "super",
-            "CONFIG_ADMIN", "config",
-            "FINANCE", "finance",
-            "RISK", "risk",
-            "CONTENT", "content",
-            "GROWTH", "growth",
-            "SUPPORT", "support",
-            "AUDITOR", "audit");
-    private static final Map<String, String> ROLE_KEY_TO_CODE = Map.of(
-            "super", "SUPER_ADMIN",
-            "config", "CONFIG_ADMIN",
-            "finance", "FINANCE",
-            "risk", "RISK",
-            "content", "CONTENT",
-            "growth", "GROWTH",
-            "support", "SUPPORT",
-            "audit", "AUDITOR");
+    private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super");
+    private static final Map<String, String> ROLE_CODE_TO_KEY = Map.ofEntries(
+            Map.entry("SUPER_ADMIN", "super"),
+            Map.entry("CONFIG_ADMIN", "config"),
+            Map.entry("FINANCE", "finance"),
+            Map.entry("RISK", "risk"),
+            Map.entry("CONTENT", "content"),
+            Map.entry("GROWTH", "growth"),
+            Map.entry("SUPPORT", "support"),
+            Map.entry("SUPPORT_MANAGER", "support_manager"),
+            Map.entry("SUPPORT_DEDICATED", "support_dedicated"),
+            Map.entry("SUPPORT_GENERAL", "support_general"),
+            Map.entry("AUDITOR", "audit"));
+    private static final Map<String, String> ROLE_KEY_TO_CODE = Map.ofEntries(
+            Map.entry("super", "SUPER_ADMIN"),
+            Map.entry("config", "CONFIG_ADMIN"),
+            Map.entry("finance", "FINANCE"),
+            Map.entry("risk", "RISK"),
+            Map.entry("content", "CONTENT"),
+            Map.entry("growth", "GROWTH"),
+            Map.entry("support", "SUPPORT"),
+            Map.entry("support_manager", "SUPPORT_MANAGER"),
+            Map.entry("support_dedicated", "SUPPORT_DEDICATED"),
+            Map.entry("support_general", "SUPPORT_GENERAL"),
+            Map.entry("audit", "AUDITOR"));
+    private static final Set<String> SUPPORT_ASSIGNABLE_ROLES = Set.of("support_dedicated", "support_general");
+    private static final Set<String> SUPPORT_ASSIGNMENT_TARGET_ROLES = Set.of("support", "support_dedicated", "support_general");
     private final AuditLogService auditLogService;
     private final AdminMapper adminMapper;
     private final AdminRoleRelationMapper roleRelationMapper;
@@ -128,6 +136,10 @@ public class OpsAdminAccountService {
         String role = normalizeRole(request.role());
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
+        }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ROLE_ASSIGNMENT_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
         }
         String deliver = normalizeDeliver(request.deliver());
         if (deliver == null) {
@@ -192,6 +204,10 @@ public class OpsAdminAccountService {
         if (nextRole == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
+        ApiResult<Void> authorization = requireRoleAssignmentAuthorization(nextRole, current, operators());
+        if (authorization != null) {
+            return failLike(authorization);
+        }
         if ("super".equals(current.role())
                 && "enabled".equals(current.status())
                 && !"super".equals(nextRole)
@@ -209,7 +225,7 @@ public class OpsAdminAccountService {
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromRole", current.role(), "toRole", nextRole));
         linkA2Proposal(idempotencyKey, "运营账号改角色(A1)", operatorLabel(current), current.role(), nextRole,
-                request.operator(), currentOperatorRole(), "acct", false, false, "超管", request.reason());
+                request.operator(), currentOperatorRole(), "acct", false, false, "超管 / 客服主管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -222,6 +238,10 @@ public class OpsAdminAccountService {
                 request == null ? null : request.operator());
         if (mutation != null) {
             return failLike(mutation);
+        }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ACCOUNT_STATUS_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
         }
         String normalizedAccountId = StringUtils.hasText(accountId) ? accountId.trim() : accountId;
         AdminAccountOverview.OperatorRecord current = operators().stream()
@@ -271,6 +291,10 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ACCOUNT_2FA_RESET_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
+        }
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
@@ -318,7 +342,7 @@ public class OpsAdminAccountService {
                 Map.of("killedAt", now, "revokedSessions", revoked));
         linkA2Proposal(idempotencyKey, "运营账号强制登出(A1)", operatorLabel(current),
                 current.sessions() + " active sessions", "0 active sessions", request.operator(),
-                actor == null ? "super" : actor.role(), "acct", false, false, "超管 / 风控", request.reason());
+                actor == null ? "super" : actor.role(), "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -331,6 +355,10 @@ public class OpsAdminAccountService {
                 request == null ? null : request.operator());
         if (mutation != null) {
             return failLike(mutation);
+        }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "SECURITY_BASELINE_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
         }
         ensureA1BusinessTables();
         String key = normalizeText(baselineKey, "BASELINE_KEY_REQUIRED").toLowerCase(Locale.ROOT);
@@ -383,6 +411,10 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "RBAC_GRANT_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
+        }
         ensureA1BusinessTables();
         AdminAccountOverview.RbacAction action = rbacActions().stream()
                 .filter(item -> item.id().equals(actionId))
@@ -433,6 +465,10 @@ public class OpsAdminAccountService {
                 request == null ? null : request.operator());
         if (mutation != null) {
             return failLike(mutation);
+        }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "RBAC_ACTION_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
         }
         ensureA1BusinessTables();
         String action = normalizeText(request.action(), "RBAC_ACTION_REQUIRED");
@@ -496,9 +532,13 @@ public class OpsAdminAccountService {
     }
 
     private String currentOperatorRole() {
-        return authenticatedOperator(operators())
+        return currentOperator()
                 .map(AdminAccountOverview.OperatorRecord::role)
                 .orElse("super");
+    }
+
+    public Optional<AdminAccountOverview.OperatorRecord> currentOperator() {
+        return authenticatedOperator(operators());
     }
 
     private String operatorLabel(AdminAccountOverview.OperatorRecord operator) {
@@ -719,6 +759,42 @@ public class OpsAdminAccountService {
         return null;
     }
 
+    private ApiResult<Void> requireRoleAssignmentAuthorization(
+            String targetRole,
+            List<AdminAccountOverview.OperatorRecord> operators) {
+        return requireRoleAssignmentAuthorization(targetRole, null, operators);
+    }
+
+    private ApiResult<Void> requireRoleAssignmentAuthorization(
+            String targetRole,
+            AdminAccountOverview.OperatorRecord target,
+            List<AdminAccountOverview.OperatorRecord> operators) {
+        AdminAccountOverview.OperatorRecord actor = authenticatedOperator(operators).orElse(null);
+        if (actor == null) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ROLE_ASSIGNMENT_FORBIDDEN");
+        }
+        if ("super".equals(actor.role())) {
+            return null;
+        }
+        if ("support_manager".equals(actor.role())
+                && SUPPORT_ASSIGNABLE_ROLES.contains(targetRole)
+                && target != null
+                && SUPPORT_ASSIGNMENT_TARGET_ROLES.contains(target.role())) {
+            return null;
+        }
+        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ROLE_ASSIGNMENT_FORBIDDEN");
+    }
+
+    private ApiResult<Void> requireSuperAuthorization(
+            List<AdminAccountOverview.OperatorRecord> operators,
+            String message) {
+        AdminAccountOverview.OperatorRecord actor = authenticatedOperator(operators).orElse(null);
+        if (actor != null && "super".equals(actor.role())) {
+            return null;
+        }
+        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), message);
+    }
+
     private void audit(
             String action,
             String resourceType,
@@ -897,6 +973,9 @@ public class OpsAdminAccountService {
             case "content" -> "CT";
             case "growth" -> "GR";
             case "support" -> "CS";
+            case "support_manager" -> "CM";
+            case "support_dedicated" -> "CD";
+            case "support_general" -> "CG";
             case "audit" -> "AU";
             default -> role.length() <= 2 ? role.toUpperCase(Locale.ROOT) : role.substring(0, 2).toUpperCase(Locale.ROOT);
         };
@@ -911,6 +990,9 @@ public class OpsAdminAccountService {
             case "content" -> "purple";
             case "growth" -> "cyan";
             case "support" -> "indigo";
+            case "support_manager" -> "teal";
+            case "support_dedicated" -> "cyan";
+            case "support_general" -> "blue";
             case "audit" -> "gray";
             default -> "";
         };
@@ -925,6 +1007,9 @@ public class OpsAdminAccountService {
             case "content" -> "文案、课程、风险披露与公告。";
             case "growth" -> "活动、节奏、权益与触达。";
             case "support" -> "用户查询、工单协同与客服处置。";
+            case "support_manager" -> "客服主管，可分配专属客服和通用客服。";
+            case "support_dedicated" -> "专属客服，承接被分配的重点服务用户。";
+            case "support_general" -> "通用客服，承接普通工单与实时会话。";
             case "audit" -> "审计与合规观察，禁止写操作。";
             default -> "";
         };
@@ -939,6 +1024,9 @@ public class OpsAdminAccountService {
             case "content" -> "I/公告/课程";
             case "growth" -> "E/F/G/H 增长与收益";
             case "support" -> "M/C/D/K 客服协同";
+            case "support_manager" -> "M/A1 客服坐席管理";
+            case "support_dedicated" -> "M/C 专属服务用户";
+            case "support_general" -> "M/C 通用客服处置";
             case "audit" -> "A2/L 报表与审计";
             default -> "";
         };

@@ -36,10 +36,13 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsSupportAgentService {
-    private static final List<String> POSITIONS = List.of("一线客服", "客服主管", "技术支持", "合规客服", "专属顾问");
+    private static final List<String> POSITIONS = List.of("通用客服", "专属客服", "客服主管", "一线客服", "技术支持", "合规客服", "专属顾问");
     private static final List<String> SERVICE_TYPES = List.of("support", "advisor");
     private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "KYC");
     private static final Set<String> ASSIGNMENT_TYPES = Set.of("PRIMARY", "BACKUP");
+    private static final String ROLE_SUPPORT_DEDICATED = "support_dedicated";
+    private static final Set<String> SUPPORT_OPERATOR_ROLES =
+            Set.of("support", "support_manager", ROLE_SUPPORT_DEDICATED, "support_general");
 
     private final SupportAgentRepository repository;
     private final OpsAdminAccountService accountService;
@@ -97,6 +100,7 @@ public class OpsSupportAgentService {
         List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
         ensureDefaultProfiles(operators);
         List<SupportAgentProfileView> agents = profileViews(operators).stream()
+                .filter(agent -> dedicatedSupportRole(agent.adminRole()))
                 .filter(agent -> agent.serviceTypes().contains("advisor"))
                 .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
                 .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
@@ -206,6 +210,16 @@ public class OpsSupportAgentService {
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
+        if (!dedicatedSupportRole(operator.role())) {
+            return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
+        }
+        ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
+        if (authorization != null) {
+            return authorization;
+        }
+        if (!repository.userExists(request.userId())) {
+            return ApiResult.fail(404, "SUPPORT_ADVISOR_USER_NOT_FOUND");
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
         if (profile == null) {
@@ -244,6 +258,17 @@ public class OpsSupportAgentService {
         String reason = request == null ? null : request.reason();
         if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
+        if (operator == null) {
+            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
+        }
+        if (!dedicatedSupportRole(operator.role())) {
+            return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
+        }
+        ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
+        if (authorization != null) {
+            return authorization;
         }
         Optional<SupportAgentAssignmentView> deactivated = repository.deactivateAssignment(
                 adminId,
@@ -289,6 +314,16 @@ public class OpsSupportAgentService {
     }
 
     private void ensureDefaultProfiles(List<AdminAccountOverview.OperatorRecord> operators) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        for (AdminAccountOverview.OperatorRecord operator : operators) {
+            parseAdminId(operator.id()).ifPresent(adminId -> repository.ensureDefaultProfile(
+                    adminId,
+                    defaultPosition(operator.role()),
+                    defaultServiceTypes(operator.role()),
+                    DEFAULT_TAGS,
+                    defaultMaxConcurrent(operator.role()),
+                    now));
+        }
     }
 
     private SupportAgentProfileView profileView(
@@ -343,7 +378,7 @@ public class OpsSupportAgentService {
             return List.of();
         }
         return overview.getData().operators().stream()
-                .filter(operator -> "support".equalsIgnoreCase(operator.role()))
+                .filter(operator -> SUPPORT_OPERATOR_ROLES.contains(normalizedRole(operator.role())))
                 .filter(operator -> "enabled".equalsIgnoreCase(operator.status()))
                 .filter(operator -> parseAdminId(operator.id()).isPresent())
                 .toList();
@@ -358,8 +393,41 @@ public class OpsSupportAgentService {
                 .findFirst();
     }
 
-    private String defaultPosition() {
-        return "一线客服";
+    private ApiResult<SupportAgentAssignmentView> requireAdvisorAssignmentAuthorization(Long targetAdminId) {
+        AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
+        if (actor == null) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_FORBIDDEN");
+        }
+        String actorRole = normalizedRole(actor.role());
+        if ("super".equals(actorRole) || "support_manager".equals(actorRole)) {
+            return null;
+        }
+        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_FORBIDDEN");
+    }
+
+    private String defaultPosition(String role) {
+        return switch (normalizedRole(role)) {
+            case "support_manager" -> "客服主管";
+            case ROLE_SUPPORT_DEDICATED -> "专属客服";
+            case "support_general", "support" -> "通用客服";
+            default -> "通用客服";
+        };
+    }
+
+    private List<String> defaultServiceTypes(String role) {
+        return ROLE_SUPPORT_DEDICATED.equals(normalizedRole(role)) ? List.of("advisor") : List.of("support");
+    }
+
+    private int defaultMaxConcurrent(String role) {
+        return ROLE_SUPPORT_DEDICATED.equals(normalizedRole(role)) ? 30 : 12;
+    }
+
+    private boolean dedicatedSupportRole(String role) {
+        return ROLE_SUPPORT_DEDICATED.equals(normalizedRole(role));
+    }
+
+    private String normalizedRole(String role) {
+        return StringUtils.hasText(role) ? role.trim().toLowerCase(Locale.ROOT).replace('-', '_') : "";
     }
 
     private Optional<Long> parseAdminId(String value) {

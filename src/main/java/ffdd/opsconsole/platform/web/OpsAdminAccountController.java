@@ -43,7 +43,7 @@ public class OpsAdminAccountController {
     }
 
     @PatchMapping("/accounts/{accountId}/role")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAnyAuthority('PERM_SYSTEM_WRITE','PERM_SUPPORT_SEAT_WRITE')")
     public ApiResult<AdminAccountOverview.OperatorRecord> changeRole(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,

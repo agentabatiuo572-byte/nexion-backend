@@ -31,6 +31,32 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
     List<String> selectActivePermissionCodes(Long adminId);
 
     @Insert("""
+            INSERT INTO nx_admin_role (
+                role_code,
+                role_name,
+                remark,
+                status,
+                is_deleted
+            )
+            VALUES (
+                #{roleCode},
+                #{roleName},
+                #{remark},
+                1,
+                0
+            )
+            ON DUPLICATE KEY UPDATE
+                role_name = VALUES(role_name),
+                remark = VALUES(remark),
+                status = 1,
+                is_deleted = 0,
+                updated_at = NOW()
+            """)
+    int ensureRole(@Param("roleCode") String roleCode,
+                   @Param("roleName") String roleName,
+                   @Param("remark") String remark);
+
+    @Insert("""
             INSERT INTO nx_admin_permission (
                 permission_code,
                 permission_name,

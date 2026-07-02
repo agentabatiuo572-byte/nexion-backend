@@ -77,6 +77,11 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     }
 
     @Override
+    public boolean userExists(Long userId) {
+        return userId != null && mapper.countActiveUser(userId) > 0;
+    }
+
+    @Override
     public List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds) {
         return mapper.listActiveAssignments(agentAdminIds == null ? List.of() : agentAdminIds);
     }

@@ -111,6 +111,32 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void permitsSupportSeatRoleMutationWithSeatPermissionOnly() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("PERM_SYSTEM_READ", "PERM_SUPPORT_SEAT_WRITE");
+
+        filter.doFilter(
+                request("PATCH", "/api/admin/platform/accounts/6/role"),
+                new MockHttpServletResponse(),
+                mark(invoked));
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
+    void rejectsSupportSeatRoleMutationWithSystemReadOnly() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        authenticate("PERM_SYSTEM_READ");
+
+        filter.doFilter(request("PATCH", "/api/admin/platform/accounts/6/role"), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
+    }
+
+    @Test
     void permitsEmergencyControlReadWhenEmergencyReadAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         authenticate("PERM_EMERGENCY_READ");

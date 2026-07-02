@@ -32,6 +32,8 @@ public interface SupportAgentRepository {
 
     long countActiveAssignments(Long agentAdminId);
 
+    boolean userExists(Long userId);
+
     List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds);
 
     SupportAgentAssignmentView upsertAssignment(
