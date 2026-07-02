@@ -124,13 +124,14 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void disabledReadTimeSeedsRequireConfiguredE3TradeinCliff() {
+    void disabledReadTimeSeedsStillReadE3TradeinOverviewWhenCliffMissing() {
         OpsDeviceService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
 
         ApiResult<DeviceTradeinOverviewView> result = realOnlyService.e3TradeinOverview();
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("E3_STAGE_MID_END_NOT_CONFIGURED");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isNotNull();
+        assertThat(deviceRepository.lastTradeinCliffMonth).isEqualTo(1);
     }
 
     @Test
@@ -249,6 +250,7 @@ class OpsDeviceServiceTest {
                 .containsExactly("recycle", "replace", "deactivate");
         assertThat(deviceRepository.lastTradeinSince).isEqualTo(LocalDateTime.now(clock).minusHours(24));
         assertThat(deviceRepository.lastTradeinMonthStart).isEqualTo(LocalDateTime.of(2026, 6, 1, 0, 0));
+        assertThat(deviceRepository.lastTradeinCliffMonth).isEqualTo(9);
     }
 
     @Test
@@ -1167,6 +1169,7 @@ class OpsDeviceServiceTest {
         private String lastTradeinOperation;
         private LocalDateTime lastTradeinSince;
         private LocalDateTime lastTradeinMonthStart;
+        private int lastTradeinCliffMonth;
         private String lastConfigValueType;
 
         @Override
@@ -1199,6 +1202,7 @@ class OpsDeviceServiceTest {
         public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth) {
             lastTradeinSince = since;
             lastTradeinMonthStart = monthStart;
+            lastTradeinCliffMonth = cliffMonth;
             return new DeviceTradeinOverviewView(
                     new BigDecimal("5.2"),
                     3L,

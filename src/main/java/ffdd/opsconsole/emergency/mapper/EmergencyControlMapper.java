@@ -356,14 +356,18 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
     List<Map<String, Object>> geoEndpointHits();
 
     @Select("""
-            SELECT CONCAT('边缘源 ', COALESCE(source, 'unknown')) AS `key`,
-                   CONCAT(SUM(event_count), ' 次 / 24h') AS value,
+            SELECT CONCAT('边缘源 ', edge.sourceKey) AS `key`,
+                   CONCAT(edge.totalCount, ' 次 / 24h') AS value,
                    'ok' AS tone
-              FROM nx_emergency_geo_block_event
-             WHERE is_deleted = 0
-               AND recorded_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
-             GROUP BY COALESCE(source, 'unknown')
-             ORDER BY SUM(event_count) DESC
+              FROM (
+                    SELECT COALESCE(source, 'unknown') AS sourceKey,
+                           SUM(event_count) AS totalCount
+                      FROM nx_emergency_geo_block_event
+                     WHERE is_deleted = 0
+                       AND recorded_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                     GROUP BY COALESCE(source, 'unknown')
+                   ) edge
+             ORDER BY edge.totalCount DESC
              LIMIT 6
             """)
     List<Map<String, Object>> geoEdgeMetrics();

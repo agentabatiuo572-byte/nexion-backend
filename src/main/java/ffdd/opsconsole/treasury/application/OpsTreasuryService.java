@@ -116,10 +116,10 @@ public class OpsTreasuryService {
         LocalDateTime prev24hStart = now.minusHours(48);
         BigDecimal reserveUsd = safe(ledgerRepository.currentReserveUsd());
         BigDecimal nexUsdRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
-        BigDecimal redlinePct = requiredConfigDecimal(REDLINE_CONFIG_KEY);
-        BigDecimal healthyPct = requiredConfigDecimal(HEALTHY_CONFIG_KEY);
-        BigDecimal runRiskPct = requiredConfigDecimal(RUN_RISK_CONFIG_KEY);
-        String scope = requiredConfigValue(SCOPE_CONFIG_KEY);
+        BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
+        BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
+        BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
+        String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
 
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
         BigDecimal userBalanceUsd = safe(ledgerRepository.sumUsdtAvailable());
@@ -162,7 +162,7 @@ public class OpsTreasuryService {
                         "nx_nex_lock_order",
                         "nx_config_item:wallet.dual-ledger.safety-thresholds",
                         "H1 growth rhythm facade"));
-        response.put("h1Rhythm", GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).summary());
+        response.put("h1Rhythm", bRhythmSummary());
         response.put("snapshot", section(
                 "reserveUsd", money(reserveUsd),
                 "liabilitiesUsd", money(liabilitiesUsd),
@@ -185,6 +185,13 @@ public class OpsTreasuryService {
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
                 "avgRiskScore", avgRiskScore.longValue()));
         return response;
+    }
+
+    private Map<String, Object> bRhythmSummary() {
+        Map<String, Object> summary = new LinkedHashMap<>(GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).summary());
+        String currentPhase = String.valueOf(summary.getOrDefault("currentPhase", ""));
+        summary.put("currentPhaseName", StringUtils.hasText(currentPhase) ? currentPhase : "未配置");
+        return summary;
     }
 
     public ApiResult<Map<String, Object>> bDomainDashboard() {
@@ -677,11 +684,16 @@ public class OpsTreasuryService {
     }
 
     private List<Map<String, Object>> funnelStagesFromOrders(LocalDateTime since) {
-        return List.of(
+        List<Map<String, Object>> stages = new ArrayList<>(List.of(
                 funnelStage("deposit", "入金", ledgerRepository.countDeposits(since, null), "nx_deposit_order", "var(--brand)"),
                 funnelStage("exchange", "兑换", ledgerRepository.countExchanges(since, null), "nx_exchange_order", "var(--cyan)"),
                 funnelStage("withdraw", "提现", ledgerRepository.countWithdrawals(since, null), "nx_withdrawal_order", "var(--warning)"),
-                funnelStage("ledger", "账本流水", ledgerRepository.countLedgers(since, null), "nx_wallet_ledger", "var(--success)"));
+                funnelStage("ledger", "账本流水", ledgerRepository.countLedgers(since, null), "nx_wallet_ledger", "var(--success)")));
+        for (int i = 0; i < stages.size(); i++) {
+            Object previousCount = i == 0 ? stages.get(i).get("ct") : stages.get(i - 1).get("ct");
+            stages.get(i).put("prevCount", previousCount);
+        }
+        return stages;
     }
 
     private Map<String, Object> funnelStage(String key, String name, long count, String source, String color) {
@@ -982,7 +994,7 @@ public class OpsTreasuryService {
     private String configValue(String key, String fallback) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
-                .orElse("");
+                .orElse(fallback);
     }
 
     private BigDecimal parseDecimal(String value, BigDecimal fallback) {

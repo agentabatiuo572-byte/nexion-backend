@@ -339,15 +339,15 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     Map<String, Object> ambassadorSummary();
 
     @Select("""
-            SELECT ranked.rank AS rank,
+            SELECT ranked.rank_no AS `rank`,
                    CONCAT('U', LPAD(ranked.member_user_id, 8, '0')) AS userId,
                    CONCAT('$', ROUND(ranked.volume, 0)) AS gmvLabel,
                    COALESCE(a.reason, '本期 GV') AS tip,
-                   CASE WHEN a.action_type IS NULL THEN CONCAT('r-', ranked.rank) ELSE CONCAT('r-', ranked.rank, ' dq') END AS className
+                   CASE WHEN a.action_type IS NULL THEN CONCAT('r-', ranked.rank_no) ELSE CONCAT('r-', ranked.rank_no, ' dq') END AS className
               FROM (
                     SELECT member_user_id,
                            volume,
-                           ROW_NUMBER() OVER (ORDER BY volume DESC, id ASC) AS rank
+                           ROW_NUMBER() OVER (ORDER BY volume DESC, id ASC) AS rank_no
                       FROM nx_team_member
                      WHERE is_deleted = 0
                    ) ranked
@@ -356,8 +356,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND a.is_deleted = 0
                AND a.period = 'week'
                AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
-             WHERE ranked.rank <= #{limit}
-             ORDER BY ranked.rank ASC
+             WHERE ranked.rank_no <= #{limit}
+             ORDER BY ranked.rank_no ASC
             """)
     List<Map<String, Object>> leaderboardPodium(@Param("limit") int limit);
 

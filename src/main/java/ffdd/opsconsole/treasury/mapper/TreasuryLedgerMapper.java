@@ -183,7 +183,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                        AND status IN ('PENDING', 'REVIEWING', 'PENDING_CHAIN', 'CHAIN_SUBMITTED')
                        AND COALESCE(next_broadcast_at, chain_submitted_at, created_at) >= #{startAt}
                        AND COALESCE(next_broadcast_at, chain_submitted_at, created_at) < #{endAt}
-                     GROUP BY DATE(COALESCE(next_broadcast_at, chain_submitted_at, created_at))
+                     GROUP BY DATE_FORMAT(DATE(COALESCE(next_broadcast_at, chain_submitted_at, created_at)), '%Y-%m-%d')
                     UNION ALL
                     SELECT DATE_FORMAT(DATE(unlock_at), '%Y-%m-%d') AS day,
                            0 AS withdrawUsd,
@@ -193,7 +193,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                        AND status IN ('ACTIVE', 'LOCKED')
                        AND unlock_at >= #{startAt}
                        AND unlock_at < #{endAt}
-                     GROUP BY DATE(unlock_at)
+                     GROUP BY DATE_FORMAT(DATE(unlock_at), '%Y-%m-%d')
               ) buckets
              GROUP BY day
              ORDER BY day ASC
@@ -201,12 +201,16 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     List<Map<String, Object>> maturityBuckets(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);
 
     @Select("""
-            SELECT COALESCE(AVG(risk_score), 0) AS value
-              FROM nx_risk_decision
-             WHERE is_deleted = 0
-               AND created_at >= #{since}
-             GROUP BY DATE(created_at)
-             ORDER BY DATE(created_at) ASC
+            SELECT avgScore AS value
+              FROM (
+                    SELECT DATE(created_at) AS riskDay,
+                           COALESCE(AVG(risk_score), 0) AS avgScore
+                      FROM nx_risk_decision
+                     WHERE is_deleted = 0
+                       AND created_at >= #{since}
+                     GROUP BY DATE(created_at)
+              ) buckets
+             ORDER BY riskDay ASC
             """)
     List<BigDecimal> riskPressureSeries(@Param("since") LocalDateTime since);
 
@@ -257,13 +261,17 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     List<Map<String, Object>> riskSeverityBuckets(@Param("since") LocalDateTime since);
 
     @Select("""
-            SELECT DATE_FORMAT(DATE(created_at), '%m-%d') AS label,
-                   COUNT(1) AS count
-              FROM nx_risk_decision
-             WHERE is_deleted = 0
-               AND created_at >= #{since}
-             GROUP BY DATE(created_at)
-             ORDER BY DATE(created_at) ASC
+            SELECT DATE_FORMAT(riskDay, '%m-%d') AS label,
+                   count
+              FROM (
+                    SELECT DATE(created_at) AS riskDay,
+                           COUNT(1) AS count
+                      FROM nx_risk_decision
+                     WHERE is_deleted = 0
+                       AND created_at >= #{since}
+                     GROUP BY DATE(created_at)
+              ) buckets
+             ORDER BY riskDay ASC
             """)
     List<Map<String, Object>> riskVolumeBuckets(@Param("since") LocalDateTime since);
 

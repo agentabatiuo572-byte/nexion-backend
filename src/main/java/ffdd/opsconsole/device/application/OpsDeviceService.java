@@ -939,9 +939,6 @@ public class OpsDeviceService {
 
     public ApiResult<DeviceTradeinOverviewView> e3TradeinOverview() {
         Map<String, String> config = deviceRepository.e3Config();
-        if (!readTimeSeedPolicy.enabled() && !StringUtils.hasText(config.get("stageMidEnd"))) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E3_STAGE_MID_END_NOT_CONFIGURED");
-        }
         int cliffMonth = parsePositiveInt(config.get("stageMidEnd"), 0) + 1;
         LocalDateTime now = LocalDateTime.now(clock);
         return ApiResult.ok(deviceRepository.e3TradeinOverview(
