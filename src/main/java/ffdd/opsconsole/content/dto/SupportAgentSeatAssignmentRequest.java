@@ -1,10 +1,8 @@
-package ffdd.opsconsole.content.domain;
+package ffdd.opsconsole.content.dto;
 
 import java.util.List;
 
-public record SupportAgentProfileRecord(
-        Long adminId,
-        String seatType,
+public record SupportAgentSeatAssignmentRequest(
         String position,
         List<String> serviceTypes,
         List<String> tags,
@@ -12,5 +10,8 @@ public record SupportAgentProfileRecord(
         Boolean enabled,
         Boolean transferable,
         Boolean busy,
-        String updatedAt) {
+        List<Long> userIds,
+        String assignmentType,
+        String operator,
+        String reason) {
 }

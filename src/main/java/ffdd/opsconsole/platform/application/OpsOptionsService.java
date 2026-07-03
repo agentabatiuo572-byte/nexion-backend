@@ -114,7 +114,15 @@ public class OpsOptionsService {
         if (!databaseRoles.isEmpty()) {
             return databaseRoles;
         }
-        return options("超级管理员", "SUPER_ADMIN", "运营管理员", "OPS_ADMIN", "财务审核员", "FINANCE_REVIEWER", "客服主管", "SUPPORT_LEAD", "风控专员", "RISK_ANALYST");
+        return options(
+                "超级管理员", "SUPER_ADMIN",
+                "配置运营", "CONFIG_ADMIN",
+                "财务", "FINANCE",
+                "风控", "RISK",
+                "内容运营", "CONTENT",
+                "增长运营", "GROWTH",
+                "客服", "SUPPORT",
+                "只读审计", "AUDITOR");
     }
 
     private List<AdminOption> permissionOptions() {

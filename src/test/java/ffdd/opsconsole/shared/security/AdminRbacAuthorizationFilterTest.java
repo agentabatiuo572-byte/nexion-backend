@@ -111,9 +111,24 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
-    void permitsSupportSeatRoleMutationWithSeatPermissionOnly() throws Exception {
+    void rejectsA1RoleMutationWithLegacySeatPermissionOnly() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
         authenticate("PERM_SYSTEM_READ", "PERM_SUPPORT_SEAT_WRITE");
+
+        filter.doFilter(
+                request("PATCH", "/api/admin/platform/accounts/6/role"),
+                response,
+                mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void permitsA1RoleMutationWithSystemWriteAuthority() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE");
 
         filter.doFilter(
                 request("PATCH", "/api/admin/platform/accounts/6/role"),

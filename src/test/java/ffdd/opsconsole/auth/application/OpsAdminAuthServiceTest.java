@@ -67,7 +67,8 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().operator()).isEqualTo("Super Admin");
         assertThat(result.getData().session().role()).isEqualTo("superadmin");
         assertThat(result.getData().session().authorities())
-                .contains("PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", "PERM_SUPPORT_SEAT_WRITE", "PERM_USER_READ");
+                .contains("PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", "PERM_USER_READ")
+                .doesNotContain("PERM_SUPPORT_SEAT_WRITE");
         Claims claims = tokenProvider.parse(result.getData().accessToken());
         assertThat(claims.get("subjectType")).isEqualTo("ADMIN");
         assertThat(claims.get("sessionId")).isEqualTo("admin-session-1");

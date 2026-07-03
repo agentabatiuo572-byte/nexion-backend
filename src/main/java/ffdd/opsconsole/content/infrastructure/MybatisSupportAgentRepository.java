@@ -22,6 +22,10 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     @Override
     public void ensureSchema() {
         mapper.createProfileTable();
+        if (mapper.countSeatTypeColumn() == 0) {
+            mapper.addSeatTypeColumn();
+        }
+        mapper.backfillSeatType();
         mapper.createAssignmentTable();
     }
 
@@ -40,17 +44,19 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     @Override
     public void ensureDefaultProfile(
             Long adminId,
+            String seatType,
             String position,
             List<String> serviceTypes,
             List<String> tags,
             int maxConcurrent,
             LocalDateTime now) {
-        mapper.ensureDefaultProfile(adminId, position, join(serviceTypes), join(tags), maxConcurrent, now);
+        mapper.ensureDefaultProfile(adminId, seatType, position, join(serviceTypes), join(tags), maxConcurrent, now);
     }
 
     @Override
     public void updateProfile(
             Long adminId,
+            String seatType,
             String position,
             List<String> serviceTypes,
             List<String> tags,
@@ -61,6 +67,7 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
             LocalDateTime now) {
         mapper.updateProfile(
                 adminId,
+                seatType,
                 position,
                 join(serviceTypes),
                 join(tags),
@@ -118,6 +125,7 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     private SupportAgentProfileRecord toProfileRecord(SupportAgentProfileRow row) {
         return new SupportAgentProfileRecord(
                 row.adminId(),
+                row.seatType(),
                 row.position(),
                 split(row.serviceTypes()),
                 split(row.tags()),

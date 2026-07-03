@@ -12,6 +12,7 @@ import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
+import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
 import ffdd.opsconsole.platform.application.OpsAdminAccountService;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -31,18 +32,23 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsSupportAgentService {
-    private static final List<String> POSITIONS = List.of("通用客服", "专属客服", "客服主管", "一线客服", "技术支持", "合规客服", "专属顾问");
+    private static final String POSITION_MANAGER = "客服主管";
+    private static final String POSITION_DEDICATED = "专属客服";
+    private static final String POSITION_GENERAL = "通用客服";
+    private static final String SEAT_MANAGER = "MANAGER";
+    private static final String SEAT_DEDICATED = "DEDICATED";
+    private static final String SEAT_GENERAL = "GENERAL";
+    private static final List<String> POSITIONS = List.of(POSITION_MANAGER, POSITION_DEDICATED, POSITION_GENERAL);
     private static final List<String> SERVICE_TYPES = List.of("support", "advisor");
     private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "KYC");
     private static final Set<String> ASSIGNMENT_TYPES = Set.of("PRIMARY", "BACKUP");
-    private static final String ROLE_SUPPORT_DEDICATED = "support_dedicated";
-    private static final Set<String> SUPPORT_OPERATOR_ROLES =
-            Set.of("support", "support_manager", ROLE_SUPPORT_DEDICATED, "support_general");
+    private static final Set<String> SUPPORT_OPERATOR_ROLES = Set.of("support");
 
     private final SupportAgentRepository repository;
     private final OpsAdminAccountService accountService;
@@ -100,7 +106,7 @@ public class OpsSupportAgentService {
         List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
         ensureDefaultProfiles(operators);
         List<SupportAgentProfileView> agents = profileViews(operators).stream()
-                .filter(agent -> dedicatedSupportRole(agent.adminRole()))
+                .filter(agent -> dedicatedSupportSeat(agent.seatType()))
                 .filter(agent -> agent.serviceTypes().contains("advisor"))
                 .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
                 .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
@@ -159,6 +165,7 @@ public class OpsSupportAgentService {
                 "NO_ADVISOR_AVAILABLE");
     }
 
+    @Transactional
     public ApiResult<SupportAgentProfileView> updateProfile(
             Long adminId,
             String idempotencyKey,
@@ -172,14 +179,24 @@ public class OpsSupportAgentService {
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
+        SupportAgentProfileRecord currentProfile = repository.findProfile(adminId).orElse(null);
+        String seatType = currentProfile == null
+                ? defaultSeatType()
+                : normalizeSeatType(currentProfile.seatType(), currentProfile.position());
+        String position = positionForSeatType(seatType);
+        ApiResult<SupportAgentProfileView> authorization = requireSeatMutationAuthorization(adminId, seatType);
+        if (authorization != null) {
+            return authorization;
+        }
         LocalDateTime now = LocalDateTime.now(clock);
-        List<String> serviceTypes = normalizeServiceTypes(request.serviceTypes());
+        List<String> serviceTypes = normalizeSeatServiceTypes(seatType, request.serviceTypes());
         List<String> tags = normalizeTags(request.tags());
         int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, 10);
-        repository.ensureDefaultProfile(adminId, request.position().trim(), serviceTypes, tags, maxConcurrent, now);
+        repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
         repository.updateProfile(
                 adminId,
-                request.position().trim(),
+                seatType,
+                position,
                 serviceTypes,
                 tags,
                 maxConcurrent,
@@ -197,6 +214,78 @@ public class OpsSupportAgentService {
         return ApiResult.ok(view);
     }
 
+    @Transactional
+    public ApiResult<SupportAgentProfileView> assignSeat(
+            Long adminId,
+            String idempotencyKey,
+            SupportAgentSeatAssignmentRequest request) {
+        repository.ensureSchema();
+        ApiResult<SupportAgentProfileView> guard = requireSeatAssignmentCommand(adminId, idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
+        if (operator == null) {
+            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
+        }
+        String position = canonicalPosition(request.position());
+        String seatType = seatTypeForPosition(position);
+        ApiResult<SupportAgentProfileView> authorization = requireSeatMutationAuthorization(adminId, seatType);
+        if (authorization != null) {
+            return authorization;
+        }
+        List<Long> userIds = normalizeUserIds(request.userIds());
+        if (SEAT_DEDICATED.equals(seatType) && userIds.isEmpty()) {
+            return ApiResult.fail(422, "SUPPORT_SEAT_DEDICATED_USERS_REQUIRED");
+        }
+        for (Long userId : userIds) {
+            if (!repository.userExists(userId)) {
+                return ApiResult.fail(404, "SUPPORT_ADVISOR_USER_NOT_FOUND");
+            }
+        }
+
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<String> serviceTypes = normalizeSeatServiceTypes(seatType, request.serviceTypes());
+        List<String> tags = normalizeTags(request.tags());
+        int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, SEAT_DEDICATED.equals(seatType) ? 30 : 12);
+        repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
+        repository.updateProfile(
+                adminId,
+                seatType,
+                position,
+                serviceTypes,
+                tags,
+                maxConcurrent,
+                !Boolean.FALSE.equals(request.enabled()),
+                !Boolean.FALSE.equals(request.transferable()),
+                Boolean.TRUE.equals(request.busy()),
+                now);
+        List<Long> boundUserIds = new ArrayList<>();
+        if (SEAT_DEDICATED.equals(seatType)) {
+            String assignmentType = normalizeAssignmentType(request.assignmentType());
+            for (Long userId : userIds) {
+                repository.upsertAssignment(
+                        adminId,
+                        userId,
+                        assignmentType,
+                        operator(request.operator()),
+                        request.reason().trim(),
+                        now);
+                boundUserIds.add(userId);
+            }
+        }
+        SupportAgentProfileView view = profileView(operator, repository.findProfile(adminId).orElseThrow());
+        audit("M1_SUPPORT_SEAT_ASSIGNED", "SUPPORT_AGENT_PROFILE", String.valueOf(adminId), request.operator(), Map.of(
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim(),
+                "seatType", view.seatType(),
+                "position", view.position(),
+                "serviceTypes", view.serviceTypes(),
+                "boundUserIds", boundUserIds));
+        return ApiResult.ok(view);
+    }
+
+    @Transactional
     public ApiResult<SupportAgentAssignmentView> assignAdvisorUser(
             Long adminId,
             String idempotencyKey,
@@ -210,7 +299,11 @@ public class OpsSupportAgentService {
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
-        if (!dedicatedSupportRole(operator.role())) {
+        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
+        if (profile == null) {
+            return ApiResult.fail(404, "SUPPORT_AGENT_PROFILE_NOT_CONFIGURED");
+        }
+        if (!dedicatedSupportSeat(profile.seatType())) {
             return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
         }
         ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
@@ -221,10 +314,6 @@ public class OpsSupportAgentService {
             return ApiResult.fail(404, "SUPPORT_ADVISOR_USER_NOT_FOUND");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
-        if (profile == null) {
-            return ApiResult.fail(404, "SUPPORT_AGENT_PROFILE_NOT_CONFIGURED");
-        }
         if (!profile.serviceTypes().contains("advisor")) {
             return ApiResult.fail(422, "SUPPORT_AGENT_NOT_ADVISOR");
         }
@@ -243,6 +332,7 @@ public class OpsSupportAgentService {
         return ApiResult.ok(assignment);
     }
 
+    @Transactional
     public ApiResult<SupportAgentAssignmentView> deactivateAdvisorAssignment(
             Long adminId,
             Long assignmentId,
@@ -263,7 +353,8 @@ public class OpsSupportAgentService {
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
-        if (!dedicatedSupportRole(operator.role())) {
+        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
+        if (profile == null || !dedicatedSupportSeat(profile.seatType())) {
             return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
         }
         ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
@@ -318,10 +409,11 @@ public class OpsSupportAgentService {
         for (AdminAccountOverview.OperatorRecord operator : operators) {
             parseAdminId(operator.id()).ifPresent(adminId -> repository.ensureDefaultProfile(
                     adminId,
-                    defaultPosition(operator.role()),
-                    defaultServiceTypes(operator.role()),
+                    defaultSeatType(),
+                    defaultPosition(),
+                    defaultServiceTypes(),
                     DEFAULT_TAGS,
-                    defaultMaxConcurrent(operator.role()),
+                    defaultMaxConcurrent(),
                     now));
         }
     }
@@ -337,6 +429,7 @@ public class OpsSupportAgentService {
                 operator.email(),
                 operator.role(),
                 operator.status(),
+                normalizeSeatType(profile.seatType(), profile.position()),
                 profile.position(),
                 profile.serviceTypes(),
                 profile.tags(),
@@ -399,31 +492,108 @@ public class OpsSupportAgentService {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_FORBIDDEN");
         }
         String actorRole = normalizedRole(actor.role());
-        if ("super".equals(actorRole) || "support_manager".equals(actorRole)) {
+        if ("super".equals(actorRole) || "superadmin".equals(actorRole)) {
+            return null;
+        }
+        if (supportSeatSupervisor(actor) && !String.valueOf(targetAdminId).equals(actor.id())) {
             return null;
         }
         return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_FORBIDDEN");
     }
 
-    private String defaultPosition(String role) {
-        return switch (normalizedRole(role)) {
-            case "support_manager" -> "客服主管";
-            case ROLE_SUPPORT_DEDICATED -> "专属客服";
-            case "support_general", "support" -> "通用客服";
-            default -> "通用客服";
+    private ApiResult<SupportAgentProfileView> requireSeatMutationAuthorization(Long targetAdminId, String seatType) {
+        AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
+        if (actor == null) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_ASSIGNMENT_FORBIDDEN");
+        }
+        String actorRole = normalizedRole(actor.role());
+        if ("super".equals(actorRole) || "superadmin".equals(actorRole)) {
+            return null;
+        }
+        if (!"support".equals(actorRole) || !supportSeatSupervisor(actor)) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_ASSIGNMENT_FORBIDDEN");
+        }
+        if (String.valueOf(targetAdminId).equals(actor.id())) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_ASSIGNMENT_SELF_FORBIDDEN");
+        }
+        if (SEAT_MANAGER.equals(seatType)) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGER_ASSIGNMENT_SUPER_ONLY");
+        }
+        return null;
+    }
+
+    private boolean supportSeatSupervisor(AdminAccountOverview.OperatorRecord actor) {
+        Long actorAdminId = parseAdminId(actor.id()).orElse(null);
+        if (actorAdminId == null) {
+            return false;
+        }
+        return repository.findProfile(actorAdminId)
+                .map(profile -> normalizeSeatType(profile.seatType(), profile.position()))
+                .filter(SEAT_MANAGER::equals)
+                .isPresent();
+    }
+
+    private String defaultSeatType() {
+        return SEAT_GENERAL;
+    }
+
+    private String defaultPosition() {
+        return POSITION_GENERAL;
+    }
+
+    private List<String> defaultServiceTypes() {
+        return List.of("support");
+    }
+
+    private int defaultMaxConcurrent() {
+        return 12;
+    }
+
+    private boolean dedicatedSupportSeat(String seatType) {
+        return SEAT_DEDICATED.equals(normalizeSeatType(seatType, null));
+    }
+
+    private String seatTypeForPosition(String position) {
+        return switch (canonicalPosition(position)) {
+            case POSITION_MANAGER -> SEAT_MANAGER;
+            case POSITION_DEDICATED -> SEAT_DEDICATED;
+            default -> SEAT_GENERAL;
         };
     }
 
-    private List<String> defaultServiceTypes(String role) {
-        return ROLE_SUPPORT_DEDICATED.equals(normalizedRole(role)) ? List.of("advisor") : List.of("support");
+    private String positionForSeatType(String seatType) {
+        return switch (normalizeSeatType(seatType, null)) {
+            case SEAT_MANAGER -> POSITION_MANAGER;
+            case SEAT_DEDICATED -> POSITION_DEDICATED;
+            default -> POSITION_GENERAL;
+        };
     }
 
-    private int defaultMaxConcurrent(String role) {
-        return ROLE_SUPPORT_DEDICATED.equals(normalizedRole(role)) ? 30 : 12;
+    private String normalizeSeatType(String seatType, String position) {
+        if (StringUtils.hasText(seatType)) {
+            String normalized = seatType.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+            if (List.of(SEAT_MANAGER, SEAT_DEDICATED, SEAT_GENERAL).contains(normalized)) {
+                return normalized;
+            }
+        }
+        return seatTypeForPosition(position);
     }
 
-    private boolean dedicatedSupportRole(String role) {
-        return ROLE_SUPPORT_DEDICATED.equals(normalizedRole(role));
+    private String canonicalPosition(String position) {
+        if (!StringUtils.hasText(position)) {
+            return POSITION_GENERAL;
+        }
+        String raw = position.trim();
+        if (POSITIONS.contains(raw)) {
+            return raw;
+        }
+        if (raw.contains("主管")) {
+            return POSITION_MANAGER;
+        }
+        if (raw.contains("专属") || raw.contains("顾问")) {
+            return POSITION_DEDICATED;
+        }
+        return POSITION_GENERAL;
     }
 
     private String normalizedRole(String role) {
@@ -451,14 +621,39 @@ public class OpsSupportAgentService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_REQUIRED");
+        }
+        if (StringUtils.hasText(request.position()) && request.position().trim().length() > 64) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_TOO_LONG");
+        }
+        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (!StringUtils.hasText(request.operator())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATOR_REQUIRED");
+        }
+        return null;
+    }
+
+    private ApiResult<SupportAgentProfileView> requireSeatAssignmentCommand(
+            Long adminId,
+            String idempotencyKey,
+            SupportAgentSeatAssignmentRequest request) {
+        if (adminId == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_REQUIRED");
+        }
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
         if (request == null || !StringUtils.hasText(request.position())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_REQUIRED");
         }
         if (request.position().trim().length() > 64) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_TOO_LONG");
         }
-        if (normalizeServiceTypes(request.serviceTypes()).isEmpty()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_SERVICE_TYPE_REQUIRED");
+        if (!ASSIGNMENT_TYPES.contains(normalizeAssignmentType(request.assignmentType()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_TYPE_INVALID");
         }
         if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
@@ -501,6 +696,26 @@ public class OpsSupportAgentService {
                 .filter(SERVICE_TYPES::contains)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         return new ArrayList<>(result);
+    }
+
+    private List<String> normalizeSeatServiceTypes(String seatType, List<String> serviceTypes) {
+        List<String> normalized = normalizeServiceTypes(serviceTypes);
+        if (SEAT_DEDICATED.equals(seatType)) {
+            LinkedHashSet<String> result = new LinkedHashSet<>(normalized);
+            result.add("advisor");
+            return new ArrayList<>(result);
+        }
+        return List.of("support");
+    }
+
+    private List<Long> normalizeUserIds(List<Long> userIds) {
+        if (userIds == null) {
+            return List.of();
+        }
+        return userIds.stream()
+                .filter(userId -> userId != null && userId > 0)
+                .distinct()
+                .toList();
     }
 
     private List<String> normalizeTags(List<String> tags) {

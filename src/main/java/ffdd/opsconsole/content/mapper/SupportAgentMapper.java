@@ -15,6 +15,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             CREATE TABLE IF NOT EXISTS nx_support_agent_profile (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
               admin_id BIGINT NOT NULL,
+              seat_type VARCHAR(32) NOT NULL DEFAULT 'GENERAL',
               position VARCHAR(64) NOT NULL,
               service_types VARCHAR(255) NOT NULL,
               tags VARCHAR(255) NOT NULL,
@@ -30,6 +31,34 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createProfileTable();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_support_agent_profile'
+               AND COLUMN_NAME = 'seat_type'
+            """)
+    long countSeatTypeColumn();
+
+    @Update("""
+            ALTER TABLE nx_support_agent_profile
+            ADD COLUMN seat_type VARCHAR(32) NOT NULL DEFAULT 'GENERAL' AFTER admin_id
+            """)
+    int addSeatTypeColumn();
+
+    @Update("""
+            UPDATE nx_support_agent_profile
+               SET seat_type = CASE
+                   WHEN position LIKE '%主管%' THEN 'MANAGER'
+                   WHEN position LIKE '%专属%' OR position LIKE '%顾问%' THEN 'DEDICATED'
+                   ELSE 'GENERAL'
+               END
+             WHERE seat_type IS NULL
+                OR seat_type = ''
+                OR seat_type = 'GENERAL'
+            """)
+    int backfillSeatType();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_support_agent_user_assignment (
@@ -54,6 +83,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
     @Select("""
             <script>
             SELECT admin_id AS adminId,
+                   seat_type AS seatType,
                    position,
                    service_types AS serviceTypes,
                    tags,
@@ -82,6 +112,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
 
     @Select("""
             SELECT admin_id AS adminId,
+                   seat_type AS seatType,
                    position,
                    service_types AS serviceTypes,
                    tags,
@@ -98,10 +129,10 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
 
     @Insert("""
             INSERT INTO nx_support_agent_profile (
-              admin_id, position, service_types, tags, max_concurrent, enabled, transferable, busy,
+              admin_id, seat_type, position, service_types, tags, max_concurrent, enabled, transferable, busy,
               created_at, updated_at, is_deleted
             ) VALUES (
-              #{adminId}, #{position}, #{serviceTypes}, #{tags}, #{maxConcurrent}, 1, 1, 0,
+              #{adminId}, #{seatType}, #{position}, #{serviceTypes}, #{tags}, #{maxConcurrent}, 1, 1, 0,
               #{now}, #{now}, 0
             )
             ON DUPLICATE KEY UPDATE
@@ -109,6 +140,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
               updated_at=updated_at
             """)
     int ensureDefaultProfile(@Param("adminId") Long adminId,
+                             @Param("seatType") String seatType,
                              @Param("position") String position,
                              @Param("serviceTypes") String serviceTypes,
                              @Param("tags") String tags,
@@ -117,7 +149,8 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
 
     @Update("""
             UPDATE nx_support_agent_profile
-               SET position=#{position},
+               SET seat_type=#{seatType},
+                   position=#{position},
                    service_types=#{serviceTypes},
                    tags=#{tags},
                    max_concurrent=#{maxConcurrent},
@@ -129,6 +162,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
              WHERE admin_id=#{adminId}
             """)
     int updateProfile(@Param("adminId") Long adminId,
+                      @Param("seatType") String seatType,
                       @Param("position") String position,
                       @Param("serviceTypes") String serviceTypes,
                       @Param("tags") String tags,
@@ -295,6 +329,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
 
     record SupportAgentProfileRow(
             Long adminId,
+            String seatType,
             String position,
             String serviceTypes,
             String tags,

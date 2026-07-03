@@ -10,6 +10,7 @@ import lombok.EqualsAndHashCode;
 @TableName("nx_support_agent_profile")
 public class SupportAgentProfileEntity extends BaseEntity {
     private Long adminId;
+    private String seatType;
     private String position;
     private String serviceTypes;
     private String tags;

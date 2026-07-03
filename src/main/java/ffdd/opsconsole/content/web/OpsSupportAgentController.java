@@ -9,6 +9,7 @@ import ffdd.opsconsole.content.domain.SupportAgentProfileView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
+import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -43,6 +44,14 @@ public class OpsSupportAgentController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentProfileUpdateRequest request) {
         return supportAgentService.updateProfile(adminId, idempotencyKey, request);
+    }
+
+    @PatchMapping("/{adminId}/seat-assignment")
+    public ApiResult<SupportAgentProfileView> assignSeat(
+            @PathVariable Long adminId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody SupportAgentSeatAssignmentRequest request) {
+        return supportAgentService.assignSeat(adminId, idempotencyKey, request);
     }
 
     @PostMapping("/{adminId}/assignments")

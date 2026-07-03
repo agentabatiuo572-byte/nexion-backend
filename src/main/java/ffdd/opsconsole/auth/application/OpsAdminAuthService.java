@@ -29,7 +29,6 @@ public class OpsAdminAuthService {
     private static final List<String> SUPER_ADMIN_MONOLITH_AUTHORITIES = List.of(
             "PERM_SYSTEM_READ",
             "PERM_SYSTEM_WRITE",
-            "PERM_SUPPORT_SEAT_WRITE",
             "PERM_AUDIT_READ",
             "PERM_AUDIT_EXPORT",
             "PERM_TREASURY_READ",
@@ -169,15 +168,6 @@ public class OpsAdminAuthService {
         }
         if ("SUPPORT".equals(normalized)) {
             return "support";
-        }
-        if ("SUPPORT_MANAGER".equals(normalized)) {
-            return "support_manager";
-        }
-        if ("SUPPORT_DEDICATED".equals(normalized)) {
-            return "support_dedicated";
-        }
-        if ("SUPPORT_GENERAL".equals(normalized)) {
-            return "support_general";
         }
         if ("AUDITOR".equals(normalized) || "AUDIT".equals(normalized)) {
             return "auditor";

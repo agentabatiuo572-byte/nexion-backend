@@ -2,7 +2,6 @@ package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -14,6 +13,7 @@ import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
+import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
 import ffdd.opsconsole.platform.application.OpsAdminAccountService;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -49,8 +49,8 @@ class OpsSupportAgentServiceTest {
     void setUp() {
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
                 operator("1", "Root Admin", "super", "enabled"),
-                operator("2", "Support Agent", "support_dedicated", "enabled"),
-                operator("3", "Disabled Support", "support_general", "disabled"),
+                operator("2", "Support Agent", "support", "enabled"),
+                operator("3", "Disabled Support", "support", "disabled"),
                 operator("4", "Finance Agent", "finance", "enabled")))));
         when(accountService.currentOperator()).thenReturn(Optional.of(operator("1", "Root Admin", "super", "enabled")));
     }
@@ -58,13 +58,14 @@ class OpsSupportAgentServiceTest {
     @Test
     void overviewReadsExistingSupportProfilesOnly() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
 
         ApiResult<SupportAgentOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().agents()).extracting("adminId").containsExactly(2L);
-        assertThat(result.getData().agents().get(0).position()).isEqualTo("一线客服");
+        assertThat(result.getData().agents().get(0).seatType()).isEqualTo("GENERAL");
+        assertThat(result.getData().agents().get(0).position()).isEqualTo("通用客服");
         assertThat(result.getData().transferTargets())
                 .anySatisfy(target -> assertThat(target).containsEntry("targetType", "agent").containsEntry("targetId", "2"));
         assertThat(result.getData().sources()).contains("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment");
@@ -74,16 +75,16 @@ class OpsSupportAgentServiceTest {
     @Test
     void agentsReturnPagedBackendRowsAndCurrentPageAssignments() {
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
-                operator("2", "Support Agent A", "support_general", "enabled"),
-                operator("5", "Support Agent B", "support_dedicated", "enabled"),
-                operator("6", "Support Agent C", "support_general", "enabled"),
-                operator("7", "Support Agent D", "support_dedicated", "enabled"),
-                operator("8", "Disabled Support", "support_general", "disabled")))));
+                operator("2", "Support Agent A", "support", "enabled"),
+                operator("5", "Support Agent B", "support", "enabled"),
+                operator("6", "Support Agent C", "support", "enabled"),
+                operator("7", "Support Agent D", "support", "enabled"),
+                operator("8", "Disabled Support", "support", "disabled")))));
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
-        fake.updateProfile(5L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
-        fake.updateProfile(6L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
-        fake.updateProfile(7L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(5L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(6L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(7L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
         fake.assignments.add(new SupportAgentAssignmentView(10L, 2L, 1001L, "U00001001", "用户1001", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
         fake.assignments.add(new SupportAgentAssignmentView(11L, 6L, 1006L, "U00001006", "用户1006", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
 
@@ -100,22 +101,23 @@ class OpsSupportAgentServiceTest {
     @Test
     void updateProfileRequiresStructuredFieldsAndAudits() {
         SupportAgentProfileUpdateRequest request = new SupportAgentProfileUpdateRequest(
-                "专属顾问",
-                List.of("support", "advisor"),
+                "通用客服",
+                List.of("support"),
                 List.of("高价值用户", "KYC"),
                 16,
                 true,
                 true,
                 false,
                 "superadmin",
-                "调整专属顾问岗位");
+                "调整通用客服岗位");
 
         var result = service.updateProfile(2L, "idem-profile", request);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().adminId()).isEqualTo(2L);
-        assertThat(result.getData().position()).isEqualTo("专属顾问");
-        assertThat(result.getData().serviceTypes()).containsExactly("support", "advisor");
+        assertThat(result.getData().seatType()).isEqualTo("GENERAL");
+        assertThat(result.getData().position()).isEqualTo("通用客服");
+        assertThat(result.getData().serviceTypes()).containsExactly("support");
         assertThat(result.getData().maxConcurrent()).isEqualTo(16);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -125,9 +127,34 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void updateProfileDoesNotChangeSeatTypeFromProfilePayload() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 20, true, true, false, now());
+
+        SupportAgentProfileUpdateRequest request = new SupportAgentProfileUpdateRequest(
+                "通用客服",
+                List.of("support"),
+                List.of("夜班"),
+                14,
+                true,
+                true,
+                false,
+                "superadmin",
+                "调整接派单配置");
+
+        var result = service.updateProfile(2L, "idem-profile-seat-guard", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
+        assertThat(result.getData().position()).isEqualTo("专属客服");
+        assertThat(result.getData().serviceTypes()).contains("advisor");
+        assertThat(fake.findProfile(2L).orElseThrow().seatType()).isEqualTo("DEDICATED");
+    }
+
+    @Test
     void assignAdvisorRequiresAdvisorServiceType() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "一线客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("support"), List.of(), 12, true, true, false, now());
 
         var result = service.assignAdvisorUser(
                 2L,
@@ -139,47 +166,41 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
-    void assignAdvisorWritesUserBindingForAdvisor() {
-        service.updateProfile(2L, "idem-profile", new SupportAgentProfileUpdateRequest(
-                "专属顾问",
-                List.of("advisor"),
-                List.of("高价值用户"),
-                8,
-                true,
-                true,
-                false,
-                "superadmin",
-                "调整顾问服务类型"));
-
-        var result = service.assignAdvisorUser(
+    void assignSeatWritesDedicatedProfileAndUserBinding() {
+        var result = service.assignSeat(
                 2L,
-                "idem-assign",
-                new SupportAgentAssignmentRequest(1001L, "PRIMARY", "superadmin", "绑定专属顾问用户"));
+                "idem-seat",
+                new SupportAgentSeatAssignmentRequest(
+                        "专属客服",
+                        List.of("advisor"),
+                        List.of("高价值用户"),
+                        30,
+                        true,
+                        true,
+                        false,
+                        List.of(1001L),
+                        "PRIMARY",
+                        "superadmin",
+                        "分配专属客服并绑定用户"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().agentAdminId()).isEqualTo(2L);
-        assertThat(result.getData().userId()).isEqualTo(1001L);
-        assertThat(result.getData().userNo()).isEqualTo("U00001001");
+        assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
+        assertThat(result.getData().position()).isEqualTo("专属客服");
+        assertThat(((FakeSupportAgentRepository) repository).assignments)
+                .extracting(SupportAgentAssignmentView::userId)
+                .contains(1001L);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService, times(2)).record(captor.capture());
+        verify(auditLogService).record(captor.capture());
         assertThat(captor.getAllValues()).extracting(AuditLogWriteRequest::getAction)
-                .contains("M5_SUPPORT_ADVISOR_USER_BOUND");
+                .contains("M1_SUPPORT_SEAT_ASSIGNED");
     }
 
     @Test
     void assignAdvisorRejectsNonSupervisorActor() {
-        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support_dedicated", "enabled")));
-        service.updateProfile(2L, "idem-profile", new SupportAgentProfileUpdateRequest(
-                "专属顾问",
-                List.of("advisor"),
-                List.of("高价值用户"),
-                8,
-                true,
-                true,
-                false,
-                "superadmin",
-                "调整顾问服务类型"));
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support", "enabled")));
 
         var result = service.assignAdvisorUser(
                 2L,
@@ -192,16 +213,8 @@ class OpsSupportAgentServiceTest {
 
     @Test
     void assignAdvisorRejectsMissingBusinessUser() {
-        service.updateProfile(2L, "idem-profile", new SupportAgentProfileUpdateRequest(
-                "专属顾问",
-                List.of("advisor"),
-                List.of("高价值用户"),
-                8,
-                true,
-                true,
-                false,
-                "superadmin",
-                "调整顾问服务类型"));
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
 
         var result = service.assignAdvisorUser(
                 2L,
@@ -263,6 +276,7 @@ class OpsSupportAgentServiceTest {
         @Override
         public void ensureDefaultProfile(
                 Long adminId,
+                String seatType,
                 String position,
                 List<String> serviceTypes,
                 List<String> tags,
@@ -272,6 +286,7 @@ class OpsSupportAgentServiceTest {
                 seededAdminIds.add(adminId);
                 profiles.put(adminId, new SupportAgentProfileRecord(
                         adminId,
+                        seatType,
                         position,
                         serviceTypes,
                         tags,
@@ -286,6 +301,7 @@ class OpsSupportAgentServiceTest {
         @Override
         public void updateProfile(
                 Long adminId,
+                String seatType,
                 String position,
                 List<String> serviceTypes,
                 List<String> tags,
@@ -296,6 +312,7 @@ class OpsSupportAgentServiceTest {
                 LocalDateTime now) {
             profiles.put(adminId, new SupportAgentProfileRecord(
                     adminId,
+                    seatType,
                     position,
                     serviceTypes,
                     tags,

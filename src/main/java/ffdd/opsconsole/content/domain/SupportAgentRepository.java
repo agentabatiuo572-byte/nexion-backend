@@ -13,6 +13,7 @@ public interface SupportAgentRepository {
 
     void ensureDefaultProfile(
             Long adminId,
+            String seatType,
             String position,
             List<String> serviceTypes,
             List<String> tags,
@@ -21,6 +22,7 @@ public interface SupportAgentRepository {
 
     void updateProfile(
             Long adminId,
+            String seatType,
             String position,
             List<String> serviceTypes,
             List<String> tags,

@@ -65,9 +65,6 @@ public class OpsAdminAccountService {
             Map.entry("CONTENT", "content"),
             Map.entry("GROWTH", "growth"),
             Map.entry("SUPPORT", "support"),
-            Map.entry("SUPPORT_MANAGER", "support_manager"),
-            Map.entry("SUPPORT_DEDICATED", "support_dedicated"),
-            Map.entry("SUPPORT_GENERAL", "support_general"),
             Map.entry("AUDITOR", "audit"));
     private static final Map<String, String> ROLE_KEY_TO_CODE = Map.ofEntries(
             Map.entry("super", "SUPER_ADMIN"),
@@ -77,12 +74,7 @@ public class OpsAdminAccountService {
             Map.entry("content", "CONTENT"),
             Map.entry("growth", "GROWTH"),
             Map.entry("support", "SUPPORT"),
-            Map.entry("support_manager", "SUPPORT_MANAGER"),
-            Map.entry("support_dedicated", "SUPPORT_DEDICATED"),
-            Map.entry("support_general", "SUPPORT_GENERAL"),
             Map.entry("audit", "AUDITOR"));
-    private static final Set<String> SUPPORT_ASSIGNABLE_ROLES = Set.of("support_dedicated", "support_general");
-    private static final Set<String> SUPPORT_ASSIGNMENT_TARGET_ROLES = Set.of("support", "support_dedicated", "support_general");
     private final AuditLogService auditLogService;
     private final AdminMapper adminMapper;
     private final AdminRoleRelationMapper roleRelationMapper;
@@ -225,7 +217,7 @@ public class OpsAdminAccountService {
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromRole", current.role(), "toRole", nextRole));
         linkA2Proposal(idempotencyKey, "运营账号改角色(A1)", operatorLabel(current), current.role(), nextRole,
-                request.operator(), currentOperatorRole(), "acct", false, false, "超管 / 客服主管", request.reason());
+                request.operator(), currentOperatorRole(), "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -776,12 +768,6 @@ public class OpsAdminAccountService {
         if ("super".equals(actor.role())) {
             return null;
         }
-        if ("support_manager".equals(actor.role())
-                && SUPPORT_ASSIGNABLE_ROLES.contains(targetRole)
-                && target != null
-                && SUPPORT_ASSIGNMENT_TARGET_ROLES.contains(target.role())) {
-            return null;
-        }
         return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ROLE_ASSIGNMENT_FORBIDDEN");
     }
 
@@ -973,9 +959,6 @@ public class OpsAdminAccountService {
             case "content" -> "CT";
             case "growth" -> "GR";
             case "support" -> "CS";
-            case "support_manager" -> "CM";
-            case "support_dedicated" -> "CD";
-            case "support_general" -> "CG";
             case "audit" -> "AU";
             default -> role.length() <= 2 ? role.toUpperCase(Locale.ROOT) : role.substring(0, 2).toUpperCase(Locale.ROOT);
         };
@@ -990,9 +973,6 @@ public class OpsAdminAccountService {
             case "content" -> "purple";
             case "growth" -> "cyan";
             case "support" -> "indigo";
-            case "support_manager" -> "teal";
-            case "support_dedicated" -> "cyan";
-            case "support_general" -> "blue";
             case "audit" -> "gray";
             default -> "";
         };
@@ -1006,10 +986,7 @@ public class OpsAdminAccountService {
             case "risk" -> "风控模型、KYC、账户限制与熔断。";
             case "content" -> "文案、课程、风险披露与公告。";
             case "growth" -> "活动、节奏、权益与触达。";
-            case "support" -> "用户查询、工单协同与客服处置。";
-            case "support_manager" -> "客服主管，可分配专属客服和通用客服。";
-            case "support_dedicated" -> "专属客服，承接被分配的重点服务用户。";
-            case "support_general" -> "通用客服，承接普通工单与实时会话。";
+            case "support" -> "客服中心后台角色，主管、专属、通用坐席在 M1 配置。";
             case "audit" -> "审计与合规观察，禁止写操作。";
             default -> "";
         };
@@ -1024,9 +1001,6 @@ public class OpsAdminAccountService {
             case "content" -> "I/公告/课程";
             case "growth" -> "E/F/G/H 增长与收益";
             case "support" -> "M/C/D/K 客服协同";
-            case "support_manager" -> "M/A1 客服坐席管理";
-            case "support_dedicated" -> "M/C 专属服务用户";
-            case "support_general" -> "M/C 通用客服处置";
             case "audit" -> "A2/L 报表与审计";
             default -> "";
         };

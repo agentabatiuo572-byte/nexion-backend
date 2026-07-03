@@ -56,6 +56,65 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
                    @Param("roleName") String roleName,
                    @Param("remark") String remark);
 
+    @Update("""
+            UPDATE nx_admin_role_relation supportRelation
+            JOIN nx_admin_role support
+              ON support.id = supportRelation.role_id
+             AND support.role_code = #{supportRoleCode}
+            JOIN nx_admin_role_relation legacyRelation
+              ON legacyRelation.admin_id = supportRelation.admin_id
+             AND legacyRelation.is_deleted = 0
+            JOIN nx_admin_role legacy
+              ON legacy.id = legacyRelation.role_id
+             AND legacy.role_code = #{legacyRoleCode}
+            SET supportRelation.is_deleted = 0,
+                supportRelation.updated_at = NOW()
+            WHERE supportRelation.is_deleted = 1
+            """)
+    int restoreSupportRelationsForLegacy(@Param("legacyRoleCode") String legacyRoleCode,
+                                         @Param("supportRoleCode") String supportRoleCode);
+
+    @Update("""
+            UPDATE nx_admin_role_relation rr
+            JOIN nx_admin_role legacy
+              ON legacy.id = rr.role_id
+             AND legacy.role_code = #{legacyRoleCode}
+            JOIN nx_admin_role support
+              ON support.role_code = #{supportRoleCode}
+             AND support.status = 1
+             AND support.is_deleted = 0
+            LEFT JOIN nx_admin_role_relation existing
+              ON existing.admin_id = rr.admin_id
+             AND existing.role_id = support.id
+            SET rr.role_id = support.id,
+                rr.is_deleted = 0,
+                rr.updated_at = NOW()
+            WHERE rr.is_deleted = 0
+              AND existing.id IS NULL
+            """)
+    int migrateRoleRelations(@Param("legacyRoleCode") String legacyRoleCode,
+                             @Param("supportRoleCode") String supportRoleCode);
+
+    @Update("""
+            UPDATE nx_admin_role_relation rr
+            JOIN nx_admin_role legacy
+              ON legacy.id = rr.role_id
+             AND legacy.role_code = #{legacyRoleCode}
+            SET rr.is_deleted = 1,
+                rr.updated_at = NOW()
+            WHERE rr.is_deleted = 0
+            """)
+    int disableRoleRelations(@Param("legacyRoleCode") String legacyRoleCode);
+
+    @Update("""
+            UPDATE nx_admin_role
+               SET status = 0,
+                   is_deleted = 1,
+                   updated_at = NOW()
+             WHERE role_code = #{roleCode}
+            """)
+    int disableRole(@Param("roleCode") String roleCode);
+
     @Insert("""
             INSERT INTO nx_admin_permission (
                 permission_code,
@@ -88,6 +147,15 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
                          @Param("permissionName") String permissionName,
                          @Param("resourcePath") String resourcePath,
                          @Param("remark") String remark);
+
+    @Update("""
+            UPDATE nx_admin_permission
+               SET status = 0,
+                   is_deleted = 1,
+                   updated_at = NOW()
+             WHERE permission_code = #{permissionCode}
+            """)
+    int disablePermission(@Param("permissionCode") String permissionCode);
 
     @Update("""
             UPDATE nx_admin_role_permission rp

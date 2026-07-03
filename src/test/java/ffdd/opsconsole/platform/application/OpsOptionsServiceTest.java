@@ -70,7 +70,15 @@ class OpsOptionsServiceTest {
 
         assertThat(options)
                 .extracting(AdminOption::value)
-                .contains("SUPER_ADMIN", "OPS_ADMIN", "FINANCE_REVIEWER", "SUPPORT_LEAD", "RISK_ANALYST");
+                .containsExactly(
+                        "SUPER_ADMIN",
+                        "CONFIG_ADMIN",
+                        "FINANCE",
+                        "RISK",
+                        "CONTENT",
+                        "GROWTH",
+                        "SUPPORT",
+                        "AUDITOR");
     }
 
     @Test

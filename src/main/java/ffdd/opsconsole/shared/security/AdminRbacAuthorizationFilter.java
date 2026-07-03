@@ -48,7 +48,6 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/platform/audit/operations/**", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT"),
             rule("/api/admin/platform/audit/mechanism-params/**", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT"),
             rule("/api/admin/platform/audit/**", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT"),
-            rule("/api/admin/platform/accounts/*/role", "PERM_SYSTEM_READ", "PERM_SUPPORT_SEAT_WRITE"),
             rule("/api/admin/platform/events/**", "PERM_AUDIT_READ", "PERM_SYSTEM_WRITE"),
             rule("/api/admin/platform/**", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE"),
             rule("/api/admin/ops-dashboard/**", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE"),

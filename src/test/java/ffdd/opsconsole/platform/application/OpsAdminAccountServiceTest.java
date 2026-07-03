@@ -220,7 +220,7 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().stats().totalAccounts()).isEqualTo(4);
         assertThat(result.getData().stats().effectiveSupers()).isEqualTo(3);
-        assertThat(result.getData().roles()).hasSize(11);
+        assertThat(result.getData().roles()).hasSize(8);
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::id)
                 .contains("1", "4");
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::email)
@@ -242,7 +242,7 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().roles()).extracting(AdminAccountOverview.RoleDefinition::key)
                 .containsExactly("super", "config", "finance", "risk", "content", "growth",
-                        "support", "support_manager", "support_dedicated", "support_general", "audit");
+                        "support", "audit");
         assertThat(result.getData().rbacMatrix()).isEmpty();
         assertThat(result.getData().securityBaselines()).isEmpty();
         assertThat(result.getData().operators()).filteredOn(operator -> "1".equals(operator.id()))
@@ -373,34 +373,27 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void supportManagerCanOnlyAssignDedicatedOrGeneralSupportSeats() {
+    void supportOperatorCannotChangeA1Roles() {
         admins.add(admin(5L, "support.manager", "客服主管", "support-manager@nexion.io", 0, 1));
         admins.add(admin(6L, "support.legacy", "旧客服", "support-legacy@nexion.io", 0, 1));
-        roleRelations.put(5L, "SUPPORT_MANAGER");
+        roleRelations.put(5L, "SUPPORT");
         roleRelations.put(6L, "SUPPORT");
         authenticateAs(5L);
 
-        ApiResult<AdminAccountOverview.OperatorRecord> allowed = service.changeRole(
+        ApiResult<AdminAccountOverview.OperatorRecord> rejected = service.changeRole(
                 "idem-support-role-1",
                 "6",
-                new AdminAccountRoleUpdateRequest("support_dedicated", "客服主管分配专属客服", "support.manager"));
-
-        assertThat(allowed.getCode()).isZero();
-        assertThat(roleRelations.get(6L)).isEqualTo("SUPPORT_DEDICATED");
-
-        ApiResult<AdminAccountOverview.OperatorRecord> rejected = service.changeRole(
-                "idem-support-role-2",
-                "6",
-                new AdminAccountRoleUpdateRequest("support_manager", "客服主管不能分配主管角色", "support.manager"));
+                new AdminAccountRoleUpdateRequest("risk", "客服不能改 A1 全局角色", "support.manager"));
 
         assertThat(rejected.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
         assertThat(rejected.getMessage()).isEqualTo("ROLE_ASSIGNMENT_FORBIDDEN");
+        assertThat(roleRelations.get(6L)).isEqualTo("SUPPORT");
     }
 
     @Test
-    void supportManagerCannotCreateAccountsOrMutateA1SecuritySettings() {
+    void supportOperatorCannotCreateAccountsOrMutateA1SecuritySettings() {
         admins.add(admin(5L, "support.manager", "客服主管", "support-manager@nexion.io", 0, 1));
-        roleRelations.put(5L, "SUPPORT_MANAGER");
+        roleRelations.put(5L, "SUPPORT");
         authenticateAs(5L);
 
         ApiResult<AdminAccountOverview.OperatorRecord> createResult = service.createAccount(
@@ -408,7 +401,7 @@ class OpsAdminAccountServiceTest {
                 new AdminAccountCreateRequest(
                         "专属客服新账号",
                         "dedicated-new@nexion.io",
-                        "support_dedicated",
+                        "support",
                         "mail",
                         "客服主管不能创建后台账号",
                         "support.manager"));
@@ -443,7 +436,7 @@ class OpsAdminAccountServiceTest {
     @Test
     void updateRbacRejectsAuditWriteAndProtectsOperatorGovernanceSuperGrant() {
         AdminRbacGrantUpdateRequest auditWriteRequest = new AdminRbacGrantUpdateRequest(
-                List.of("C", "C", "-", "-", "-", "-", "M", "-", "-", "-", "M"),
+                List.of("C", "C", "-", "-", "-", "-", "M", "M"),
                 "bad audit grant",
                 "superadmin");
 
@@ -454,7 +447,7 @@ class OpsAdminAccountServiceTest {
         assertThat(auditResult.getMessage()).isEqualTo("AUDIT_ROLE_WRITE_FORBIDDEN");
 
         AdminRbacGrantUpdateRequest superRemovedRequest = new AdminRbacGrantUpdateRequest(
-                List.of("-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "R"),
+                List.of("-", "-", "-", "-", "-", "-", "-", "R"),
                 "remove super",
                 "superadmin");
 
@@ -468,7 +461,7 @@ class OpsAdminAccountServiceTest {
     @Test
     void updateRbacGrantsWritesBusinessGrantTableNotNxConfigItem() {
         AdminRbacGrantUpdateRequest request = new AdminRbacGrantUpdateRequest(
-                List.of("C", "R", "-", "M", "-", "-", "R", "-", "-", "-", "R"),
+                List.of("C", "R", "-", "M", "-", "-", "R", "R"),
                 "tighten risk grants",
                 "superadmin");
 
@@ -575,26 +568,26 @@ class OpsAdminAccountServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().id()).isEqualTo("e3");
-        assertThat(result.getData().grants()).containsExactly("-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "R");
+        assertThat(result.getData().grants()).containsExactly("-", "-", "-", "-", "-", "-", "-", "R");
         assertThat(rbacActionRows).containsKey("e3");
-        assertThat(rbacGrantRows.get("e3")).hasSize(11);
+        assertThat(rbacGrantRows.get("e3")).hasSize(8);
         assertThat(repository.items).doesNotContainKey("a1.rbac.action.e3");
         verify(auditLogService).record(any(AuditLogWriteRequest.class));
     }
 
     private void registerTestRbacActions() {
         registerTestAction("balance_adjust", "余额/资产调整(C3)", "用户/风控", 10,
-                List.of("C", "-", "C", "-", "-", "-", "M", "-", "-", "-", "R"));
+                List.of("C", "-", "C", "-", "-", "-", "M", "R"));
         registerTestAction("operator_governance", "运营账号治理(A1)", "基座/应急", 20,
-                List.of("M", "-", "-", "-", "-", "-", "-", "-", "-", "-", "R"));
+                List.of("M", "-", "-", "-", "-", "-", "-", "R"));
         registerTestAction("audit_export", "审计全量导出(A2)", "基座/应急", 30,
-                List.of("M", "-", "-", "-", "-", "-", "-", "-", "-", "-", "M"));
+                List.of("M", "-", "-", "-", "-", "-", "-", "M"));
     }
 
     private void registerTestAction(String id, String action, String domainGroup, int sort, List<String> grants) {
         putRbacAction(id, action, domainGroup, sort);
         List<String> roles = List.of("super", "config", "finance", "risk", "content", "growth",
-                "support", "support_manager", "support_dedicated", "support_general", "audit");
+                "support", "audit");
         for (int i = 0; i < roles.size(); i++) {
             putRbacGrant(id, roles.get(i), grants.get(i));
         }
@@ -651,9 +644,6 @@ class OpsAdminAccountServiceTest {
                 roleRow(6L, "CONTENT", "内容"),
                 roleRow(7L, "GROWTH", "增长"),
                 roleRow(8L, "SUPPORT", "客服"),
-                roleRow(9L, "SUPPORT_MANAGER", "客服主管"),
-                roleRow(10L, "SUPPORT_DEDICATED", "专属客服"),
-                roleRow(11L, "SUPPORT_GENERAL", "通用客服"),
                 roleRow(12L, "AUDITOR", "只读审计"));
     }
 

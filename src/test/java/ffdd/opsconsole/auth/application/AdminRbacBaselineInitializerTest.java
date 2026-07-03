@@ -3,6 +3,7 @@ package ffdd.opsconsole.auth.application;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
@@ -17,9 +18,19 @@ class AdminRbacBaselineInitializerTest {
     void ensuresRuntimePermissionsAndRoleGrants() {
         initializer.ensureBaseline();
 
-        verify(mapper).ensureRole("SUPPORT_MANAGER", "客服主管", "客服坐席与服务用户分配管理");
-        verify(mapper).ensureRole("SUPPORT_DEDICATED", "专属客服", "专属服务用户跟进坐席");
-        verify(mapper).ensureRole("SUPPORT_GENERAL", "通用客服", "通用工单与会话接待坐席");
+        verify(mapper).ensureRole("SUPPORT", "客服", "客服中心全局后台角色;主管、专属、通用在 M1 坐席业务表内配置");
+        verify(mapper).restoreSupportRelationsForLegacy("SUPPORT_MANAGER", "SUPPORT");
+        verify(mapper).restoreSupportRelationsForLegacy("SUPPORT_DEDICATED", "SUPPORT");
+        verify(mapper).restoreSupportRelationsForLegacy("SUPPORT_GENERAL", "SUPPORT");
+        verify(mapper).migrateRoleRelations("SUPPORT_MANAGER", "SUPPORT");
+        verify(mapper).migrateRoleRelations("SUPPORT_DEDICATED", "SUPPORT");
+        verify(mapper).migrateRoleRelations("SUPPORT_GENERAL", "SUPPORT");
+        verify(mapper).disableRoleRelations("SUPPORT_MANAGER");
+        verify(mapper).disableRoleRelations("SUPPORT_DEDICATED");
+        verify(mapper).disableRoleRelations("SUPPORT_GENERAL");
+        verify(mapper).disableRole("SUPPORT_MANAGER");
+        verify(mapper).disableRole("SUPPORT_DEDICATED");
+        verify(mapper).disableRole("SUPPORT_GENERAL");
 
         verify(mapper).ensurePermission(
                 eq("PERM_WITHDRAWAL_READ"),
@@ -36,11 +47,12 @@ class AdminRbacBaselineInitializerTest {
                 eq("Export BI operations"),
                 eq("/api/admin/bi/exports/**"),
                 anyString());
-        verify(mapper).ensurePermission(
+        verify(mapper, never()).ensurePermission(
                 eq("PERM_SUPPORT_SEAT_WRITE"),
-                eq("Assign support seat roles"),
-                eq("/api/admin/platform/accounts/*/role"),
+                anyString(),
+                anyString(),
                 anyString());
+        verify(mapper).disablePermission("PERM_SUPPORT_SEAT_WRITE");
 
         verify(mapper).insertMissingRolePermission("FINANCE", "PERM_WITHDRAWAL_REVIEW");
         verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_GROWTH_WRITE");
@@ -53,10 +65,9 @@ class AdminRbacBaselineInitializerTest {
         verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_USER_WRITE");
         verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_READ");
         verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_WRITE");
-        verify(mapper).insertMissingRolePermission("SUPPORT_MANAGER", "PERM_SUPPORT_SEAT_WRITE");
-        verify(mapper).disableRolePermission("SUPPORT_MANAGER", "PERM_SYSTEM_WRITE");
-        verify(mapper).insertMissingRolePermission("SUPPORT_DEDICATED", "PERM_USER_WRITE");
-        verify(mapper).insertMissingRolePermission("SUPPORT_GENERAL", "PERM_CONTENT_WRITE");
+        verify(mapper, never()).insertMissingRolePermission("SUPPORT_MANAGER", "PERM_SUPPORT_SEAT_WRITE");
+        verify(mapper, never()).insertMissingRolePermission("SUPPORT_DEDICATED", "PERM_USER_WRITE");
+        verify(mapper, never()).insertMissingRolePermission("SUPPORT_GENERAL", "PERM_CONTENT_WRITE");
         verify(mapper).insertMissingRolePermission("AUDITOR", "PERM_AUDIT_EXPORT");
         verify(mapper).insertMissingRolePermission("AUDITOR", "PERM_BI_EXPORT");
     }
