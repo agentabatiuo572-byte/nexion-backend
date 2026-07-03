@@ -54,6 +54,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsAdminAccountService {
     private static final List<String> GRANT_OPTIONS = List.of("-", "R", "M", "C");
+    private static final List<String> WORK_EMAIL_DOMAINS = List.of("@nexion.ai", "@nexion.io");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Pattern ACTION_CODE_PATTERN = Pattern.compile("\\(([A-Za-z][A-Za-z0-9_-]*)\\)");
     private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super");
@@ -119,7 +120,7 @@ public class OpsAdminAccountService {
         }
         String displayName = normalizeText(request.displayName(), "DISPLAY_NAME_REQUIRED");
         String email = normalizeText(request.email(), "EMAIL_REQUIRED").toLowerCase(Locale.ROOT);
-        if (!email.contains("@") || !email.endsWith("@nexion.io")) {
+        if (!workEmail(email)) {
             return ApiResult.fail(422, "WORK_EMAIL_REQUIRED");
         }
         if (adminByEmail(email).isPresent()) {
@@ -842,6 +843,12 @@ public class OpsAdminAccountService {
                 .eq(AdminEntity::getUsername, username)
                 .eq(AdminEntity::getIsDeleted, 0)
                 .last("LIMIT 1")));
+    }
+
+    private boolean workEmail(String email) {
+        return StringUtils.hasText(email)
+                && email.contains("@")
+                && WORK_EMAIL_DOMAINS.stream().anyMatch(email::endsWith);
     }
 
     private String uniqueUsername(String email) {

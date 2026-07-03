@@ -332,6 +332,40 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
+    void createAccountAcceptsNexionAiWorkEmailDomain() {
+        AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "内容值班",
+                "content-shift@nexion.ai",
+                "content",
+                "mail",
+                "new employee onboarding",
+                "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-ai-email", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().email()).isEqualTo("content-shift@nexion.ai");
+        assertThat(admins).extracting(AdminEntity::getEmail).contains("content-shift@nexion.ai");
+        verify(roleRelationMapper).ensurePrimaryRole(5L, "CONTENT");
+    }
+
+    @Test
+    void createAccountRejectsExternalEmailDomain() {
+        AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "外部人员",
+                "external@example.com",
+                "content",
+                "mail",
+                "external account should be rejected",
+                "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-external-email", request);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("WORK_EMAIL_REQUIRED");
+    }
+
+    @Test
     void createAccountAllowsHandoffInitialPasswordWithoutReturningPlaintextCredential() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
                 "资金测试值班",
