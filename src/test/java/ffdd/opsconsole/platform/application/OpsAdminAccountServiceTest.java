@@ -332,37 +332,37 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void createAccountAcceptsNexionAiWorkEmailDomain() {
+    void createAccountAcceptsValidEmailFormat() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
                 "内容值班",
-                "content-shift@nexion.ai",
+                "content-shift@example.com",
                 "content",
                 "mail",
                 "new employee onboarding",
                 "superadmin");
 
-        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-ai-email", request);
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-valid-email", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().email()).isEqualTo("content-shift@nexion.ai");
-        assertThat(admins).extracting(AdminEntity::getEmail).contains("content-shift@nexion.ai");
+        assertThat(result.getData().email()).isEqualTo("content-shift@example.com");
+        assertThat(admins).extracting(AdminEntity::getEmail).contains("content-shift@example.com");
         verify(roleRelationMapper).ensurePrimaryRole(5L, "CONTENT");
     }
 
     @Test
-    void createAccountRejectsExternalEmailDomain() {
+    void createAccountRejectsInvalidEmailFormat() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
                 "外部人员",
-                "external@example.com",
+                "external.example.com",
                 "content",
                 "mail",
-                "external account should be rejected",
+                "invalid email should be rejected",
                 "superadmin");
 
-        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-external-email", request);
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-invalid-email", request);
 
         assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("WORK_EMAIL_REQUIRED");
+        assertThat(result.getMessage()).isEqualTo("EMAIL_FORMAT_INVALID");
     }
 
     @Test
