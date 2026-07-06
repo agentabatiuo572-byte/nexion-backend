@@ -6,6 +6,8 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
+import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
@@ -19,6 +21,8 @@ import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
+import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
+import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateArchiveRequest;
@@ -361,6 +365,104 @@ public class OpsDeviceService {
     public ApiResult<PageResult<DeviceTaskView>> tasks(DeviceTaskQueryRequest request) {
         PageResult<DeviceTaskView> page = catalogRepository.pageTasks(request);
         return ApiResult.ok(page);
+    }
+
+    /** E6 算力与设备配置只读聚合:从 nx_config_item 读取覆盖值,缺失时回落到注册表默认。 */
+    public ApiResult<ComputeConfigView> computeConfig() {
+        var flags = ComputeConfigRegistry.FLAGS.stream()
+                .map(f -> new ComputeConfigView.FlagView(f.key(), f.label(), f.desc(), readFlag(f), f.frontendEffect())).toList();
+        var coeffs = ComputeConfigRegistry.COEFFICIENTS.stream()
+                .map(c -> new ComputeConfigView.CoeffView(c.key(), c.label(),
+                        readVal(ComputeConfigRegistry.coeffKey(c.key()), c.defaultVal()), c.unit(), c.desc(), c.frontendEffect())).toList();
+        var yields = ComputeConfigRegistry.YIELD_ESTIMATE.stream()
+                .map(y -> new ComputeConfigView.YieldView(y.key(), y.label(),
+                        readVal(ComputeConfigRegistry.yieldKey(y.key()), y.defaultVal()), y.unit())).toList();
+        var tiers = ComputeConfigRegistry.GPU_TIERS.stream()
+                .map(t -> new ComputeConfigView.GpuTierView(t.id(),
+                        readVal(ComputeConfigRegistry.gpuTierKey(t.id(), "label"), t.label()),
+                        t.desc(), t.defaultModel(),
+                        readVal(ComputeConfigRegistry.gpuTierKey(t.id(), "tops"), t.defaultTops()),
+                        readKeywords(t))).toList();
+        var dl = new ComputeConfigView.DownloadView(
+                readVal(ComputeConfigRegistry.downloadKey("url"), ""),
+                readVal(ComputeConfigRegistry.downloadKey("zhTitle"), "电脑显卡算力共享"),
+                readVal(ComputeConfigRegistry.downloadKey("zhGuide"), "下载桌面客户端,使用同一账号登录,连接后电脑会出现在设备仓库中。"),
+                readVal(ComputeConfigRegistry.downloadKey("enTitle"), "Computer GPU share"),
+                readVal(ComputeConfigRegistry.downloadKey("enGuide"), "Download the desktop client, sign in with the same account, and the computer appears in device inventory after connection."));
+        return ApiResult.ok(new ComputeConfigView("E6", flags, coeffs, yields, tiers, dl, List.of("nx_config_item:E.compute.*")));
+    }
+
+    /** E6 单参数 PATCH:校验 paramKey 白名单 + 值规则,写入 nx_config_item 并记审计。 */
+    @Transactional
+    public ApiResult<ComputeConfigParamResponse> updateComputeConfigParam(
+            String paramKey, String idempotencyKey, ComputeConfigParamUpdateRequest request) {
+        ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (command != null) {
+            return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        if (!ComputeConfigRegistry.isComputeParamKey(paramKey)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMPUTE_PARAM_KEY_INVALID");
+        }
+        String value = normalizeText(request.value());
+        String error = validateComputeValue(paramKey, value);
+        if (error != null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), error);
+        }
+        String before = configFacade.activeValue(paramKey).orElse("");
+        configFacade.upsertAdminValue(paramKey, value, "STRING", ComputeConfigRegistry.CONFIG_GROUP, "E6 compute config");
+        audit("E6_COMPUTE_CONFIG_CHANGED", "E6_COMPUTE_CONFIG", paramKey, request.operator(), detail(
+                "paramKey", paramKey, "before", before, "after", value,
+                "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(new ComputeConfigParamResponse(paramKey, value, LocalDateTime.now(clock).toString()));
+    }
+
+    private String validateComputeValue(String paramKey, String value) {
+        if (paramKey.equals(ComputeConfigRegistry.flagKey("computeShareEnabled"))) {
+            return Set.of("on", "off").contains(value) ? null : "COMPUTE_FLAG_INVALID";
+        }
+        if (paramKey.equals(ComputeConfigRegistry.coeffKey("h5BaseFactor"))) {
+            BigDecimal v = parseComputeNumber(value);
+            return (v != null && v.signum() >= 0 && v.compareTo(BigDecimal.ONE) <= 0) ? null : "COMPUTE_COEFF_INVALID";
+        }
+        if (paramKey.equals(ComputeConfigRegistry.coeffKey("continuityFullHours"))) {
+            BigDecimal v = parseComputeNumber(value);
+            return (v != null && v.signum() > 0) ? null : "COMPUTE_COEFF_INVALID";
+        }
+        if (paramKey.startsWith(ComputeConfigRegistry.PARAM_PREFIX + "yieldEstimate.")) {
+            BigDecimal v = parseComputeNumber(value);
+            return (v != null && v.signum() > 0) ? null : "COMPUTE_YIELD_INVALID";
+        }
+        if (paramKey.startsWith(ComputeConfigRegistry.PARAM_PREFIX + "gpuTier.")) {
+            String tail = paramKey.substring((ComputeConfigRegistry.PARAM_PREFIX + "gpuTier.").length());
+            if (tail.endsWith(".tops")) {
+                BigDecimal v = parseComputeNumber(value);
+                return (v != null && v.signum() > 0) ? null : "COMPUTE_TOPS_INVALID";
+            }
+            if (tail.endsWith(".label")) {
+                return (value.isBlank() || value.length() > 24) ? "COMPUTE_LABEL_INVALID" : null;
+            }
+            if (tail.contains("keyword")) {
+                return value.length() > 48 ? "COMPUTE_KEYWORD_INVALID" : null;
+            }
+        }
+        if (paramKey.equals(ComputeConfigRegistry.downloadKey("url"))) {
+            if (value.isBlank()) {
+                return null;
+            }
+            return (value.length() <= 300 && value.startsWith("https://")) ? null : "COMPUTE_URL_INVALID";
+        }
+        if (paramKey.startsWith(ComputeConfigRegistry.PARAM_PREFIX + "download.")) {
+            return value.length() > 320 ? "COMPUTE_DOWNLOAD_TEXT_INVALID" : null;
+        }
+        return null;
+    }
+
+    private BigDecimal parseComputeNumber(String v) {
+        try {
+            return new BigDecimal(v.trim());
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     @Transactional
@@ -928,7 +1030,7 @@ public class OpsDeviceService {
         Map<String, String> before = deviceRepository.e3Config();
         deviceRepository.upsertE3Config(key, value.value(), value.valueType(), operator(request.operator()));
         Map<String, String> after = deviceRepository.e3Config();
-        audit("E3_CONFIG_CHANGED", "DEVICE_E3_CONFIG", key, request.operator(), Map.of(
+        audit("E3_CONFIG_CHANGED", "DEVICE_E3_CONFIG", key, request.operator(), detail(
                 "key", key,
                 "oldValue", before.get(key),
                 "newValue", after.get(key),
@@ -1476,6 +1578,25 @@ public class OpsDeviceService {
                 .map(value -> matchE1PhaseId(value, phases))
                 .filter(StringUtils::hasText)
                 .orElse("");
+    }
+
+    private boolean readFlag(ComputeConfigRegistry.FlagDef f) {
+        return configFacade.activeValue(ComputeConfigRegistry.flagKey(f.key())).map(s -> "on".equals(s.trim())).orElse(f.defaultOn());
+    }
+
+    private String readVal(String key, String fallback) {
+        return configFacade.activeValue(key).filter(s -> !s.isBlank()).orElse(fallback);
+    }
+
+    private List<String> readKeywords(ComputeConfigRegistry.GpuTierDef t) {
+        List<String> out = new ArrayList<>();
+        for (String slot : ComputeConfigRegistry.KEYWORD_SLOTS) {
+            String v = readVal(ComputeConfigRegistry.gpuTierKey(t.id(), slot), "");
+            if (!v.isBlank()) {
+                out.add(v);
+            }
+        }
+        return out;
     }
 
     private int readInt(String configKey, int fallback) {

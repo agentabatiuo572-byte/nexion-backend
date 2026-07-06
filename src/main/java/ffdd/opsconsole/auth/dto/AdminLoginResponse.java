@@ -8,6 +8,7 @@ public record AdminLoginResponse(String accessToken, String tokenType, AdminSess
             String username,
             String operator,
             String role,
-            List<String> authorities) {
+            List<String> authorities,
+            boolean passwordChangeRequired) {
     }
 }

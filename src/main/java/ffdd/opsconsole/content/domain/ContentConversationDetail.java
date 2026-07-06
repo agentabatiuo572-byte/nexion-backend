@@ -4,5 +4,6 @@ import java.util.List;
 
 public record ContentConversationDetail(
         ContentConversationView conversation,
-        List<ContentConversationMessageView> messages) {
+        List<ContentConversationMessageView> messages,
+        ConversationCustomerProfile customerProfile) {
 }

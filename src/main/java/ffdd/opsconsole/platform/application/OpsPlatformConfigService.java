@@ -35,7 +35,7 @@ public class OpsPlatformConfigService {
     private static final String META_DELIMITER = "||";
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Pattern CONFIG_SUFFIX_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{1,96}$");
-    private static final Set<String> ACTIVE_GROUPS = Set.of(GROUP_FLAG, GROUP_HEALTH);
+    private static final Set<String> ACTIVE_GROUPS = Set.of(GROUP_FLAG, GROUP_GATE, GROUP_HEALTH);
     private static final Set<String> DELETED_CONFIG_KEYS = Set.of(
             "admin.system.clock_drift_ms",
             "admin.system.clock_threshold_ms",
@@ -185,9 +185,9 @@ public class OpsPlatformConfigService {
     }
 
     private List<Map<String, Object>> featureFlags(Map<String, PlatformConfigItem> configs) {
-        return configs.values().stream()
-                .filter(item -> GROUP_FLAG.equals(item.configGroup()))
-                .map(this::genericFeature)
+        // 用 FEATURE_SEEDS(高保真固定五项)输出完整中文视图;status 从 config 表读,空则用 seed 默认。
+        return FEATURE_SEEDS.stream()
+                .map(seed -> feature(configs, seed))
                 .toList();
     }
 
@@ -219,9 +219,9 @@ public class OpsPlatformConfigService {
     }
 
     private List<Map<String, Object>> killSwitches(Map<String, PlatformConfigItem> configs) {
-        return configs.values().stream()
-                .filter(item -> GROUP_GATE.equals(item.configGroup()))
-                .map(this::genericGate)
+        // 用 GATE_SEEDS(五熔断闸 + 地区屏蔽,固定目录)输出完整中文视图;status 从 config 读,空则用 seed 默认。
+        return GATE_SEEDS.stream()
+                .map(seed -> gate(configs, seed))
                 .toList();
     }
 
@@ -253,12 +253,12 @@ public class OpsPlatformConfigService {
     }
 
     private List<Map<String, Object>> systemHealth(Map<String, PlatformConfigItem> configs) {
-        List<Map<String, Object>> seededHealth = configs.values().stream()
-                .filter(item -> GROUP_HEALTH.equals(item.configGroup()))
-                .map(this::genericHealth)
+        // 用 HEALTH_SEEDS(四项关键依赖)输出完整视图 + JVM 堆实时;metric 从 config 读,空则用 seed 默认。
+        List<Map<String, Object>> rows = HEALTH_SEEDS.stream()
+                .map(seed -> health(configs, seed))
                 .collect(Collectors.toList());
-        seededHealth.add(jvmHealth());
-        return seededHealth;
+        rows.add(jvmHealth());
+        return rows;
     }
 
     private Map<String, Object> genericHealth(PlatformConfigItem item) {
@@ -342,7 +342,7 @@ public class OpsPlatformConfigService {
         if (item != null && StringUtils.hasText(item.configValue())) {
             return item.configValue();
         }
-        return "";
+        return fallback == null ? "" : fallback;
     }
 
     private String updatedAt(PlatformConfigItem item) {

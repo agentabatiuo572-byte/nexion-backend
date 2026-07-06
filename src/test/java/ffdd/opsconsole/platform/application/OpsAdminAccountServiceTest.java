@@ -17,6 +17,8 @@ import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
+import ffdd.opsconsole.platform.dto.AdminAccountPasswordResetResponse;
+import ffdd.opsconsole.platform.dto.AdminAccountProfileUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountRoleUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountSecurityBaselineUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
@@ -119,6 +121,13 @@ class OpsAdminAccountServiceTest {
             });
             return 1;
         });
+        when(accountStateMapper.upsertCredentialStatus(any(Long.class), any(String.class))).thenAnswer(invocation -> {
+            upsertAccountState(invocation.getArgument(0), state -> {
+                state.setTfaRequired(1);
+                state.setCredentialDeliveryStatus(invocation.getArgument(1));
+            });
+            return 1;
+        });
         when(accountStateMapper.upsertTfaResetAt(any(Long.class), any(LocalDateTime.class))).thenAnswer(invocation -> {
             upsertAccountState(invocation.getArgument(0), state -> {
                 state.setTfaRequired(1);
@@ -159,7 +168,9 @@ class OpsAdminAccountServiceTest {
             }
             return 0;
         });
-        when(adminMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(admins));
+        when(adminMapper.selectList(any())).thenAnswer(invocation -> admins.stream()
+                .filter(admin -> !Integer.valueOf(1).equals(admin.getIsDeleted()))
+                .toList());
         when(adminMapper.selectOne(any())).thenReturn(null);
         when(adminSessionRegistry.countActiveSessions(any(Long.class))).thenReturn(0);
         when(auditCenterService.pendingOperationCountByActionMarker("(A1)")).thenReturn(0);
@@ -202,6 +213,21 @@ class OpsAdminAccountServiceTest {
                         if (patch.getStatus() != null) {
                             admin.setStatus(patch.getStatus());
                         }
+                        if (patch.getPasswordHash() != null) {
+                            admin.setPasswordHash(patch.getPasswordHash());
+                        }
+                        if (patch.getUsername() != null) {
+                            admin.setUsername(patch.getUsername());
+                        }
+                        if (patch.getNickname() != null) {
+                            admin.setNickname(patch.getNickname());
+                        }
+                        if (patch.getEmail() != null) {
+                            admin.setEmail(patch.getEmail());
+                        }
+                        if (patch.getIsDeleted() != null) {
+                            admin.setIsDeleted(patch.getIsDeleted());
+                        }
                         admin.setUpdatedAt(LocalDateTime.now());
                     });
             return 1;
@@ -225,6 +251,8 @@ class OpsAdminAccountServiceTest {
                 .contains("1", "4");
         assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::email)
                 .contains("admin@nexion.ai", "risk@nexion.io");
+        assertThat(result.getData().operators()).extracting(AdminAccountOverview.OperatorRecord::username)
+                .contains("superadmin", "risk.lead");
         assertThat(result.getData().rbacMatrix()).extracting(AdminAccountOverview.RbacAction::id)
                 .contains("operator_governance", "audit_export")
                 .doesNotContain("premium", "nex-v2", "points");
@@ -290,19 +318,23 @@ class OpsAdminAccountServiceTest {
     @Test
     void createAccountPersistsRealAdminWithoutReturningPlaintextCredentialAndWritesAudit() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "risk.new",
                 "新风控成员",
-                "risk-new@nexion.io",
+                null,
                 "risk",
-                "mail",
+                null,
                 "new employee onboarding",
-                "superadmin");
+                "superadmin",
+                "12345678");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-1", request);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().id()).isEqualTo("5");
         assertThat(result.getData().name()).isEqualTo("新风控成员");
-        assertThat(result.getData().credentialDeliveryStatus()).isEqualTo("MAIL_DISPATCHED");
+        assertThat(result.getData().username()).isEqualTo("risk.new");
+        assertThat(result.getData().email()).isEmpty();
+        assertThat(result.getData().credentialDeliveryStatus()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
         assertThat(result.getData().role()).isEqualTo("risk");
         assertThat(repository.items).doesNotContainKey("a1.account.5.role");
         assertThat(repository.items).doesNotContainKey("a1.account.5.registered");
@@ -310,9 +342,14 @@ class OpsAdminAccountServiceTest {
         assertThat(repository.items).doesNotContainKey("a1.account.5.credentialDeliveryStatus");
         assertThat(repository.items).doesNotContainKey("a1.account.5.createdAt");
         assertThat(accountStates.get(5L).getTfaRequired()).isEqualTo(1);
-        assertThat(accountStates.get(5L).getCredentialDeliveryStatus()).isEqualTo("MAIL_DISPATCHED");
-        assertThat(admins).extracting(AdminEntity::getEmail).contains("risk-new@nexion.io");
-        assertThat(result.getData().toString()).doesNotContain("NX-");
+        assertThat(accountStates.get(5L).getCredentialDeliveryStatus()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
+        assertThat(admins).extracting(AdminEntity::getUsername).contains("risk.new");
+        AdminEntity created = admins.stream()
+                .filter(admin -> "risk.new".equals(admin.getUsername()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(passwordEncoder.matches("12345678", created.getPasswordHash())).isTrue();
+        assertThat(result.getData().toString()).doesNotContain("12345678");
         verify(roleRelationMapper).ensurePrimaryRole(5L, "RISK");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -326,38 +363,125 @@ class OpsAdminAccountServiceTest {
         verify(auditCenterService).createProposal(keyCaptor.capture(), proposalCaptor.capture());
         assertThat(keyCaptor.getValue()).isEqualTo("idem-create-1-a2");
         assertThat(proposalCaptor.getValue().action()).isEqualTo("运营账号创建(A1)");
-        assertThat(proposalCaptor.getValue().obj()).contains("新风控成员", "risk-new@nexion.io");
+        assertThat(proposalCaptor.getValue().obj()).contains("新风控成员", "risk.new");
         assertThat(proposalCaptor.getValue().obj()).doesNotContain("5");
+        assertThat(proposalCaptor.getValue().toString()).doesNotContain("12345678");
         assertThat(proposalCaptor.getValue().sourceDomain()).isEqualTo("A1");
     }
 
     @Test
-    void createAccountAcceptsValidEmailFormat() {
+    void createAccountAcceptsOptionalValidEmail() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "content.shift",
                 "内容值班",
                 "content-shift@example.com",
                 "content",
-                "mail",
+                null,
                 "new employee onboarding",
-                "superadmin");
+                "superadmin",
+                "ContentShift@123");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-valid-email", request);
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData().username()).isEqualTo("content.shift");
         assertThat(result.getData().email()).isEqualTo("content-shift@example.com");
         assertThat(admins).extracting(AdminEntity::getEmail).contains("content-shift@example.com");
         verify(roleRelationMapper).ensurePrimaryRole(5L, "CONTENT");
     }
 
     @Test
+    void updateProfileWritesRealAdminColumnsAndRevokesSessionsWhenLoginNameChanges() {
+        AdminAccountProfileUpdateRequest request = new AdminAccountProfileUpdateRequest(
+                "risk.shift",
+                "风控值班长",
+                "",
+                "operator profile correction",
+                "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result =
+                service.updateProfile("idem-profile-1", "4", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().username()).isEqualTo("risk.shift");
+        assertThat(result.getData().name()).isEqualTo("风控值班长");
+        assertThat(result.getData().email()).isEmpty();
+        AdminEntity target = admins.stream()
+                .filter(admin -> admin.getId().equals(4L))
+                .findFirst()
+                .orElseThrow();
+        assertThat(target.getUsername()).isEqualTo("risk.shift");
+        assertThat(target.getNickname()).isEqualTo("风控值班长");
+        assertThat(target.getEmail()).isEmpty();
+        verify(adminSessionRegistry).revokeSessions(4L);
+        assertThat(accountStates.get(4L).getSessionsRevokedAt()).isNotNull();
+        assertThat(repository.items).doesNotContainKey("a1.account.4.profile");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_PROFILE_UPDATED");
+        ArgumentCaptor<AuditOperationProposalRequest> proposalCaptor =
+                ArgumentCaptor.forClass(AuditOperationProposalRequest.class);
+        verify(auditCenterService).createProposal(org.mockito.ArgumentMatchers.eq("idem-profile-1-a2"), proposalCaptor.capture());
+        assertThat(proposalCaptor.getValue().action()).isEqualTo("运营账号编辑(A1)");
+    }
+
+    @Test
+    void deleteAccountSoftDeletesAdminAndRevokesSessions() {
+        AdminAccountActionRequest request = new AdminAccountActionRequest("operator left company", "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result =
+                service.deleteAccount("idem-delete-1", "4", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().id()).isEqualTo("4");
+        AdminEntity target = admins.stream()
+                .filter(admin -> admin.getId().equals(4L))
+                .findFirst()
+                .orElseThrow();
+        assertThat(target.getStatus()).isZero();
+        assertThat(target.getIsDeleted()).isEqualTo(1);
+        verify(adminSessionRegistry).revokeSessions(4L);
+        assertThat(accountStates.get(4L).getSessionsRevokedAt()).isNotNull();
+        assertThat(repository.items).doesNotContainKey("a1.account.4.deleted");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_DELETED");
+    }
+
+    @Test
+    void deleteAccountRejectsSelfAndMinimumSuperBoundary() {
+        AdminAccountActionRequest request = new AdminAccountActionRequest("bad delete", "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> selfResult =
+                service.deleteAccount("idem-delete-self", "1", request);
+
+        assertThat(selfResult.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(selfResult.getMessage()).isEqualTo("ACCOUNT_DELETE_SELF_FORBIDDEN");
+
+        admins.get(2).setStatus(0);
+        ApiResult<AdminAccountOverview.OperatorRecord> minSuperResult =
+                service.deleteAccount("idem-delete-min-super", "2", request);
+
+        assertThat(minSuperResult.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(minSuperResult.getMessage()).isEqualTo("MIN_EFFECTIVE_SUPER_REQUIRED");
+        assertThat(admins.get(1).getIsDeleted()).isZero();
+        verify(adminSessionRegistry, never()).revokeSessions(1L);
+        verify(adminSessionRegistry, never()).revokeSessions(2L);
+    }
+
+    @Test
     void createAccountRejectsInvalidEmailFormat() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "external.ops",
                 "外部人员",
                 "external.example.com",
                 "content",
-                "mail",
+                null,
                 "invalid email should be rejected",
-                "superadmin");
+                "superadmin",
+                "ExternalOps@123");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-invalid-email", request);
 
@@ -366,36 +490,46 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void createAccountAllowsHandoffInitialPasswordWithoutReturningPlaintextCredential() {
+    void createAccountRejectsMissingOrWeakInitialPassword() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "finance.shift",
                 "资金测试值班",
-                "finance-shift@nexion.io",
+                null,
                 "finance",
-                "handoff",
+                null,
                 "local e2e shift bootstrap",
                 "superadmin",
-                "E2eShift@12345");
+                "");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-shift", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().credentialDeliveryStatus()).isEqualTo("HANDOFF_PENDING");
-        assertThat(accountStates.get(5L).getCredentialDeliveryStatus()).isEqualTo("HANDOFF_PENDING");
-        AdminEntity created = admins.stream()
-                .filter(admin -> "finance-shift@nexion.io".equals(admin.getEmail()))
-                .findFirst()
-                .orElseThrow();
-        assertThat(passwordEncoder.matches("E2eShift@12345", created.getPasswordHash())).isTrue();
-        assertThat(result.getData().toString()).doesNotContain("E2eShift@12345");
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("INITIAL_PASSWORD_REQUIRED");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> weak = service.createAccount(
+                "idem-create-shift-weak",
+                new AdminAccountCreateRequest(
+                        "finance.shift",
+                        "资金测试值班",
+                        null,
+                        "finance",
+                        null,
+                        "local e2e shift bootstrap",
+                        "superadmin",
+                        "short"));
+
+        assertThat(weak.getCode()).isEqualTo(422);
+        assertThat(weak.getMessage()).isEqualTo("INITIAL_PASSWORD_WEAK");
     }
 
     @Test
-    void createAccountRejectsInitialPasswordOutsideHandoffDelivery() {
+    void createAccountRejectsInvalidOrDuplicateUsername() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
+                "bad name",
                 "资金测试值班",
-                "finance-shift@nexion.io",
+                null,
                 "finance",
-                "mail",
+                null,
                 "local e2e shift bootstrap",
                 "superadmin",
                 "E2eShift@12345");
@@ -403,7 +537,23 @@ class OpsAdminAccountServiceTest {
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-shift", request);
 
         assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("INITIAL_PASSWORD_HANDOFF_ONLY");
+        assertThat(result.getMessage()).isEqualTo("USERNAME_INVALID");
+
+        when(adminMapper.selectOne(any())).thenReturn(admins.get(3));
+        ApiResult<AdminAccountOverview.OperatorRecord> duplicate = service.createAccount(
+                "idem-create-duplicate",
+                new AdminAccountCreateRequest(
+                        "risk.lead",
+                        "重复账号",
+                        null,
+                        "risk",
+                        null,
+                        "duplicate username",
+                        "superadmin",
+                        "RiskLead@12345"));
+
+        assertThat(duplicate.getCode()).isEqualTo(409);
+        assertThat(duplicate.getMessage()).isEqualTo("ADMIN_USERNAME_EXISTS");
     }
 
     @Test
@@ -416,7 +566,7 @@ class OpsAdminAccountServiceTest {
 
         ApiResult<AdminAccountOverview.OperatorRecord> rejected = service.changeRole(
                 "idem-support-role-1",
-                "6",
+                "9999",
                 new AdminAccountRoleUpdateRequest("risk", "客服不能改 A1 全局角色", "support.manager"));
 
         assertThat(rejected.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
@@ -433,12 +583,14 @@ class OpsAdminAccountServiceTest {
         ApiResult<AdminAccountOverview.OperatorRecord> createResult = service.createAccount(
                 "idem-support-create",
                 new AdminAccountCreateRequest(
+                        "risk.lead",
                         "专属客服新账号",
-                        "dedicated-new@nexion.io",
+                        "risk@nexion.io",
                         "support",
-                        "mail",
+                        null,
                         "客服主管不能创建后台账号",
-                        "support.manager"));
+                        "support.manager",
+                        "SupportNew@123"));
         ApiResult<AdminAccountOverview.SecurityBaseline> securityResult = service.updateSecurityBaseline(
                 "idem-support-security",
                 "session",
@@ -507,6 +659,32 @@ class OpsAdminAccountServiceTest {
         assertThat(rbacGrantRows.get("balance_adjust").get("config").getGrantValue()).isEqualTo("R");
         assertThat(repository.items).doesNotContainKey("a1.rbac.risk.balance_adjust");
         assertThat(repository.items).doesNotContainKey("a1.rbac.config.balance_adjust");
+    }
+
+    @Test
+    void resetPasswordReturnsTemporaryPasswordOnceAndMarksChangeRequired() {
+        authenticateAs(1L);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("operator forgot password", "superadmin");
+
+        ApiResult<AdminAccountPasswordResetResponse> result =
+                service.resetPassword("idem-password-reset", "4", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().account().id()).isEqualTo("4");
+        assertThat(result.getData().temporaryPassword())
+                .hasSize(8)
+                .matches("[23456789abcdefghjkmnpqrstuvwxyz]{8}");
+        AdminEntity target = admins.stream()
+                .filter(admin -> admin.getId().equals(4L))
+                .findFirst()
+                .orElseThrow();
+        assertThat(passwordEncoder.matches(result.getData().temporaryPassword(), target.getPasswordHash())).isTrue();
+        assertThat(accountStates.get(4L).getCredentialDeliveryStatus()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
+        verify(adminSessionRegistry).revokeSessions(4L);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_PASSWORD_RESET");
+        assertThat(captor.getValue().toString()).doesNotContain(result.getData().temporaryPassword());
     }
 
     @Test

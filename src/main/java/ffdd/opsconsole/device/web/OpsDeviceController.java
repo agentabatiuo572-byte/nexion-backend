@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
+import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
@@ -14,6 +15,8 @@ import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
+import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
+import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateArchiveRequest;
@@ -162,6 +165,19 @@ public class OpsDeviceController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DevicePhoneTierRewardUpdateRequest request) {
         return deviceService.updatePhoneTierReward(tier, idempotencyKey, request);
+    }
+
+    @GetMapping("/compute-config")
+    public ApiResult<ComputeConfigView> computeConfig() {
+        return deviceService.computeConfig();
+    }
+
+    @PatchMapping("/compute-config/params/{paramKey}")
+    public ApiResult<ComputeConfigParamResponse> updateComputeConfigParam(
+            @PathVariable String paramKey,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody ComputeConfigParamUpdateRequest request) {
+        return deviceService.updateComputeConfigParam(paramKey, idempotencyKey, request);
     }
 
     @PostMapping("/tasks")

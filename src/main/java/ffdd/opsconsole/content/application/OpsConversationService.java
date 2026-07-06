@@ -10,7 +10,9 @@ import ffdd.opsconsole.content.domain.AdvisorRoutingDecision;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
+import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
 import ffdd.opsconsole.content.domain.ConversationRepository;
+import ffdd.opsconsole.content.domain.CustomerProfileRepository;
 import ffdd.opsconsole.content.domain.ConversationTicketResult;
 import ffdd.opsconsole.content.domain.SupportTicketDetail;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
@@ -24,11 +26,30 @@ import ffdd.opsconsole.content.dto.ConversationStatusRequest;
 import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
+import ffdd.opsconsole.content.dto.CustomerNoteRemoveRequest;
+import ffdd.opsconsole.content.dto.CustomerNoteRequest;
+import ffdd.opsconsole.content.dto.CustomerTagRequest;
+import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
+import ffdd.opsconsole.device.application.OpsDeviceService;
+import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.finance.application.OpsFinanceService;
+import ffdd.opsconsole.finance.domain.DepositFlowView;
+import ffdd.opsconsole.finance.domain.WithdrawalOrderView;
+import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.application.OpsRiskService;
+import ffdd.opsconsole.risk.domain.RiskCaseView;
+import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.user.application.OpsUserService;
+import ffdd.opsconsole.user.domain.UserAccountView;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -36,6 +57,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -60,6 +82,13 @@ public class OpsConversationService {
     private final AuditLogService auditLogService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    // 跨域聚合客户档案(只读辅助):复用 user360 同款 service,不另造轮子。
+    private final OpsUserService userService;
+    private final OpsFinanceService financeService;
+    private final OpsDeviceService deviceService;
+    private final OpsRiskService riskService;
+    // 客户档案标注(自定义标签 + 内部备注,按 user_id 聚合,独立于会话生命周期)
+    private final CustomerProfileRepository customerProfileRepository;
 
     public ApiResult<Map<String, Object>> overview() {
         ensureSeedData();
@@ -83,11 +112,330 @@ public class OpsConversationService {
         if (!StringUtils.hasText(conversationNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_NO_REQUIRED");
         }
-        return conversationRepository.findByConversationNo(conversationNo.trim())
-                .map(conversation -> ApiResult.ok(new ContentConversationDetail(
-                        conversation,
-                        conversationRepository.messages(conversation.conversationNo()))))
-                .orElseGet(() -> ApiResult.fail(404, "CONVERSATION_NOT_FOUND"));
+        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        if (conversation == null) {
+            return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
+        }
+        List<ContentConversationMessageView> messages = conversationRepository.messages(conversation.conversationNo());
+        // 跨域聚合客户档案(只读辅助);内部对每个子域 try/catch 降级,绝不抛异常中断会话详情。
+        ConversationCustomerProfile customerProfile = buildCustomerProfile(conversation);
+        return ApiResult.ok(new ContentConversationDetail(conversation, messages, customerProfile));
+    }
+
+    /**
+     * 跨域聚合会话客户档案(只读辅助)。
+     *
+     * <p>按 {@code conversation.userId} 调用 user / finance / device / risk / content 工单域,
+     * 复用 user360 同款 service,不另造查询。每个子域独立 try/catch 降级,任何子查询失败都不得
+     * 中断会话详情返回;查不到的字段用合理兜底("—" / 0 / "未绑定" 等),只要数据源能查到就用真实值。</p>
+     *
+     * <p>会话未关联具体用户(userId 为空,如受众群发)时返回 null,前端降级显示"未关联用户"。</p>
+     */
+    private ConversationCustomerProfile buildCustomerProfile(ContentConversationView conversation) {
+        Long userId = conversation.userId();
+        String conversationType = conversation.conversationType();
+        if (userId == null || userId <= 0) {
+            return null;
+        }
+
+        // 1. user 域:基础资料 / KYC / 账龄 / 地区
+        UserAccountView profile = null;
+        try {
+            ApiResult<UserAccountView> profileResult = userService.profile(userId);
+            if (profileResult.getCode() == 0) {
+                profile = profileResult.getData();
+            }
+        } catch (RuntimeException ignored) {
+            // 降级:profile 维持 null,后续走最小档案兜底
+        }
+        if (profile == null) {
+            return minimalProfile(userId, conversationType);
+        }
+
+        String uid = StringUtils.hasText(profile.userNo()) ? profile.userNo().trim() : formatUid(userId);
+        String nickname = StringUtils.hasText(profile.nickname()) ? profile.nickname().trim() : ("用户 " + uid);
+        String phone = StringUtils.hasText(profile.phoneMasked()) ? profile.phoneMasked().trim() : "未绑定";
+        String vlevel = firstNonBlank(profile.vRank(), profile.userLevel());
+        String kyc = kycLabel(profile.kycStatus());
+        String region = StringUtils.hasText(profile.countryCode()) ? profile.countryCode().trim() : "未知";
+        String joined = formatDate(profile.registeredAt());
+        String lastActive = formatDateTime(profile.lastLoginAt());
+        BigDecimal balance = profile.walletUsdt() == null ? BigDecimal.ZERO : profile.walletUsdt();
+
+        // 2. risk 域:风险评分 / 带级 / 未结案件
+        int effectiveScore = -1;
+        String bandLabel = null;
+        long openCases = 0;
+        try {
+            RiskScoreUserView scoreView = dataOrNull(riskService.scoreUser(profile.userNo()));
+            if (scoreView != null) {
+                if (scoreView.effectiveScore() != null) {
+                    effectiveScore = scoreView.effectiveScore();
+                }
+                bandLabel = scoreView.bandLabel();
+            }
+            List<RiskCaseView> cases = pageRecords(riskService.cases(new RiskCaseQueryRequest(userId, null, null, 1, 20, null)), 20);
+            openCases = cases.stream().filter(rc -> !"FINALIZED".equalsIgnoreCase(statusText(rc.status()))).count();
+        } catch (RuntimeException ignored) {
+            // 降级:风险字段走兜底
+        }
+        if (effectiveScore < 0 && profile.riskScore() != null) {
+            effectiveScore = profile.riskScore();
+        }
+        String risk = riskLevel(effectiveScore, profile, openCases);
+        List<String> systemTags = buildTags(profile, conversationType, openCases);
+        String riskNote = buildRiskNote(profile, bandLabel, openCases, effectiveScore);
+
+        // 客户自定义标签(持久化于 nx_customer_tag;独立 try/catch 降级,绝不中断会话详情)
+        List<String> customTags = List.of();
+        try {
+            List<String> persistedTags = customerProfileRepository.findCustomTags(userId);
+            customTags = persistedTags == null ? List.of() : persistedTags;
+        } catch (RuntimeException ignored) {
+            // 降级:customTags 维持空列表
+        }
+
+        // 3. finance 域:累计充值 / 提现 / 流水条目(最近若干条进 ledger)
+        BigDecimal recharge = BigDecimal.ZERO;
+        BigDecimal withdraw = BigDecimal.ZERO;
+        List<ConversationCustomerProfile.LedgerEntry> ledger = new ArrayList<>();
+        try {
+            List<DepositFlowView> deposits = pageRecords(financeService.topupFlows("confirmed", userId, null, 1, 20), 20);
+            recharge = deposits.stream()
+                    .map(d -> d.providerReceived() != null ? d.providerReceived() : (d.amount() != null ? d.amount() : BigDecimal.ZERO))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            for (DepositFlowView d : deposits) {
+                ledger.add(new ConversationCustomerProfile.LedgerEntry(
+                        "充值 " + channelOrAsset(d),
+                        formatDateTime(d.confirmedAt() != null ? d.confirmedAt() : d.createdAt()),
+                        money(d.providerReceived() != null ? d.providerReceived() : d.amount()),
+                        Boolean.TRUE,
+                        !"CONFIRMED".equalsIgnoreCase(statusText(d.status()))));
+            }
+        } catch (RuntimeException ignored) {
+            // 降级:recharge 维持 0
+        }
+        try {
+            List<WithdrawalOrderView> withdrawals = pageRecords(
+                    financeService.withdrawals(new WithdrawalQueryRequest(null, userId, null, 1, 20)), 20);
+            withdraw = withdrawals.stream()
+                    .filter(w -> List.of("SUCCESS", "COMPLETED").contains(statusText(w.status())))
+                    .map(w -> w.amount() != null ? w.amount() : BigDecimal.ZERO)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            for (WithdrawalOrderView w : withdrawals) {
+                ledger.add(new ConversationCustomerProfile.LedgerEntry(
+                        "提现 " + (w.asset() != null ? w.asset() : ""),
+                        formatDateTime(w.completedAt() != null ? w.completedAt() : w.createdAt()),
+                        money(w.amount()),
+                        Boolean.FALSE,
+                        !List.of("SUCCESS", "COMPLETED").contains(statusText(w.status()))));
+            }
+        } catch (RuntimeException ignored) {
+            // 降级:withdraw 维持 0
+        }
+
+        // 4. device 域:设备数 / 算力 / 闲置
+        long deviceTotal = 0;
+        long deviceActive = 0;
+        long deviceIdle = 0;
+        BigDecimal hashrateTotal = BigDecimal.ZERO;
+        try {
+            List<DeviceOpsView> devices = dataOrNull(deviceService.userDevices(userId, 200));
+            if (devices == null) {
+                devices = List.of();
+            }
+            deviceTotal = devices.size();
+            for (DeviceOpsView d : devices) {
+                if (List.of("ONLINE", "ACTIVE", "RUNNING").contains(statusText(d.status()))) {
+                    deviceActive++;
+                } else {
+                    deviceIdle++;
+                }
+                if (d.hashrate() != null) {
+                    hashrateTotal = hashrateTotal.add(d.hashrate());
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // 降级:device 字段走兜底
+        }
+        // device 域查不到时,回退 profile 自带的设备计数(nx_user 冗余字段)
+        if (deviceTotal == 0 && profile.deviceCount() != null && profile.deviceCount() > 0) {
+            deviceTotal = profile.deviceCount();
+            if (profile.activeDeviceCount() != null) {
+                deviceActive = profile.activeDeviceCount();
+                deviceIdle = Math.max(0, deviceTotal - deviceActive);
+            }
+        }
+        String device = deviceTotal > 0 ? (deviceActive + "/" + deviceTotal + " 在网") : "无设备";
+        String hashrate = hashrateTotal.signum() > 0 ? (money(hashrateTotal) + " TH/s") : "—";
+        String idle = deviceIdle > 0 ? ("闲置 " + deviceIdle) : null;
+
+        // 5. content 域:关联工单数(本域 ticketRepository,按 userId 过滤)
+        Integer tickets = 0;
+        try {
+            PageResult<SupportTicketView> ticketPage = ticketRepository.pageTickets(
+                    new SupportTicketQueryRequest(null, null, null, null, null, userId, null, 1L, 1L));
+            if (ticketPage != null) {
+                tickets = (int) ticketPage.getTotal();
+            }
+        } catch (RuntimeException ignored) {
+            // 降级:tickets 维持 0
+        }
+
+        // 客户内部备注(持久化于 nx_customer_note;独立 try/catch 降级)
+        List<ConversationCustomerProfile.CustomerNote> notes = List.of();
+        try {
+            List<ConversationCustomerProfile.CustomerNote> persistedNotes = customerProfileRepository.findNotes(userId);
+            notes = persistedNotes == null ? List.of() : persistedNotes;
+        } catch (RuntimeException ignored) {
+            // 降级:notes 维持空列表
+        }
+
+        return new ConversationCustomerProfile(
+                uid, nickname, phone, vlevel, kyc, systemTags, customTags, risk, riskNote,
+                money(recharge) + " USDT", money(withdraw) + " USDT", money(balance) + " USDT",
+                tickets, device, hashrate, idle, region, joined, lastActive,
+                ledger, notes);
+    }
+
+    /** userId 存在但 user 域查不到档案时的最小兜底档案(只读辅助,不阻断会话)。 */
+    private ConversationCustomerProfile minimalProfile(Long userId, String conversationType) {
+        String uid = formatUid(userId);
+        List<String> tags = new ArrayList<>();
+        tags.add("advisor".equalsIgnoreCase(statusText(conversationType)) ? "顾问会话" : "客服会话");
+        return new ConversationCustomerProfile(
+                uid, "用户 " + uid, "未绑定", "—", "未认证",
+                tags, List.of(), "中", "未取到客户档案,按客服流程核对",
+                "—", "—", "—", 0, "无设备", "—", null,
+                "未知", "—", "—", List.of(), List.of());
+    }
+
+    private String formatUid(Long userId) {
+        return "U-" + String.format("%05d", userId);
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value.trim();
+            }
+        }
+        return "—";
+    }
+
+    private String kycLabel(String kycStatus) {
+        String normalized = statusText(kycStatus);
+        if (List.of("VERIFIED", "APPROVED", "PASSED").contains(normalized)) {
+            return "已认证";
+        }
+        if (normalized.isEmpty()) {
+            return "未认证";
+        }
+        return "认证中";
+    }
+
+    private String riskLevel(int effectiveScore, UserAccountView profile, long openCases) {
+        int score = effectiveScore;
+        if (score < 0) {
+            score = fallbackRiskScore(profile, openCases);
+        }
+        if (score >= 70) {
+            return "高";
+        }
+        if (score >= 40) {
+            return "中";
+        }
+        return "低";
+    }
+
+    private int fallbackRiskScore(UserAccountView profile, long openCases) {
+        int statusScore = switch (statusText(profile.status())) {
+            case "BANNED", "RESTRICTED" -> 88;
+            case "FROZEN" -> 76;
+            default -> 20;
+        };
+        int kycScore = List.of("VERIFIED", "APPROVED", "PASSED").contains(statusText(profile.kycStatus())) ? 0 : 25;
+        int caseScore = openCases > 0 ? 35 : 0;
+        return Math.min(100, statusScore + kycScore + caseScore);
+    }
+
+    private List<String> buildTags(UserAccountView profile, String conversationType, long openCases) {
+        List<String> tags = new ArrayList<>();
+        tags.add("advisor".equalsIgnoreCase(statusText(conversationType)) ? "顾问会话" : "客服会话");
+        if (StringUtils.hasText(profile.vRank())) {
+            tags.add("V:" + profile.vRank().trim());
+        }
+        if (List.of("VERIFIED", "APPROVED", "PASSED").contains(statusText(profile.kycStatus()))) {
+            tags.add("已实名");
+        }
+        if (openCases > 0) {
+            tags.add("风控介入");
+        }
+        String accountStatus = statusText(profile.status());
+        if (!"ACTIVE".equals(accountStatus) && !accountStatus.isEmpty()) {
+            tags.add(accountStatus);
+        }
+        return tags;
+    }
+
+    private String buildRiskNote(UserAccountView profile, String bandLabel, long openCases, int effectiveScore) {
+        List<String> parts = new ArrayList<>();
+        if (StringUtils.hasText(bandLabel)) {
+            parts.add(bandLabel.trim());
+        }
+        if (openCases > 0) {
+            parts.add("未结风控案件 " + openCases + " 件");
+        }
+        if (!List.of("VERIFIED", "APPROVED", "PASSED").contains(statusText(profile.kycStatus()))) {
+            parts.add("KYC 未通过");
+        }
+        String accountStatus = statusText(profile.status());
+        if (!"ACTIVE".equals(accountStatus) && !accountStatus.isEmpty()) {
+            parts.add("账号 " + accountStatus);
+        }
+        if (effectiveScore >= 0) {
+            parts.add("评分 " + effectiveScore);
+        }
+        return parts.isEmpty() ? "正常" : String.join(" / ", parts);
+    }
+
+    private String channelOrAsset(DepositFlowView deposit) {
+        return StringUtils.hasText(deposit.asset()) ? deposit.asset().trim()
+                : (StringUtils.hasText(deposit.channel()) ? deposit.channel().trim() : "");
+    }
+
+    private String money(BigDecimal value) {
+        return (value == null ? BigDecimal.ZERO : value).setScale(2, RoundingMode.HALF_UP).toPlainString();
+    }
+
+    private String formatDate(LocalDateTime time) {
+        return time == null ? "—" : time.toLocalDate().toString();
+    }
+
+    private String formatDateTime(LocalDateTime time) {
+        return time == null ? "—" : time.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+    }
+
+    private String statusText(String value) {
+        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private <T> T dataOrNull(ApiResult<T> result) {
+        if (result == null || result.getCode() != 0) {
+            return null;
+        }
+        return result.getData();
+    }
+
+    private <T> List<T> pageRecords(ApiResult<PageResult<T>> result, int limit) {
+        if (result == null || result.getCode() != 0 || result.getData() == null) {
+            return List.of();
+        }
+        List<T> records = result.getData().getRecords();
+        if (records == null) {
+            return List.of();
+        }
+        return records.size() > limit ? new ArrayList<>(records.subList(0, limit)) : records;
     }
 
     public ApiResult<List<Map<String, Object>>> transferTargets() {
@@ -240,6 +588,101 @@ public class OpsConversationService {
                 "reason", reasonOrDefault(request.reason(), "agent reply"),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
+    }
+
+    public ApiResult<List<String>> addCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
+        ensureSeedData();
+        ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        Long userId = requireUserId(conversationNo);
+        if (userId == null) {
+            return ApiResult.fail(404, "CONVERSATION_NOT_LINKED_TO_USER");
+        }
+        String tag = request.tag().trim();
+        String actor = operator(request.operator());
+        LocalDateTime now = LocalDateTime.now(clock);
+        try {
+            customerProfileRepository.addCustomTag(userId, tag, actor, now);
+        } catch (DuplicateKeyException ignored) {
+            // 幂等:标签已存在(并发重复点击 / 删后重加),视为成功
+        }
+        audit("I9_CUSTOMER_TAG_ADDED", "U-" + userId, actor, Map.of(
+                "userId", userId,
+                "conversationNo", conversationNo,
+                "tag", tag,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(customerProfileRepository.findCustomTags(userId));
+    }
+
+    public ApiResult<List<String>> removeCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
+        ensureSeedData();
+        ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        Long userId = requireUserId(conversationNo);
+        if (userId == null) {
+            return ApiResult.fail(404, "CONVERSATION_NOT_LINKED_TO_USER");
+        }
+        String tag = request.tag().trim();
+        String actor = operator(request.operator());
+        if (!customerProfileRepository.removeCustomTag(userId, tag)) {
+            return ApiResult.fail(404, "CUSTOMER_TAG_NOT_FOUND");
+        }
+        audit("I9_CUSTOMER_TAG_REMOVED", "U-" + userId, actor, Map.of(
+                "userId", userId,
+                "conversationNo", conversationNo,
+                "tag", tag,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(customerProfileRepository.findCustomTags(userId));
+    }
+
+    public ApiResult<ConversationCustomerProfile.CustomerNote> addNote(String conversationNo, String idempotencyKey, CustomerNoteRequest request) {
+        ensureSeedData();
+        ApiResult<ConversationCustomerProfile.CustomerNote> guard = requireProfileNoteCommand(conversationNo, idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        Long userId = requireUserId(conversationNo);
+        if (userId == null) {
+            return ApiResult.fail(404, "CONVERSATION_NOT_LINKED_TO_USER");
+        }
+        String text = request.text().trim();
+        String actor = operator(request.operator());
+        LocalDateTime now = LocalDateTime.now(clock);
+        ConversationCustomerProfile.CustomerNote created = customerProfileRepository.addNote(userId, actor, text, actor, now);
+        audit("I9_CUSTOMER_NOTE_ADDED", "U-" + userId, actor, Map.of(
+                "userId", userId,
+                "conversationNo", conversationNo,
+                "noteId", created.id(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(created);
+    }
+
+    public ApiResult<Void> removeNote(String conversationNo, Long noteId, String idempotencyKey, CustomerNoteRemoveRequest request) {
+        ensureSeedData();
+        ApiResult<Void> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (noteId == null || noteId <= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTE_ID_REQUIRED");
+        }
+        String actor = operator(request.operator());
+        if (!customerProfileRepository.removeNote(noteId, actor, LocalDateTime.now(clock))) {
+            return ApiResult.fail(404, "CUSTOMER_NOTE_NOT_FOUND");
+        }
+        audit("I9_CUSTOMER_NOTE_REMOVED", "U-" + noteId, actor, Map.of(
+                "noteId", noteId,
+                "conversationNo", conversationNo,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(null);
     }
 
     public ApiResult<ContentConversationView> updateStatus(
@@ -609,6 +1052,46 @@ public class OpsConversationService {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
+    }
+
+    /** 标签写命令校验:复用 reason≥6 + 幂等头 + tag 非空且 ≤64。 */
+    private <T> ApiResult<T> requireProfileTagCommand(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
+        ApiResult<T> reasonGuard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
+        if (reasonGuard != null) {
+            return reasonGuard;
+        }
+        if (request == null || !StringUtils.hasText(request.tag())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CUSTOMER_TAG_REQUIRED");
+        }
+        if (request.tag().trim().length() > 64) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CUSTOMER_TAG_TOO_LONG");
+        }
+        return null;
+    }
+
+    /** 备注写命令校验:复用 reason≥6 + 幂等头 + text 非空且 ≤2000。 */
+    private <T> ApiResult<T> requireProfileNoteCommand(String conversationNo, String idempotencyKey, CustomerNoteRequest request) {
+        ApiResult<T> reasonGuard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
+        if (reasonGuard != null) {
+            return reasonGuard;
+        }
+        if (request == null || !StringUtils.hasText(request.text())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CUSTOMER_NOTE_REQUIRED");
+        }
+        if (request.text().trim().length() > 2000) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CUSTOMER_NOTE_TOO_LONG");
+        }
+        return null;
+    }
+
+    /** 解析 conversationNo → userId;会话不存在或未关联用户返回 null(404 由调用方判定)。 */
+    private Long requireUserId(String conversationNo) {
+        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        if (conversation == null) {
+            return null;
+        }
+        Long userId = conversation.userId();
+        return (userId == null || userId <= 0) ? null : userId;
     }
 
     private <T> ApiResult<T> invalidState() {

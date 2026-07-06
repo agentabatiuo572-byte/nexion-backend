@@ -29,6 +29,7 @@ public record AdminAccountOverview(
     public record OperatorRecord(
             String id,
             String name,
+            String username,
             String email,
             String role,
             boolean tfa,

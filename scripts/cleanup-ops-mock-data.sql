@@ -431,7 +431,7 @@ UPDATE nx_support_agent_user_assignment a
        a.updated_at = NOW()
  WHERE a.agent_admin_id IN (SELECT admin_id FROM tmp_ops_mock_admin)
     OR a.user_id IN (SELECT user_id FROM tmp_ops_mock_user)
-    OR REGEXP_LIKE(CONCAT_WS(' ', a.assignment_type, a.status, a.operator, a.reason), @cleanup_regex, 'i');
+    OR REGEXP_LIKE(CONCAT_WS(' ', a.status, a.operator, a.reason), @cleanup_regex, 'i');
 
 UPDATE nx_admin_risk_arbitrage_row r
    SET r.is_deleted = 1,

@@ -374,10 +374,12 @@ public class OpsKillSwitchService {
     }
 
     private List<Map<String, Object>> autoRuleRows() {
+        // 四条自动触发规则是固定目录,不应因 DB 未配阈值而消失;DB 有值则覆盖,否则落回 seed 自带阈值。
         return AUTO_RULE_SEEDS.stream()
-                .filter(seed -> activeValue(autoRuleConfigKey(seed.id())).filter(StringUtils::hasText).isPresent())
                 .map(seed -> {
-            String threshold = activeValue(autoRuleConfigKey(seed.id())).orElse("");
+            String threshold = activeValue(autoRuleConfigKey(seed.id()))
+                    .filter(StringUtils::hasText)
+                    .orElse(seed.threshold());
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
             row.put("nm", seed.name());

@@ -42,7 +42,7 @@ import org.springframework.util.StringUtils;
 public class OpsSessionTemplateService {
     private static final String CONFIG_GROUP = "content-session";
     private static final List<SessionCategorySeed> CATEGORY_SEEDS = List.of(
-            new SessionCategorySeed("advisor", "专属顾问", "conversations.roleAdvisor", true, "增长 / 客服坐席", false),
+            new SessionCategorySeed("advisor", "专属客服", "conversations.roleAdvisor", true, "增长 / 客服坐席", false),
             new SessionCategorySeed("support", "普通客服", "conversations.roleSupport", true, "客服坐席", false),
             new SessionCategorySeed("ai", "Nova AI 顾问", "conversations.roleAi", true, "Nova 自动(配置见 I2)", true));
     private static final List<SessionSegmentField> SEGMENT_FIELDS = List.of(

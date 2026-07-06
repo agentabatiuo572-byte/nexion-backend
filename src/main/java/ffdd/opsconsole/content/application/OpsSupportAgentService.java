@@ -47,7 +47,6 @@ public class OpsSupportAgentService {
     private static final List<String> POSITIONS = List.of(POSITION_MANAGER, POSITION_DEDICATED, POSITION_GENERAL);
     private static final List<String> SERVICE_TYPES = List.of("support", "advisor");
     private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "KYC");
-    private static final Set<String> ASSIGNMENT_TYPES = Set.of("PRIMARY", "BACKUP");
     private static final Set<String> SUPPORT_OPERATOR_ROLES = Set.of("support");
 
     private final SupportAgentRepository repository;
@@ -120,17 +119,11 @@ public class OpsSupportAgentService {
                             Function.identity(),
                             (left, right) -> left,
                             LinkedHashMap::new));
-            Optional<SupportAgentAssignmentView> primary = repository.listActiveAssignments(agentIds).stream()
-                    .filter(assignment -> userId.equals(assignment.userId()))
-                    .filter(assignment -> "PRIMARY".equalsIgnoreCase(assignment.assignmentType()))
+            Optional<SupportAgentAssignmentView> boundAssignment = repository.listActiveAssignments(agentIds).stream()
+                    .filter(row -> userId.equals(row.userId()))
                     .findFirst();
-            Optional<SupportAgentAssignmentView> backup = repository.listActiveAssignments(agentIds).stream()
-                    .filter(assignment -> userId.equals(assignment.userId()))
-                    .filter(assignment -> "BACKUP".equalsIgnoreCase(assignment.assignmentType()))
-                    .findFirst();
-            Optional<SupportAgentAssignmentView> assignment = primary.or(() -> backup);
-            if (assignment.isPresent() && agentById.containsKey(assignment.get().agentAdminId())) {
-                SupportAgentProfileView agent = agentById.get(assignment.get().agentAdminId());
+            if (boundAssignment.isPresent() && agentById.containsKey(boundAssignment.get().agentAdminId())) {
+                SupportAgentProfileView agent = agentById.get(boundAssignment.get().agentAdminId());
                 return new AdvisorRoutingDecision(
                         "agent",
                         String.valueOf(agent.adminId()),
@@ -262,12 +255,10 @@ public class OpsSupportAgentService {
                 now);
         List<Long> boundUserIds = new ArrayList<>();
         if (SEAT_DEDICATED.equals(seatType)) {
-            String assignmentType = normalizeAssignmentType(request.assignmentType());
             for (Long userId : userIds) {
                 repository.upsertAssignment(
                         adminId,
                         userId,
-                        assignmentType,
                         operator(request.operator()),
                         request.reason().trim(),
                         now);
@@ -317,18 +308,15 @@ public class OpsSupportAgentService {
         if (!profile.serviceTypes().contains("advisor")) {
             return ApiResult.fail(422, "SUPPORT_AGENT_NOT_ADVISOR");
         }
-        String assignmentType = normalizeAssignmentType(request.assignmentType());
         SupportAgentAssignmentView assignment = repository.upsertAssignment(
                 adminId,
                 request.userId(),
-                assignmentType,
                 operator(request.operator()),
                 request.reason().trim(),
                 now);
         audit("M5_SUPPORT_ADVISOR_USER_BOUND", "SUPPORT_ADVISOR_ASSIGNMENT", adminId + ":" + request.userId(), request.operator(), Map.of(
                 "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim(),
-                "assignmentType", assignmentType));
+                "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(assignment);
     }
 
@@ -652,9 +640,6 @@ public class OpsSupportAgentService {
         if (request.position().trim().length() > 64) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_TOO_LONG");
         }
-        if (!ASSIGNMENT_TYPES.contains(normalizeAssignmentType(request.assignmentType()))) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_TYPE_INVALID");
-        }
         if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
@@ -673,9 +658,6 @@ public class OpsSupportAgentService {
         }
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
-        }
-        if (!ASSIGNMENT_TYPES.contains(normalizeAssignmentType(request.assignmentType()))) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_TYPE_INVALID");
         }
         if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
@@ -729,12 +711,6 @@ public class OpsSupportAgentService {
                 .distinct()
                 .limit(10)
                 .toList();
-    }
-
-    private String normalizeAssignmentType(String assignmentType) {
-        return StringUtils.hasText(assignmentType)
-                ? assignmentType.trim().toUpperCase(Locale.ROOT)
-                : "PRIMARY";
     }
 
     private int boundedInt(Integer value, int min, int max, int fallback) {

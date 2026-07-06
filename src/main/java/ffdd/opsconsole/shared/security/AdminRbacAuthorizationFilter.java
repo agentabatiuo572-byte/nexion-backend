@@ -4,6 +4,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
+import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.io.IOException;
@@ -25,8 +27,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @RequiredArgsConstructor
 public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     private static final String ADMIN_PREFIX = "/api/admin/";
+    private static final String PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
+    private static final Set<String> PASSWORD_CHANGE_REQUIRED_STATUSES = Set.of(
+            PASSWORD_CHANGE_REQUIRED,
+            "MAIL_DISPATCHED",
+            "HANDOFF_PENDING");
+    private static final Set<String> PASSWORD_CHANGE_ALLOWED_PATHS = Set.of(
+            "/api/admin/auth/me",
+            "/api/admin/auth/password/change");
     private static final Set<String> ANY_ADMIN_PATHS = Set.of(
             "/api/admin/auth/me",
+            "/api/admin/auth/password/change",
             "/api/admin/options/*/*");
     private static final Set<String> ADMIN_WRITE_AUTHORITIES = Set.of(
             "PERM_SYSTEM_WRITE",
@@ -40,9 +51,12 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             "PERM_MARKET_WRITE",
             "PERM_GROWTH_WRITE",
             "PERM_CONTENT_WRITE",
+            "PERM_SUPPORT_WRITE",
             "PERM_EMERGENCY_WRITE",
             "PERM_RISK_WRITE",
             "PERM_BI_EXPORT");
+    private static final List<String> SUPPORT_OR_CONTENT_READ = List.of("PERM_SUPPORT_READ", "PERM_CONTENT_READ");
+    private static final List<String> SUPPORT_OR_CONTENT_WRITE = List.of("PERM_SUPPORT_WRITE", "PERM_CONTENT_WRITE");
     private static final List<Rule> RULES = List.of(
             rule("/api/admin/platform/audit/exports/**", "PERM_AUDIT_EXPORT", "PERM_AUDIT_EXPORT"),
             rule("/api/admin/platform/audit/operations/**", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT"),
@@ -61,6 +75,18 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/teams/**", "PERM_TEAM_READ", "PERM_TEAM_WRITE"),
             rule("/api/admin/market/**", "PERM_MARKET_READ", "PERM_MARKET_WRITE"),
             rule("/api/admin/growth/**", "PERM_GROWTH_READ", "PERM_GROWTH_WRITE"),
+            ruleAny("/api/admin/content/tickets", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/tickets/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/conversations", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/conversations/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/knowledge", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/knowledge/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/session-templates", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/session-templates/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/support-agents", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/support-agents/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
+            ruleAny("/api/admin/content/support-workbench", SUPPORT_OR_CONTENT_READ, List.of("PERM_CONTENT_WRITE")),
+            ruleAny("/api/admin/content/support-workbench/**", SUPPORT_OR_CONTENT_READ, List.of("PERM_CONTENT_WRITE")),
             rule("/api/admin/content/**", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE"),
             rule("/api/admin/emergency-control/**", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE"),
             rule("/api/admin/emergency/**", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE"),
@@ -71,6 +97,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
 
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
     private final AuditLogService auditLogService;
+    private final AdminAccountStateMapper accountStateMapper;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -91,6 +118,11 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_UNAUTHORIZED, "ADMIN_AUTH_REQUIRED");
             return;
         }
+        if (!matchesPasswordChangeAllowedPath(path) && passwordChangeRequired(authentication)) {
+            auditDenial(request, authentication, "ADMIN_PASSWORD_CHANGE_REQUIRED", null);
+            reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
+            return;
+        }
         if (matchesAnyAdminPath(path)) {
             filterChain.doFilter(request, response);
             return;
@@ -107,7 +139,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             return;
         }
         if (!required.matches(authorities)) {
-            auditDenial(request, authentication, "ADMIN_PERMISSION_DENIED", required.authority());
+            auditDenial(request, authentication, "ADMIN_PERMISSION_DENIED", required.describe());
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PERMISSION_DENIED");
             return;
         }
@@ -118,15 +150,39 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         return ANY_ADMIN_PATHS.stream().anyMatch(pattern -> pathMatcher.match(pattern, path));
     }
 
+    private boolean matchesPasswordChangeAllowedPath(String path) {
+        return PASSWORD_CHANGE_ALLOWED_PATHS.stream().anyMatch(pattern -> pathMatcher.match(pattern, path));
+    }
+
+    private boolean passwordChangeRequired(Authentication authentication) {
+        Long adminId = parseAdminId(authentication.getPrincipal());
+        if (adminId == null) {
+            return false;
+        }
+        AdminAccountStateEntity state = accountStateMapper.selectActiveByAdminId(adminId);
+        return state != null && PASSWORD_CHANGE_REQUIRED_STATUSES.contains(state.getCredentialDeliveryStatus());
+    }
+
+    private Long parseAdminId(Object principal) {
+        if (principal == null) {
+            return null;
+        }
+        try {
+            return Long.valueOf(String.valueOf(principal));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
         return RULES.stream()
                 .filter(rule -> pathMatcher.match(rule.pattern(), path))
                 .findFirst()
                 .map(rule -> {
-                    String authority = read ? rule.readAuthority() : rule.writeAuthority();
-                    return StringUtils.hasText(authority)
-                            ? RequiredAuthority.single(authority)
+                    List<String> authorities = read ? rule.readAuthorities() : rule.writeAuthorities();
+                    return !authorities.isEmpty()
+                            ? RequiredAuthority.anyOf(authorities)
                             : RequiredAuthority.authenticated();
                 })
                 .orElse(null);
@@ -162,29 +218,42 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     }
 
     private static Rule rule(String pattern, String readAuthority, String writeAuthority) {
-        return new Rule(pattern, readAuthority, writeAuthority);
+        return ruleAny(
+                pattern,
+                StringUtils.hasText(readAuthority) ? List.of(readAuthority) : List.of(),
+                StringUtils.hasText(writeAuthority) ? List.of(writeAuthority) : List.of());
     }
 
-    private record Rule(String pattern, String readAuthority, String writeAuthority) {
+    private static Rule ruleAny(String pattern, List<String> readAuthorities, List<String> writeAuthorities) {
+        return new Rule(pattern, List.copyOf(readAuthorities), List.copyOf(writeAuthorities));
     }
 
-    private record RequiredAuthority(String authority, boolean authenticatedOnly) {
-        static RequiredAuthority single(String authority) {
-            return new RequiredAuthority(authority, false);
+    private record Rule(String pattern, List<String> readAuthorities, List<String> writeAuthorities) {
+    }
+
+    private record RequiredAuthority(List<String> authorities, boolean authenticatedOnly) {
+        static RequiredAuthority anyOf(List<String> authorities) {
+            return new RequiredAuthority(List.copyOf(authorities), false);
         }
 
         static RequiredAuthority authenticated() {
-            return new RequiredAuthority(null, true);
+            return new RequiredAuthority(List.of(), true);
+        }
+
+        String describe() {
+            return String.join("|", authorities);
         }
 
         boolean matches(Collection<String> actualAuthorities) {
             if (authenticatedOnly) {
                 return true;
             }
-            if ("ANY_ADMIN_WRITE".equals(authority)) {
-                return actualAuthorities.stream().anyMatch(ADMIN_WRITE_AUTHORITIES::contains);
-            }
-            return StringUtils.hasText(authority) && actualAuthorities.contains(authority);
+            return authorities.stream().anyMatch(authority -> {
+                if ("ANY_ADMIN_WRITE".equals(authority)) {
+                    return actualAuthorities.stream().anyMatch(ADMIN_WRITE_AUTHORITIES::contains);
+                }
+                return StringUtils.hasText(authority) && actualAuthorities.contains(authority);
+            });
         }
     }
 }

@@ -15,12 +15,17 @@ import ffdd.opsconsole.content.dto.ConversationStatusRequest;
 import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
+import ffdd.opsconsole.content.dto.CustomerNoteRemoveRequest;
+import ffdd.opsconsole.content.dto.CustomerNoteRequest;
+import ffdd.opsconsole.content.dto.CustomerTagRequest;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class OpsConversationControllerTest {
     private final OpsConversationService conversationService = mock(OpsConversationService.class);
-    private final OpsConversationController controller = new OpsConversationController(conversationService);
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
+    private final OpsConversationController controller = new OpsConversationController(conversationService, eventPublisher);
 
     @Test
     void overviewDelegatesToService() {
@@ -112,5 +117,45 @@ class OpsConversationControllerTest {
         assertThat(controller.initiate("idem-i9-init", request).getCode()).isZero();
 
         verify(conversationService).initiate("idem-i9-init", request);
+    }
+
+    @Test
+    void addCustomTagDelegatesWithIdempotencyHeader() {
+        CustomerTagRequest request = new CustomerTagRequest("高净值", "add vip tag", "agent-1");
+        when(conversationService.addCustomTag("CV-1", "idem-i9-tag", request)).thenReturn(ApiResult.ok(List.of("高净值")));
+
+        assertThat(controller.addCustomTag("CV-1", "idem-i9-tag", request).getCode()).isZero();
+
+        verify(conversationService).addCustomTag("CV-1", "idem-i9-tag", request);
+    }
+
+    @Test
+    void removeCustomTagDelegatesWithIdempotencyHeader() {
+        CustomerTagRequest request = new CustomerTagRequest("高净值", "remove vip tag", "agent-1");
+        when(conversationService.removeCustomTag("CV-1", "idem-i9-tag", request)).thenReturn(ApiResult.ok(List.of()));
+
+        assertThat(controller.removeCustomTag("CV-1", "idem-i9-tag", request).getCode()).isZero();
+
+        verify(conversationService).removeCustomTag("CV-1", "idem-i9-tag", request);
+    }
+
+    @Test
+    void addNoteDelegatesWithIdempotencyHeader() {
+        CustomerNoteRequest request = new CustomerNoteRequest("测试备注", "add note reason", "agent-1");
+        when(conversationService.addNote("CV-1", "idem-i9-note", request)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.addNote("CV-1", "idem-i9-note", request).getCode()).isZero();
+
+        verify(conversationService).addNote("CV-1", "idem-i9-note", request);
+    }
+
+    @Test
+    void removeNoteDelegatesWithIdempotencyHeader() {
+        CustomerNoteRemoveRequest request = new CustomerNoteRemoveRequest("remove note reason", "agent-1");
+        when(conversationService.removeNote("CV-1", 5L, "idem-i9-note", request)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.removeNote("CV-1", 5L, "idem-i9-note", request).getCode()).isZero();
+
+        verify(conversationService).removeNote("CV-1", 5L, "idem-i9-note", request);
     }
 }

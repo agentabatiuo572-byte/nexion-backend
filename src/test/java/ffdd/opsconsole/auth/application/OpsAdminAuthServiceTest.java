@@ -3,15 +3,20 @@ package ffdd.opsconsole.auth.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.AdminLoginRequest;
 import ffdd.opsconsole.auth.dto.AdminLoginResponse;
+import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
+import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import ffdd.opsconsole.shared.security.JwtProperties;
@@ -29,6 +34,7 @@ class OpsAdminAuthServiceTest {
     private final AdminMapper adminMapper = mock(AdminMapper.class);
     private final AdminRolePermissionMapper permissionMapper = mock(AdminRolePermissionMapper.class);
     private final AdminRoleRelationMapper roleRelationMapper = mock(AdminRoleRelationMapper.class);
+    private final AdminAccountStateMapper accountStateMapper = mock(AdminAccountStateMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final JwtTokenProvider tokenProvider = new JwtTokenProvider(jwtProperties());
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
@@ -37,6 +43,7 @@ class OpsAdminAuthServiceTest {
                     adminMapper,
                     permissionMapper,
                     roleRelationMapper,
+                    accountStateMapper,
                     passwordEncoder,
                     tokenProvider,
                     adminSessionRegistry);
@@ -66,6 +73,7 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().username()).isEqualTo("superadmin");
         assertThat(result.getData().session().operator()).isEqualTo("Super Admin");
         assertThat(result.getData().session().role()).isEqualTo("superadmin");
+        assertThat(result.getData().session().passwordChangeRequired()).isFalse();
         assertThat(result.getData().session().authorities())
                 .contains("PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", "PERM_USER_READ")
                 .doesNotContain("PERM_SUPPORT_SEAT_WRITE");
@@ -90,6 +98,111 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().role()).isEqualTo("risk");
         assertThat(result.getData().session().authorities())
                 .containsExactly("PERM_RISK_READ", "PERM_RISK_WRITE");
+    }
+
+    @Test
+    void loginMarksSessionWhenInitialPasswordMustBeChanged() {
+        AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(4L);
+        state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(state);
+        when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
+        when(permissionMapper.selectActivePermissionCodes(4L)).thenReturn(List.of("PERM_RISK_READ"));
+        when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
+
+        ApiResult<AdminLoginResponse> result =
+                service.login(new AdminLoginRequest("risk.shift", "RiskShift@123"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().session().passwordChangeRequired()).isTrue();
+        assertThat(result.getData().session().authorities()).isEmpty();
+        Claims claims = tokenProvider.parse(result.getData().accessToken());
+        assertThat(claims.get("authorities", List.class)).isEmpty();
+    }
+
+    @Test
+    void loginTreatsLegacyCredentialDeliveryStatesAsPasswordChangeRequired() {
+        AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(4L);
+        state.setCredentialDeliveryStatus("HANDOFF_PENDING");
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(state);
+        when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
+        when(permissionMapper.selectActivePermissionCodes(4L)).thenReturn(List.of("PERM_RISK_READ"));
+        when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
+
+        ApiResult<AdminLoginResponse> result =
+                service.login(new AdminLoginRequest("risk.shift", "RiskShift@123"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().session().passwordChangeRequired()).isTrue();
+        assertThat(result.getData().session().authorities()).isEmpty();
+    }
+
+    @Test
+    void changePasswordVerifiesCurrentPasswordStoresHashAndIssuesFreshSession() {
+        AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
+        when(adminMapper.selectById(4L)).thenReturn(admin);
+        when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
+        when(permissionMapper.selectActivePermissionCodes(4L)).thenReturn(List.of("PERM_RISK_READ"));
+        when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-new");
+        when(adminMapper.updateById(any(AdminEntity.class))).thenAnswer(invocation -> {
+            AdminEntity patch = invocation.getArgument(0);
+            admin.setPasswordHash(patch.getPasswordHash());
+            return 1;
+        });
+        var authentication = new UsernamePasswordAuthenticationToken("4", null, List.of());
+
+        ApiResult<AdminLoginResponse> result =
+                service.changePassword(authentication, new AdminPasswordChangeRequest("RiskShift@123", "87654321"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(passwordEncoder.matches("87654321", admin.getPasswordHash())).isTrue();
+        assertThat(result.getData().accessToken()).isNotBlank();
+        assertThat(result.getData().session().passwordChangeRequired()).isFalse();
+        verify(accountStateMapper).upsertCredentialStatus(4L, "ACTIVE");
+        verify(adminSessionRegistry).revokeSessionsExcept(4L, "admin-session-new");
+    }
+
+    @Test
+    void changePasswordDoesNotMutatePasswordWhenFreshSessionCannotBeCreated() {
+        AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
+        String originalHash = admin.getPasswordHash();
+        when(adminMapper.selectById(4L)).thenReturn(admin);
+        when(adminSessionRegistry.createSession(4L, "risk.shift"))
+                .thenThrow(new IllegalStateException("redis down"));
+        var authentication = new UsernamePasswordAuthenticationToken("4", null, List.of());
+
+        ApiResult<AdminLoginResponse> result =
+                service.changePassword(authentication, new AdminPasswordChangeRequest("RiskShift@123", "87654321"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("ADMIN_SESSION_STORE_UNAVAILABLE");
+        assertThat(admin.getPasswordHash()).isEqualTo(originalHash);
+        verify(adminMapper, never()).updateById(any(AdminEntity.class));
+        verify(accountStateMapper, never()).upsertCredentialStatus(4L, "ACTIVE");
+        verify(adminSessionRegistry, never()).revokeSessions(4L);
+        verify(adminSessionRegistry, never()).revokeSessionsExcept(any(Long.class), any(String.class));
+    }
+
+    @Test
+    void changePasswordRejectsWrongCurrentPasswordAndWeakReplacement() {
+        AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
+        when(adminMapper.selectById(4L)).thenReturn(admin);
+        var authentication = new UsernamePasswordAuthenticationToken("4", null, List.of());
+
+        ApiResult<AdminLoginResponse> wrongCurrent =
+                service.changePassword(authentication, new AdminPasswordChangeRequest("wrong", "RiskShift@456"));
+        ApiResult<AdminLoginResponse> weak =
+                service.changePassword(authentication, new AdminPasswordChangeRequest("RiskShift@123", "short"));
+
+        assertThat(wrongCurrent.getCode()).isEqualTo(OpsErrorCode.UNAUTHORIZED.httpStatus());
+        assertThat(wrongCurrent.getMessage()).isEqualTo("ADMIN_PASSWORD_CURRENT_INVALID");
+        assertThat(weak.getCode()).isEqualTo(422);
+        assertThat(weak.getMessage()).isEqualTo("ADMIN_PASSWORD_WEAK");
     }
 
     @Test

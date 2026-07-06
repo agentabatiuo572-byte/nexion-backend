@@ -7,6 +7,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class AdminRbacBaselineInitializerTest {
@@ -47,6 +48,16 @@ class AdminRbacBaselineInitializerTest {
                 eq("Export BI operations"),
                 eq("/api/admin/bi/exports/**"),
                 anyString());
+        verify(mapper).ensurePermission(
+                eq("PERM_SUPPORT_READ"),
+                eq("Read support center operations"),
+                eq("/api/admin/content/{tickets,conversations,knowledge,session-templates,support-agents,support-workbench}/**"),
+                anyString());
+        verify(mapper).ensurePermission(
+                eq("PERM_SUPPORT_WRITE"),
+                eq("Write support center operations"),
+                eq("/api/admin/content/{tickets,conversations,knowledge,session-templates,support-agents}/**"),
+                anyString());
         verify(mapper, never()).ensurePermission(
                 eq("PERM_SUPPORT_SEAT_WRITE"),
                 anyString(),
@@ -62,9 +73,12 @@ class AdminRbacBaselineInitializerTest {
         verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_AUDIT_EXPORT");
         verify(mapper).insertMissingRolePermission("CONFIG_ADMIN", "PERM_BI_EXPORT");
         verify(mapper).insertMissingRolePermission("RISK", "PERM_RISK_WRITE");
-        verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_USER_WRITE");
-        verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_READ");
-        verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_WRITE");
+        verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_SUPPORT_READ");
+        verify(mapper).insertMissingRolePermission("SUPPORT", "PERM_SUPPORT_WRITE");
+        verify(mapper).disableRolePermissionsExcept("SUPPORT", List.of("PERM_SUPPORT_READ", "PERM_SUPPORT_WRITE"));
+        verify(mapper, never()).insertMissingRolePermission("SUPPORT", "PERM_USER_WRITE");
+        verify(mapper, never()).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_READ");
+        verify(mapper, never()).insertMissingRolePermission("SUPPORT", "PERM_GROWTH_WRITE");
         verify(mapper, never()).insertMissingRolePermission("SUPPORT_MANAGER", "PERM_SUPPORT_SEAT_WRITE");
         verify(mapper, never()).insertMissingRolePermission("SUPPORT_DEDICATED", "PERM_USER_WRITE");
         verify(mapper, never()).insertMissingRolePermission("SUPPORT_GENERAL", "PERM_CONTENT_WRITE");

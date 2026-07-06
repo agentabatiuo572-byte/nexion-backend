@@ -1,6 +1,9 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -13,7 +16,9 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.AdvisorRoutingDecision;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
+import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
 import ffdd.opsconsole.content.domain.ConversationRepository;
+import ffdd.opsconsole.content.domain.CustomerProfileRepository;
 import ffdd.opsconsole.content.domain.SupportTicketMessageView;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
@@ -26,6 +31,9 @@ import ffdd.opsconsole.content.dto.ConversationStatusRequest;
 import ffdd.opsconsole.content.dto.ConversationTicketRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferDecisionRequest;
 import ffdd.opsconsole.content.dto.ConversationTransferRequest;
+import ffdd.opsconsole.content.dto.CustomerNoteRemoveRequest;
+import ffdd.opsconsole.content.dto.CustomerNoteRequest;
+import ffdd.opsconsole.content.dto.CustomerTagRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.Clock;
@@ -38,6 +46,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DuplicateKeyException;
 
 class OpsConversationServiceTest {
     private final FakeConversationRepository conversationRepository = new FakeConversationRepository();
@@ -45,6 +54,7 @@ class OpsConversationServiceTest {
     private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final CustomerProfileRepository customerProfileRepository = mock(CustomerProfileRepository.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsConversationService service = service();
 
@@ -58,7 +68,12 @@ class OpsConversationServiceTest {
                 configFacade,
                 auditLogService,
                 clock,
-                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                mock(ffdd.opsconsole.user.application.OpsUserService.class),
+                mock(ffdd.opsconsole.finance.application.OpsFinanceService.class),
+                mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
+                mock(ffdd.opsconsole.risk.application.OpsRiskService.class),
+                customerProfileRepository);
     }
 
     @Test
@@ -275,6 +290,95 @@ class OpsConversationServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().conversation().conversationNo()).isEqualTo("CV-1");
         assertThat(result.getData().messages()).hasSize(1);
+    }
+
+    @Test
+    void addCustomTagPersistsAndReturnsLatestList() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+        when(customerProfileRepository.findCustomTags(1001L)).thenReturn(List.of("高净值"));
+
+        var result = service.addCustomTag("CV-1", "idem-tag", new CustomerTagRequest("高净值", "add vip tag", "agent-1"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsExactly("高净值");
+        verify(customerProfileRepository).addCustomTag(eq(1001L), eq("高净值"), eq("agent-1"), any());
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("I9_CUSTOMER_TAG_ADDED");
+    }
+
+    @Test
+    void addCustomTagIsIdempotentOnDuplicateKey() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+        doThrow(new DuplicateKeyException("dup")).when(customerProfileRepository)
+                .addCustomTag(eq(1001L), any(), any(), any());
+        when(customerProfileRepository.findCustomTags(1001L)).thenReturn(List.of("高净值"));
+
+        var result = service.addCustomTag("CV-1", "idem-tag", new CustomerTagRequest("高净值", "add vip tag", "agent-1"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsExactly("高净值");
+    }
+
+    @Test
+    void addCustomTagRejectsConversationWithoutUserId() {
+        conversationRepository.conversation = new ContentConversationView(
+                1L, "CV-BATCH", null, "support", "OPEN",
+                "agent-1", "Agent One", 0, "audience broadcast", LocalDateTime.now(),
+                null, null, null, null, null, null, null, LocalDateTime.now());
+
+        var result = service.addCustomTag("CV-BATCH", "idem-tag", new CustomerTagRequest("高净值", "add vip tag", "agent-1"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+    }
+
+    @Test
+    void addCustomTagRequiresReasonAtLeastSixCharacters() {
+        var result = service.addCustomTag("CV-1", "idem-tag", new CustomerTagRequest("高净值", "short", "agent-1"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+    }
+
+    @Test
+    void removeCustomTagReturns404WhenTagMissing() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+        when(customerProfileRepository.removeCustomTag(1001L, "高净值")).thenReturn(false);
+
+        var result = service.removeCustomTag("CV-1", "idem-tag", new CustomerTagRequest("高净值", "remove vip tag", "agent-1"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+    }
+
+    @Test
+    void addNoteReturnsCreatedNoteAndAudits() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+        ConversationCustomerProfile.CustomerNote created = new ConversationCustomerProfile.CustomerNote("1", 0L, "agent-1", "测试备注");
+        when(customerProfileRepository.addNote(eq(1001L), eq("agent-1"), eq("测试备注"), eq("agent-1"), any())).thenReturn(created);
+
+        var result = service.addNote("CV-1", "idem-note", new CustomerNoteRequest("测试备注", "add note reason", "agent-1"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().id()).isEqualTo("1");
+        assertThat(result.getData().text()).isEqualTo("测试备注");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("I9_CUSTOMER_NOTE_ADDED");
+    }
+
+    @Test
+    void removeNoteSoftDeletesAndAudits() {
+        when(customerProfileRepository.removeNote(eq(5L), eq("agent-1"), any())).thenReturn(true);
+
+        var result = service.removeNote("CV-1", 5L, "idem-note", new CustomerNoteRemoveRequest("remove note reason", "agent-1"));
+
+        assertThat(result.getCode()).isZero();
+        verify(customerProfileRepository).removeNote(eq(5L), eq("agent-1"), any());
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("I9_CUSTOMER_NOTE_REMOVED");
     }
 
     @Test

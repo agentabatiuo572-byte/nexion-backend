@@ -5,6 +5,8 @@ import ffdd.opsconsole.platform.application.OpsAdminAccountService;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
+import ffdd.opsconsole.platform.dto.AdminAccountPasswordResetResponse;
+import ffdd.opsconsole.platform.dto.AdminAccountProfileUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountRoleUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountSecurityBaselineUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
@@ -13,6 +15,7 @@ import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -51,6 +54,15 @@ public class OpsAdminAccountController {
         return accountService.changeRole(idempotencyKey, accountId, request);
     }
 
+    @PatchMapping("/accounts/{accountId}/profile")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    public ApiResult<AdminAccountOverview.OperatorRecord> updateProfile(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String accountId,
+            @RequestBody(required = false) AdminAccountProfileUpdateRequest request) {
+        return accountService.updateProfile(idempotencyKey, accountId, request);
+    }
+
     @PatchMapping("/accounts/{accountId}/status")
     @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
     public ApiResult<AdminAccountOverview.OperatorRecord> updateStatus(
@@ -60,6 +72,15 @@ public class OpsAdminAccountController {
         return accountService.updateStatus(idempotencyKey, accountId, request);
     }
 
+    @DeleteMapping("/accounts/{accountId}")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    public ApiResult<AdminAccountOverview.OperatorRecord> deleteAccount(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String accountId,
+            @RequestBody(required = false) AdminAccountActionRequest request) {
+        return accountService.deleteAccount(idempotencyKey, accountId, request);
+    }
+
     @PostMapping("/accounts/{accountId}/reset-2fa")
     @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
     public ApiResult<AdminAccountOverview.OperatorRecord> reset2fa(
@@ -67,6 +88,15 @@ public class OpsAdminAccountController {
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountActionRequest request) {
         return accountService.reset2fa(idempotencyKey, accountId, request);
+    }
+
+    @PostMapping("/accounts/{accountId}/password/reset")
+    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    public ApiResult<AdminAccountPasswordResetResponse> resetPassword(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String accountId,
+            @RequestBody(required = false) AdminAccountActionRequest request) {
+        return accountService.resetPassword(idempotencyKey, accountId, request);
     }
 
     @PostMapping("/accounts/{accountId}/sessions/revoke")

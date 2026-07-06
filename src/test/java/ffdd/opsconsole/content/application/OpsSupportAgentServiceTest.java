@@ -85,8 +85,8 @@ class OpsSupportAgentServiceTest {
         fake.updateProfile(5L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
         fake.updateProfile(6L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
         fake.updateProfile(7L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
-        fake.assignments.add(new SupportAgentAssignmentView(10L, 2L, 1001L, "U00001001", "用户1001", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
-        fake.assignments.add(new SupportAgentAssignmentView(11L, 6L, 1006L, "U00001006", "用户1006", "PRIMARY", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
+        fake.assignments.add(new SupportAgentAssignmentView(10L, 2L, 1001L, "U00001001", "用户1001", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
+        fake.assignments.add(new SupportAgentAssignmentView(11L, 6L, 1006L, "U00001006", "用户1006", "ACTIVE", now().toString(), null, "system", "seed", now().toString()));
 
         ApiResult<SupportAgentPageView> result = service.agents(new SupportAgentQueryRequest(2L, 2L));
 
@@ -152,6 +152,29 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void updateProfileRejectsNonSupervisorActor() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support", "enabled")));
+
+        SupportAgentProfileUpdateRequest request = new SupportAgentProfileUpdateRequest(
+                "通用客服",
+                List.of("support"),
+                List.of("夜班"),
+                14,
+                true,
+                true,
+                false,
+                "support.agent",
+                "尝试调整客服岗位");
+
+        var result = service.updateProfile(2L, "idem-profile-forbidden", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_SEAT_ASSIGNMENT_FORBIDDEN");
+    }
+
+    @Test
     void assignAdvisorRequiresAdvisorServiceType() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("support"), List.of(), 12, true, true, false, now());
@@ -159,7 +182,7 @@ class OpsSupportAgentServiceTest {
         var result = service.assignAdvisorUser(
                 2L,
                 "idem-assign",
-                new SupportAgentAssignmentRequest(1001L, "PRIMARY", "superadmin", "绑定专属顾问用户"));
+                new SupportAgentAssignmentRequest(1001L, "superadmin", "绑定专属客服用户"));
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("SUPPORT_AGENT_NOT_ADVISOR");
@@ -179,7 +202,6 @@ class OpsSupportAgentServiceTest {
                         true,
                         false,
                         List.of(1001L),
-                        "PRIMARY",
                         "superadmin",
                         "分配专属客服并绑定用户"));
 
@@ -197,6 +219,58 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void assignSeatRejectsNonSupervisorActor() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support", "enabled")));
+
+        var result = service.assignSeat(
+                2L,
+                "idem-seat-forbidden",
+                new SupportAgentSeatAssignmentRequest(
+                        "专属客服",
+                        List.of("advisor"),
+                        List.of("高价值用户"),
+                        16,
+                        true,
+                        true,
+                        false,
+                        List.of(1001L),
+                        "support.agent",
+                        "尝试分配客服坐席"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_SEAT_ASSIGNMENT_FORBIDDEN");
+    }
+
+    @Test
+    void assignAdvisorReplacesExistingActiveBindingForSameUser() {
+        when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
+                operator("1", "Root Admin", "super", "enabled"),
+                operator("2", "Support Agent A", "support", "enabled"),
+                operator("5", "Support Agent B", "support", "enabled")))));
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
+        fake.updateProfile(5L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
+
+        var first = service.assignAdvisorUser(
+                2L,
+                "idem-assign-first",
+                new SupportAgentAssignmentRequest(1001L, "superadmin", "首次绑定专属客服用户"));
+        var second = service.assignAdvisorUser(
+                5L,
+                "idem-assign-second",
+                new SupportAgentAssignmentRequest(1001L, "superadmin", "改绑专属客服用户"));
+
+        assertThat(first.getCode()).isZero();
+        assertThat(second.getCode()).isZero();
+        assertThat(fake.assignments)
+                .filteredOn(row -> row.userId().equals(1001L) && "ACTIVE".equals(row.status()))
+                .extracting(SupportAgentAssignmentView::agentAdminId)
+                .containsExactly(5L);
+    }
+
+    @Test
     void assignAdvisorRejectsNonSupervisorActor() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
@@ -205,7 +279,7 @@ class OpsSupportAgentServiceTest {
         var result = service.assignAdvisorUser(
                 2L,
                 "idem-assign-forbidden",
-                new SupportAgentAssignmentRequest(1001L, "PRIMARY", "support.agent", "绑定专属顾问用户"));
+                new SupportAgentAssignmentRequest(1001L, "support.agent", "绑定专属客服用户"));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_ASSIGNMENT_FORBIDDEN");
@@ -219,7 +293,7 @@ class OpsSupportAgentServiceTest {
         var result = service.assignAdvisorUser(
                 2L,
                 "idem-assign-missing-user",
-                new SupportAgentAssignmentRequest(9999L, "PRIMARY", "superadmin", "绑定专属顾问用户"));
+                new SupportAgentAssignmentRequest(9999L, "superadmin", "绑定专属客服用户"));
 
         assertThat(result.getCode()).isEqualTo(404);
         assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_USER_NOT_FOUND");
@@ -238,6 +312,7 @@ class OpsSupportAgentServiceTest {
         return new AdminAccountOverview.OperatorRecord(
                 id,
                 name,
+                name.toLowerCase().replace(' ', '.'),
                 name.toLowerCase().replace(' ', '.') + "@nexion.io",
                 role,
                 true,
@@ -346,13 +421,10 @@ class OpsSupportAgentServiceTest {
         public SupportAgentAssignmentView upsertAssignment(
                 Long agentAdminId,
                 Long userId,
-                String assignmentType,
                 String operator,
                 String reason,
                 LocalDateTime now) {
-            assignments.removeIf(row -> row.agentAdminId().equals(agentAdminId)
-                    && row.userId().equals(userId)
-                    && row.assignmentType().equals(assignmentType)
+            assignments.removeIf(row -> row.userId().equals(userId)
                     && "ACTIVE".equals(row.status()));
             SupportAgentAssignmentView row = new SupportAgentAssignmentView(
                     assignmentId++,
@@ -360,7 +432,6 @@ class OpsSupportAgentServiceTest {
                     userId,
                     "U" + String.format("%08d", userId),
                     "用户" + userId,
-                    assignmentType,
                     "ACTIVE",
                     now.toString(),
                     null,
@@ -387,7 +458,6 @@ class OpsSupportAgentServiceTest {
                             row.userId(),
                             row.userNo(),
                             row.nickname(),
-                            row.assignmentType(),
                             "INACTIVE",
                             row.startsAt(),
                             now.toString(),

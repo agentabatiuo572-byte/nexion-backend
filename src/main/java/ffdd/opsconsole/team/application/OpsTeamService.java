@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -396,6 +397,7 @@ public class OpsTeamService {
             throw new IllegalArgumentException("Unsupported F team UI config key");
         }
         String value = normalizeUiValue(request.value());
+        validateUiConfig(key, value);
         String configKey = uiConfigKey(key);
         String oldValue = configFacade.activeValue(configKey).orElse("");
         configFacade.upsertAdminValue(configKey, value, "TEXT", "team", "F domain UI-backed policy state");
@@ -585,14 +587,18 @@ public class OpsTeamService {
 
     private Map<String, Object> normalizeVRankRow(Map<String, Object> raw) {
         String level = textValue(raw, "v", "");
+        // 按 VRANK_SEEDS 字段组合输出:组合外的门槛字段 put null,前端 fieldsOf 按 != null 显示按钮,
+        // 避免非该阶字段(如非 V1 的 selfBuy)误显示导致编辑时 thresholdFields 校验报 Unsupported。
+        VRankSeed seed = VRANK_SEEDS.stream().filter(s -> s.v().equals(level)).findFirst().orElse(null);
+        Set<String> fields = seed != null ? seed.fields() : Set.of();
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("v", level);
         row.put("label", textValue(raw, "label", level));
-        row.put("selfBuy", moneyCompact(intValue(raw.get("selfBuyUsd"), 0)));
-        row.put("directRefs", intValue(raw.get("directRefs"), 0));
-        row.put("teamGv", moneyCompact(intValue(raw.get("teamGvUsd"), 0)));
-        row.put("legCount", intValue(raw.get("legCount"), 0));
-        row.put("legRank", textValue(raw, "legRank", ""));
+        row.put("selfBuy", fields.contains("selfBuy") ? moneyCompact(intValue(raw.get("selfBuyUsd"), 0)) : null);
+        row.put("directRefs", fields.contains("directRefs") ? intValue(raw.get("directRefs"), 0) : null);
+        row.put("teamGv", fields.contains("teamGv") ? moneyCompact(intValue(raw.get("teamGvUsd"), 0)) : null);
+        row.put("legCount", fields.contains("legCount") ? intValue(raw.get("legCount"), 0) : null);
+        row.put("legRank", fields.contains("legRank") ? textValue(raw, "legRank", "") : null);
         row.put("votes", intValue(raw.get("votes"), 0));
         row.put("pop", intValue(raw.get("pop"), 0));
         row.put("rewards", activeRewards(level));
@@ -1231,16 +1237,156 @@ public class OpsTeamService {
         };
     }
 
+    private static final ObjectMapper JSON_PROBE = new ObjectMapper();
+
     private String normalizeUiValue(String raw) {
         String value = requireText(raw, "TEAM_CONFIG_VALUE_REQUIRED");
-        if (value.length() > 160) {
+        String trimmed = value.trim();
+        boolean isJson = trimmed.startsWith("{") || trimmed.startsWith("[");
+        // JSON 类配置(头衔/Partner Status/PERIOD_PRIZE/大使预算等)放宽到 4000 字符;标量保持 160。
+        int limit = isJson ? 4000 : 160;
+        if (trimmed.length() > limit) {
             throw new IllegalArgumentException("F team UI config value is too long");
         }
-        String trimmed = value.trim();
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            throw new IllegalArgumentException("F team UI config does not accept raw JSON");
+        if (isJson && !isValidJson(trimmed)) {
+            throw new IllegalArgumentException("F team UI config JSON is malformed");
         }
         return trimmed;
+    }
+
+    private boolean isValidJson(String raw) {
+        try {
+            JSON_PROBE.readTree(raw);
+            return true;
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
+    // key-specific 校验:开关 / 数字范围 / JSON schema。批1a 文本项(titles/prize.name/settleCron/unlockVRank)不强校验。
+    private void validateUiConfig(String key, String value) {
+        switch (key) {
+            case "F.vrank.permanent", "F.leaderboard.paused", "F.binary.paused" -> {
+                if (!"on".equalsIgnoreCase(value) && !"off".equalsIgnoreCase(value)) {
+                    throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
+                }
+            }
+            case "F.leaderboard.minUsd" -> {
+                if (parseDecimal(value, BigDecimal.valueOf(-1)).signum() < 0) {
+                    throw new IllegalArgumentException("F_TEAM_NUMBER_INVALID");
+                }
+            }
+            case "F.unilevel.depth" -> {
+                int depth;
+                try {
+                    depth = Integer.parseInt(value.trim());
+                } catch (NumberFormatException ex) {
+                    throw new IllegalArgumentException("F_TEAM_NUMBER_INVALID");
+                }
+                if (depth < 1 || depth > 10) {
+                    throw new IllegalArgumentException("F_TEAM_DEPTH_OUT_OF_RANGE");
+                }
+            }
+            case "F.commission.anomalyThreshold" -> validateAnomalyThreshold(value);
+            case "F.pool.top1MaxPct", "F.pool.top5MaxPct" -> {
+                var pct = parseDecimal(value, BigDecimal.valueOf(-1));
+                if (pct.signum() < 0 || pct.compareTo(BigDecimal.valueOf(100)) > 0) {
+                    throw new IllegalArgumentException("F_TEAM_PCT_OUT_OF_RANGE");
+                }
+            }
+            case "F.pool.periodPrize" -> validatePeriodPrize(value);
+            case "F.partner.tiers" -> validatePartnerTiers(value);
+            case "F.vrank.titles" -> validateVrankTitles(value);
+            default -> {
+                // F.unilevel.L{1-7}.paused 动态 toggle(7 层独立暂停开关);非该 pattern 的 key 白名单已过滤。
+                if (key.matches("F\\.unilevel\\.L[1-7]\\.paused")
+                        && !"on".equalsIgnoreCase(value) && !"off".equalsIgnoreCase(value)) {
+                    throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
+                }
+            }
+        }
+    }
+
+    private void validateAnomalyThreshold(String value) {
+        try {
+            var node = JSON_PROBE.readTree(value);
+            var frozen = node.get("frozen");
+            var anomaly = node.get("anomaly");
+            if (!node.isObject() || frozen == null || anomaly == null || !frozen.isNumber() || !anomaly.isNumber()) {
+                throw new IllegalArgumentException("F_ANOMALY_THRESHOLD_SCHEMA_INVALID");
+            }
+        } catch (IllegalArgumentException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("F_ANOMALY_THRESHOLD_SCHEMA_INVALID");
+        }
+    }
+
+    // 4 周期榜单奖池(today/week/month/allTime)· 各须为非负数字。
+    private void validatePeriodPrize(String value) {
+        try {
+            var node = JSON_PROBE.readTree(value);
+            if (!node.isObject()) {
+                throw new IllegalArgumentException("F_PERIOD_PRIZE_SCHEMA_INVALID");
+            }
+            for (String period : new String[]{"today", "week", "month", "allTime"}) {
+                var amount = node.get(period);
+                if (amount == null || !amount.isNumber() || amount.decimalValue().signum() < 0) {
+                    throw new IllegalArgumentException("F_PERIOD_PRIZE_SCHEMA_INVALID");
+                }
+            }
+        } catch (IllegalArgumentException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("F_PERIOD_PRIZE_SCHEMA_INVALID");
+        }
+    }
+
+    // Partner Status 4 档门槛(bronze/silver/gold/diamond)· 须为数字且非递减。
+    private void validatePartnerTiers(String value) {
+        try {
+            var node = JSON_PROBE.readTree(value);
+            if (!node.isObject()) {
+                throw new IllegalArgumentException("F_PARTNER_TIERS_SCHEMA_INVALID");
+            }
+            var bronze = node.get("bronze");
+            var silver = node.get("silver");
+            var gold = node.get("gold");
+            var diamond = node.get("diamond");
+            if (bronze == null || silver == null || gold == null || diamond == null
+                    || !bronze.isNumber() || !silver.isNumber() || !gold.isNumber() || !diamond.isNumber()) {
+                throw new IllegalArgumentException("F_PARTNER_TIERS_SCHEMA_INVALID");
+            }
+            if (bronze.decimalValue().compareTo(silver.decimalValue()) > 0
+                    || silver.decimalValue().compareTo(gold.decimalValue()) > 0
+                    || gold.decimalValue().compareTo(diamond.decimalValue()) > 0) {
+                throw new IllegalArgumentException("F_PARTNER_TIERS_NOT_ASCENDING");
+            }
+        } catch (IllegalArgumentException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("F_PARTNER_TIERS_SCHEMA_INVALID");
+        }
+    }
+
+    // V-Rank 13 阶头衔(V0-V12)· 每阶须为非空文本。
+    private void validateVrankTitles(String value) {
+        try {
+            var node = JSON_PROBE.readTree(value);
+            if (!node.isObject()) {
+                throw new IllegalArgumentException("F_VRANK_TITLES_SCHEMA_INVALID");
+            }
+            for (String level : VRANK_LEVELS) {
+                var title = node.get(level);
+                if (title == null || !title.isTextual() || title.asText().isBlank()) {
+                    throw new IllegalArgumentException("F_VRANK_TITLES_SCHEMA_INVALID");
+                }
+            }
+        } catch (IllegalArgumentException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("F_VRANK_TITLES_SCHEMA_INVALID");
+        }
     }
 
     private Map<String, String> configValues() {
@@ -1512,7 +1658,30 @@ public class OpsTeamService {
                 "F3.dailyCap.nextTrigger",
                 "F3.dailyCap.nextLabel",
                 "F.pool.ratio",
-                "F.pool.monthlyCap"));
+                "F.pool.monthlyCap",
+                "F.vrank.titles",
+                "F.prize.name",
+                "F.pool.settleCron",
+                "F.pool.unlockVRank",
+                // 批1b · 中风险:开关 / 数字范围 / JSON schema(配置面存储,业务逻辑消费留后续)。
+                "F.vrank.permanent",
+                "F.leaderboard.paused",
+                "F.leaderboard.minUsd",
+                "F.unilevel.depth",
+                "F.commission.anomalyThreshold",
+                // 批1c · 高风险:资金/结算语义型配置(配置面存储 + schema 校验;业务逻辑消费 + B1 红线归属留后续批次)。
+                "F.binary.paused",
+                "F.pool.top1MaxPct",
+                "F.pool.top5MaxPct",
+                "F.pool.periodPrize",
+                "F.unilevel.L1.paused",
+                "F.unilevel.L2.paused",
+                "F.unilevel.L3.paused",
+                "F.unilevel.L4.paused",
+                "F.unilevel.L5.paused",
+                "F.unilevel.L6.paused",
+                "F.unilevel.L7.paused",
+                "F.partner.tiers"));
         return Collections.unmodifiableSet(keys);
     }
 

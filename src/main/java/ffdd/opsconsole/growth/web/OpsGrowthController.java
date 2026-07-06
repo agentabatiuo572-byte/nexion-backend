@@ -8,6 +8,10 @@ import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.util.Map;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -103,6 +107,34 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthQuestEventRequest request) {
         return growthService.createQuestEvent(idempotencyKey, request);
+    }
+
+    @PostMapping("/quest-events/missions")
+    public ApiResult<Map<String, Object>> createMission(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthMissionRequest request) {
+        return growthService.createMission(idempotencyKey, request);
+    }
+
+    @PostMapping("/quest-events/monthly-missions")
+    public ApiResult<Map<String, Object>> createMonthlyMission(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthMonthlyMissionRequest request) {
+        return growthService.createMonthlyMission(idempotencyKey, request);
+    }
+
+    @PostMapping("/quest-events/wheel-tiers")
+    public ApiResult<Map<String, Object>> createWheelTier(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthWheelTierRequest request) {
+        return growthService.createWheelTier(idempotencyKey, request);
+    }
+
+    @PostMapping("/quest-events/wheel-guards")
+    public ApiResult<Map<String, Object>> createWheelGuard(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthWheelGuardRequest request) {
+        return growthService.createWheelGuard(idempotencyKey, request);
     }
 
     @PatchMapping("/quest-events/events/{eventId}/reward")

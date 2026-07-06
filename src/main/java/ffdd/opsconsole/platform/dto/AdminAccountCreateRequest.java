@@ -1,10 +1,11 @@
 package ffdd.opsconsole.platform.dto;
 
 public record AdminAccountCreateRequest(
+        String username,
         String displayName,
         String email,
         String role,
-        String deliver,
+        String ignoredCredentialDelivery,
         String reason,
         String operator,
         String initialPassword) {
@@ -12,9 +13,20 @@ public record AdminAccountCreateRequest(
             String displayName,
             String email,
             String role,
-            String deliver,
+            String ignoredCredentialDelivery,
             String reason,
             String operator) {
-        this(displayName, email, role, deliver, reason, operator, null);
+        this(null, displayName, email, role, ignoredCredentialDelivery, reason, operator, null);
+    }
+
+    public AdminAccountCreateRequest(
+            String displayName,
+            String email,
+            String role,
+            String ignoredCredentialDelivery,
+            String reason,
+            String operator,
+            String initialPassword) {
+        this(null, displayName, email, role, ignoredCredentialDelivery, reason, operator, initialPassword);
     }
 }

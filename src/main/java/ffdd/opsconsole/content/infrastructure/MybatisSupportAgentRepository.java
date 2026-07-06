@@ -27,6 +27,16 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
         }
         mapper.backfillSeatType();
         mapper.createAssignmentTable();
+        if (mapper.countAssignmentTypeColumn() > 0) {
+            mapper.dropAssignmentTypeColumn();
+        }
+        mapper.deactivateDuplicateActiveAssignments();
+        if (mapper.countActiveUserColumn() == 0) {
+            mapper.addActiveUserColumn();
+        }
+        if (mapper.countActiveUserUniqueIndex() == 0) {
+            mapper.addActiveUserUniqueIndex();
+        }
     }
 
     @Override
@@ -97,13 +107,12 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     public SupportAgentAssignmentView upsertAssignment(
             Long agentAdminId,
             Long userId,
-            String assignmentType,
             String operator,
             String reason,
             LocalDateTime now) {
-        mapper.deactivateSameAssignment(agentAdminId, userId, assignmentType, operator, reason, now);
-        mapper.insertAssignment(agentAdminId, userId, assignmentType, operator, reason, now);
-        return mapper.findActiveAssignment(agentAdminId, userId, assignmentType);
+        mapper.deactivateActiveAssignmentsForUser(userId, operator, reason, now);
+        mapper.insertAssignment(agentAdminId, userId, operator, reason, now);
+        return mapper.findActiveAssignment(agentAdminId, userId);
     }
 
     @Override

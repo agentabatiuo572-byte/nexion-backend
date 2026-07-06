@@ -482,24 +482,24 @@ public class OpsFinanceService {
     }
 
     private List<DepositChannelView> topupChannels() {
+        // 五条充值渠道是固定目录;不再按 DB 是否配置过滤,fee/min_amount/enabled 空时落回 seed 默认。
         return TOPUP_CHANNELS.stream()
-                .filter(this::hasAnyTopupChannelConfig)
                 .map(channel -> new DepositChannelView(
                         channel.id(),
                         channel.code(),
-                        configValue(channelConfigKey(channel.code(), "fee"), ""),
-                        configValue(channelConfigKey(channel.code(), "min_amount"), ""),
-                        configBoolean(channelConfigKey(channel.code(), "enabled"), false)))
+                        configValue(channelConfigKey(channel.code(), "fee"), channel.defaultFee()),
+                        configValue(channelConfigKey(channel.code(), "min_amount"), channel.defaultMinAmount()),
+                        configBoolean(channelConfigKey(channel.code(), "enabled"), channel.defaultEnabled())))
                 .toList();
     }
 
     private List<DepositCardRiskParamView> topupCardParams() {
+        // 三条刷卡风控参数是固定目录;不再按 DB 是否配置过滤,value 空时落回 seed defaultValue。
         return TOPUP_CARD_PARAMS.stream()
-                .filter(param -> configFacade.activeValue(cardParamConfigKey(param.key())).filter(StringUtils::hasText).isPresent())
                 .map(param -> new DepositCardRiskParamView(
                         param.key(),
                         param.name(),
-                        configValue(cardParamConfigKey(param.key()), ""),
+                        configValue(cardParamConfigKey(param.key()), param.defaultValue()),
                         param.note()))
                 .toList();
     }

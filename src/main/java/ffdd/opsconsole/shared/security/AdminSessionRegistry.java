@@ -94,6 +94,44 @@ public class AdminSessionRegistry {
         return active;
     }
 
+    public int revokeSessionsExcept(Long adminId, String retainedSessionId) {
+        if (adminId == null) {
+            return 0;
+        }
+        if (!StringUtils.hasText(retainedSessionId)) {
+            return revokeSessions(adminId);
+        }
+        Set<String> sessionIds = redisTemplate.opsForSet().members(indexKey(adminId));
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return 0;
+        }
+        String retained = retainedSessionId.trim();
+        List<String> revokedIds = sessionIds.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .filter(sessionId -> !sessionId.equals(retained))
+                .toList();
+        int active = 0;
+        for (String sessionId : revokedIds) {
+            if (isSessionActive(adminId, sessionId)) {
+                active++;
+            }
+        }
+        List<String> keys = revokedIds.stream()
+                .map(AdminSessionRegistry::sessionKey)
+                .toList();
+        if (!keys.isEmpty()) {
+            redisTemplate.delete(keys);
+            redisTemplate.opsForSet().remove(indexKey(adminId), revokedIds.toArray());
+        }
+        pruneIndex(adminId, sessionIds.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .filter(sessionId -> !retained.equals(sessionId) && !revokedIds.contains(sessionId))
+                .toList());
+        return active;
+    }
+
     private void pruneIndex(Long adminId, List<String> stale) {
         if (!stale.isEmpty()) {
             redisTemplate.opsForSet().remove(indexKey(adminId), stale.toArray());

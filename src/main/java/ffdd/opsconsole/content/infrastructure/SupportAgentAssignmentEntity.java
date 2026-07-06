@@ -12,7 +12,6 @@ import lombok.EqualsAndHashCode;
 public class SupportAgentAssignmentEntity extends BaseEntity {
     private Long agentAdminId;
     private Long userId;
-    private String assignmentType;
     private String status;
     private LocalDateTime startsAt;
     private LocalDateTime endsAt;

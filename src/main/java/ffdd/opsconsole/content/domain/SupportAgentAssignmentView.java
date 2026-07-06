@@ -6,7 +6,6 @@ public record SupportAgentAssignmentView(
         Long userId,
         String userNo,
         String nickname,
-        String assignmentType,
         String status,
         String startsAt,
         String endsAt,

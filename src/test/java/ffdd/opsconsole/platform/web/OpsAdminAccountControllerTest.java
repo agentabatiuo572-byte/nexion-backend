@@ -9,6 +9,7 @@ import ffdd.opsconsole.platform.application.OpsAdminAccountService;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
+import ffdd.opsconsole.platform.dto.AdminAccountProfileUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountRoleUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountSecurityBaselineUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
@@ -45,19 +46,27 @@ class OpsAdminAccountControllerTest {
         AdminAccountStatusUpdateRequest statusRequest =
                 new AdminAccountStatusUpdateRequest("disabled", "offboard", "superadmin");
         AdminAccountActionRequest actionRequest = new AdminAccountActionRequest("identity verified", "superadmin");
+        AdminAccountProfileUpdateRequest profileRequest =
+                new AdminAccountProfileUpdateRequest("risk.shift", "风控值班", null, "rename", "superadmin");
         AdminAccountCreateRequest createRequest =
                 new AdminAccountCreateRequest("王新", "wangxin@nexion.io", "risk", "mail", "join", "superadmin");
 
         controller.createAccount("idem-create", createRequest);
         controller.changeRole("idem-role", "op-001", roleRequest);
+        controller.updateProfile("idem-profile", "op-001", profileRequest);
         controller.updateStatus("idem-status", "op-001", statusRequest);
+        controller.deleteAccount("idem-delete", "op-001", actionRequest);
         controller.reset2fa("idem-2fa", "op-001", actionRequest);
+        controller.resetPassword("idem-password", "op-001", actionRequest);
         controller.revokeSessions("idem-session", "op-001", actionRequest);
 
         verify(accountService).createAccount("idem-create", createRequest);
         verify(accountService).changeRole("idem-role", "op-001", roleRequest);
+        verify(accountService).updateProfile("idem-profile", "op-001", profileRequest);
         verify(accountService).updateStatus("idem-status", "op-001", statusRequest);
+        verify(accountService).deleteAccount("idem-delete", "op-001", actionRequest);
         verify(accountService).reset2fa("idem-2fa", "op-001", actionRequest);
+        verify(accountService).resetPassword("idem-password", "op-001", actionRequest);
         verify(accountService).revokeSessions("idem-session", "op-001", actionRequest);
     }
 

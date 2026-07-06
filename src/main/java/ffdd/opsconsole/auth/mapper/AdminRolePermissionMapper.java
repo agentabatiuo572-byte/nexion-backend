@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.auth.infrastructure.AdminRolePermissionEntity;
+import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
@@ -214,4 +215,25 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             """)
     int disableRolePermission(@Param("roleCode") String roleCode,
                               @Param("permissionCode") String permissionCode);
+
+    @Update("""
+            <script>
+            UPDATE nx_admin_role_permission rp
+            JOIN nx_admin_role r
+              ON r.id = rp.role_id
+             AND r.role_code = #{roleCode}
+             AND r.is_deleted = 0
+            JOIN nx_admin_permission p
+              ON p.id = rp.permission_id
+            SET rp.is_deleted = 1,
+                rp.updated_at = NOW()
+            WHERE rp.is_deleted = 0
+              AND p.permission_code NOT IN
+              <foreach collection="allowedPermissionCodes" item="permissionCode" open="(" separator="," close=")">
+                #{permissionCode}
+              </foreach>
+            </script>
+            """)
+    int disableRolePermissionsExcept(@Param("roleCode") String roleCode,
+                                     @Param("allowedPermissionCodes") Collection<String> allowedPermissionCodes);
 }

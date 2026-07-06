@@ -17,6 +17,10 @@ import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
@@ -597,6 +601,185 @@ public class OpsGrowthService {
                     "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = questEvents().getData();
             response.put("updated", Map.of("eventId", id, "action", "created"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    public ApiResult<Map<String, Object>> createMission(
+            String idempotencyKey,
+            GrowthMissionRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            String code = normalizePlainText(request.missionCode(), 64);
+            if (!Pattern.compile("^[A-Za-z0-9_-]{2,64}$").matcher(code).matches()) {
+                throw new IllegalArgumentException("MISSION_CODE_INVALID");
+            }
+            if (questEventMapper.get().countByMissionCode(code) > 0) {
+                return validation("MISSION_ALREADY_EXISTS");
+            }
+            String name = normalizePlainText(request.missionName(), 128);
+            String type = normalizePlainText(request.missionType(), 32).toUpperCase(Locale.ROOT);
+            if (!Set.of("DAY_ONE", "WEEKLY_T1", "WEEKLY_T2").contains(type)) {
+                throw new IllegalArgumentException("MISSION_TYPE_UNSUPPORTED");
+            }
+            int rewardPoints = request.rewardPoints() == null ? 0 : request.rewardPoints();
+            if (rewardPoints < 0) {
+                throw new IllegalArgumentException("MISSION_REWARD_INVALID");
+            }
+            questEventMapper.get().insertMission(code, name, type, rewardPoints, 1, LocalDateTime.now());
+            audit("H3_MISSION_CREATED", "GROWTH_MISSION", code, request.operator(), Map.of(
+                    "missionCode", code,
+                    "missionName", name,
+                    "missionType", type,
+                    "rewardPoints", rewardPoints,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEvents().getData();
+            response.put("updated", Map.of("missionCode", code, "missionType", type, "action", "created"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    public ApiResult<Map<String, Object>> createMonthlyMission(
+            String idempotencyKey,
+            GrowthMonthlyMissionRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            String code = normalizePlainText(request.challengeCode(), 64);
+            if (!Pattern.compile("^[A-Za-z0-9_-]{2,64}$").matcher(code).matches()) {
+                throw new IllegalArgumentException("CHALLENGE_CODE_INVALID");
+            }
+            if (questEventMapper.get().countByChallengeCode(code) > 0) {
+                return validation("CHALLENGE_ALREADY_EXISTS");
+            }
+            String name = normalizePlainText(request.challengeName(), 128);
+            String theme = request.theme() == null ? "" : request.theme().trim();
+            String description = request.description() == null ? "" : request.description().trim();
+            int monthsFrom = request.monthsFrom() == null ? 0 : request.monthsFrom();
+            int monthsTo = request.monthsTo() == null ? 999 : request.monthsTo();
+            if (monthsFrom < 0 || monthsFrom > 999 || monthsTo < monthsFrom || monthsTo > 999) {
+                throw new IllegalArgumentException("CHALLENGE_AGE_RANGE_INVALID");
+            }
+            String targetType = normalizePlainText(request.targetType(), 64);
+            int targetValue = request.targetValue() == null ? 1 : request.targetValue();
+            if (targetValue < 1) {
+                throw new IllegalArgumentException("CHALLENGE_TARGET_VALUE_INVALID");
+            }
+            String rewardType = normalizePlainText(StringUtils.hasText(request.rewardType()) ? request.rewardType() : "NEX", 32).toUpperCase(Locale.ROOT);
+            BigDecimal rewardAmount = request.rewardAmount() == null ? BigDecimal.ZERO : request.rewardAmount();
+            if (rewardAmount.compareTo(BigDecimal.ZERO) < 0) {
+                throw new IllegalArgumentException("CHALLENGE_REWARD_AMOUNT_INVALID");
+            }
+            String rewardName = normalizePlainText(request.rewardName(), 128);
+            if (rewardAmount.compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::monthlyMissions).size() * 10L + 10L));
+            questEventMapper.get().insertMonthlyChallenge(code, name, description, theme, monthsFrom, monthsTo,
+                    targetType, targetValue, rewardType, rewardAmount, rewardName, null, sortOrder, 1, LocalDateTime.now());
+            audit("H3_MONTHLY_MISSION_CREATED", "GROWTH_MISSION", code, request.operator(), Map.of(
+                    "challengeCode", code,
+                    "challengeName", name,
+                    "rewardAmount", rewardAmount,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEvents().getData();
+            response.put("updated", Map.of("challengeCode", code, "action", "created"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    public ApiResult<Map<String, Object>> createWheelTier(
+            String idempotencyKey,
+            GrowthWheelTierRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            String tierName = normalizePlainText(request.tierName(), 128);
+            if (questEventMapper.get().countByTierName(tierName) > 0) {
+                return validation("WHEEL_TIER_ALREADY_EXISTS");
+            }
+            String rewardName = normalizePlainText(request.rewardName(), 128);
+            BigDecimal probability = request.probabilityPct() == null ? BigDecimal.ZERO : request.probabilityPct();
+            if (probability.compareTo(BigDecimal.ZERO) < 0 || probability.compareTo(new BigDecimal("100")) > 0) {
+                throw new IllegalArgumentException("WHEEL_TIER_PROBABILITY_INVALID");
+            }
+            int realOutflow = (request.realOutflow() != null && request.realOutflow() == 1) ? 1 : 0;
+            String rewardKind = normalizePlainText(StringUtils.hasText(request.rewardKind()) ? request.rewardKind() : "nex", 64).toLowerCase(Locale.ROOT);
+            // 真实出金档位会放大资金流出,过 B1 备付金红线
+            if (realOutflow == 1 && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::wheelTiers).size() * 10L + 10L));
+            questEventMapper.get().insertWheelTier(tierName, rewardName, probability, realOutflow, rewardKind, sortOrder, 1, LocalDateTime.now());
+            audit("H4_WHEEL_TIER_CREATED", "WHEEL_CONFIG", tierName, request.operator(), Map.of(
+                    "tierName", tierName,
+                    "rewardName", rewardName,
+                    "probabilityPct", probability,
+                    "realOutflow", realOutflow,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEvents().getData();
+            response.put("updated", Map.of("tierName", tierName, "action", "created"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    public ApiResult<Map<String, Object>> createWheelGuard(
+            String idempotencyKey,
+            GrowthWheelGuardRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            String key = normalizePlainText(request.guardKey(), 64).toLowerCase(Locale.ROOT);
+            if (!Pattern.compile("^[a-z][a-z0-9_]{1,63}$").matcher(key).matches()) {
+                throw new IllegalArgumentException("GUARD_KEY_INVALID");
+            }
+            if (questEventMapper.get().countByGuardKey(key) > 0) {
+                return validation("WHEEL_GUARD_ALREADY_EXISTS");
+            }
+            String label = normalizePlainText(request.guardLabel(), 128);
+            String value = request.guardValue() == null ? "" : request.guardValue().trim();
+            String note = request.note() == null ? "" : request.note().trim();
+            int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::wheelGuards).size() * 10L + 10L));
+            questEventMapper.get().insertWheelGuard(key, label, value, note, sortOrder, 1, LocalDateTime.now());
+            audit("H4_WHEEL_GUARD_CREATED", "WHEEL_CONFIG", key, request.operator(), Map.of(
+                    "guardKey", key,
+                    "guardLabel", label,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEvents().getData();
+            response.put("updated", Map.of("guardKey", key, "action", "created"));
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
@@ -2147,12 +2330,11 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> phaseControls() {
+        // 三项阶段控制是固定目录,不再按 value 是否配置过滤(value 空时前端显示"未配置")。
         return List.of(
                 phaseControl("schedule", "排程", "按 12 个月增长曲线自动推进"),
                 phaseControl("pin", "锁定阶段", "临时固定在指定阶段，用于投产窗口或演示"),
-                phaseControl("override", "覆盖策略", "按批次或 cohort 临时覆盖阶段")).stream()
-                .filter(row -> StringUtils.hasText(String.valueOf(row.get("value"))))
-                .toList();
+                phaseControl("override", "覆盖策略", "按批次或 cohort 临时覆盖阶段"));
     }
 
     private Map<String, Object> phaseControl(String key, String label, String description) {
@@ -2169,7 +2351,22 @@ public class OpsGrowthService {
     }
 
     private List<Map<String, Object>> phaseAttribution() {
-        return List.of();
+        // 三阶段归因是固定目录(P1/P2/P3),保证归因矩阵非空。
+        return List.of(
+                phaseAttributionRow("P1", "新手上手期", "新手任务加成驱动激活", "deviceReleasePacingPct", "0.80", "增长主导"),
+                phaseAttributionRow("P2", "裂变扩散期", "邀请奖励拉新驱动裂变", "inviteRewardMultiplier", "1.20", "增长主导"),
+                phaseAttributionRow("P3", "沉淀转化期", "任务/质押驱动转化", "questRewardMultiplier", "1.00", "增长+运营"));
+    }
+
+    private Map<String, Object> phaseAttributionRow(String phase, String name, String driver, String paramKey, String value, String owner) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("phase", phase);
+        row.put("name", name);
+        row.put("driver", driver);
+        row.put("paramKey", paramKey);
+        row.put("value", value);
+        row.put("owner", owner);
+        return row;
     }
 
     private Map<String, Object> coverage() {

@@ -41,7 +41,6 @@ public interface SupportAgentRepository {
     SupportAgentAssignmentView upsertAssignment(
             Long agentAdminId,
             Long userId,
-            String assignmentType,
             String operator,
             String reason,
             LocalDateTime now);

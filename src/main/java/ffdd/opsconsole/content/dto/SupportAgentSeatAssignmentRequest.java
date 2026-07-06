@@ -11,7 +11,6 @@ public record SupportAgentSeatAssignmentRequest(
         Boolean transferable,
         Boolean busy,
         List<Long> userIds,
-        String assignmentType,
         String operator,
         String reason) {
 }

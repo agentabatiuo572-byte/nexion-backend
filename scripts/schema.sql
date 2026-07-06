@@ -4314,3 +4314,31 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_draft (
   UNIQUE KEY uk_disclosure_draft (jurisdiction_code, version_label),
   KEY idx_disclosure_draft_status (jurisdiction_code, status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ===== 客户档案:自定义标签 + 内部备注(content 域,按 user_id 聚合,跨会话共享)=====
+
+-- 客户自定义标签(坐席手动添加;物理删除,UNIQUE 防重,操作历史走审计日志)
+CREATE TABLE IF NOT EXISTS nx_customer_tag (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  tag VARCHAR(64) NOT NULL,
+  last_operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_customer_tag_user_tag (user_id, tag),
+  KEY idx_customer_tag_user (user_id, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 客户内部备注(坐席留档;软删除保留合规追溯)
+CREATE TABLE IF NOT EXISTS nx_customer_note (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  author VARCHAR(64) NOT NULL,
+  content VARCHAR(2000) NOT NULL,
+  last_operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_customer_note_user_time (user_id, is_deleted, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

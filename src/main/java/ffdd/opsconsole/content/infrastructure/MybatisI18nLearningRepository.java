@@ -87,7 +87,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     @Override
     public List<I18nNamespaceView> listNamespaces() {
-        return namespaceMapper.selectList(new LambdaQueryWrapper<I18nNamespaceEntity>()
+        // DB 命名空间优先;DB 未覆盖的 code 用 NAMESPACE_SEEDS(11 项高保真)兜底,保证矩阵非空。
+        List<I18nNamespaceView> rows = new java.util.ArrayList<>(namespaceMapper.selectList(new LambdaQueryWrapper<I18nNamespaceEntity>()
                         .eq(I18nNamespaceEntity::getIsDeleted, 0)
                         .eq(I18nNamespaceEntity::getStatus, 1)
                         .orderByAsc(I18nNamespaceEntity::getSortOrder)
@@ -99,7 +100,19 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                         value(row.getCoveragePct()),
                         text(row.getVariants(), "-"),
                         text(row.getLastChange(), "-")))
-                .toList();
+                .toList());
+        java.util.Set<String> existingCodes = rows.stream()
+                .map(I18nNamespaceView::ns)
+                .collect(java.util.stream.Collectors.toSet());
+        NAMESPACE_SEEDS.stream()
+                .filter(seed -> !existingCodes.contains(seed.code()))
+                .forEach(seed -> rows.add(new I18nNamespaceView(
+                        seed.code(),
+                        seed.keys(),
+                        seed.coverage(),
+                        text(seed.variants(), "-"),
+                        text(seed.lastChange(), "-"))));
+        return rows;
     }
 
     @Override

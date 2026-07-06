@@ -1388,7 +1388,7 @@ public class OpsNexMarketService {
     private String readText(String configKey, String fallback) {
         return configFacade.activeValue(configKey)
                 .filter(StringUtils::hasText)
-                .orElse("");
+                .orElse(fallback);
     }
 
     private List<String> sunsetExclusions() {

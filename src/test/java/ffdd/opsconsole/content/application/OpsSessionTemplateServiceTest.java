@@ -282,7 +282,7 @@ class OpsSessionTemplateServiceTest {
         private final List<SessionScriptView> scripts = new ArrayList<>(List.of(new SessionScriptView(
                 "AS-001",
                 "开场",
-                "你好,我是你的专属顾问。",
+                "你好,我是你的专属客服。",
                 "—",
                 "published",
                 "全量",

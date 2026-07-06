@@ -9,6 +9,8 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
+import ffdd.opsconsole.platform.dto.AdminAccountPasswordResetResponse;
+import ffdd.opsconsole.platform.dto.AdminAccountProfileUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountRoleUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountSecurityBaselineUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
@@ -30,6 +32,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
@@ -39,11 +42,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -55,8 +59,15 @@ import org.springframework.util.StringUtils;
 public class OpsAdminAccountService {
     private static final List<String> GRANT_OPTIONS = List.of("-", "R", "M", "C");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
+    private static final Logger log = LoggerFactory.getLogger(OpsAdminAccountService.class);
     private static final Pattern ACTION_CODE_PATTERN = Pattern.compile("\\(([A-Za-z][A-Za-z0-9_-]*)\\)");
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
+    private static final Pattern ADMIN_USERNAME_PATTERN = Pattern.compile("^[a-z0-9._-]{3,32}$");
+    private static final String PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
+    private static final String PASSWORD_ACTIVE = "ACTIVE";
+    private static final String TEMP_PASSWORD_CHARS =
+            "23456789abcdefghjkmnpqrstuvwxyz";
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super");
     private static final Map<String, String> ROLE_CODE_TO_KEY = Map.ofEntries(
             Map.entry("SUPER_ADMIN", "super"),
@@ -89,6 +100,7 @@ public class OpsAdminAccountService {
     private final OpsAuditCenterService auditCenterService;
 
     public ApiResult<AdminAccountOverview> overview() {
+        ensureA1BusinessTables();
         List<AdminAccountOverview.OperatorRecord> operators = operators();
         int active = (int) operators.stream().filter(operator -> "enabled".equals(operator.status())).count();
         int activeSessions = operators.stream().mapToInt(AdminAccountOverview.OperatorRecord::sessions).sum();
@@ -118,38 +130,40 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ROLE_ASSIGNMENT_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
+        }
+        String username = normalizeUsername(request.username());
+        if (!StringUtils.hasText(username)) {
+            return ApiResult.fail(422, StringUtils.hasText(request.username()) ? "USERNAME_INVALID" : "USERNAME_REQUIRED");
+        }
+        if (adminByUsername(username).isPresent()) {
+            return ApiResult.fail(409, "ADMIN_USERNAME_EXISTS");
+        }
         String displayName = normalizeText(request.displayName(), "DISPLAY_NAME_REQUIRED");
-        String email = normalizeText(request.email(), "EMAIL_REQUIRED").toLowerCase(Locale.ROOT);
-        if (!validEmail(email)) {
+        String email = normalizeOptionalEmail(request.email());
+        if (StringUtils.hasText(request.email()) && email == null) {
             return ApiResult.fail(422, "EMAIL_FORMAT_INVALID");
         }
-        if (adminByEmail(email).isPresent()) {
+        if (email != null && adminByEmail(email).isPresent()) {
             return ApiResult.fail(409, "ADMIN_EMAIL_EXISTS");
         }
         String role = normalizeRole(request.role());
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
-        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ROLE_ASSIGNMENT_FORBIDDEN");
-        if (authorization != null) {
-            return failLike(authorization);
+        if (!StringUtils.hasText(request.initialPassword())) {
+            return ApiResult.fail(422, "INITIAL_PASSWORD_REQUIRED");
         }
-        String deliver = normalizeDeliver(request.deliver());
-        if (deliver == null) {
-            return ApiResult.fail(422, "CREDENTIAL_DELIVERY_INVALID");
-        }
-        if (StringUtils.hasText(request.initialPassword()) && !"handoff".equals(deliver)) {
-            return ApiResult.fail(422, "INITIAL_PASSWORD_HANDOFF_ONLY");
-        }
-        if (StringUtils.hasText(request.initialPassword()) && !strongInitialPassword(request.initialPassword())) {
+        if (!strongInitialPassword(request.initialPassword())) {
             return ApiResult.fail(422, "INITIAL_PASSWORD_WEAK");
         }
 
-        String initialPassword = normalizeInitialPassword(request.initialPassword(), deliver);
+        String initialPassword = request.initialPassword().trim();
         AdminEntity admin = new AdminEntity();
-        admin.setUsername(uniqueUsername(email));
-        admin.setPasswordHash(passwordEncoder.encode(
-                StringUtils.hasText(initialPassword) ? initialPassword : UUID.randomUUID().toString()));
+        admin.setUsername(username);
+        admin.setPasswordHash(passwordEncoder.encode(initialPassword));
         admin.setNickname(displayName);
         admin.setEmail(email);
         admin.setSuperAdmin("super".equals(role) ? 1 : 0);
@@ -165,18 +179,93 @@ public class OpsAdminAccountService {
         }
         syncPrimaryRoleRelation(adminId, role);
 
-        String credentialStatus = "mail".equals(deliver) ? "MAIL_DISPATCHED" : "HANDOFF_PENDING";
+        String credentialStatus = PASSWORD_CHANGE_REQUIRED;
         accountStateMapper.upsertCreatedState(adminId, credentialStatus);
         String accountId = String.valueOf(adminId);
 
         audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,
-                Map.of("role", role, "credentialDeliveryStatus", credentialStatus,
-                        "initialPasswordProvided", StringUtils.hasText(initialPassword)));
+                Map.of("username", username, "role", role, "credentialDeliveryStatus", credentialStatus));
         AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
         linkA2Proposal(idempotencyKey, "运营账号创建(A1)", operatorLabel(created), "—",
                 role + " / " + credentialStatus, request.operator(), currentOperatorRole(), "acct",
                 false, false, "超管", request.reason());
         return ApiResult.ok(created);
+    }
+
+    @Transactional
+    public ApiResult<AdminAccountOverview.OperatorRecord> updateProfile(
+            String idempotencyKey, String accountId, AdminAccountProfileUpdateRequest request) {
+        ApiResult<Void> mutation = requireMutation(
+                idempotencyKey,
+                request == null ? null : request.reason(),
+                request == null ? null : request.operator());
+        if (mutation != null) {
+            return failLike(mutation);
+        }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ACCOUNT_PROFILE_UPDATE_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
+        }
+        AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+
+        String username = normalizeUsername(request.username());
+        if (!StringUtils.hasText(username)) {
+            return ApiResult.fail(422, StringUtils.hasText(request.username()) ? "USERNAME_INVALID" : "USERNAME_REQUIRED");
+        }
+        Optional<AdminEntity> usernameOwner = adminByUsername(username);
+        if (usernameOwner.isPresent() && !String.valueOf(usernameOwner.get().getId()).equals(current.id())) {
+            return ApiResult.fail(409, "ADMIN_USERNAME_EXISTS");
+        }
+        String displayName = firstText(request.displayName());
+        if (!StringUtils.hasText(displayName)) {
+            return ApiResult.fail(422, "DISPLAY_NAME_REQUIRED");
+        }
+        String email = normalizeOptionalEmail(request.email());
+        if (StringUtils.hasText(request.email()) && email == null) {
+            return ApiResult.fail(422, "EMAIL_FORMAT_INVALID");
+        }
+        if (email != null) {
+            Optional<AdminEntity> emailOwner = adminByEmail(email);
+            if (emailOwner.isPresent() && !String.valueOf(emailOwner.get().getId()).equals(current.id())) {
+                return ApiResult.fail(409, "ADMIN_EMAIL_EXISTS");
+            }
+        }
+
+        boolean usernameChanged = !username.equals(current.username());
+        boolean displayNameChanged = !displayName.equals(current.name());
+        boolean emailChanged = !firstText(email).equals(firstText(current.email()));
+        if (!usernameChanged && !displayNameChanged && !emailChanged) {
+            return ApiResult.ok(current);
+        }
+
+        Long adminId = parseAccountId(current.id()).orElseThrow();
+        AdminEntity patch = new AdminEntity();
+        patch.setId(adminId);
+        patch.setUsername(username);
+        patch.setNickname(displayName);
+        patch.setEmail(firstText(email));
+        adminMapper.updateById(patch);
+        if (usernameChanged) {
+            adminSessionRegistry.revokeSessions(adminId);
+            accountStateMapper.upsertSessionsRevokedAt(adminId, LocalDateTime.now());
+        }
+
+        audit("A1_OPERATOR_PROFILE_UPDATED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(),
+                idempotencyKey, Map.of(
+                        "fromUsername", current.username(),
+                        "toUsername", username,
+                        "fromDisplayName", current.name(),
+                        "toDisplayName", displayName,
+                        "fromEmail", firstText(current.email()),
+                        "toEmail", firstText(email)));
+        AdminAccountOverview.OperatorRecord updated = requireOperator(current.id());
+        linkA2Proposal(idempotencyKey, "运营账号编辑(A1)", operatorLabel(updated),
+                operatorLabel(current), operatorLabel(updated), request.operator(), currentOperatorRole(),
+                "acct", false, false, "超管", request.reason());
+        return ApiResult.ok(updated);
     }
 
     @Transactional
@@ -189,17 +278,17 @@ public class OpsAdminAccountService {
         if (mutation != null) {
             return failLike(mutation);
         }
-        AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
-        if (current == null) {
-            return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ROLE_ASSIGNMENT_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
         }
         String nextRole = normalizeRole(request.role());
         if (nextRole == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
-        ApiResult<Void> authorization = requireRoleAssignmentAuthorization(nextRole, current, operators());
-        if (authorization != null) {
-            return failLike(authorization);
+        AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
         if ("super".equals(current.role())
                 && "enabled".equals(current.status())
@@ -275,6 +364,51 @@ public class OpsAdminAccountService {
     }
 
     @Transactional
+    public ApiResult<AdminAccountOverview.OperatorRecord> deleteAccount(
+            String idempotencyKey, String accountId, AdminAccountActionRequest request) {
+        ApiResult<Void> mutation = requireMutation(
+                idempotencyKey,
+                request == null ? null : request.reason(),
+                request == null ? null : request.operator());
+        if (mutation != null) {
+            return failLike(mutation);
+        }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ACCOUNT_DELETE_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
+        }
+        AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        Optional<Long> actorId = authenticatedAdminId();
+        if (actorId.isPresent() && current.id().equals(String.valueOf(actorId.get()))) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ACCOUNT_DELETE_SELF_FORBIDDEN");
+        }
+        if ("super".equals(current.role())
+                && "enabled".equals(current.status())
+                && effectiveSupers(operators()) - 1 < minEffectiveSupers()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "MIN_EFFECTIVE_SUPER_REQUIRED");
+        }
+
+        Long adminId = parseAccountId(current.id()).orElseThrow();
+        AdminEntity patch = new AdminEntity();
+        patch.setId(adminId);
+        patch.setStatus(0);
+        patch.setIsDeleted(1);
+        adminMapper.updateById(patch);
+        adminSessionRegistry.revokeSessions(adminId);
+        accountStateMapper.upsertSessionsRevokedAt(adminId, LocalDateTime.now());
+
+        audit("A1_OPERATOR_DELETED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(),
+                idempotencyKey, Map.of("username", current.username(), "role", current.role(), "status", current.status()));
+        linkA2Proposal(idempotencyKey, "运营账号删除(A1)", operatorLabel(current), current.status(),
+                "deleted", request.operator(), currentOperatorRole(), "acct", false, false, "超管",
+                request.reason());
+        return ApiResult.ok(current);
+    }
+
+    @Transactional
     public ApiResult<AdminAccountOverview.OperatorRecord> reset2fa(
             String idempotencyKey, String accountId, AdminAccountActionRequest request) {
         ApiResult<Void> mutation = requireMutation(
@@ -300,6 +434,42 @@ public class OpsAdminAccountService {
                 request.operator(), currentOperatorRole(), "acct", false, false, "超管",
                 request.reason());
         return ApiResult.ok(requireOperator(current.id()));
+    }
+
+    @Transactional
+    public ApiResult<AdminAccountPasswordResetResponse> resetPassword(
+            String idempotencyKey, String accountId, AdminAccountActionRequest request) {
+        ApiResult<Void> mutation = requireMutation(
+                idempotencyKey,
+                request == null ? null : request.reason(),
+                request == null ? null : request.operator());
+        if (mutation != null) {
+            return failLike(mutation);
+        }
+        ApiResult<Void> authorization = requireSuperAuthorization(operators(), "ACCOUNT_PASSWORD_RESET_FORBIDDEN");
+        if (authorization != null) {
+            return failLike(authorization);
+        }
+        AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+
+        Long adminId = parseAccountId(current.id()).orElseThrow();
+        AdminEntity patch = new AdminEntity();
+        patch.setId(adminId);
+        String temporaryPassword = generateTemporaryPassword();
+        patch.setPasswordHash(passwordEncoder.encode(temporaryPassword));
+        adminMapper.updateById(patch);
+        adminSessionRegistry.revokeSessions(adminId);
+        accountStateMapper.upsertCredentialStatus(adminId, PASSWORD_CHANGE_REQUIRED);
+
+        audit("A1_OPERATOR_PASSWORD_RESET", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(),
+                idempotencyKey, Map.of("credentialDeliveryStatus", PASSWORD_CHANGE_REQUIRED));
+        linkA2Proposal(idempotencyKey, "运营账号重置密码(A1)", operatorLabel(current), "已设置",
+                "临时密码已生成 / 首登强制改密", request.operator(), currentOperatorRole(), "acct",
+                false, false, "超管", request.reason());
+        return ApiResult.ok(new AdminAccountPasswordResetResponse(requireOperator(current.id()), temporaryPassword));
     }
 
     @Transactional
@@ -488,6 +658,29 @@ public class OpsAdminAccountService {
         rbacActionMapper.createActionTable();
         rbacGrantMapper.createGrantTable();
         securityBaselineMapper.createSecurityBaselineTable();
+        seedSecurityBaselines();
+    }
+
+    /**
+     * 幂等 seed 安全基线默认值:仅当行缺席时插入,绝不覆盖管理员已调整的阈值。
+     *
+     * <p>值字符串格式对齐前端 a1-accounts.tsx 的正则提取:
+     * session 行 "Xmin / Yh"(滑动过期 min / 绝对上限 h);lock 行 "X次 / Ymin"(短锁触发次数 / 锁定时长)。
+     * 长锁策略(24h 内累计短锁≥3 次→长锁 24h 自动解)为服务端硬性、不可调,记入 description,不走可调阈值。</p>
+     */
+    private void seedSecurityBaselines() {
+        seedBaselineIfAbsent("session", "会话基线",
+                "session 滑动过期(无操作自动登出) / 绝对上限(一次登录最长存活);比用户侧更短,操盘台高敏",
+                "30min / 8h", 0, 10);
+        seedBaselineIfAbsent("lock", "登录锁定基线",
+                "登录失败短锁(连错触发次数 / 锁定时长);长锁:24h 内累计短锁≥3 次升级长锁 24h 自动解(不可调)",
+                "5次 / 15min", 0, 20);
+    }
+
+    private void seedBaselineIfAbsent(String key, String label, String description, String value, int locked, int sortOrder) {
+        if (securityBaselineMapper.selectActiveByKey(key) == null) {
+            securityBaselineMapper.upsertBaseline(key, label, description, value, locked, sortOrder);
+        }
     }
 
     private void linkA2Proposal(
@@ -503,24 +696,31 @@ public class OpsAdminAccountService {
             boolean sos,
             String roleGate,
             String reason) {
-        ApiResult<AuditCenterOverview.AuditOperationTicket> result = auditCenterService.createProposal(
-                idempotencyKey.trim() + "-a2",
-                new AuditOperationProposalRequest(
-                        action,
-                        objectText,
-                        beforeValue,
-                        afterValue,
-                        operator,
-                        operatorRole,
-                        type,
-                        amplifies,
-                        sos,
-                        roleGate,
-                        reason,
-                        "A1"));
-        if (result == null || result.getCode() != 0) {
-            String message = result == null ? "A2_OPERATION_PROPOSAL_FAILED" : result.getMessage();
-            throw new IllegalStateException("A2_OPERATION_PROPOSAL_FAILED:" + message);
+        // 事后台账:主操作已即时执行(单人确认,CLAUDE.md 双签已取消),
+        // A2 仅作"已执行留痕"(approved 票);留痕失败不回滚主操作(降级为日志,
+        // 避免事后记录反噬已生效的业务变更)。
+        try {
+            ApiResult<AuditCenterOverview.AuditOperationTicket> result = auditCenterService.recordExecuted(
+                    idempotencyKey.trim() + "-a2",
+                    new AuditOperationProposalRequest(
+                            action,
+                            objectText,
+                            beforeValue,
+                            afterValue,
+                            operator,
+                            operatorRole,
+                            type,
+                            amplifies,
+                            sos,
+                            roleGate,
+                            reason,
+                            "A1"));
+            if (result == null || result.getCode() != 0) {
+                String message = result == null ? "null result" : result.getMessage();
+                log.warn("A2 executed-ticket recording failed for [{}] (main op already committed): {}", action, message);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("A2 executed-ticket recording threw for [{}] (main op already committed): {}", action, ex.getMessage());
         }
     }
 
@@ -535,9 +735,9 @@ public class OpsAdminAccountService {
     }
 
     private String operatorLabel(AdminAccountOverview.OperatorRecord operator) {
-        String name = firstText(operator.name(), operator.email(), "管理员");
-        if (StringUtils.hasText(operator.email()) && !operator.email().equals(name)) {
-            return name + " · " + operator.email();
+        String name = firstText(operator.name(), operator.username(), operator.email(), "管理员");
+        if (StringUtils.hasText(operator.username()) && !operator.username().equals(name)) {
+            return name + " · " + operator.username();
         }
         return name;
     }
@@ -589,6 +789,7 @@ public class OpsAdminAccountService {
         return new AdminAccountOverview.OperatorRecord(
                 id,
                 firstText(admin.getNickname(), admin.getUsername(), id),
+                firstText(admin.getUsername()),
                 StringUtils.hasText(admin.getEmail()) ? admin.getEmail().trim() : "",
                 role,
                 state == null || !Integer.valueOf(0).equals(state.getTfaRequired()),
@@ -845,24 +1046,24 @@ public class OpsAdminAccountService {
                 .last("LIMIT 1")));
     }
 
-    private boolean validEmail(String email) {
-        return StringUtils.hasText(email) && EMAIL_PATTERN.matcher(email).matches();
+    private String normalizeUsername(String username) {
+        if (!StringUtils.hasText(username)) {
+            return null;
+        }
+        String normalized = username.trim().toLowerCase(Locale.ROOT);
+        return ADMIN_USERNAME_PATTERN.matcher(normalized).matches() ? normalized : null;
     }
 
-    private String uniqueUsername(String email) {
-        String base = email.substring(0, email.indexOf("@"))
-                .toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9_.-]+", "_")
-                .replaceAll("^_+|_+$", "");
-        if (!StringUtils.hasText(base)) {
-            base = "admin";
+    private String normalizeOptionalEmail(String email) {
+        if (!StringUtils.hasText(email)) {
+            return null;
         }
-        String candidate = base;
-        int index = 2;
-        while (adminByUsername(candidate).isPresent()) {
-            candidate = base + "_" + index++;
-        }
-        return candidate;
+        String normalized = email.trim().toLowerCase(Locale.ROOT);
+        return validEmail(normalized) ? normalized : null;
+    }
+
+    private boolean validEmail(String email) {
+        return StringUtils.hasText(email) && EMAIL_PATTERN.matcher(email).matches();
     }
 
     private void syncPrimaryRoleRelation(Long adminId, String role) {
@@ -1019,24 +1220,17 @@ public class OpsAdminAccountService {
         return List.of("enabled", "disabled").contains(normalized) ? normalized : null;
     }
 
-    private String normalizeDeliver(String deliver) {
-        String normalized = StringUtils.hasText(deliver) ? deliver.trim().toLowerCase(Locale.ROOT) : "mail";
-        return List.of("mail", "handoff").contains(normalized) ? normalized : null;
-    }
-
-    private String normalizeInitialPassword(String initialPassword, String deliver) {
-        if (!"handoff".equals(deliver) || !StringUtils.hasText(initialPassword)) {
-            return null;
-        }
-        return initialPassword.trim();
-    }
-
     private boolean strongInitialPassword(String initialPassword) {
-        String normalized = initialPassword.trim();
-        return normalized.length() >= 12
-                && Pattern.compile("[A-Z]").matcher(normalized).find()
-                && Pattern.compile("[a-z]").matcher(normalized).find()
-                && Pattern.compile("\\d").matcher(normalized).find();
+        String normalized = StringUtils.hasText(initialPassword) ? initialPassword.trim() : "";
+        return normalized.length() >= 8;
+    }
+
+    private String generateTemporaryPassword() {
+        StringBuilder password = new StringBuilder(8);
+        for (int i = 0; i < 8; i++) {
+            password.append(TEMP_PASSWORD_CHARS.charAt(SECURE_RANDOM.nextInt(TEMP_PASSWORD_CHARS.length())));
+        }
+        return password.toString();
     }
 
     private String normalizeDomainGroup(String domainGroup) {

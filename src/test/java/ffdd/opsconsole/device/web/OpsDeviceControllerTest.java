@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.device.application.OpsDeviceService;
+import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
@@ -16,6 +17,8 @@ import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
+import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
+import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
@@ -236,6 +239,22 @@ class OpsDeviceControllerTest {
 
         verify(deviceService).phoneTierRewards();
         verify(deviceService).updatePhoneTierReward(3, "idem-tier", request);
+    }
+
+    @Test
+    void computeConfigDelegatesToService() {
+        when(deviceService.computeConfig()).thenReturn(ApiResult.ok(mock(ComputeConfigView.class)));
+        assertThat(controller.computeConfig().getCode()).isEqualTo(0);
+        verify(deviceService).computeConfig();
+    }
+
+    @Test
+    void updateComputeConfigParamDelegatesWithHeaders() {
+        ComputeConfigParamUpdateRequest req = new ComputeConfigParamUpdateRequest("on", "理由长度足够", "superadmin");
+        when(deviceService.updateComputeConfigParam("E.compute.computeShareEnabled", "idem-c", req))
+                .thenReturn(ApiResult.ok(new ComputeConfigParamResponse("E.compute.computeShareEnabled", "on", "now")));
+        controller.updateComputeConfigParam("E.compute.computeShareEnabled", "idem-c", req);
+        verify(deviceService).updateComputeConfigParam("E.compute.computeShareEnabled", "idem-c", req);
     }
 
     @Test

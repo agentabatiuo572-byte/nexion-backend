@@ -3,6 +3,7 @@ package ffdd.opsconsole.auth.web;
 import ffdd.opsconsole.auth.application.OpsAdminAuthService;
 import ffdd.opsconsole.auth.dto.AdminLoginRequest;
 import ffdd.opsconsole.auth.dto.AdminLoginResponse;
+import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
@@ -27,5 +28,12 @@ public class OpsAdminAuthController {
     @GetMapping("/me")
     public ApiResult<AdminLoginResponse.AdminSession> me(Authentication authentication) {
         return authService.current(authentication);
+    }
+
+    @PostMapping("/password/change")
+    public ApiResult<AdminLoginResponse> changePassword(
+            Authentication authentication,
+            @RequestBody(required = false) AdminPasswordChangeRequest request) {
+        return authService.changePassword(authentication, request);
     }
 }

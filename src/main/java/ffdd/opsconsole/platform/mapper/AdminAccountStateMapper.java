@@ -56,6 +56,21 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
 
     @Insert("""
             INSERT INTO nx_admin_account_state (
+              admin_id, tfa_required, credential_delivery_status, is_deleted
+            ) VALUES (
+              #{adminId}, 1, #{credentialDeliveryStatus}, 0
+            )
+            ON DUPLICATE KEY UPDATE
+              credential_delivery_status = VALUES(credential_delivery_status),
+              updated_at = NOW(),
+              is_deleted = 0
+            """)
+    int upsertCredentialStatus(
+            @Param("adminId") Long adminId,
+            @Param("credentialDeliveryStatus") String credentialDeliveryStatus);
+
+    @Insert("""
+            INSERT INTO nx_admin_account_state (
               admin_id, tfa_required, tfa_reset_at, credential_delivery_status, is_deleted
             ) VALUES (
               #{adminId}, 1, #{resetAt}, 'ACTIVE', 0

@@ -195,6 +195,88 @@ public class OpsAuditCenterService {
         return ApiResult.ok(toTicket(ticket));
     }
 
+    @Transactional
+    public ApiResult<AuditOperationTicket> recordExecuted(
+            String idempotencyKey, AuditOperationProposalRequest request) {
+        // 事后台账:高敏操作已即时执行(单人确认,CLAUDE.md 双签已取消),
+        // 建 status=approved 的票作为"已执行留痕",而非 pending 待审。
+        ensureSeedData();
+        ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey,
+                request == null ? null : request.reason(),
+                request == null ? null : request.operator());
+        if (guard != null) {
+            return guard;
+        }
+        String operationType;
+        String action;
+        String objectText;
+        String beforeValue;
+        String afterValue;
+        String operator;
+        String operatorRole;
+        String roleGate;
+        String reason;
+        String sourceDomain;
+        try {
+            operationType = normalizeOperationType(request.type());
+            action = normalizeLimitedText(request.action(), "ACTION_REQUIRED", 160);
+            objectText = normalizeLimitedText(request.obj(), "OBJECT_REQUIRED", 255);
+            beforeValue = normalizeOptionalText(request.beforeValue(), "—", 128);
+            afterValue = normalizeOptionalText(request.afterValue(), "—", 128);
+            operator = normalizeLimitedText(request.operator(), "OPERATOR_REQUIRED", 128);
+            operatorRole = normalizeOptionalText(request.operatorRole(), "operator", 32);
+            roleGate = normalizeOptionalText(request.roleGate(), "超管", 255);
+            reason = normalizeLimitedText(request.reason(), "REASON_REQUIRED", 512);
+            sourceDomain = normalizeOptionalText(request.sourceDomain(), "A2", 32);
+        } catch (IllegalArgumentException ex) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
+        }
+
+        AuditOperationTicketEntity ticket = new AuditOperationTicketEntity();
+        ticket.setOperationId(nextOperationId());
+        ticket.setAction(action);
+        ticket.setObjectText(objectText);
+        ticket.setBeforeValue(beforeValue);
+        ticket.setAfterValue(afterValue);
+        ticket.setOperatorName(operator);
+        ticket.setOperatorRole(operatorRole);
+        ticket.setOperationType(operationType);
+        ticket.setAmplifies(Boolean.TRUE.equals(request.amplifies()) ? 1 : 0);
+        ticket.setSos(Boolean.TRUE.equals(request.sos()) || "sos".equals(operationType) ? 1 : 0);
+        ticket.setTimeLabel("刚刚");
+        ticket.setMine(0);
+        ticket.setRoleGate(roleGate);
+        ticket.setReason(reason);
+        ticket.setStatus(STATUS_APPROVED);
+        ticket.setDecisionReason("即时执行·已生效(单人确认)");
+        ticket.setDecidedAt(LocalDateTime.now());
+        ticket.setIsDeleted(0);
+        ticketMapper.insert(ticket);
+
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("A2_OPERATION_EXECUTED")
+                .resourceType("A2_OPERATION")
+                .resourceId(ticket.getOperationId())
+                .bizNo(ticket.getOperationId())
+                .actorType("ADMIN")
+                .actorUsername(ticket.getOperatorName())
+                .result("SUCCESS")
+                .riskLevel(operationRiskLevel(ticket))
+                .detail(Map.of(
+                        "operationId", ticket.getOperationId(),
+                        "action", ticket.getAction(),
+                        "resource", ticket.getObjectText(),
+                        "before", ticket.getBeforeValue(),
+                        "after", ticket.getAfterValue(),
+                        "type", ticket.getOperationType(),
+                        "sourceDomain", sourceDomain,
+                        "reason", ticket.getReason(),
+                        "status", STATUS_APPROVED,
+                        "idempotencyKey", idempotencyKey.trim()))
+                .build());
+        return ApiResult.ok(toTicket(ticket));
+    }
+
     public ApiResult<AuditMechanismParam> updateMechanismParam(
             String idempotencyKey, String paramKey, AuditMechanismParamUpdateRequest request) {
         ensureSeedData();

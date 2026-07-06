@@ -22,6 +22,7 @@ public class AdminRbacBaselineInitializer {
             "SUPPORT_DEDICATED",
             "SUPPORT_GENERAL");
     private static final String LEGACY_SUPPORT_SEAT_PERMISSION = "PERM_SUPPORT_SEAT_WRITE";
+    private static final List<String> SUPPORT_ALLOWED_PERMISSIONS = List.of("PERM_SUPPORT_READ", "PERM_SUPPORT_WRITE");
 
     private static final List<RoleDef> ROLES = List.of(
             role(SUPER_ADMIN, "超级管理员", "平台全域管理员"),
@@ -55,6 +56,8 @@ public class AdminRbacBaselineInitializer {
             perm("PERM_GROWTH_WRITE", "Write growth operations", "/api/admin/growth/**"),
             perm("PERM_CONTENT_READ", "Read content operations", "/api/admin/content/**"),
             perm("PERM_CONTENT_WRITE", "Write content operations", "/api/admin/content/**"),
+            perm("PERM_SUPPORT_READ", "Read support center operations", "/api/admin/content/{tickets,conversations,knowledge,session-templates,support-agents,support-workbench}/**"),
+            perm("PERM_SUPPORT_WRITE", "Write support center operations", "/api/admin/content/{tickets,conversations,knowledge,session-templates,support-agents}/**"),
             perm("PERM_EMERGENCY_READ", "Read emergency operations", "/api/admin/emergency/**"),
             perm("PERM_EMERGENCY_WRITE", "Write emergency operations", "/api/admin/emergency/**"),
             perm("PERM_RISK_READ", "Read risk operations", "/api/admin/risk/**"),
@@ -96,12 +99,7 @@ public class AdminRbacBaselineInitializer {
                     "PERM_TREASURY_READ", "PERM_WITHDRAWAL_READ",
                     "PERM_CONTENT_READ", "PERM_CONTENT_WRITE",
                     "PERM_AUDIT_READ", "PERM_BI_READ", "PERM_BI_EXPORT"),
-            grant(SUPPORT,
-                    "PERM_USER_READ", "PERM_USER_WRITE",
-                    "PERM_WITHDRAWAL_READ", "PERM_RISK_READ",
-                    "PERM_GROWTH_READ", "PERM_GROWTH_WRITE",
-                    "PERM_CONTENT_READ", "PERM_CONTENT_WRITE",
-                    "PERM_AUDIT_READ", "PERM_BI_READ"),
+            grant(SUPPORT, SUPPORT_ALLOWED_PERMISSIONS),
             grant(AUDITOR,
                     "PERM_SYSTEM_READ", "PERM_AUDIT_READ", "PERM_TREASURY_READ", "PERM_USER_READ",
                     "PERM_WITHDRAWAL_READ", "PERM_DEVICE_READ", "PERM_TEAM_READ", "PERM_MARKET_READ",
@@ -135,6 +133,12 @@ public class AdminRbacBaselineInitializer {
                 mapper.insertMissingRolePermission(grant.roleCode(), permissionCode);
             }
         }
+        revokeSupportPermissionsOutsideBaseline();
+    }
+
+    private void revokeSupportPermissionsOutsideBaseline() {
+        mapper.disableRolePermissionsExcept(SUPPORT, SUPPORT_ALLOWED_PERMISSIONS);
+        mapper.disableRolePermission(SUPPORT, LEGACY_SUPPORT_SEAT_PERMISSION);
     }
 
     private static PermissionDef perm(String code, String name, String resourcePath) {

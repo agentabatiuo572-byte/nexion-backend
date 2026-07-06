@@ -65,7 +65,6 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
               agent_admin_id BIGINT NOT NULL,
               user_id BIGINT NOT NULL,
-              assignment_type VARCHAR(32) NOT NULL,
               status VARCHAR(32) NOT NULL,
               starts_at DATETIME NOT NULL,
               ends_at DATETIME DEFAULT NULL,
@@ -79,6 +78,74 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createAssignmentTable();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_support_agent_user_assignment'
+               AND COLUMN_NAME = 'assignment_type'
+            """)
+    long countAssignmentTypeColumn();
+
+    @Update("""
+            ALTER TABLE nx_support_agent_user_assignment
+            DROP COLUMN assignment_type
+            """)
+    int dropAssignmentTypeColumn();
+
+    @Update("""
+            UPDATE nx_support_agent_user_assignment stale
+              JOIN (
+                SELECT id
+                  FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY updated_at DESC, id DESC) AS row_num
+                      FROM nx_support_agent_user_assignment
+                     WHERE status='ACTIVE'
+                       AND is_deleted=0
+                  ) ranked
+                 WHERE ranked.row_num > 1
+              ) duplicate ON duplicate.id=stale.id
+               SET stale.status='INACTIVE',
+                   stale.ends_at=COALESCE(stale.ends_at, NOW()),
+                   stale.reason=COALESCE(NULLIF(stale.reason, ''), 'deduplicate active support assignment'),
+                   stale.updated_at=NOW()
+            """)
+    int deactivateDuplicateActiveAssignments();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_support_agent_user_assignment'
+               AND COLUMN_NAME = 'active_user_id'
+            """)
+    long countActiveUserColumn();
+
+    @Update("""
+            ALTER TABLE nx_support_agent_user_assignment
+            ADD COLUMN active_user_id BIGINT
+              GENERATED ALWAYS AS (
+                CASE WHEN status = 'ACTIVE' AND is_deleted = 0 THEN user_id ELSE NULL END
+              ) STORED
+            """)
+    int addActiveUserColumn();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.STATISTICS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_support_agent_user_assignment'
+               AND INDEX_NAME = 'uq_support_assignment_active_user'
+            """)
+    long countActiveUserUniqueIndex();
+
+    @Update("""
+            ALTER TABLE nx_support_agent_user_assignment
+            ADD UNIQUE KEY uq_support_assignment_active_user (active_user_id)
+            """)
+    int addActiveUserUniqueIndex();
 
     @Select("""
             <script>
@@ -196,7 +263,6 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    a.user_id AS userId,
                    CONCAT('U', LPAD(a.user_id, 8, '0')) AS userNo,
                    COALESCE(NULLIF(u.nickname, ''), CONCAT('用户', a.user_id)) AS nickname,
-                   a.assignment_type AS assignmentType,
                    a.status,
                    DATE_FORMAT(a.starts_at, '%Y-%m-%dT%H:%i:%s') AS startsAt,
                    DATE_FORMAT(a.ends_at, '%Y-%m-%dT%H:%i:%s') AS endsAt,
@@ -230,31 +296,26 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    operator=#{operator},
                    reason=#{reason},
                    updated_at=#{now}
-             WHERE agent_admin_id=#{agentAdminId}
-               AND user_id=#{userId}
-               AND assignment_type=#{assignmentType}
+             WHERE user_id=#{userId}
                AND status='ACTIVE'
                AND is_deleted=0
             """)
-    int deactivateSameAssignment(@Param("agentAdminId") Long agentAdminId,
-                                 @Param("userId") Long userId,
-                                 @Param("assignmentType") String assignmentType,
-                                 @Param("operator") String operator,
-                                 @Param("reason") String reason,
-                                 @Param("now") LocalDateTime now);
+    int deactivateActiveAssignmentsForUser(@Param("userId") Long userId,
+                                           @Param("operator") String operator,
+                                           @Param("reason") String reason,
+                                           @Param("now") LocalDateTime now);
 
     @Insert("""
             INSERT INTO nx_support_agent_user_assignment (
-              agent_admin_id, user_id, assignment_type, status, starts_at, operator, reason,
+              agent_admin_id, user_id, status, starts_at, operator, reason,
               created_at, updated_at, is_deleted
             ) VALUES (
-              #{agentAdminId}, #{userId}, #{assignmentType}, 'ACTIVE', #{now}, #{operator}, #{reason},
+              #{agentAdminId}, #{userId}, 'ACTIVE', #{now}, #{operator}, #{reason},
               #{now}, #{now}, 0
             )
             """)
     int insertAssignment(@Param("agentAdminId") Long agentAdminId,
                          @Param("userId") Long userId,
-                         @Param("assignmentType") String assignmentType,
                          @Param("operator") String operator,
                          @Param("reason") String reason,
                          @Param("now") LocalDateTime now);
@@ -265,26 +326,23 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    a.user_id AS userId,
                    CONCAT('U', LPAD(a.user_id, 8, '0')) AS userNo,
                    COALESCE(NULLIF(u.nickname, ''), CONCAT('用户', a.user_id)) AS nickname,
-                   a.assignment_type AS assignmentType,
                    a.status,
                    DATE_FORMAT(a.starts_at, '%Y-%m-%dT%H:%i:%s') AS startsAt,
                    DATE_FORMAT(a.ends_at, '%Y-%m-%dT%H:%i:%s') AS endsAt,
                    a.operator,
                    a.reason,
                    DATE_FORMAT(a.updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
-              FROM nx_support_agent_user_assignment a
+             FROM nx_support_agent_user_assignment a
               JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
              WHERE a.agent_admin_id=#{agentAdminId}
                AND a.user_id=#{userId}
-               AND a.assignment_type=#{assignmentType}
                AND a.status='ACTIVE'
                AND a.is_deleted=0
              ORDER BY a.id DESC
              LIMIT 1
             """)
     SupportAgentAssignmentView findActiveAssignment(@Param("agentAdminId") Long agentAdminId,
-                                                    @Param("userId") Long userId,
-                                                    @Param("assignmentType") String assignmentType);
+                                                    @Param("userId") Long userId);
 
     @Select("""
             SELECT a.id,
@@ -292,7 +350,6 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    a.user_id AS userId,
                    CONCAT('U', LPAD(a.user_id, 8, '0')) AS userNo,
                    COALESCE(NULLIF(u.nickname, ''), CONCAT('用户', a.user_id)) AS nickname,
-                   a.assignment_type AS assignmentType,
                    a.status,
                    DATE_FORMAT(a.starts_at, '%Y-%m-%dT%H:%i:%s') AS startsAt,
                    DATE_FORMAT(a.ends_at, '%Y-%m-%dT%H:%i:%s') AS endsAt,

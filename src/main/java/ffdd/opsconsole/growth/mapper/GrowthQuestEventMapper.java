@@ -376,7 +376,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             SELECT tier_name AS tier,
                    reward_name AS reward,
                    probability_pct AS prob,
-                   real_outflow AS real,
+                   real_outflow AS `real`,
                    reward_kind AS kind
               FROM nx_growth_wheel_tier
              WHERE is_deleted = 0
@@ -637,6 +637,104 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             @Param("sortOrder") int sortOrder,
             @Param("status") int status,
             @Param("now") LocalDateTime now);
+
+    // ===== H3 业务实体创建(4 张业务表原本只读,补 @Insert + 唯一性预检) =====
+
+    @Insert("""
+            INSERT INTO nx_mission (
+                mission_code, mission_name, mission_type, reward_points, status, created_at, updated_at, is_deleted
+            ) VALUES (
+                #{missionCode}, #{missionName}, #{missionType}, #{rewardPoints}, #{status}, #{now}, #{now}, 0
+            )
+            """)
+    int insertMission(
+            @Param("missionCode") String missionCode,
+            @Param("missionName") String missionName,
+            @Param("missionType") String missionType,
+            @Param("rewardPoints") int rewardPoints,
+            @Param("status") int status,
+            @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_mission WHERE mission_code = #{missionCode} AND is_deleted = 0
+            """)
+    long countByMissionCode(@Param("missionCode") String missionCode);
+
+    @Insert("""
+            INSERT INTO nx_monthly_challenge (
+                challenge_code, challenge_name, description, theme, months_from, months_to,
+                target_type, target_value, reward_type, reward_amount, reward_name, badge_achievement_code,
+                sort_order, status, created_at, updated_at, is_deleted
+            ) VALUES (
+                #{challengeCode}, #{challengeName}, #{description}, #{theme}, #{monthsFrom}, #{monthsTo},
+                #{targetType}, #{targetValue}, #{rewardType}, #{rewardAmount}, #{rewardName}, #{badgeAchievementCode},
+                #{sortOrder}, #{status}, #{now}, #{now}, 0
+            )
+            """)
+    int insertMonthlyChallenge(
+            @Param("challengeCode") String challengeCode,
+            @Param("challengeName") String challengeName,
+            @Param("description") String description,
+            @Param("theme") String theme,
+            @Param("monthsFrom") int monthsFrom,
+            @Param("monthsTo") int monthsTo,
+            @Param("targetType") String targetType,
+            @Param("targetValue") int targetValue,
+            @Param("rewardType") String rewardType,
+            @Param("rewardAmount") BigDecimal rewardAmount,
+            @Param("rewardName") String rewardName,
+            @Param("badgeAchievementCode") String badgeAchievementCode,
+            @Param("sortOrder") int sortOrder,
+            @Param("status") int status,
+            @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_monthly_challenge WHERE challenge_code = #{challengeCode} AND is_deleted = 0
+            """)
+    long countByChallengeCode(@Param("challengeCode") String challengeCode);
+
+    @Insert("""
+            INSERT INTO nx_growth_wheel_tier (
+                tier_name, reward_name, probability_pct, real_outflow, reward_kind, sort_order, status, created_at, updated_at, is_deleted
+            ) VALUES (
+                #{tierName}, #{rewardName}, #{probabilityPct}, #{realOutflow}, #{rewardKind}, #{sortOrder}, #{status}, #{now}, #{now}, 0
+            )
+            """)
+    int insertWheelTier(
+            @Param("tierName") String tierName,
+            @Param("rewardName") String rewardName,
+            @Param("probabilityPct") BigDecimal probabilityPct,
+            @Param("realOutflow") int realOutflow,
+            @Param("rewardKind") String rewardKind,
+            @Param("sortOrder") int sortOrder,
+            @Param("status") int status,
+            @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_wheel_tier WHERE tier_name = #{tierName} AND is_deleted = 0
+            """)
+    long countByTierName(@Param("tierName") String tierName);
+
+    @Insert("""
+            INSERT INTO nx_growth_wheel_guard (
+                guard_key, guard_label, guard_value, note, sort_order, status, created_at, updated_at, is_deleted
+            ) VALUES (
+                #{guardKey}, #{guardLabel}, #{guardValue}, #{note}, #{sortOrder}, #{status}, #{now}, #{now}, 0
+            )
+            """)
+    int insertWheelGuard(
+            @Param("guardKey") String guardKey,
+            @Param("guardLabel") String guardLabel,
+            @Param("guardValue") String guardValue,
+            @Param("note") String note,
+            @Param("sortOrder") int sortOrder,
+            @Param("status") int status,
+            @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_wheel_guard WHERE guard_key = #{guardKey} AND is_deleted = 0
+            """)
+    long countByGuardKey(@Param("guardKey") String guardKey);
 
     @Update("""
             UPDATE nx_event_quest

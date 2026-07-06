@@ -12,6 +12,8 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
+import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
@@ -25,6 +27,8 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.domain.DeviceTradeinTxView;
+import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
+import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
@@ -908,6 +912,75 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         verify(auditLogService, never()).record(any());
+    }
+
+    @Test
+    void computeConfigReturnsDefaultsWhenConfigEmpty() {
+        ApiResult<ComputeConfigView> r = newServiceWithEmptyConfig().computeConfig();
+
+        assertThat(r.getData().domain()).isEqualTo("E6");
+        assertThat(r.getData().flags()).hasSize(1);
+        assertThat(r.getData().flags().get(0).enabled()).isFalse();
+        assertThat(r.getData().gpuTiers()).hasSize(6);
+        assertThat(r.getData().gpuTiers().get(0).tops()).isEqualTo("40");
+        assertThat(r.getData().download().url()).isEmpty();
+    }
+
+    @Test
+    void updateComputeConfigParamRejectsMissingReason() {
+        ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "   ", "superadmin");
+
+        ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(
+                ComputeConfigRegistry.flagKey("computeShareEnabled"), "idem-e6", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(configFacade.values).doesNotContainKey(ComputeConfigRegistry.flagKey("computeShareEnabled"));
+        verify(auditLogService, never()).record(any());
+    }
+
+    @Test
+    void updateComputeConfigParamRejectsNonComputeKey() {
+        ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "enable share", "superadmin");
+
+        ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(
+                "admin.system.other", "idem-e6", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COMPUTE_PARAM_KEY_INVALID");
+        verify(auditLogService, never()).record(any());
+    }
+
+    @Test
+    void updateComputeConfigParamWritesAndAudits() {
+        String paramKey = ComputeConfigRegistry.flagKey("computeShareEnabled");
+        ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "enable share", "superadmin");
+
+        ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(paramKey, "idem-e6", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().paramKey()).isEqualTo(paramKey);
+        assertThat(result.getData().value()).isEqualTo("on");
+        // upsert 写入断言:FakePlatformConfigFacade.values 是可读回的 map(activeValue 也读它)
+        assertThat(configFacade.activeValue(paramKey)).contains("on");
+        assertThat(configFacade.values).containsEntry(paramKey, "on");
+
+        // auditLogService 是 Mockito mock,可 verify
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E6_COMPUTE_CONFIG_CHANGED");
+        assertThat(captor.getValue().getResourceType()).isEqualTo("E6_COMPUTE_CONFIG");
+        assertThat(captor.getValue().getResourceId()).isEqualTo(paramKey);
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("paramKey", paramKey)
+                .containsEntry("before", "")
+                .containsEntry("after", "on")
+                .containsEntry("idempotencyKey", "idem-e6");
+    }
+
+    /** 构造一个 config 全空的 service:FakePlatformConfigFacade 默认 values 为空 map,
+     *  activeValue() 返回 Optional.empty(),触发所有项回落到 ComputeConfigRegistry 默认值。 */
+    private OpsDeviceService newServiceWithEmptyConfig() {
+        return service();
     }
 
     @SuppressWarnings("unchecked")
