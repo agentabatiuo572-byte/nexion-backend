@@ -9,6 +9,9 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.RiskUserStateFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -75,7 +78,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsUserService {
+public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final Set<String> USER_STATUSES = Set.of("ACTIVE", "FROZEN", "BANNED", "RESTRICTED");
     private static final Set<String> ASSETS = Set.of("USDT", "NEX");
     private static final Set<String> DIRECTIONS = Set.of("CREDIT", "DEBIT");
@@ -229,6 +232,7 @@ public class OpsUserService {
     private final RiskUserStateFacade riskUserStateFacade;
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(userRepository.overview());
@@ -1982,6 +1986,116 @@ public class OpsUserService {
             String note) {
         private boolean composite() {
             return StringUtils.hasText(secondaryConfigKey);
+        }
+    }
+
+    @Override
+    public String domain() {
+        return "C";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            case "c4_kyc_status_change" -> {
+                UserKycStatusUpdateRequest req = new UserKycStatusUpdateRequest(str(p, "status"), reason, operator);
+                return updateKycStatus(longVal(p, "userId"), idem, req);
+            }
+            case "c5_2fa_disable" -> {
+                UserSecurityActionRequest req = new UserSecurityActionRequest(reason, operator);
+                return disableTwoFactor(longVal(p, "userId"), idem, req);
+            }
+            case "c5_password_reset" -> {
+                UserSecurityActionRequest req = new UserSecurityActionRequest(reason, operator);
+                return requestPasswordReset(longVal(p, "userId"), idem, req);
+            }
+            case "c5_user_unlock" -> {
+                UserSecurityActionRequest req = new UserSecurityActionRequest(reason, operator);
+                return unlockSecurity(longVal(p, "userId"), idem, req);
+            }
+            case "c2_account_freeze", "c2_account_unfreeze" -> {
+                UserStatusUpdateRequest req = new UserStatusUpdateRequest(str(p, "status"), reason, operator);
+                return updateStatus(longVal(p, "userId"), idem, req);
+            }
+            case "c2_session_revoke_all" -> {
+                UserSessionRevokeAllRequest req = new UserSessionRevokeAllRequest(reason, operator);
+                return revokeUserSessions(longVal(p, "userId"), idem, req);
+            }
+            case "c5_session_revoke_one" -> {
+                UserSessionRevokeRequest req = new UserSessionRevokeRequest(reason, operator);
+                return revokeSession(str(p, "refreshTokenId"), idem, req);
+            }
+            case "c2_impersonate_terminate" -> {
+                UserImpersonationTerminateRequest req = new UserImpersonationTerminateRequest(reason, operator);
+                return terminateImpersonation(str(p, "sessionNo"), idem, req);
+            }
+            case "c2_impersonate_start" -> {
+                UserImpersonationRequest req = new UserImpersonationRequest(intVal(p, "ttlMinutes"), reason, operator);
+                return startImpersonation(longVal(p, "userId"), idem, req);
+            }
+            case "c3_adjust_approve" -> {
+                UserAssetAdjustmentReviewRequest req = new UserAssetAdjustmentReviewRequest(reason, operator);
+                return approveAssetAdjustment(str(p, "adjustmentNo"), idem, req);
+            }
+            case "c3_adjust_reject" -> {
+                UserAssetAdjustmentReviewRequest req = new UserAssetAdjustmentReviewRequest(reason, operator);
+                return rejectAssetAdjustment(str(p, "adjustmentNo"), idem, req);
+            }
+            case "c3_adjust_create" -> {
+                UserAssetAdjustmentRequest req = new UserAssetAdjustmentRequest(
+                        str(p, "asset"),
+                        str(p, "direction"),
+                        str(p, "amount"),
+                        reason, operator,
+                        str(p, "referenceType"),
+                        str(p, "referenceId"));
+                return createAssetAdjustment(longVal(p, "userId"), idem, req);
+            }
+            case "c2_blocklist_upsert" -> {
+                UserAccountListUpsertRequest req = new UserAccountListUpsertRequest(
+                        longVal(p, "userId"),
+                        str(p, "kind"),
+                        reason, operator,
+                        str(p, "expiresAt"));
+                return upsertAccountList(idem, req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    /** 从 replay params 取 Long,null 安全(支持 Number 与数字字符串)。 */
+    private static Long longVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.longValue();
+        try {
+            return Long.parseLong(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /** 从 replay params 取 Integer,null 安全(缺失返回 null,由 DTO 默认逻辑兜底)。 */
+    private static Integer intVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 }
