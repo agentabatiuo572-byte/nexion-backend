@@ -6,6 +6,9 @@ import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountOverview;
@@ -57,7 +60,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsAdminAccountService {
+public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final List<String> GRANT_OPTIONS = List.of("-", "R", "M", "C");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final Logger log = LoggerFactory.getLogger(OpsAdminAccountService.class);
@@ -100,6 +103,7 @@ public class OpsAdminAccountService {
     private final AdminSessionRegistry adminSessionRegistry;
     private final AdminPermissionCache permissionCache;
     private final OpsAuditCenterService auditCenterService;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
     public ApiResult<AdminAccountOverview> overview() {
         ensureA1BusinessTables();
@@ -1290,6 +1294,76 @@ public class OpsAdminAccountService {
         }
         String slug = action.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_").replaceAll("^_|_$", "");
         return StringUtils.hasText(slug) ? slug : "action_" + System.currentTimeMillis();
+    }
+
+    @Override
+    public String domain() {
+        return "A";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            case "a1_account_create" -> {
+                AdminAccountCreateRequest req = new AdminAccountCreateRequest(
+                        str(p, "username"),
+                        str(p, "displayName"),
+                        str(p, "email"),
+                        str(p, "role"),
+                        null,                       // ignoredCredentialDelivery
+                        reason, operator,
+                        str(p, "initialPassword"));
+                return createAccount(idem, req);
+            }
+            case "a1_account_update_profile" -> {
+                AdminAccountProfileUpdateRequest req = new AdminAccountProfileUpdateRequest(
+                        str(p, "username"),
+                        str(p, "displayName"),
+                        str(p, "email"),
+                        reason, operator);
+                return updateProfile(idem, str(p, "accountId"), req);
+            }
+            case "a1_account_change_role" -> {
+                AdminAccountRoleUpdateRequest req = new AdminAccountRoleUpdateRequest(
+                        str(p, "role"), reason, operator);
+                return changeRole(idem, str(p, "accountId"), req);
+            }
+            case "a1_account_status_update" -> {
+                AdminAccountStatusUpdateRequest req = new AdminAccountStatusUpdateRequest(
+                        str(p, "status"), reason, operator);
+                return updateStatus(idem, str(p, "accountId"), req);
+            }
+            case "a1_account_delete" -> {
+                AdminAccountActionRequest req = new AdminAccountActionRequest(reason, operator);
+                return deleteAccount(idem, str(p, "accountId"), req);
+            }
+            case "a1_account_reset_2fa" -> {
+                AdminAccountActionRequest req = new AdminAccountActionRequest(reason, operator);
+                return reset2fa(idem, str(p, "accountId"), req);
+            }
+            case "a1_account_force_logout" -> {
+                AdminAccountActionRequest req = new AdminAccountActionRequest(reason, operator);
+                return revokeSessions(idem, str(p, "accountId"), req);
+            }
+            case "a1_security_baseline_update" -> {
+                AdminAccountSecurityBaselineUpdateRequest req = new AdminAccountSecurityBaselineUpdateRequest(
+                        str(p, "value"), reason, operator);
+                return updateSecurityBaseline(idem, str(p, "baselineKey"), req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
     }
 
 }
