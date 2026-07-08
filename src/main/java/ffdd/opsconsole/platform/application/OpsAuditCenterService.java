@@ -5,6 +5,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
@@ -80,6 +81,7 @@ public class OpsAuditCenterService {
     private final AuditOperationHistoryMapper historyMapper;
     private final AuditConfirmCategoryMapper confirmCategoryMapper;
     private final AuditObjectLockMapper lockMapper;
+    private final AuditReplayDispatcher replayDispatcher;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     public ApiResult<AuditCenterOverview> overview() {
@@ -198,7 +200,13 @@ public class OpsAuditCenterService {
             lock.setTargetType(target.type());
             lock.setTargetId(target.id());
             lock.setOperator(operator);
-            lockMapper.insert(lock);
+            lock.setIsDeleted(0);
+            try {
+                lockMapper.insert(lock);
+            } catch (org.springframework.dao.DataIntegrityViolationException ex) {
+                // 并发命中 uk_target 唯一键:转 409 而非 500
+                return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
+            }
         }
         ticketMapper.insert(ticket);
 
@@ -362,6 +370,29 @@ public class OpsAuditCenterService {
         }
         if (!STATUS_PENDING.equals(status(ticket.getStatus()))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
+        }
+        // approve 才回放目标域;reject/withdrawn 只删锁不回放(原值天然保持)
+        if (STATUS_APPROVED.equals(nextStatus)) {
+            AuditReplayCommand cmd = deserializeCommand(ticket.getCommandJson());
+            if (cmd == null) {
+                return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
+            }
+            AuditReplayContext ctx = new AuditReplayContext(
+                    request.operator().trim(), request.reason().trim(), idempotencyKey.trim());
+            A2ReplayContext.enterReplay();
+            try {
+                ApiResult<?> replayResult = replayDispatcher.dispatch(cmd, ctx);
+                if (replayResult.getCode() != 0) {
+                    // 回放失败:不删锁、不改状态、目标域域方法已 return fail 未写入 → ticket 保持 pending,原值保持
+                    return ApiResult.fail(replayResult.getCode(), replayResult.getMessage());
+                }
+            } finally {
+                A2ReplayContext.exitReplay();
+            }
+            releaseLock(ticket.getOperationId());
+        } else {
+            // reject / withdrawn:删锁,目标域不动(原值恢复)
+            releaseLock(ticket.getOperationId());
         }
         ticket.setStatus(nextStatus);
         ticket.setDecisionReason(request.reason().trim());
