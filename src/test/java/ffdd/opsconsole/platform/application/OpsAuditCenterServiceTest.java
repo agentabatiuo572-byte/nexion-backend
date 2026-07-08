@@ -53,7 +53,10 @@ class OpsAuditCenterServiceTest {
                     ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                     ticketMapper,
                     historyMapper,
-                    confirmCategoryMapper);
+                    confirmCategoryMapper,
+                    mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
+                    mock(ffdd.opsconsole.platform.application.AuditReplayDispatcher.class),
+                    new com.fasterxml.jackson.databind.ObjectMapper());
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
     private final List<AuditOperationHistoryEntity> historyRows = new ArrayList<>();
     private final List<AuditConfirmCategoryEntity> categoryRows = new ArrayList<>();
@@ -213,7 +216,9 @@ class OpsAuditCenterServiceTest {
                 false,
                 "增长 / 超管",
                 "本周 KPI 节奏校准",
-                "H1");
+                "H1",
+                null,
+                null);
 
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.createProposal("idem-proposal-1", request);
 
@@ -245,7 +250,9 @@ class OpsAuditCenterServiceTest {
                 false,
                 "超管",
                 "新增客服账号入职",
-                "A1");
+                "A1",
+                null,
+                null);
 
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.createProposal("idem-a1-acct", request);
 
