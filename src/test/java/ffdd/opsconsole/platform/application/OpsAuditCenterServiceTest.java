@@ -3,12 +3,14 @@ package ffdd.opsconsole.platform.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
@@ -46,6 +48,8 @@ class OpsAuditCenterServiceTest {
     private final AuditOperationTicketMapper ticketMapper = mock(AuditOperationTicketMapper.class);
     private final AuditOperationHistoryMapper historyMapper = mock(AuditOperationHistoryMapper.class);
     private final AuditConfirmCategoryMapper confirmCategoryMapper = mock(AuditConfirmCategoryMapper.class);
+    private final AuditReplayDispatcher replayDispatcher = mock(AuditReplayDispatcher.class);
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
     private final OpsAuditCenterService service =
             new OpsAuditCenterService(
                     repository,
@@ -55,8 +59,8 @@ class OpsAuditCenterServiceTest {
                     historyMapper,
                     confirmCategoryMapper,
                     mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
-                    mock(ffdd.opsconsole.platform.application.AuditReplayDispatcher.class),
-                    new com.fasterxml.jackson.databind.ObjectMapper());
+                    replayDispatcher,
+                    objectMapper);
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
     private final List<AuditOperationHistoryEntity> historyRows = new ArrayList<>();
     private final List<AuditConfirmCategoryEntity> categoryRows = new ArrayList<>();
@@ -134,6 +138,8 @@ class OpsAuditCenterServiceTest {
         doAnswer(invocation -> null).when(ticketMapper).createTicketTable();
         doAnswer(invocation -> null).when(historyMapper).createHistoryTable();
         doAnswer(invocation -> null).when(confirmCategoryMapper).createConfirmCategoryTable();
+        // 批0: approve 回放目标域,dispatch 须返回成功(code=0)否则 NPE/fail
+        doReturn(ApiResult.ok()).when(replayDispatcher).dispatch(any(), any());
     }
 
     @Test
@@ -324,6 +330,13 @@ class OpsAuditCenterServiceTest {
         ticket.setReason("explicit test fixture");
         ticket.setStatus(status);
         ticket.setIsDeleted(0);
+        // 批0: approve 要求 ticket 带 commandJson(否则 COMMAND_REQUIRED 422),fixture 补回放指令
+        try {
+            ticket.setCommandJson(objectMapper.writeValueAsString(
+                    new AuditReplayCommand("D", "d2_withdraw_approve", Map.of())));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            throw new RuntimeException(ex);
+        }
         ticketRows.put(operationId, ticket);
     }
 
