@@ -144,6 +144,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!StringUtils.hasText(username)) {
             return ApiResult.fail(422, StringUtils.hasText(request.username()) ? "USERNAME_INVALID" : "USERNAME_REQUIRED");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "account", username) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (adminByUsername(username).isPresent()) {
             return ApiResult.fail(409, "ADMIN_USERNAME_EXISTS");
         }
@@ -192,9 +196,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,
                 Map.of("username", username, "role", role, "credentialDeliveryStatus", credentialStatus));
         AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
-        linkA2Proposal(idempotencyKey, "运营账号创建(A1)", operatorLabel(created), "—",
-                role + " / " + credentialStatus, request.operator(), currentOperatorRole(), "acct",
-                false, false, "超管", request.reason());
         return ApiResult.ok(created);
     }
 
@@ -215,6 +216,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
 
         String username = normalizeUsername(request.username());
@@ -268,9 +273,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                         "fromEmail", firstText(current.email()),
                         "toEmail", firstText(email)));
         AdminAccountOverview.OperatorRecord updated = requireOperator(current.id());
-        linkA2Proposal(idempotencyKey, "运营账号编辑(A1)", operatorLabel(updated),
-                operatorLabel(current), operatorLabel(updated), request.operator(), currentOperatorRole(),
-                "acct", false, false, "超管", request.reason());
         return ApiResult.ok(updated);
     }
 
@@ -296,6 +298,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if ("super".equals(current.role())
                 && "enabled".equals(current.status())
                 && !"super".equals(nextRole)
@@ -314,8 +320,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromRole", current.role(), "toRole", nextRole));
-        linkA2Proposal(idempotencyKey, "运营账号改角色(A1)", operatorLabel(current), current.role(), nextRole,
-                request.operator(), currentOperatorRole(), "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -341,6 +345,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String nextStatus = normalizeStatus(request.status());
         if (nextStatus == null) {
             return ApiResult.fail(422, "STATUS_INVALID");
@@ -365,9 +373,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         audit("enabled".equals(nextStatus) ? "A1_OPERATOR_ENABLED" : "A1_OPERATOR_DISABLED",
                 "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromStatus", current.status(), "toStatus", nextStatus));
-        linkA2Proposal(idempotencyKey, "enabled".equals(nextStatus) ? "运营账号启用(A1)" : "运营账号禁用(A1)",
-                operatorLabel(current), current.status(), nextStatus, request.operator(), currentOperatorRole(),
-                "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -388,6 +393,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         Optional<Long> actorId = authenticatedAdminId();
         if (actorId.isPresent() && current.id().equals(String.valueOf(actorId.get()))) {
@@ -410,9 +419,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
         audit("A1_OPERATOR_DELETED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(),
                 idempotencyKey, Map.of("username", current.username(), "role", current.role(), "status", current.status()));
-        linkA2Proposal(idempotencyKey, "运营账号删除(A1)", operatorLabel(current), current.status(),
-                "deleted", request.operator(), currentOperatorRole(), "acct", false, false, "超管",
-                request.reason());
         return ApiResult.ok(current);
     }
 
@@ -434,13 +440,14 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         Long adminId = parseAccountId(current.id()).orElseThrow();
         accountStateMapper.upsertTfaResetAt(adminId, LocalDateTime.now());
         audit("A1_OPERATOR_2FA_RESET", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("tfaRequired", true));
-        linkA2Proposal(idempotencyKey, "运营账号重置双因子(A1)", operatorLabel(current), "已绑定", "待重新绑定",
-                request.operator(), currentOperatorRole(), "acct", false, false, "超管",
-                request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -504,6 +511,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (authorization != null) {
             return failLike(authorization);
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         LocalDateTime revokedAt = LocalDateTime.now();
         String now = revokedAt.format(ISO);
         Long adminId = parseAccountId(current.id()).orElseThrow();
@@ -511,9 +522,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         accountStateMapper.upsertSessionsRevokedAt(adminId, revokedAt);
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("killedAt", now, "revokedSessions", revoked));
-        linkA2Proposal(idempotencyKey, "运营账号强制登出(A1)", operatorLabel(current),
-                current.sessions() + " active sessions", "0 active sessions", request.operator(),
-                actor == null ? "super" : actor.role(), "acct", false, false, "超管", request.reason());
         return ApiResult.ok(requireOperator(current.id()));
     }
 
@@ -533,6 +541,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         }
         ensureA1BusinessTables();
         String key = normalizeText(baselineKey, "BASELINE_KEY_REQUIRED").toLowerCase(Locale.ROOT);
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("A", "baseline", key) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String value = normalizeText(request.value(), "BASELINE_VALUE_REQUIRED");
         AdminAccountOverview.SecurityBaseline baseline = securityBaseline(key).orElse(null);
         if (baseline == null) {
@@ -567,8 +579,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         securityBaselineMapper.upsertValue(key, value);
         audit("A1_SECURITY_BASELINE_CHANGED", "A1_SECURITY_BASELINE", key, request.operator(), request.reason(), idempotencyKey,
                 Map.of("value", value));
-        linkA2Proposal(idempotencyKey, "安全基线调整(A1)", baseline.name(), baseline.value(), value,
-                request.operator(), currentOperatorRole(), "param", false, false, "超管", request.reason());
         return ApiResult.ok(securityBaseline(key).orElseThrow());
     }
 
