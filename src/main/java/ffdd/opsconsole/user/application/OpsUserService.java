@@ -435,6 +435,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         UserAccountView before = userRepository.findById(userId).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -714,6 +718,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (reasonGuard != null) {
             return reasonGuard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "accountlist", String.valueOf(request.userId())) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         UserAccountView user = userRepository.findById(request.userId()).orElse(null);
         if (user == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -817,6 +825,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "impersonation", normalizedSessionNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         UserImpersonationSessionView existing = userRepository.findImpersonation(normalizedSessionNo).orElse(null);
         if (existing == null) {
             return ApiResult.fail(404, "IMPERSONATION_SESSION_NOT_FOUND");
@@ -858,6 +870,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         ApiResult<Map<String, Object>> reasonGuard = requirePlainReason(request.reason(), "SESSION_REVOKE_REASON_REJECTED");
         if (reasonGuard != null) {
             return reasonGuard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (userRepository.findById(userId).isEmpty()) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -1044,6 +1060,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         UserSecurityStatusView before = loadSecurityStatus(userId);
         if (before == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -1062,6 +1082,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         ApiResult<UserSecurityStatusView> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (loadSecurityStatus(userId) == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -1083,6 +1107,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         UserSecurityStatusView before = loadSecurityStatus(userId);
         if (before == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -1101,6 +1129,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         ApiResult<UserAccountView> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         UserAccountView before = userRepository.findById(userId).orElse(null);
         if (before == null) {
@@ -1149,6 +1181,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (guard != null) {
             return guard;
         }
+        String normalizedRefreshTokenId = refreshTokenId.trim();
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "session", normalizedRefreshTokenId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         UserSessionView session = userRepository.findSession(refreshTokenId.trim()).orElse(null);
         if (session == null) {
             return ApiResult.fail(404, "SESSION_NOT_FOUND");
@@ -1175,6 +1212,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         if (userRepository.findById(userId).isEmpty()) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         int ttlMinutes = request.ttlMinutes() == null ? 15 : request.ttlMinutes();
         if (ttlMinutes < 5 || ttlMinutes > 60) {
@@ -1208,6 +1249,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         if (userRepository.findById(userId).isEmpty()) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "user", String.valueOf(userId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String asset = normalizeAsset(request.asset());
         String direction = normalizeDirection(request.direction());
@@ -1323,6 +1368,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             normalizedNo = requireText(adjustmentNo, "ADJUSTMENT_NO_REQUIRED");
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("C", "adjustment", normalizedNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         UserAssetAdjustmentView before = userRepository.findAssetAdjustment(normalizedNo).orElse(null);
         if (before == null) {
