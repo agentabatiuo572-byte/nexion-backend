@@ -1,5 +1,8 @@
 package ffdd.opsconsole.platform.dto;
 
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+
 public record AuditOperationProposalRequest(
         String action,
         String obj,
@@ -12,5 +15,7 @@ public record AuditOperationProposalRequest(
         Boolean sos,
         String roleGate,
         String reason,
-        String sourceDomain) {
+        String sourceDomain,
+        AuditReplayCommand command,
+        AuditLockTarget target) {
 }

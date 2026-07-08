@@ -31,6 +31,7 @@ import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
@@ -97,6 +98,7 @@ public class OpsAdminAccountService {
     private final AdminSecurityBaselineMapper securityBaselineMapper;
     private final PasswordEncoder passwordEncoder;
     private final AdminSessionRegistry adminSessionRegistry;
+    private final AdminPermissionCache permissionCache;
     private final OpsAuditCenterService auditCenterService;
 
     public ApiResult<AdminAccountOverview> overview() {
@@ -303,6 +305,8 @@ public class OpsAdminAccountService {
         patch.setSuperAdmin("super".equals(nextRole) ? 1 : 0);
         adminMapper.updateById(patch);
         syncPrimaryRoleRelation(adminId, nextRole);
+        // 改角色后立即失效该 admin 的 Redis 权限缓存，避免 30min TTL 窗口内仍用旧角色权限
+        permissionCache.evict(adminId);
 
         audit("A1_OPERATOR_ROLE_CHANGED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("fromRole", current.role(), "toRole", nextRole));
@@ -714,7 +718,9 @@ public class OpsAdminAccountService {
                             sos,
                             roleGate,
                             reason,
-                            "A1"));
+                            "A1",
+                            null,
+                            null));
             if (result == null || result.getCode() != 0) {
                 String message = result == null ? "null result" : result.getMessage();
                 log.warn("A2 executed-ticket recording failed for [{}] (main op already committed): {}", action, message);
