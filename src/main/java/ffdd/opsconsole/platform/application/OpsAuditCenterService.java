@@ -3,6 +3,8 @@ package ffdd.opsconsole.platform.application;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
@@ -15,9 +17,11 @@ import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.infrastructure.AuditConfirmCategoryEntity;
+import ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationHistoryEntity;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AuditConfirmCategoryMapper;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.platform.mapper.AuditOperationHistoryMapper;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -75,6 +79,8 @@ public class OpsAuditCenterService {
     private final AuditOperationTicketMapper ticketMapper;
     private final AuditOperationHistoryMapper historyMapper;
     private final AuditConfirmCategoryMapper confirmCategoryMapper;
+    private final AuditObjectLockMapper lockMapper;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     public ApiResult<AuditCenterOverview> overview() {
         ensureSeedData();
@@ -170,6 +176,30 @@ public class OpsAuditCenterService {
         ticket.setReason(reason);
         ticket.setStatus(STATUS_PENDING);
         ticket.setIsDeleted(0);
+        // 存回放指令(供 approve 时回放执行)
+        AuditReplayCommand command = request.command();
+        if (command != null) {
+            try {
+                ticket.setCommandJson(objectMapper.writeValueAsString(command));
+            } catch (Exception ex) {
+                return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_SERIALIZE_FAILED");
+            }
+        }
+        // 加目标对象锁(防 pending 期间重复发起)
+        AuditLockTarget target = request.target();
+        if (target != null) {
+            int exists = lockMapper.countActiveByTarget(target.domain(), target.type(), target.id());
+            if (exists > 0) {
+                return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
+            }
+            AuditObjectLockEntity lock = new AuditObjectLockEntity();
+            lock.setTicketId(ticket.getOperationId());
+            lock.setTargetDomain(target.domain());
+            lock.setTargetType(target.type());
+            lock.setTargetId(target.id());
+            lock.setOperator(operator);
+            lockMapper.insert(lock);
+        }
         ticketMapper.insert(ticket);
 
         auditLogService.record(AuditLogWriteRequest.builder()
@@ -390,6 +420,26 @@ public class OpsAuditCenterService {
             return fail(OpsErrorCode.VALIDATION_FAILED, "OPERATOR_REQUIRED");
         }
         return null;
+    }
+
+    /** 释放目标对象锁(approve/reject 后调用,物理删除 nx_audit_object_lock 行,放开 uk_target 唯一键)。 */
+    private void releaseLock(String operationId) {
+        AuditObjectLockEntity lock = lockMapper.selectByTicketId(operationId);
+        if (lock != null) {
+            lockMapper.deleteById(lock.getId());
+        }
+    }
+
+    /** 反序列化回放指令;空或解析失败返回 null。 */
+    private AuditReplayCommand deserializeCommand(String commandJson) {
+        if (!StringUtils.hasText(commandJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(commandJson, AuditReplayCommand.class);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private Map<String, PlatformConfigItem> loadConfigMap(Collection<String> groups) {
@@ -636,6 +686,7 @@ public class OpsAuditCenterService {
         ticketMapper.createTicketTable();
         historyMapper.createHistoryTable();
         confirmCategoryMapper.createConfirmCategoryTable();
+        lockMapper.createLockTable();
         if (readTimeBusinessSeedsDisabled()) {
             return;
         }
