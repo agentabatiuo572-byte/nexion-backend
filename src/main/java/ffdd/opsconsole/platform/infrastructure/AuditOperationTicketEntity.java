@@ -27,4 +27,5 @@ public class AuditOperationTicketEntity extends BaseEntity {
     private String status;
     private String decisionReason;
     private LocalDateTime decidedAt;
+    private String commandJson;
 }

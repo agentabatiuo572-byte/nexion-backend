@@ -1592,6 +1592,7 @@ CREATE TABLE IF NOT EXISTS nx_audit_operation_ticket (
   status VARCHAR(32) NOT NULL DEFAULT 'pending',
   decision_reason VARCHAR(512) NULL,
   decided_at DATETIME NULL,
+  command_json TEXT NULL COMMENT '结构化回放指令 {domain,op,params}',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -4341,4 +4342,18 @@ CREATE TABLE IF NOT EXISTS nx_customer_note (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   KEY idx_customer_note_user_time (user_id, is_deleted, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_audit_object_lock (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ticket_id VARCHAR(64) NOT NULL,
+  target_domain VARCHAR(4) NOT NULL,
+  target_type VARCHAR(64) NOT NULL,
+  target_id VARCHAR(128) NOT NULL,
+  operator VARCHAR(128) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_target (target_domain, target_type, target_id),
+  KEY idx_lock_ticket (ticket_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
