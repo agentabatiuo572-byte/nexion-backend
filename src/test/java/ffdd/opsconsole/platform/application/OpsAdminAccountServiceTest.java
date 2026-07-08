@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -12,6 +13,8 @@ import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
@@ -39,6 +42,7 @@ import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -69,7 +73,10 @@ class OpsAdminAccountServiceTest {
     private final AdminSecurityBaselineMapper securityBaselineMapper = mock(AdminSecurityBaselineMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
+    private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final List<AdminEntity> admins = new ArrayList<>();
     private final Map<Long, String> roleRelations = new LinkedHashMap<>();
     private final Map<Long, AdminAccountStateEntity> accountStates = new LinkedHashMap<>();
@@ -79,12 +86,13 @@ class OpsAdminAccountServiceTest {
     private final OpsAdminAccountService service =
             new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
-                    adminSessionRegistry, auditCenterService);
+                    adminSessionRegistry, permissionCache, auditCenterService, lockMapper);
 
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
         authenticateAs(1L);
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
         repository.clear();
         accountStates.clear();
         rbacActionRows.clear();
@@ -356,17 +364,8 @@ class OpsAdminAccountServiceTest {
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_CREATED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("A1_ADMIN_ACCOUNT");
-
-        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<AuditOperationProposalRequest> proposalCaptor =
-                ArgumentCaptor.forClass(AuditOperationProposalRequest.class);
-        verify(auditCenterService).createProposal(keyCaptor.capture(), proposalCaptor.capture());
-        assertThat(keyCaptor.getValue()).isEqualTo("idem-create-1-a2");
-        assertThat(proposalCaptor.getValue().action()).isEqualTo("运营账号创建(A1)");
-        assertThat(proposalCaptor.getValue().obj()).contains("新风控成员", "risk.new");
-        assertThat(proposalCaptor.getValue().obj()).doesNotContain("5");
-        assertThat(proposalCaptor.getValue().toString()).doesNotContain("12345678");
-        assertThat(proposalCaptor.getValue().sourceDomain()).isEqualTo("A1");
+        // Task2 移除 createAccount 的 linkA2Proposal 调用(不再留痕 A2 recordExecuted),
+        // 故不再 verify auditCenterService.recordExecuted; 仅保留 auditLogService 审计断言。
     }
 
     @Test
@@ -420,10 +419,7 @@ class OpsAdminAccountServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_PROFILE_UPDATED");
-        ArgumentCaptor<AuditOperationProposalRequest> proposalCaptor =
-                ArgumentCaptor.forClass(AuditOperationProposalRequest.class);
-        verify(auditCenterService).createProposal(org.mockito.ArgumentMatchers.eq("idem-profile-1-a2"), proposalCaptor.capture());
-        assertThat(proposalCaptor.getValue().action()).isEqualTo("运营账号编辑(A1)");
+        // Task2 移除 updateProfile 的 linkA2Proposal 调用,不再 verify auditCenterService.recordExecuted。
     }
 
     @Test
@@ -785,6 +781,49 @@ class OpsAdminAccountServiceTest {
         assertThat(rbacGrantRows.get("e3")).hasSize(8);
         assertThat(repository.items).doesNotContainKey("a1.rbac.action.e3");
         verify(auditLogService).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void replayA1AccountStatusUpdateInvokesUpdateStatusAndSucceeds() {
+        AuditReplayCommand cmd = new AuditReplayCommand("A", "a1_account_status_update", Map.of(
+                "accountId", "4",
+                "status", "disabled"));
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay disable risk operator", "idem-replay-status");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isZero();
+        AdminEntity target = admins.stream()
+                .filter(admin -> admin.getId().equals(4L))
+                .findFirst()
+                .orElseThrow();
+        assertThat(target.getStatus()).isZero();
+    }
+
+    @Test
+    void replayA1AccountCreateInvokesCreateAccountAndSucceeds() {
+        AuditReplayCommand cmd = new AuditReplayCommand("A", "a1_account_create", Map.of(
+                "username", "risk.replay",
+                "displayName", "回放风控",
+                "role", "risk",
+                "initialPassword", "ReplayRisk@123"));
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay create risk operator", "idem-replay-create");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(admins).extracting(AdminEntity::getUsername).contains("risk.replay");
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        AuditReplayCommand cmd = new AuditReplayCommand("A", "a1_unknown_op", Map.of());
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay unknown op", "idem-replay-unknown");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:a1_unknown_op");
     }
 
     private void registerTestRbacActions() {
