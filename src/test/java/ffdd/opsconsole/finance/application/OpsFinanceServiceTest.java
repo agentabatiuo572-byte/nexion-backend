@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -52,6 +53,8 @@ class OpsFinanceServiceTest {
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final RiskOpsRepository riskOpsRepository = mock(RiskOpsRepository.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final OpsFinanceService service =
             new OpsFinanceService(
                     configFacade,
@@ -62,11 +65,13 @@ class OpsFinanceServiceTest {
                     riskKycReviewFacade,
                     riskOpsRepository,
                     auditLogService,
-                    ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+                    ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    lockMapper);
 
     @BeforeEach
     void setUpRiskDefaults() {
         when(riskOpsRepository.withdrawRules()).thenReturn(List.of());
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
         emergencyRepository.settings.put("killswitch.withdraw", "enabled");
     }
 
@@ -80,7 +85,8 @@ class OpsFinanceServiceTest {
                 riskKycReviewFacade,
                 riskOpsRepository,
                 auditLogService,
-                seedPolicy);
+                seedPolicy,
+                lockMapper);
     }
 
     @Test

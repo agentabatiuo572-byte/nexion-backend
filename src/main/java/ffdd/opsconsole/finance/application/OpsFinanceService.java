@@ -24,6 +24,9 @@ import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
@@ -51,7 +54,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsFinanceService {
+public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final String TOPUP_CONFIG_GROUP = "finance-topup";
     private static final BigDecimal CARD_FEE_BUFFER_RATE = new BigDecimal("0.035");
     private static final Set<String> CONFIRMED_DEPOSIT_STATUSES = Set.of("CONFIRMED", "CREDITED", "SUCCESS");
@@ -89,6 +92,7 @@ public class OpsFinanceService {
     private final RiskOpsRepository riskOpsRepository;
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -398,6 +402,11 @@ public class OpsFinanceService {
         ApiResult<WithdrawalOrderView> guard = requireWithdrawalCommand(withdrawalNo, idempotencyKey, request);
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            if (lockMapper.countActiveByTarget("D", "withdrawal", withdrawalNo.trim()) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+            }
         }
         ensureD2FallbackSeedData();
         WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo.trim()).orElse(null);
@@ -1239,5 +1248,26 @@ public class OpsFinanceService {
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
+    }
+
+    @Override
+    public String domain() {
+        return "D";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String withdrawalNo = String.valueOf(p.get("withdrawalNo"));
+        String action;
+        switch (cmd.op()) {
+            case "d2_withdraw_approve" -> action = "APPROVE";
+            case "d2_withdraw_unfreeze" -> action = "UNFREEZE";
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+        WithdrawalReviewRequest req = new WithdrawalReviewRequest(action, ctx.operator(), ctx.reason());
+        return reviewWithdrawal(withdrawalNo, ctx.idempotencyKey(), req);
     }
 }
