@@ -681,7 +681,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 && lockMapper.countActiveByTarget("K", "arbitrage_row", normalizedRowId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        if ("freeze-cluster".equals(normalizedAction)
+        if (!A2ReplayContext.isReplaying()
+                && "freeze-cluster".equals(normalizedAction)
                 && StringUtils.hasText(before.clusterId())
                 && lockMapper.countActiveByTarget("K", "cluster", before.clusterId()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
