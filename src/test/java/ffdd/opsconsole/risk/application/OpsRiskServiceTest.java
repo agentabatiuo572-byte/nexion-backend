@@ -1,9 +1,11 @@
 package ffdd.opsconsole.risk.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -11,6 +13,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
 import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
@@ -57,6 +61,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import ffdd.opsconsole.shared.api.PageResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -66,12 +71,20 @@ class OpsRiskServiceTest {
     private final FakeFinanceWithdrawalKycReviewFacade financeWithdrawalKycReviewFacade = new FakeFinanceWithdrawalKycReviewFacade();
     private final FakeMarketExchangeKycReviewFacade marketExchangeKycReviewFacade = new FakeMarketExchangeKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final OpsRiskService service = new OpsRiskService(
             riskRepository,
             userKycStatusFacade,
             financeWithdrawalKycReviewFacade,
             marketExchangeKycReviewFacade,
-            auditLogService);
+            auditLogService,
+            lockMapper);
+
+    @BeforeEach
+    void stubLockMapperNoActiveLock() {
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
 
     @Test
     void overviewDeclaresDecisionStates() {
@@ -560,6 +573,42 @@ class OpsRiskServiceTest {
         assertThat(financeWithdrawalKycReviewFacade.releasedWithdrawalNo).isEqualTo("WD-90412");
         assertThat(financeWithdrawalKycReviewFacade.rejectedWithdrawalNo).isNull();
         assertThat(marketExchangeKycReviewFacade.releasedExchangeNo).isNull();
+    }
+
+    @Test
+    void replayK1ClusterFreezeInvokesUpdateClusterStatusAndSucceeds() {
+        AuditReplayCommand cmd = new AuditReplayCommand("K", "k1_cluster_freeze", Map.of(
+                "clusterId", "CL-318"));
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay freeze cluster", "idem-replay-k1-freeze");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.multiAccountClusters.get("CL-318")).isEqualTo("frozen");
+    }
+
+    @Test
+    void replayK5TicketPassInvokesDecideTicketAndSucceeds() {
+        riskRepository.createManualKycReviewTicket("KR-1", "usr_55B1", "seed review ticket", "system");
+        AuditReplayCommand cmd = new AuditReplayCommand("K", "k5_ticket_pass", Map.of(
+                "ticketId", "KR-1"));
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay pass ticket", "idem-replay-k5-pass");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.kycTicketStatus("KR-1")).isEqualTo("passed");
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        AuditReplayCommand cmd = new AuditReplayCommand("K", "k_unknown_op", Map.of());
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay unknown op", "idem-replay-unknown");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:k_unknown_op");
     }
 
     private static final class FakeRiskOpsRepository implements RiskOpsRepository {
