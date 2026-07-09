@@ -224,6 +224,7 @@ class OpsAuditCenterServiceTest {
                 "本周 KPI 节奏校准",
                 "H1",
                 null,
+                null,
                 null);
 
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.createProposal("idem-proposal-1", request);
@@ -257,6 +258,7 @@ class OpsAuditCenterServiceTest {
                 "超管",
                 "新增客服账号入职",
                 "A1",
+                null,
                 null,
                 null);
 

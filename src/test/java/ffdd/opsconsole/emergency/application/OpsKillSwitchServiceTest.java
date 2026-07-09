@@ -26,11 +26,22 @@ class OpsKillSwitchServiceTest {
     private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final OpsKillSwitchService service = new OpsKillSwitchService(
             emergencyRepository,
             coverageFacade,
             auditLogService,
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+            lockMapper);
+
+    @org.junit.jupiter.api.BeforeEach
+    void stubLocksNoActive() {
+        org.mockito.Mockito.when(lockMapper.countActiveByTarget(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(0);
+    }
 
     @Test
     void matrixHasFiveActiveGatesAndRetiredSunsetGatesWithoutWritingConfig() {
@@ -48,7 +59,8 @@ class OpsKillSwitchServiceTest {
                 emergencyRepository,
                 coverageFacade,
                 mock(AuditLogService.class),
-                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+                OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
+                mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class));
 
         var result = realOnlyService.matrix();
 

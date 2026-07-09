@@ -1,6 +1,9 @@
 package ffdd.opsconsole.emergency.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -12,10 +15,14 @@ import ffdd.opsconsole.content.facade.NotificationEmergencyDispatchResult;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.emergency.dto.GeoCountryStatusRequest;
 import ffdd.opsconsole.emergency.dto.GeoEdgeJudgeRequest;
+import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookCreateRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookRunRequest;
 import ffdd.opsconsole.emergency.dto.TamperAlertConfigRequest;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.util.ArrayList;
@@ -32,13 +39,26 @@ class OpsEmergencyControlServiceTest {
     private final FakeNotificationDispatchFacade notificationDispatchFacade = new FakeNotificationDispatchFacade();
     private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
+    private final OpsKillSwitchService killSwitchService = mock(OpsKillSwitchService.class);
     private final OpsEmergencyControlService service = new OpsEmergencyControlService(
             configFacade,
             notificationDispatchFacade,
             auditLogService,
             new ObjectMapper(),
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-            emergencyRepository);
+            emergencyRepository,
+            lockMapper,
+            killSwitchService);
+
+    @org.junit.jupiter.api.BeforeEach
+    void stubLocksNoActive() {
+        org.mockito.Mockito.when(lockMapper.countActiveByTarget(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString())).thenReturn(0);
+    }
 
     @Test
     void geoCountryChangePersistsConfigAndAudits() {
@@ -547,6 +567,48 @@ class OpsEmergencyControlServiceTest {
         assertThat(accounts.get(0))
                 .containsEntry("userCode", "U00083271")
                 .doesNotContainKey("uid");
+    }
+
+    @Test
+    void replayJ1GateKillDelegatesToKillSwitchServiceToggle() {
+        doReturn(ApiResult.ok(new java.util.LinkedHashMap<>(Map.of("domain", "J1"))))
+                .when(killSwitchService).toggle(eq("withdraw"), eq("idem-replay-j1-kill"), any(KillSwitchToggleRequest.class));
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("J", "j1_gate_kill", Map.of("gateKey", "withdraw")),
+                new AuditReplayContext("superadmin", "j1 replay kill", "idem-replay-j1-kill"));
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<KillSwitchToggleRequest> captor = ArgumentCaptor.forClass(KillSwitchToggleRequest.class);
+        verify(killSwitchService).toggle(eq("withdraw"), eq("idem-replay-j1-kill"), captor.capture());
+        assertThat(captor.getValue().enabled()).isEqualTo("disabled");
+        assertThat(captor.getValue().reason()).isEqualTo("j1 replay kill");
+    }
+
+    @Test
+    void replayJ2CountryManageUpdatesGeoCountryAndAudit() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("J", "j2_country_manage", Map.of("countryCode", "VE", "status", "blocked")),
+                new AuditReplayContext("risk-lead", "j2 replay country block", "idem-replay-j2-country"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(emergencyRepository.geoCountries)
+                .anySatisfy(row -> assertThat(row)
+                        .containsEntry("cc", "VE")
+                        .containsEntry("status", "blocked"));
+        verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
+                "J2_GEO_COUNTRY_STATUS_CHANGED".equals(request.getAction())
+                        && String.valueOf(request.getDetail()).contains("idem-replay-j2-country")));
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("J", "j_unknown_op", Map.of()),
+                new AuditReplayContext("superadmin", "replay unknown op", "idem-replay-unknown"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:j_unknown_op");
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
