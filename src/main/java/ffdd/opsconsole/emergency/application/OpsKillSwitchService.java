@@ -109,6 +109,10 @@ public class OpsKillSwitchService {
         boolean enable = parseEnabled(request.enabled());
         boolean before = gateEnabled(normalizedKey);
         GateSeed seed = gateSeed(normalizedKey);
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("J", "gate", normalizedKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (enable && !before && seed.coveragePrecheckRequired() && coverageBelowRedline()) {
             return coverageRedline();
         }
@@ -140,6 +144,10 @@ public class OpsKillSwitchService {
             String key = normalizeGate(rawKey);
             if (isRetired(key)) {
                 return retiredFeature();
+            }
+            if (!A2ReplayContext.isReplaying()
+                    && lockMapper.countActiveByTarget("J", "gate", key) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
             boolean before = gateEnabled(key);
             writeGate(key, false, request.operator());

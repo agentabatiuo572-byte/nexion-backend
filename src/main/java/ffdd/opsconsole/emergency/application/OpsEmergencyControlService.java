@@ -111,6 +111,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         }
         String cc = normalizeCountry(countryCode);
         String status = normalizeGeoStatus(request.status());
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("J", "country", cc) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         writeCountryStatus(cc, status, request.reason().trim(), request.operator());
         audit("J2_GEO_COUNTRY_STATUS_CHANGED", "GEO_COUNTRY", cc, request.operator(), "HIGH", map(
                 "country", cc,
@@ -179,6 +183,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EMERGENCY_BLOCK_COUNTRIES_REQUIRED");
         }
         for (String country : countries) {
+            if (!A2ReplayContext.isReplaying()
+                    && lockMapper.countActiveByTarget("J", "country", country) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+            }
             writeCountryStatus(country, "blocked", request.reason().trim(), request.operator());
         }
         audit("J2_GEO_EMERGENCY_BLOCK_CREATED", "GEO_COUNTRY_BATCH", String.join(",", countries), request.operator(), "CRITICAL", map(
@@ -239,6 +247,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         int threshold = request.threshold() == null ? 10 : request.threshold();
         if (threshold < 1 || threshold > 100) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TAMPER_THRESHOLD_RANGE_1_100");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("J", "alert_config", "default") > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         boolean feedK4 = request.feedK4() == null || request.feedK4();
         emergencyRepository.upsertSetting(TAMPER_THRESHOLD, String.valueOf(threshold), "NUMBER", GROUP_TAMPER, request.reason().trim(), request.operator());
@@ -413,6 +425,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         if (validation != null) {
             return validation;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("J", "playbook", seed.code()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         Optional<Map<String, Object>> existingExecution = emergencyRepository.executionByIdempotencyKey(seed.code(), idempotencyKey.trim());
         if (existingExecution.isPresent()) {
             String existingExecId = stringValue(existingExecution.get().get("executionId"), "");
@@ -482,6 +498,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_EXECUTION_NOT_FOUND");
         }
         Map<String, Object> execution = found.get();
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("J", "playbook_execution", execId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String playbookCode = requestedCode;
         if (!StringUtils.hasText(playbookCode)) {
             playbookCode = stringValue(execution.get("code"), "").toUpperCase(Locale.ROOT);
