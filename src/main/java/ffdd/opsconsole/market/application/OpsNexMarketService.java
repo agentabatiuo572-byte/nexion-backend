@@ -29,6 +29,9 @@ import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
@@ -57,7 +60,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsNexMarketService {
+public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final String EXCHANGE_USER_DAILY_CAP_KEY = "wallet.exchange.user_daily_cap_usdt";
     private static final String EXCHANGE_PLATFORM_DAILY_CAP_KEY = "wallet.exchange.platform_daily_cap_usdt";
     private static final String EXCHANGE_FEE_PCT_KEY = "wallet.exchange.fee_pct";
@@ -106,6 +109,7 @@ public class OpsNexMarketService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> exchangeOverview() {
         BigDecimal platformCap = readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000"));
@@ -2713,6 +2717,158 @@ public class OpsNexMarketService {
     }
 
     private record PageSpec(int page, int pageSize, long total, int totalPages, int offset) {
+    }
+
+    @Override
+    public String domain() {
+        return "G";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            case "g1_staking_pool_param" -> {
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator);
+                return updateStakingPoolParam(idem, str(p, "tierKey"), str(p, "paramKey"), req);
+            }
+            case "g1_staking_pool_sale_status" -> {
+                // updateStakingPoolSaleStatus 内部用 parseBooleanValue(request.value()) 解析布尔,enabled 以字符串放入 value
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(String.valueOf(boolVal(p, "enabled")), reason, operator);
+                return updateStakingPoolSaleStatus(idem, str(p, "tierKey"), req);
+            }
+            case "g1_staking_pool_kill_status" -> {
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(String.valueOf(boolVal(p, "killed")), reason, operator);
+                return updateStakingPoolKillStatus(idem, str(p, "tierKey"), req);
+            }
+            case "g2_exchange_param" -> {
+                ExchangeParamUpdateRequest req = new ExchangeParamUpdateRequest(str(p, "value"), reason, operator);
+                return updateExchangeParam(idem, str(p, "paramKey"), req);
+            }
+            case "g2_exchange_swap_status" -> {
+                ExchangeSwapStatusRequest req = new ExchangeSwapStatusRequest(boolVal(p, "enabled"), reason, operator);
+                return updateExchangeSwapStatus(idem, req);
+            }
+            case "g2_exchange_cancel_queue" -> {
+                ExchangeQueueCancelRequest req = new ExchangeQueueCancelRequest(reason, operator);
+                return cancelExchangeQueueOrder(idem, str(p, "exchangeNo"), req);
+            }
+            case "g2_exchange_trigger_kyc_review" -> {
+                // @Transactional 自调用陷阱:replay 本身不带 @Transactional(与 J 域 replay 一致),
+                // 此处 this.triggerExchangeKycReview(...) 是直接自调用,Spring 代理被绕过,@Transactional 不生效。
+                // 原子性回退由两条兜底:(1) triggerExchangeKycReview 内部 riskKycReviewFacade 自管事务;
+                // (2) 外层 OpsAuditCenterService.decide() 的 @Transactional 事务边界兜底。
+                // 若审查者要求严格事务,可改为注入 ApplicationContext 经 getBean() 调用代理(本批不采用)。
+                ExchangeKycReviewRequest req = new ExchangeKycReviewRequest(reason, operator);
+                return triggerExchangeKycReview(idem, str(p, "exchangeNo"), req);
+            }
+            case "g3_curve_update" -> {
+                // frames 是 7 帧 List<Map>,逐帧重建 NexMarketCurveFrame(dayIndex,targetPrice,pumpProbability,volatilityPct)
+                List<NexMarketCurveFrame> frames = new ArrayList<>();
+                Object rawFrames = p.get("frames");
+                if (rawFrames instanceof List<?> frameList) {
+                    for (Object item : frameList) {
+                        if (item instanceof Map<?, ?> rawFrame) {
+                            Map<String, Object> fm = new LinkedHashMap<>();
+                            rawFrame.forEach((k, v) -> fm.put(String.valueOf(k), v));
+                            Integer dayIndex = intVal(fm, "dayIndex");
+                            frames.add(new NexMarketCurveFrame(
+                                    dayIndex == null ? 0 : dayIndex,
+                                    new BigDecimal(str(fm, "targetPrice")),
+                                    new BigDecimal(str(fm, "pumpProbability")),
+                                    new BigDecimal(str(fm, "volatilityPct"))));
+                        }
+                    }
+                }
+                NexMarketCurveUpdateRequest req = new NexMarketCurveUpdateRequest(frames, reason, operator);
+                return updateWeeklyCurve(idem, req);
+            }
+            case "g3_curve_advance" -> {
+                NexMarketAdvanceRequest req = new NexMarketAdvanceRequest(reason, operator);
+                return advanceCurrentFrame(idem, req);
+            }
+            case "g3_curve_control" -> {
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator);
+                return updateControl(idem, str(p, "controlKey"), req);
+            }
+            case "g3_override" -> {
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator);
+                return updateOverride(idem, str(p, "overrideKey"), req);
+            }
+            case "g4_genesis_param" -> {
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator);
+                return updateGenesisParam(idem, str(p, "paramKey"), req);
+            }
+            case "g4_genesis_market_status" -> {
+                // updateGenesisMarketStatus 内部用 parseBooleanValue(request.value()) 解析布尔,enabled 以字符串放入 value
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(String.valueOf(boolVal(p, "enabled")), reason, operator);
+                return updateGenesisMarketStatus(idem, req);
+            }
+            case "g4_genesis_rerun_dividend" -> {
+                // rerunGenesisDividendBatch 仅消费 request.reason()/operator(),不读 value();value 留 null
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(null, reason, operator);
+                return rerunGenesisDividendBatch(idem, str(p, "batchNo"), req);
+            }
+            case "g7_repurchase_param" -> {
+                NexMarketValueUpdateRequest req = new NexMarketValueUpdateRequest(str(p, "value"), reason, operator);
+                return updateRepurchaseParam(idem, str(p, "paramKey"), req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    /** 从 replay params 取 List<String>,null 安全(支持 List 与逗号分隔字符串)。 */
+    private static java.util.List<String> strList(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) {
+            return java.util.List.of();
+        }
+        if (v instanceof List<?> list) {
+            return list.stream()
+                    .map(item -> item == null ? "" : String.valueOf(item).trim())
+                    .filter(StringUtils::hasText)
+                    .toList();
+        }
+        String raw = String.valueOf(v).trim();
+        if (raw.isEmpty()) {
+            return java.util.List.of();
+        }
+        return java.util.Arrays.stream(raw.split("[,\\s]+"))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .toList();
+    }
+
+    /** 从 replay params 取 Boolean,null 安全。 */
+    private static Boolean boolVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Boolean b) return b;
+        if (v instanceof String s) return Boolean.parseBoolean(s.trim());
+        return null;
+    }
+
+    /** 从 replay params 取 Integer,null 安全(缺失返回 null,由 DTO 默认逻辑兜底)。 */
+    private static Integer intVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
 }
