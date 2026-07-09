@@ -10,6 +10,9 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
 import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
@@ -70,7 +73,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsRiskService {
+public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final Set<String> FINAL_DECISIONS = Set.of("ALLOW", "BLOCK", "REJECT", "DENY");
     private static final Set<String> MANUAL_DECISIONS = Set.of("ALLOW", "BLOCK", "HOLD");
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
@@ -125,6 +128,7 @@ public class OpsRiskService {
     private final FinanceWithdrawalKycReviewFacade financeWithdrawalKycReviewFacade;
     private final MarketExchangeKycReviewFacade marketExchangeKycReviewFacade;
     private final AuditLogService auditLogService;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(riskRepository.overview());
@@ -1420,5 +1424,94 @@ public class OpsRiskService {
             List<String> head,
             String note
     ) {
+    }
+
+    @Override
+    public String domain() {
+        return "K";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            case "k1_cluster_freeze", "k1_cluster_release", "k1_cluster_cleared", "k1_cluster_flag" -> {
+                String status = switch (cmd.op()) {
+                    case "k1_cluster_freeze" -> "frozen";
+                    case "k1_cluster_release" -> "released";
+                    case "k1_cluster_cleared" -> "cleared";
+                    default -> "flagged";
+                };
+                RiskClusterStatusRequest req = new RiskClusterStatusRequest(status, reason, operator);
+                return updateMultiAccountClusterStatus(str(p, "clusterId"), idem, req);
+            }
+            case "k2_row_flag", "k2_row_blockgift", "k2_row_boardflag", "k2_row_freeze" -> {
+                String action = switch (cmd.op()) {
+                    case "k2_row_flag" -> "mark";
+                    case "k2_row_blockgift" -> "block-gift";
+                    case "k2_row_boardflag" -> "board-flag";
+                    default -> "freeze-cluster";
+                };
+                RiskArbitrageActionRequest req = new RiskArbitrageActionRequest(reason, operator);
+                return executeArbitrageAction(str(p, "rowId"), action, idem, req);
+            }
+            case "k3_rule_create" -> {
+                RiskRuleCreateRequest req = new RiskRuleCreateRequest(
+                        str(p, "dimension"),
+                        str(p, "conditionText"),
+                        str(p, "action"),
+                        reason, operator);
+                return createWithdrawRule(idem, req);
+            }
+            case "k3_rule_toggle" -> {
+                RiskRuleStatusRequest req = new RiskRuleStatusRequest(str(p, "state"), reason, operator);
+                return updateWithdrawRuleState(str(p, "ruleId"), idem, req);
+            }
+            case "k3_rule_archive" -> {
+                RiskRuleStatusRequest req = new RiskRuleStatusRequest("archived", reason, operator);
+                return updateWithdrawRuleState(str(p, "ruleId"), idem, req);
+            }
+            case "k4_user_override" -> {
+                RiskScoreOverrideRequest req = new RiskScoreOverrideRequest(intVal(p, "score"), reason, operator);
+                return overrideScore(str(p, "userNo"), idem, req);
+            }
+            case "k4_user_recompute" -> {
+                RiskScoreCommandRequest req = new RiskScoreCommandRequest(reason, operator);
+                return recomputeScore(str(p, "userNo"), idem, req);
+            }
+            case "k5_ticket_pass", "k5_ticket_reject" -> {
+                String decision = "k5_ticket_pass".equals(cmd.op()) ? "passed" : "rejected";
+                RiskKycReviewDecisionRequest req = new RiskKycReviewDecisionRequest(decision, reason, operator);
+                return decideKycReviewTicket(str(p, "ticketId"), idem, req);
+            }
+            case "k5_ticket_manual" -> {
+                RiskKycManualReviewRequest req = new RiskKycManualReviewRequest(str(p, "userNo"), reason, operator);
+                return createManualKycReviewTicket(idem, req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    /** 从 replay params 取 Integer,null 安全(缺失返回 null,由 DTO 默认逻辑兜底)。 */
+    private static Integer intVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 }
