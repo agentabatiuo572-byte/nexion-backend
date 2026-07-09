@@ -169,6 +169,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "exchange_param", paramKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         ExchangeParamDef def = exchangeParamDef(paramKey);
         if (def == null) {
             return validation("G2_EXCHANGE_PARAM_KEY_INVALID");
@@ -202,6 +206,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "exchange_swap", "exchange") > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (request.enabled() == null) {
             return validation("EXCHANGE_SWAP_ENABLED_REQUIRED");
@@ -243,6 +251,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "exchange_order", exchangeNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         Optional<ExchangeOrderView> before = marketRepository.findExchangeOrder(exchangeNo);
         if (before.isEmpty()) {
             return ApiResult.fail(404, "EXCHANGE_ORDER_NOT_FOUND");
@@ -270,6 +282,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "exchange_order", exchangeNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (!StringUtils.hasText(exchangeNo)) {
             return validation("EXCHANGE_NO_REQUIRED");
@@ -417,6 +433,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "staking_pool", tierKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         StakingPoolDef pool = stakingPoolDef(tierKey);
         if (pool == null) {
             return validation("G1_STAKING_TIER_KEY_INVALID");
@@ -461,6 +481,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "staking_pool", tierKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         StakingPoolDef pool = stakingPoolDef(tierKey);
         if (pool == null) {
             return validation("G1_STAKING_TIER_KEY_INVALID");
@@ -500,6 +524,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "staking_pool", tierKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         StakingPoolDef pool = stakingPoolDef(tierKey);
         if (pool == null) {
@@ -591,6 +619,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "repurchase_param", paramKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         RepurchaseParamDef def = repurchaseParamDef(paramKey);
         if (def == null) {
@@ -729,6 +761,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "genesis_param", paramKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         GenesisParamDef def = genesisParamDef(paramKey);
         if (def == null) {
             return validation("G4_GENESIS_PARAM_KEY_INVALID");
@@ -769,6 +805,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "genesis_market", "genesis") > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         Boolean enabled = parseBooleanValue(request.value());
         if (enabled == null) {
             return validation("G4_GENESIS_MARKET_STATUS_INVALID");
@@ -807,6 +847,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "genesis_dividend_batch", batchNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalizedBatch = batchNo == null ? "" : batchNo.trim();
         if (!normalizedBatch.matches("[A-Za-z0-9-]{3,32}")) {
@@ -890,6 +934,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "nex_market_curve", "weekly") > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         List<NexMarketCurveFrame> before = loadCurve();
         List<NexMarketCurveFrame> frames = normalizeFrames(request.frames());
         if (curveRaisesLiability(before, frames)) {
@@ -920,6 +968,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "nex_market_control", controlKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (!CONTROL_KEYS.contains(controlKey)) {
             return validation("G3_CONTROL_KEY_INVALID");
@@ -953,6 +1005,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "nex_market_override", overrideKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (!OVERRIDE_KEYS.contains(overrideKey)) {
             return validation("G3_OVERRIDE_KEY_INVALID");
         }
@@ -980,6 +1036,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "nex_market_curve", "weekly") > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         List<NexMarketCurveFrame> frames = loadCurve();
         if (frames.isEmpty()) {
