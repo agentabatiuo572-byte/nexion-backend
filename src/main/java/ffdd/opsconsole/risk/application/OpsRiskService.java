@@ -277,6 +277,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!StringUtils.hasText(normalizedCluster) || !CLUSTER_STATES.contains(status)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_STATUS_INVALID");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "cluster", normalizedCluster) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (!riskRepository.updateMultiAccountClusterStatus(normalizedCluster, status, request.reason().trim(), operator(request.operator()))) {
             return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
         }
@@ -389,6 +393,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (action == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_ACTION_INVALID");
         }
+        String ruleKey = dimension + ":" + condition;
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "rule", ruleKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String ruleId = nextRuleId();
         RiskRuleView created = riskRepository.createWithdrawRule(ruleId, dimension, condition, action, "draft", operator(request.operator()));
         audit("K3_WITHDRAW_RULE_CREATED", "WITHDRAW_RULE", created.ruleId(), null, operator(request.operator()), Map.of(
@@ -419,6 +428,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         if ("archived".equals(before.state()) && !"archived".equals(state)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "rule", normalized) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (state.equals(before.state())) {
             return ApiResult.ok(before);
@@ -664,6 +677,15 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!before.actions().contains(spec.requiredRowAction())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "arbitrage_row", normalizedRowId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if ("freeze-cluster".equals(normalizedAction)
+                && StringUtils.hasText(before.clusterId())
+                && lockMapper.countActiveByTarget("K", "cluster", before.clusterId()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         boolean linkedClusterFrozen = false;
         if ("freeze-cluster".equals(normalizedAction)) {
             String clusterId = trimmed(before.clusterId());
@@ -819,6 +841,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!StringUtils.hasText(normalized) || score == null || score < 0 || score > 100) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_OVERRIDE_INVALID");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "score_user", normalized) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         RiskScoreOverrideView updated = riskRepository.overrideScore(normalized, score, request.reason().trim(), operator(request.operator())).orElse(null);
         if (updated == null) {
             return ApiResult.fail(404, "SCORE_USER_NOT_FOUND");
@@ -841,6 +867,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         String normalized = trimmed(userNo);
         if (!StringUtils.hasText(normalized)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "score_user", normalized) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         RiskScoreUserView updated = riskRepository.recomputeScore(normalized).orElse(null);
         if (updated == null) {
@@ -901,6 +931,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (ticket == null) {
             return ApiResult.fail(404, "K5_REVIEW_TICKET_NOT_FOUND");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "ticket", normalizedTicket) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (!riskRepository.updateKycReviewTicketStatus(normalizedTicket, decision, request.reason().trim(), operator(request.operator()))) {
             return ApiResult.fail(404, "K5_REVIEW_TICKET_NOT_FOUND");
         }
@@ -925,6 +959,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         String userNo = trimmed(request.userNo());
         if (!StringUtils.hasText(userNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_USER_REQUIRED");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("K", "user", userNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String ticketId = "KR-M-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
         riskRepository.createManualKycReviewTicket(ticketId, userNo, request.reason().trim(), operator(request.operator()));
