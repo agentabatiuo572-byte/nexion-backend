@@ -1,8 +1,10 @@
 package ffdd.opsconsole.user.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -10,6 +12,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.RiskUserStateFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -60,6 +64,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -70,6 +75,8 @@ class OpsUserServiceTest {
     private final FakeFinanceWithdrawalControlFacade financeWithdrawalControlFacade = new FakeFinanceWithdrawalControlFacade();
     private final FakeRiskUserStateFacade riskUserStateFacade = new FakeRiskUserStateFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final OpsUserService service = new OpsUserService(
             userRepository,
             coverageFacade,
@@ -77,7 +84,13 @@ class OpsUserServiceTest {
             financeWithdrawalControlFacade,
             riskUserStateFacade,
             auditLogService,
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+            lockMapper);
+
+    @BeforeEach
+    void stubLockMapperNoActiveLock() {
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
 
     @Test
     void overviewKeepsSunsetCapabilitiesHistoricalOnly() {
@@ -855,6 +868,48 @@ class OpsUserServiceTest {
         assertThat(userRepository.lockedSecurityUsersCalls).isGreaterThan(0);
         assertThat(result.getData().lockedUsers()).extracting(UserSecurityUserRow::userNo)
                 .containsExactly("U00003315", "U00008807", "U00002231");
+    }
+
+    @Test
+    void replayC2AccountFreezeInvokesUpdateStatusAndSucceeds() {
+        AuditReplayCommand cmd = new AuditReplayCommand("C", "c2_account_freeze", Map.of(
+                "userId", 1L,
+                "status", "FROZEN"));
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay freeze user", "idem-replay-c2-freeze");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(userRepository.user.status()).isEqualTo("FROZEN");
+    }
+
+    @Test
+    void replayC3AdjustApproveInvokesApproveAndSucceeds() {
+        String adjustmentNo = String.valueOf(service.createAssetAdjustment(
+                1L,
+                "idem-c3-replay-create",
+                new UserAssetAdjustmentRequest("NEX", "DEBIT", "2.5", "pending correction for replay", "superadmin"))
+                .getData()
+                .get("adjustmentNo"));
+        AuditReplayCommand cmd = new AuditReplayCommand("C", "c3_adjust_approve", Map.of(
+                "adjustmentNo", adjustmentNo));
+        AuditReplayContext ctx = new AuditReplayContext("checker", "replay approve adjustment", "idem-replay-c3-approve");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(userRepository.adjustments.get(adjustmentNo).status()).isEqualTo("APPROVED");
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        AuditReplayCommand cmd = new AuditReplayCommand("C", "c2_unknown_op", Map.of());
+        AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay unknown op", "idem-replay-unknown");
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:c2_unknown_op");
     }
 
     private static final class FakeFinanceWithdrawalControlFacade implements FinanceWithdrawalControlFacade {
