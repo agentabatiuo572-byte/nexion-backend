@@ -36,4 +36,10 @@ public interface AuditObjectLockMapper extends BaseMapper<AuditObjectLockEntity>
             WHERE ticket_id = #{ticketId} AND is_deleted = 0 LIMIT 1
             """)
     AuditObjectLockEntity selectByTicketId(@Param("ticketId") String ticketId);
+
+    @Select("""
+            SELECT * FROM nx_audit_object_lock
+            WHERE ticket_id = #{ticketId} AND is_deleted = 0
+            """)
+    java.util.List<AuditObjectLockEntity> selectActiveByTicketId(@Param("ticketId") String ticketId);
 }

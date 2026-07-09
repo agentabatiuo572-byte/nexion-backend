@@ -9,6 +9,8 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.facade.ContentNotificationDispatchFacade;
 import ffdd.opsconsole.content.facade.NotificationEmergencyDispatchResult;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
+import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
 import ffdd.opsconsole.emergency.dto.GeoCountryStatusRequest;
 import ffdd.opsconsole.emergency.dto.GeoEdgeJudgeRequest;
 import ffdd.opsconsole.emergency.dto.GeoEmergencyBlockRequest;
@@ -19,6 +21,9 @@ import ffdd.opsconsole.emergency.dto.SopPlaybookUpdateRequest;
 import ffdd.opsconsole.emergency.dto.TamperAlertConfigRequest;
 import ffdd.opsconsole.emergency.dto.TamperReportRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -45,7 +50,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsEmergencyControlService {
+public class OpsEmergencyControlService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final Pattern ISO_COUNTRY = Pattern.compile("^[A-Z]{2}$");
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final TypeReference<List<Map<String, Object>>> LIST_MAP_TYPE = new TypeReference<>() {
@@ -68,6 +73,8 @@ public class OpsEmergencyControlService {
     private final ObjectMapper objectMapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final EmergencyControlRepository emergencyRepository;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
+    private final ffdd.opsconsole.emergency.application.OpsKillSwitchService killSwitchService;
 
     public ApiResult<Map<String, Object>> geoBlockOverview() {
         List<Map<String, Object>> countries = countryViews();
@@ -1285,6 +1292,102 @@ public class OpsEmergencyControlService {
             row.put(String.valueOf(values[i]), values[i + 1]);
         }
         return row;
+    }
+
+    @Override
+    public String domain() {
+        return "J";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            case "j1_gate_kill", "j1_gate_resume" -> {
+                String enabled = "j1_gate_kill".equals(cmd.op()) ? "disabled" : "enabled";
+                KillSwitchToggleRequest req = new KillSwitchToggleRequest(enabled, reason, operator);
+                return killSwitchService.toggle(str(p, "gateKey"), idem, req);
+            }
+            case "j1_batch_kill" -> {
+                EmergencyDisableRequest req = new EmergencyDisableRequest(strList(p, "keys"), reason, operator);
+                return killSwitchService.emergencyDisable(idem, req);
+            }
+            case "j2_country_manage" -> {
+                GeoCountryStatusRequest req = new GeoCountryStatusRequest(str(p, "status"), reason, operator);
+                return updateGeoCountry(str(p, "countryCode"), idem, req);
+            }
+            case "j2_emergency_block" -> {
+                GeoEmergencyBlockRequest req = new GeoEmergencyBlockRequest(strList(p, "countries"), reason, operator);
+                return emergencyGeoBlock(idem, req);
+            }
+            case "j3_alert_config" -> {
+                TamperAlertConfigRequest req = new TamperAlertConfigRequest(intVal(p, "threshold"), boolVal(p, "feedK4"), reason, operator);
+                return updateTamperAlertConfig(idem, req);
+            }
+            case "j4_playbook_execute" -> {
+                SopPlaybookRunRequest req = new SopPlaybookRunRequest(boolVal(p, "emergency"), reason, operator);
+                return executePlaybook(str(p, "code"), idem, req);
+            }
+            case "j4_playbook_rollback" -> {
+                SopPlaybookRunRequest req = new SopPlaybookRunRequest(boolVal(p, "emergency"), reason, operator);
+                return rollbackPlaybookExecution(str(p, "code"), str(p, "executionId"), idem, req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    /** 从 replay params 取 List<String>,null 安全(支持 List 与逗号分隔字符串)。 */
+    private static java.util.List<String> strList(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) {
+            return java.util.List.of();
+        }
+        if (v instanceof List<?> list) {
+            return list.stream()
+                    .map(item -> item == null ? "" : String.valueOf(item).trim())
+                    .filter(StringUtils::hasText)
+                    .toList();
+        }
+        String raw = String.valueOf(v).trim();
+        if (raw.isEmpty()) {
+            return java.util.List.of();
+        }
+        return java.util.Arrays.stream(raw.split("[,\\s]+"))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .toList();
+    }
+
+    /** 从 replay params 取 Boolean,null 安全。 */
+    private static Boolean boolVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Boolean b) return b;
+        if (v instanceof String s) return Boolean.parseBoolean(s.trim());
+        return null;
+    }
+
+    /** 从 replay params 取 Integer,null 安全(缺失返回 null,由 DTO 默认逻辑兜底)。 */
+    private static Integer intVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private record PlaybookSeed(String code, String name, String scene, boolean emergency, String sla, String state,

@@ -208,6 +208,30 @@ public class OpsAuditCenterService {
                 return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
             }
         }
+        // 多锁扩展(J 域 batch_kill/emergency_block):per-target 循环插锁,任一冲突整单回滚
+        java.util.List<AuditLockTarget> targets = request.targets();
+        if (targets != null && !targets.isEmpty()) {
+            for (AuditLockTarget t : targets) {
+                int exists = lockMapper.countActiveByTarget(t.domain(), t.type(), t.id());
+                if (exists > 0) {
+                    return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
+                }
+            }
+            for (AuditLockTarget t : targets) {
+                AuditObjectLockEntity lock = new AuditObjectLockEntity();
+                lock.setTicketId(ticket.getOperationId());
+                lock.setTargetDomain(t.domain());
+                lock.setTargetType(t.type());
+                lock.setTargetId(t.id());
+                lock.setOperator(operator);
+                lock.setIsDeleted(0);
+                try {
+                    lockMapper.insert(lock);
+                } catch (org.springframework.dao.DataIntegrityViolationException ex) {
+                    return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
+                }
+            }
+        }
         ticketMapper.insert(ticket);
 
         auditLogService.record(AuditLogWriteRequest.builder()
@@ -453,10 +477,10 @@ public class OpsAuditCenterService {
         return null;
     }
 
-    /** 释放目标对象锁(approve/reject 后调用,物理删除 nx_audit_object_lock 行,放开 uk_target 唯一键)。 */
+    /** 释放目标对象锁(approve/reject 后调用,物理删除 nx_audit_object_lock 行,放开 uk_target 唯一键).单锁/多锁均按 ticketId 全删。 */
     private void releaseLock(String operationId) {
-        AuditObjectLockEntity lock = lockMapper.selectByTicketId(operationId);
-        if (lock != null) {
+        java.util.List<AuditObjectLockEntity> locks = lockMapper.selectActiveByTicketId(operationId);
+        for (AuditObjectLockEntity lock : locks) {
             lockMapper.deleteById(lock.getId());
         }
     }

@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.dto;
 
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import java.util.List;
 
 public record AuditOperationProposalRequest(
         String action,
@@ -17,5 +18,6 @@ public record AuditOperationProposalRequest(
         String reason,
         String sourceDomain,
         AuditReplayCommand command,
-        AuditLockTarget target) {
+        AuditLockTarget target,
+        List<AuditLockTarget> targets) {
 }

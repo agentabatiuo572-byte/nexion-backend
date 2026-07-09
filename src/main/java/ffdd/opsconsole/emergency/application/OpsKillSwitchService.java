@@ -11,6 +11,7 @@ import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest;
 import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
 import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -67,6 +68,7 @@ public class OpsKillSwitchService {
     private final TreasuryCoverageFacade coverageFacade;
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> matrix() {
         ensureSeedData();
