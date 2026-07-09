@@ -47,6 +47,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -228,6 +229,9 @@ public class OpsAuditCenterService {
                 try {
                     lockMapper.insert(lock);
                 } catch (org.springframework.dao.DataIntegrityViolationException ex) {
+                    // 多锁并发命中 uk_target:前 i-1 个 insert 已在当前事务内,必须标记回滚,否则 commit 后留下孤儿锁
+                    // (ticketId 指向未创建的 ticket,uk_target 永久被占,后续同 target propose 永远 409)
+                    TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
                     return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
                 }
             }
