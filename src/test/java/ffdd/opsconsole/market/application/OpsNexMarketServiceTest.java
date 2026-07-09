@@ -2,8 +2,10 @@ package ffdd.opsconsole.market.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -31,7 +33,10 @@ import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveFrame;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -50,6 +55,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -61,6 +67,7 @@ class OpsNexMarketServiceTest {
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsNexMarketService service = service();
 
@@ -79,8 +86,15 @@ class OpsNexMarketServiceTest {
                 auditLogService,
                 new ObjectMapper(),
                 clock,
-                seedPolicy);
+                seedPolicy,
+                lockMapper);
         return service;
+    }
+
+    @BeforeEach
+    void stubLocksNoActive() {
+        // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,replay 与常规写方法直通
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
     }
 
     @Test
@@ -969,6 +983,49 @@ class OpsNexMarketServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G1_STAKING_POOL_KILL_STATUS_CHANGED");
+    }
+
+    @Test
+    void replayG1StakingPoolParamWritesConfigAndAudits() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("G", "g1_staking_pool_param", Map.of(
+                        "tierKey", "usdt30d",
+                        "paramKey", "penalty",
+                        "value", "6")),
+                new AuditReplayContext("superadmin", "g1 replay penalty", "idem-replay-g1-penalty"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("G.staking.penalty.usdt30d", "6");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("G1_STAKING_POOL_PARAM_CHANGED");
+    }
+
+    @Test
+    void replayG3CurveControlWritesConfigAndAudits() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("G", "g3_curve_control", Map.of(
+                        "controlKey", "pin",
+                        "value", "D3")),
+                new AuditReplayContext("superadmin", "g3 replay pin", "idem-replay-g3-pin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("wallet.nex_market.control.pin", "D3");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("G3_CONTROL_CHANGED");
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("G", "g_unknown", Map.of()),
+                new AuditReplayContext("superadmin", "replay unknown op", "idem-replay-unknown"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:g_unknown");
     }
 
     private static List<NexMarketCurveFrame> frames(String price) {
