@@ -1,8 +1,12 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.DisclosureChapterView;
@@ -13,12 +17,18 @@ import ffdd.opsconsole.content.domain.FinancialFieldView;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionFieldView;
 import ffdd.opsconsole.content.domain.TrustSectionView;
+import ffdd.opsconsole.content.domain.NotificationCapRuleView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
 import ffdd.opsconsole.content.dto.DisclosureGateUpdateRequest;
+import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
 import ffdd.opsconsole.content.dto.TrustDisclosureActionRequest;
 import ffdd.opsconsole.content.dto.TrustSectionPublishRequest;
 import ffdd.opsconsole.content.dto.TrustSectionRollbackRequest;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.time.Clock;
@@ -32,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -40,12 +51,24 @@ class OpsTrustDisclosureServiceTest {
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T10:30:00Z"), ZoneOffset.UTC);
+    private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
+    private final OpsNotificationCampaignService notificationCampaignService = mock(OpsNotificationCampaignService.class);
+    private final OpsI18nLearningService i18nLearningService = mock(OpsI18nLearningService.class);
     private final OpsTrustDisclosureService service = new OpsTrustDisclosureService(
             repository,
             configFacade,
             auditLogService,
             clock,
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+            lockMapper,
+            notificationCampaignService,
+            i18nLearningService);
+
+    @BeforeEach
+    void stubLockGuard() {
+        // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,常规写方法直通,replay 路径也无阻塞
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
 
     @Test
     void overviewReturnsTrustDisclosureDataAndSources() {
@@ -159,6 +182,60 @@ class OpsTrustDisclosureServiceTest {
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I5_DISCLOSURE_PUBLISHED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("DISCLOSURE_JURISDICTION");
+    }
+
+    @Test
+    void replayI4TrustSectionPublishAuditsI4Action() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
+                        "sectionKey", "financials",
+                        "action", "publish",
+                        "version", "v6")),
+                new AuditReplayContext("Marina K.", "replay trust section publish", "idem-replay-i4-publish"));
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("I4_TRUST_SECTION_PUBLISHED");
+        assertThat(captor.getValue().getResourceType()).isEqualTo("TRUST_SECTION");
+    }
+
+    @Test
+    void replayI4GateAdjustWritesConfigFacade() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("I", "i4_gate_adjust", Map.of("scope", "提现 + 质押锁仓")),
+                new AuditReplayContext("Marina K.", "replay gate adjust scope", "idem-replay-i4-gate"));
+
+        assertThat(result.getCode()).isZero();
+        verify(configFacade).upsertAdminValue("disclosure.gate.withdraw", "true", "BOOLEAN", "content", "replay gate adjust scope");
+        verify(configFacade).upsertAdminValue("disclosure.gate.staking", "true", "BOOLEAN", "content", "replay gate adjust scope");
+    }
+
+    @Test
+    void replayI3CapAdjustDelegatesToNotificationCampaignService() {
+        when(notificationCampaignService.updateCapRule(anyString(), anyString(), any()))
+                .thenReturn(ApiResult.ok(mock(NotificationCapRuleView.class)));
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("I", "i3_cap_adjust", Map.of(
+                        "tier", "critical",
+                        "cap", "50")),
+                new AuditReplayContext("Marina K.", "replay cap adjust rule", "idem-replay-i3-cap"));
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<NotificationCapUpdateRequest> captor = ArgumentCaptor.forClass(NotificationCapUpdateRequest.class);
+        verify(notificationCampaignService).updateCapRule(eq("critical"), eq("idem-replay-i3-cap"), captor.capture());
+        assertThat(captor.getValue().cap()).isEqualTo("50");
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("I", "i99_unknown", Map.of()),
+                new AuditReplayContext("Marina K.", "replay unknown op", "idem-replay-unknown"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:i99_unknown");
     }
 
     private static TrustDisclosureActionRequest actionRequest() {
