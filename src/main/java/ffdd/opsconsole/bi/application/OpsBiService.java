@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
 import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
@@ -17,6 +18,11 @@ import ffdd.opsconsole.bi.dto.BiReportCreateRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayable;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
@@ -36,13 +42,15 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsBiService {
+public class OpsBiService implements AuditReplayable {
     private static final Set<String> ACTIONS = Set.of("GENERATE", "RERUN", "APPROVE", "DOWNLOAD");
 
     private final BiReportRepository reportRepository;
     private final GrowthRhythmFacade growthRhythmFacade;
     private final TreasuryLedgerRepository ledgerRepository;
     private final AuditLogService auditLogService;
+    private final AdminPermissionCache permissionCache;
+    private final AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(reportRepository.overview());
@@ -197,7 +205,20 @@ public class OpsBiService {
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("L", "report", reportId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String normalizedAction = normalizeAction(action);
+        // service 层二次校验（path variable 多态）:APPROVE 需 bi_l5_task_approve(HIGH),GENERATE/RERUN/DOWNLOAD 需 bi_l5_write
+        Long adminId = parseAdminIdFromContext();
+        if (adminId == null) {
+            return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+        }
+        String requiredCode = "APPROVE".equals(normalizedAction) ? "bi_l5_task_approve" : "bi_l5_write";
+        if (!permissionCache.getPermissionCodes(adminId).contains(requiredCode)) {
+            return ApiResult.fail(403, "PERMISSION_DENIED");
+        }
         if (Boolean.TRUE.equals(request.includeDecrypted())) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "DECRYPTED_PII_EXPORT_BLOCKED");
         }
@@ -452,6 +473,18 @@ public class OpsBiService {
         return null;
     }
 
+    private Long parseAdminIdFromContext() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || authentication.getPrincipal() == null) {
+            return null;
+        }
+        try {
+            return Long.valueOf(String.valueOf(authentication.getPrincipal()));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     private String normalizeAction(String action) {
         String normalized = normalizeText(action);
         if (!ACTIONS.contains(normalized)) {
@@ -621,5 +654,35 @@ public class OpsBiService {
                 .riskLevel(Boolean.TRUE.equals(report.containsPii()) ? "HIGH" : "MEDIUM")
                 .detail(detail)
                 .build());
+    }
+
+    @Override
+    public String domain() {
+        return "L";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            // reportAction 多态端点:replay 走 APPROVE 分支(状态推进 PENDING_CONFIRM→READY,非资金,不动台账)。
+            // includeDecrypted=false 保持退役硬阻断语义;includeSensitive=false 复用脱敏口径。
+            case "l5_task_approve" -> {
+                BiReportActionRequest req = new BiReportActionRequest(reason, operator, false, false);
+                return reportAction(str(p, "reportId"), "APPROVE", idem, req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
     }
 }

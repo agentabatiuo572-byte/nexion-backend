@@ -1,13 +1,18 @@
 package ffdd.opsconsole.bi.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
@@ -17,6 +22,9 @@ import ffdd.opsconsole.bi.dto.BiReportActionRequest;
 import ffdd.opsconsole.bi.dto.BiReportCreateRequest;
 import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
@@ -30,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -41,7 +50,20 @@ class OpsBiServiceTest {
     private GrowthRhythmSnapshot h1Snapshot = h1Snapshot(12, 7, "P3");
     private final GrowthRhythmFacade growthRhythmFacade = () -> h1Snapshot;
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, ledgerRepository, auditLogService);
+    private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
+    private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
+    private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, ledgerRepository, auditLogService, permissionCache, lockMapper);
+
+    @BeforeEach
+    void seedPermissionContext() {
+        // reportAction service 层二次校验需 admin id + 权限码;默认 stub 全 bi_l5 码让二次校验通过
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(1L, null, List.of()));
+        when(permissionCache.getPermissionCodes(anyLong())).thenReturn(
+                java.util.Set.of("bi_l5_read", "bi_l5_write", "bi_l5_task_approve"));
+        // 默认无 A2 对象锁,reportAction 直达;锁场景测试在专用 case 覆盖
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
 
     @AfterEach
     void clearSecurityContext() {
@@ -165,6 +187,34 @@ class OpsBiServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("L_BI_REPORT_APPROVE");
+    }
+
+    @Test
+    void replayL5TaskApproveRoutesToApproveActionAndAudits() {
+        // 命令模式回放:l5_task_approve → reportAction(APPROVE) 分支,状态 PENDING_CONFIRM→READY
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("L", "l5_task_approve", Map.of("reportId", "EXP-1")),
+                new AuditReplayContext("approver", "approve masked export via a2", "idem-replay-l5"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("status", "READY");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("L_BI_REPORT_APPROVE");
+        assertThat(captor.getValue().getResourceId()).isEqualTo("EXP-1");
+    }
+
+    @Test
+    void replayUnknownOpReturns422Marker() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("L", "bi_l5_unknown", Map.of()),
+                new AuditReplayContext("approver", "unknown op replay", "idem-replay-unknown"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).contains("UNKNOWN_REPLAY_OP:bi_l5_unknown");
+        verify(auditLogService, never()).record(org.mockito.ArgumentMatchers.any(AuditLogWriteRequest.class));
     }
 
     @Test
