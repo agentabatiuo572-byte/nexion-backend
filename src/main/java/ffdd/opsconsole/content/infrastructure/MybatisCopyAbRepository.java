@@ -6,10 +6,14 @@ import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
+import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
+import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
+import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.mapper.CopyContentMapper;
+import ffdd.opsconsole.content.mapper.CopyPositionMapper;
 import ffdd.opsconsole.content.mapper.CopyExperimentMapper;
 import ffdd.opsconsole.content.mapper.CopyExperimentVariantMapper;
 import ffdd.opsconsole.content.mapper.CopyFrameworkParamMapper;
@@ -35,6 +39,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     private final CopyExperimentMapper experimentMapper;
     private final CopyExperimentVariantMapper variantMapper;
     private final CopyFrameworkParamMapper frameworkMapper;
+    private final CopyPositionMapper positionMapper;
 
     private static final List<CopySeed> COPY_SEEDS = List.of();
     private static final List<VersionSeed> HCB_VERSIONS = List.of();
@@ -134,7 +139,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setIsDeleted(0);
         }
         fillVersion(version, request.surface(), request.audience(), request.trafficSplit(), request.versionNote(),
-                request.zh(), request.en(), "DRAFT", operator(request.operator()), now);
+                request.zh(), request.en(), request.vi(), request.copyPosition(), "DRAFT", operator(request.operator()), now);
         version.setTsLabel(TS_LABEL.format(now));
         if (version.getId() == null) {
             versionMapper.insert(version);
@@ -160,7 +165,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setIsDeleted(0);
         }
         fillVersion(version, request.surface(), request.audience(), request.trafficSplit(), request.versionNote(),
-                request.zh(), request.en(), "PUBLISHED", operator(request.operator()), now);
+                request.zh(), request.en(), request.vi(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
         version.setTsLabel(TS_LABEL.format(now));
         if (version.getId() == null) {
             versionMapper.insert(version);
@@ -182,6 +187,38 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         copy.setLastOperator(operator(request.operator()));
         copy.setUpdatedAt(now);
         copyMapper.updateById(copy);
+        return findCopy(copyKey).orElse(toCopyRow(copy));
+    }
+
+    @Override
+    public CopyContentRow createCopy(CopyCreateRequest request, LocalDateTime now) {
+        // 新建文案位 = insert nx_content_copy(首版生效) + 一个 PUBLISHED version 行。
+        String copyKey = request.copyKey().trim();
+        String op = operator(request.operator());
+        CopyContentEntity copy = new CopyContentEntity();
+        copy.setCopyKey(copyKey);
+        copy.setDescription(request.description().trim());
+        copy.setSurface(request.surface().trim());
+        copy.setCurrentVersion(request.version().trim());
+        copy.setStatus("PUBLISHED");
+        copy.setI18nKey(request.i18nKey().trim());
+        copy.setLastChange(DAY_LABEL.format(now));
+        copy.setLastOperator(op);
+        copy.setCreatedAt(now);
+        copy.setUpdatedAt(now);
+        copy.setIsDeleted(0);
+        copyMapper.insert(copy);
+
+        CopyVersionEntity version = new CopyVersionEntity();
+        version.setCopyKey(copyKey);
+        version.setVersion(request.version().trim());
+        version.setCreatedAt(now);
+        version.setIsDeleted(0);
+        fillVersion(version, request.surface(), request.audience(), request.trafficSplit(), request.versionNote(),
+                request.zh(), request.en(), request.vi(), request.copyPosition(), "PUBLISHED", op, now);
+        version.setTsLabel(TS_LABEL.format(now));
+        versionMapper.insert(version);
+
         return findCopy(copyKey).orElse(toCopyRow(copy));
     }
 
@@ -254,6 +291,52 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setLastOperator(operator(operator));
         entity.setUpdatedAt(now);
         experimentMapper.updateById(entity);
+    }
+
+    @Override
+    public List<CopyPositionView> listPositions() {
+        return positionMapper.selectList(new LambdaQueryWrapper<CopyPositionEntity>()
+                        .eq(CopyPositionEntity::getIsDeleted, 0)
+                        .orderByAsc(CopyPositionEntity::getSortOrder)
+                        .orderByAsc(CopyPositionEntity::getId))
+                .stream()
+                .map(entity -> new CopyPositionView(
+                        entity.getPositionKey(),
+                        entity.getName(),
+                        entity.getSurface(),
+                        entity.getSortOrder() == null ? 0 : entity.getSortOrder(),
+                        entity.getStatus()))
+                .toList();
+    }
+
+    @Override
+    public void createPosition(CopyPositionCreateRequest request, LocalDateTime now) {
+        CopyPositionEntity entity = new CopyPositionEntity();
+        entity.setPositionKey(request.positionKey().trim());
+        entity.setName(request.name().trim());
+        entity.setSurface(request.surface().trim());
+        entity.setSortOrder(0);
+        entity.setStatus("ACTIVE");
+        entity.setLastOperator(operator(request.operator()));
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        positionMapper.insert(entity);
+    }
+
+    @Override
+    public void deletePosition(String positionKey, LocalDateTime now) {
+        CopyPositionEntity entity = positionMapper.selectOne(new LambdaQueryWrapper<CopyPositionEntity>()
+                .eq(CopyPositionEntity::getPositionKey, positionKey)
+                .eq(CopyPositionEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        if (entity == null) {
+            return;
+        }
+        entity.setIsDeleted(1);
+        entity.setLastOperator(operator(null));
+        entity.setUpdatedAt(now);
+        positionMapper.updateById(entity);
     }
 
     private void archivePublishedVersion(String copyKey, LocalDateTime now) {
@@ -426,6 +509,8 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 entity.getDraftVersion(),
                 entity.getDraftZh(),
                 entity.getDraftEn(),
+                entity.getDraftVi(),
+                entity.getCopyPosition(),
                 entity.getDraftSurface(),
                 entity.getDraftAudience(),
                 entity.getDraftTrafficSplit(),
@@ -441,6 +526,8 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 entity.getTsLabel(),
                 entity.getZhText(),
                 entity.getEnText(),
+                entity.getViText(),
+                entity.getCopyPosition(),
                 entity.getSurface(),
                 entity.getAudience(),
                 entity.getTrafficSplit(),
@@ -478,6 +565,8 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             String versionNote,
             String zh,
             String en,
+            String vi,
+            String copyPosition,
             String status,
             String operator,
             LocalDateTime now) {
@@ -485,6 +574,8 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setChain(operator + " / content");
         entity.setZhText(zh.trim());
         entity.setEnText(en.trim());
+        entity.setViText(vi == null ? null : vi.trim());
+        entity.setCopyPosition(copyPosition == null ? null : copyPosition.trim());
         entity.setSurface(surface.trim());
         entity.setAudience(audience.trim());
         entity.setTrafficSplit(trafficSplit.trim());

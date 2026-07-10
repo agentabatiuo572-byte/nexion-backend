@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
+import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
@@ -113,6 +114,50 @@ public class OpsCopyAbService {
                 "surface", request.surface().trim(),
                 "audience", request.audience().trim()));
         return ApiResult.ok(updated);
+    }
+
+    public ApiResult<CopyContentRow> createCopy(String idempotencyKey, CopyCreateRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null || !StringUtils.hasText(request.copyKey()) || !StringUtils.hasText(request.description())
+                || !StringUtils.hasText(request.surface()) || !StringUtils.hasText(request.i18nKey())
+                || !StringUtils.hasText(request.version()) || !StringUtils.hasText(request.versionNote())
+                || !StringUtils.hasText(request.audience()) || !StringUtils.hasText(request.trafficSplit())
+                || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.en())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
+        }
+        ApiResult<CopyContentRow> guard = validateCopyPayload(request.surface(), request.trafficSplit(), request.zh(), request.en(), request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (findCopy(request.copyKey()) != null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_EXISTS");
+        }
+        CopyContentRow created = copyAbRepository.createCopy(normalizeCreate(request), now());
+        audit("I1_COPY_CREATED", created.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+                "copyKey", created.key(),
+                "version", created.version(),
+                "surface", created.surface()));
+        return ApiResult.ok(created);
+    }
+
+    private CopyCreateRequest normalizeCreate(CopyCreateRequest request) {
+        return new CopyCreateRequest(
+                request.copyKey().trim(),
+                request.description().trim(),
+                request.surface().trim(),
+                request.i18nKey().trim(),
+                request.version().trim(),
+                request.audience().trim(),
+                String.valueOf(parseSplit(request.trafficSplit())),
+                request.versionNote().trim(),
+                request.zh().trim(),
+                request.en().trim(),
+                request.vi() == null ? null : request.vi().trim(),
+                request.copyPosition() == null ? null : request.copyPosition().trim(),
+                operator(request.operator()),
+                request.reason().trim());
     }
 
     public ApiResult<CopyContentRow> rollbackVersion(String copyKey, String version, String idempotencyKey, CopyActionRequest request) {
@@ -287,6 +332,8 @@ public class OpsCopyAbService {
                 request.versionNote().trim(),
                 request.zh().trim(),
                 request.en().trim(),
+                request.vi() == null ? null : request.vi().trim(),
+                request.copyPosition() == null ? null : request.copyPosition().trim(),
                 operator(request.operator()),
                 request.reason().trim());
     }
@@ -300,6 +347,8 @@ public class OpsCopyAbService {
                 request.versionNote().trim(),
                 request.zh().trim(),
                 request.en().trim(),
+                request.vi() == null ? null : request.vi().trim(),
+                request.copyPosition() == null ? null : request.copyPosition().trim(),
                 operator(request.operator()),
                 request.reason().trim());
     }
