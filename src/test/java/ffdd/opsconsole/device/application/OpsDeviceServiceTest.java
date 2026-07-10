@@ -2,11 +2,16 @@ package ffdd.opsconsole.device.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -67,6 +72,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -76,6 +82,7 @@ class OpsDeviceServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsDeviceService service = service();
 
@@ -91,7 +98,14 @@ class OpsDeviceServiceTest {
                 ledgerPostingFacade,
                 auditLogService,
                 clock,
-                seedPolicy);
+                seedPolicy,
+                lockMapper);
+    }
+
+    @BeforeEach
+    void stubLocksNoActive() {
+        // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,replay 与常规写方法直通
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
     }
 
     @Test
@@ -975,6 +989,67 @@ class OpsDeviceServiceTest {
                 .containsEntry("before", "")
                 .containsEntry("after", "on")
                 .containsEntry("idempotencyKey", "idem-e6");
+    }
+
+    @Test
+    void replayE1SkuStatusChangesStatusAndAudits() {
+        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e1_sku_status", Map.of(
+                        "skuId", "stellarbox-test",
+                        "status", "off")),
+                new AuditReplayContext("superadmin", "e1 replay sku status", "idem-replay-e1-sku-status"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isInstanceOf(DeviceSkuView.class);
+        assertThat(((DeviceSkuView) result.getData()).status()).isEqualTo("off");
+        assertThat(catalogRepository.sku.status()).isEqualTo("off");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E1_SKU_STATUS_CHANGED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("fromStatus", "on")
+                .containsEntry("toStatus", "off")
+                .containsEntry("idempotencyKey", "idem-replay-e1-sku-status");
+    }
+
+    @Test
+    void replayE4OrderRefundPostsLedgerAndAudits() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e4_order_refund", Map.of("orderNo", "OD-1")),
+                new AuditReplayContext("superadmin", "e4 replay refund", "idem-replay-e4-refund"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isInstanceOf(DeviceOrderView.class);
+        assertThat(((DeviceOrderView) result.getData()).state()).isEqualTo("refunded");
+        assertThat(catalogRepository.order.state()).isEqualTo("refunded");
+        assertThat(ledgerPostingFacade.entries).hasSize(1);
+        assertThat(ledgerPostingFacade.entries.get(0))
+                .containsEntry("bizNo", "E4-REFUND-OD-1")
+                .containsEntry("bizType", "REFUND")
+                .containsEntry("direction", "IN")
+                .containsEntry("status", "SUCCESS");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_REFUNDED");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("idempotencyKey", "idem-replay-e4-refund");
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e_unknown", Map.of()),
+                new AuditReplayContext("superadmin", "unknown replay", "idem-replay-unknown"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:e_unknown");
+        verify(auditLogService, never()).record(any());
     }
 
     /** 构造一个 config 全空的 service:FakePlatformConfigFacade 默认 values 为空 map,
