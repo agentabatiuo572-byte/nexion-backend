@@ -24,7 +24,12 @@ import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayable;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -47,7 +52,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsGrowthService {
+public class OpsGrowthService implements AuditReplayable {
     private static final String PHASE_CONFIG_KEY = "platform.phase.config";
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
@@ -123,6 +128,7 @@ public class OpsGrowthService {
     private final Optional<DeviceCatalogRepository> deviceCatalogRepository;
     private final Optional<GrowthQuestEventMapper> questEventMapper;
     private final Optional<GrowthVoucherMapper> voucherMapper;
+    private final AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> phases() {
         ensurePhaseSeedData();
@@ -305,6 +311,10 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("H", "growth_phase_control", controlKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String normalizedKey = requireText(controlKey, "Phase control key is required");
         if (!PHASE_CONTROL_KEYS.contains(normalizedKey)) {
             return validation("PHASE_CONTROL_KEY_INVALID");
@@ -330,6 +340,10 @@ public class OpsGrowthService {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("H", "growth_phase_override", overrideId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalizedId = requireText(overrideId, "Phase override id is required");
         if (!normalizedId.matches("[A-Za-z0-9_-]+")) {
@@ -423,6 +437,10 @@ public class OpsGrowthService {
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("H", "trial_session", sessionId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String sid = normalizeTrialSessionId(sessionId);
         String state = trialSessionState(sid);
         if (TRIAL_TERMINAL_STATES.contains(state)) {
@@ -449,6 +467,10 @@ public class OpsGrowthService {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("H", "trial_session", sessionId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String sid = normalizeTrialSessionId(sessionId);
         if (!trialKillSwitchEnabled()) {
@@ -1013,6 +1035,10 @@ public class OpsGrowthService {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("H", "checkin_rule", ruleKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String key = normalizeCheckInRuleKey(ruleKey);
         String value = requireText(request.value(), "value is required");
@@ -3492,4 +3518,73 @@ public class OpsGrowthService {
         }
         return row;
     }
+
+    @Override
+    public String domain() {
+        return "H";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            case "h1_phase_control" -> {
+                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, str(p, "value"), reason, operator);
+                return updatePhaseControl(idem, str(p, "controlKey"), req);
+            }
+            case "h1_phase_override" -> {
+                // updatePhaseOverride 内部用 parseBooleanValue(request.value()) 解析布尔,disabled 以字符串放入 value
+                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, String.valueOf(boolVal(p, "disabled")), reason, operator);
+                return updatePhaseOverride(idem, str(p, "overrideId"), req);
+            }
+            case "h2_trial_cancel" -> {
+                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, null, reason, operator);
+                return cancelTrialSession(idem, str(p, "sid"), req);
+            }
+            case "h2_trial_charge" -> {
+                // 直接动 USDT OUT 台账,金额由 trialChargeAmount() 实时算,复用原方法保证一致;
+                // 前置闸门 trialKillSwitchEnabled()(J1 联动)由原方法保留。H 域无 @Transactional,无自调用代理问题。
+                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, null, reason, operator);
+                return chargeTrialSession(idem, str(p, "sid"), req);
+            }
+            case "h5_checkin_rule" -> {
+                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, str(p, "value"), reason, operator);
+                return updateCheckInRule(idem, str(p, "ruleKey"), req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    /** 从 replay params 取 Boolean,null 安全。 */
+    private static Boolean boolVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Boolean b) return b;
+        if (v instanceof String s) return Boolean.parseBoolean(s.trim());
+        return null;
+    }
+
+    /** 从 replay params 取 Integer,null 安全(缺失返回 null,由 DTO 默认逻辑兜底)。 */
+    private static Integer intVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
 }
