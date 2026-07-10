@@ -46,6 +46,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.util.StringUtils;
@@ -82,6 +83,7 @@ public class OpsAuditCenterService {
     private final AuditOperationHistoryMapper historyMapper;
     private final AuditConfirmCategoryMapper confirmCategoryMapper;
     private final AuditObjectLockMapper lockMapper;
+    @Lazy
     private final AuditReplayDispatcher replayDispatcher;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
