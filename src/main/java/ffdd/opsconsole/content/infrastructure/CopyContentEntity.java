@@ -20,6 +20,8 @@ public class CopyContentEntity extends BaseEntity {
     private String draftVersion;
     private String draftZh;
     private String draftEn;
+    private String draftVi;
+    private String copyPosition;
     private String draftSurface;
     private String draftAudience;
     private String draftTrafficSplit;

@@ -8,6 +8,8 @@ public record CopyVersionRow(
         String ts,
         String zh,
         String en,
+        String vi,
+        String copyPosition,
         String surface,
         String audience,
         String trafficSplit,

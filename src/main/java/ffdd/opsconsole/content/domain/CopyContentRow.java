@@ -12,6 +12,8 @@ public record CopyContentRow(
         String draftVersion,
         String draftZh,
         String draftEn,
+        String draftVi,
+        String copyPosition,
         String draftSurface,
         String draftAudience,
         String draftTrafficSplit,

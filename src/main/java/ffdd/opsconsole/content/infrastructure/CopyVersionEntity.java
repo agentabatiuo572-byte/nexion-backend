@@ -16,6 +16,8 @@ public class CopyVersionEntity extends BaseEntity {
     private String tsLabel;
     private String zhText;
     private String enText;
+    private String viText;
+    private String copyPosition;
     private String surface;
     private String audience;
     private String trafficSplit;
