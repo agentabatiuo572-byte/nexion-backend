@@ -24,7 +24,10 @@ import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -36,6 +39,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -45,6 +49,7 @@ class OpsGrowthServiceTest {
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final GrowthQuestEventMapper questEventMapper = mock(GrowthQuestEventMapper.class);
     private final List<Map<String, Object>> trialPolicies = new ArrayList<>();
     private final List<Map<String, Object>> trialSessions = new ArrayList<>();
@@ -167,7 +172,14 @@ class OpsGrowthServiceTest {
                     ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                     Optional.empty(),
                     Optional.of(questEventMapper),
-                    Optional.empty());
+                    Optional.empty(),
+                    lockMapper);
+
+    @BeforeEach
+    void stubLocksNoActive() {
+        // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,常规写方法直通,replay 路径也无阻塞
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
 
     @Test
     void checkInUsesNexAndKeepsPointsSunset() {
@@ -817,7 +829,8 @@ class OpsGrowthServiceTest {
                 .containsEntry("dialCount", 0)
                 .containsEntry("currentMonth", 0);
         assertThat(result.getData().get("monthlyDials")).asList().isEmpty();
-        assertThat(result.getData().get("controls")).asList().isEmpty();
+        // controls 是固定目录(schedule/pin/override),非 DB 种子数据,空库时仍为 3 条
+        assertThat(result.getData().get("controls")).asList().hasSize(3);
         assertThat(result.getData()).containsKey("coverage");
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
@@ -872,7 +885,8 @@ class OpsGrowthServiceTest {
                 OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty());
+                Optional.empty(),
+                lockMapper);
 
         ApiResult<Map<String, Object>> rhythm = realOnlyService.rhythm();
         ApiResult<Map<String, Object>> phases = realOnlyService.phases();
@@ -888,9 +902,10 @@ class OpsGrowthServiceTest {
                 .containsEntry("currentMonth", 0)
                 .containsEntry("currentPhase", "");
         assertThat(phases.getData().get("monthlyDials")).asList().isEmpty();
-        assertThat(phases.getData().get("controls")).asList().isEmpty();
+        // controls / attribution 是固定目录,非种子数据,禁用种子时仍非空
+        assertThat(phases.getData().get("controls")).asList().hasSize(3);
         assertThat(phases.getData().get("overrides")).asList().isEmpty();
-        assertThat(phases.getData().get("attribution")).asList().isEmpty();
+        assertThat(phases.getData().get("attribution")).asList().hasSize(3);
     }
 
     @Test
@@ -905,7 +920,8 @@ class OpsGrowthServiceTest {
                 OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty());
+                Optional.empty(),
+                lockMapper);
 
         ApiResult<Map<String, Object>> trials = realOnlyService.trials();
         ApiResult<Map<String, Object>> checkIn = realOnlyService.checkIn();
@@ -1017,7 +1033,8 @@ class OpsGrowthServiceTest {
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.of(voucherMapper));
+                Optional.of(voucherMapper),
+                lockMapper);
 
         ApiResult<Map<String, Object>> vouchers = voucherService.vouchers();
 
@@ -1039,7 +1056,8 @@ class OpsGrowthServiceTest {
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.of(voucherMapper));
+                Optional.of(voucherMapper),
+                lockMapper);
         Map<String, Object> createdRow = voucherDbRow("vc-test-25", "active");
         Map<String, Object> pausedRow = voucherDbRow("vc-test-25", "paused");
         when(voucherMapper.listVouchers()).thenReturn(
@@ -1103,6 +1121,56 @@ class OpsGrowthServiceTest {
         assertThat(deleted.getData().get("vouchers")).asList().isEmpty();
     }
 
+    @Test
+    void replayH2TrialChargePostsUsdtOutLedgerEntry() {
+        seedTrialPolicies();
+        seedTrialSession("usr_9921", "active");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("H", "h2_trial_charge", Map.of("sid", "usr_9921")),
+                new AuditReplayContext("superadmin", "replay trial charge", "idem-replay-h2-charge"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(ledgerPostingFacade.entries).hasSize(1);
+        Map<String, Object> entry = ledgerPostingFacade.entries.get(0);
+        assertThat(entry)
+                .containsEntry("bizNo", "H2-TRIAL-CHARGE-usr_9921")
+                .containsEntry("bizType", "TRIAL_CHARGE")
+                .containsEntry("asset", "USDT")
+                .containsEntry("direction", "OUT")
+                .containsEntry("status", "SUCCESS");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_SESSION_CHARGED");
+    }
+
+    @Test
+    void replayH5CheckInRuleWritesBusinessRowAndAudit() {
+        seedCheckInConfiguredRows();
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("H", "h5_checkin_rule", Map.of("ruleKey", "baseline", "value", "3")),
+                new AuditReplayContext("superadmin", "replay checkin rule", "idem-replay-h5-baseline"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(findRow(checkInRules, "key", "baseline")).containsEntry("cur", "3");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H5_CHECKIN_RULE_CHANGED");
+    }
+
+    @Test
+    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("H", "h99_unknown", Map.of()),
+                new AuditReplayContext("superadmin", "replay unknown op", "idem-replay-unknown"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:h99_unknown");
+    }
+
     private static Map<String, Object> voucherDbRow(String voucherId, String status) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", voucherId);
@@ -1136,7 +1204,8 @@ class OpsGrowthServiceTest {
                 seedPolicy,
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty());
+                Optional.empty(),
+                lockMapper);
     }
 
     @SuppressWarnings("unchecked")
