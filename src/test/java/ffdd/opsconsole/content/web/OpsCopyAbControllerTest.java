@@ -90,11 +90,11 @@ class OpsCopyAbControllerTest {
     }
 
     private static CopyVersionPublishRequest publishRequest() {
-        return new CopyVersionPublishRequest("v8", "Home", "全量", "50", "复投文案换版", "中文", "English", "Marina K.", "发布文案新版");
+        return new CopyVersionPublishRequest("v8", "Home", "全量", "50", "复投文案换版", "中文", "English", null, null, "Marina K.", "发布文案新版");
     }
 
     private static CopyDraftSaveRequest draftRequest() {
-        return new CopyDraftSaveRequest("v8", "Home", "全量", "50", "复投文案草稿", "中文", "English", "Marina K.", "保存草稿版本");
+        return new CopyDraftSaveRequest("v8", "Home", "全量", "50", "复投文案草稿", "中文", "English", null, null, "Marina K.", "保存草稿版本");
     }
 
     private static CopyActionRequest actionRequest() {

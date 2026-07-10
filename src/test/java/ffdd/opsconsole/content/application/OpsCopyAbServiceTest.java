@@ -10,8 +10,10 @@ import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
+import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
+import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
@@ -64,6 +66,7 @@ class OpsCopyAbServiceTest {
         var request = new CopyVersionPublishRequest(
                 "v8", "Home", "全量", "50", "测试",
                 "赚取 {amount} USDT 和 {nex} NEX", "Earn {amount} USDT",
+                null, null,
                 "Marina K.", "发布文案新版");
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub", request);
@@ -164,6 +167,8 @@ class OpsCopyAbServiceTest {
                 "复投文案换版",
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
                 "Reinvest {amount} USDT and earn {nex} NEX",
+                null,
+                null,
                 "Marina K.",
                 "发布文案新版");
     }
@@ -177,6 +182,8 @@ class OpsCopyAbServiceTest {
                 "复投文案草稿",
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
                 "Reinvest {amount} USDT and earn {nex} NEX",
+                null,
+                null,
                 "Marina K.",
                 "保存草稿版本");
     }
@@ -245,6 +252,28 @@ class OpsCopyAbServiceTest {
         }
 
         @Override
+        public CopyContentRow createCopy(CopyCreateRequest request, LocalDateTime now) {
+            String copyKey = request.copyKey().trim();
+            String versionNo = request.version().trim();
+            copies.put(copyKey, copy(copyKey, versionNo, "published", null, null, null));
+            versions.put(key(copyKey, versionNo), new CopyVersionRow(
+                    copyKey,
+                    versionNo,
+                    "published",
+                    "Marina K. / content",
+                    "06-18 09:30",
+                    request.zh(),
+                    request.en(),
+                    request.vi(),
+                    request.copyPosition(),
+                    request.surface(),
+                    request.audience(),
+                    request.trafficSplit(),
+                    request.versionNote()));
+            return copies.get(copyKey);
+        }
+
+        @Override
         public void saveDraft(String copyKey, CopyDraftSaveRequest request, LocalDateTime now) {
             CopyContentRow current = copies.get(copyKey);
             copies.put(copyKey, copy(copyKey, current.version(), "draft-saved", request.version(), request.zh(), request.en()));
@@ -256,6 +285,8 @@ class OpsCopyAbServiceTest {
                     "06-18 09:30",
                     request.zh(),
                     request.en(),
+                    request.vi(),
+                    request.copyPosition(),
                     request.surface(),
                     request.audience(),
                     request.trafficSplit(),
@@ -273,6 +304,8 @@ class OpsCopyAbServiceTest {
                     "06-18 09:30",
                     request.zh(),
                     request.en(),
+                    request.vi(),
+                    request.copyPosition(),
                     request.surface(),
                     request.audience(),
                     request.trafficSplit(),
@@ -313,6 +346,21 @@ class OpsCopyAbServiceTest {
                     current.note()));
         }
 
+        @Override
+        public List<CopyPositionView> listPositions() {
+            return List.of();
+        }
+
+        @Override
+        public void createPosition(ffdd.opsconsole.content.dto.CopyPositionCreateRequest request, LocalDateTime now) {
+            // test fake: no-op
+        }
+
+        @Override
+        public void deletePosition(String positionKey, LocalDateTime now) {
+            // test fake: no-op
+        }
+
         private static CopyContentRow copy(String key, String version, String status, String draftVersion, String draftZh, String draftEn) {
             return new CopyContentRow(
                     key,
@@ -326,6 +374,8 @@ class OpsCopyAbServiceTest {
                     draftVersion,
                     draftZh,
                     draftEn,
+                    null,
+                    null,
                     "Home",
                     "全量",
                     "50",
@@ -333,7 +383,7 @@ class OpsCopyAbServiceTest {
         }
 
         private static CopyVersionRow version(String copyKey, String version, String status) {
-            return new CopyVersionRow(copyKey, version, status, "seed / lead", "06-01 10:00", "zh", "en", "Home", "全量", "50", "seed");
+            return new CopyVersionRow(copyKey, version, status, "seed / lead", "06-01 10:00", "zh", "en", null, null, "Home", "全量", "50", "seed");
         }
 
         private static CopyExperimentRow experiment(String id, String state) {
