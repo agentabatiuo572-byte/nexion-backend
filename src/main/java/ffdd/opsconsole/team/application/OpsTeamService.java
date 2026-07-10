@@ -8,7 +8,12 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository;
@@ -36,7 +41,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsTeamService {
+public class OpsTeamService implements AuditReplayable {
     private static final Set<String> ACTIVE_KEYS = Set.of(
             "directRoyaltyPct",
             "networkRoyaltyPct",
@@ -85,6 +90,7 @@ public class OpsTeamService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final TeamFulfillmentQueueRepository fulfillmentQueueRepository;
     private final TeamCommissionRepository commissionRepository;
+    private final AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
@@ -366,6 +372,10 @@ public class OpsTeamService {
         if (!ACTIVE_KEYS.contains(key)) {
             return updateUiConfig(idempotencyKey, request, key);
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "team_config", key) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         BigDecimal oldValue = currentValue(key);
         BigDecimal newValue = normalizeValue(key, request.value());
         if (loosensPayoutControl(key, oldValue, newValue) && coverageBelowRedline()) {
@@ -396,6 +406,10 @@ public class OpsTeamService {
         if (!UI_CONFIG_KEYS.contains(key)) {
             throw new IllegalArgumentException("Unsupported F team UI config key");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "ui_config", key) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String value = normalizeUiValue(request.value());
         validateUiConfig(key, value);
         String configKey = uiConfigKey(key);
@@ -419,6 +433,10 @@ public class OpsTeamService {
             String key) {
         String value = normalizeUiValue(request.value());
         int layerNo = unilevelLayerNo(key);
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "unilevel_rule", "L" + layerNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String field = key.startsWith("F.unilevel.nex.") ? "nexPerUsd" : "usdtRate";
         Object businessValue = "usdtRate".equals(field)
                 ? percentRatio(value, BigDecimal.ZERO)
@@ -449,6 +467,10 @@ public class OpsTeamService {
             TeamCommissionConfigUpdateRequest request,
             String key,
             String eventId) {
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "commission_event", eventId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String value = normalizeUiValue(request.value());
         Map<String, Object> oldEvent = commissionEvents().stream()
                 .filter(row -> eventId.equals(row.get("id")))
@@ -1877,6 +1899,65 @@ public class OpsTeamService {
             boolean amplifies,
             boolean visualAmplify,
             String unit) {
+    }
+
+    @Override
+    public String domain() {
+        return "F";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            // f_config: polymorphic ACTIVE_KEYS,key 分发(directRoyaltyPct/binary-rate/pool-ratio 等数值政策)。
+            // amplifies true: royalty/match/pool 放大佣金流出。
+            case "f_config" -> {
+                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
+                return updateConfig(idem, req);
+            }
+            // f_ui_config: polymorphic UI keys,key 分发(F.binary.spillover/F.fulfillment... 等 toggle)。amplifies false。
+            case "f_ui_config" -> {
+                String key = str(p, "key");
+                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
+                return updateUiConfig(idem, req, key);
+            }
+            // f_unilevel_rule: key 承载 layerNo + 字段(F.unilevel.L{n} usdtRate / F.unilevel.nex.L{n} nexPerUsd)。amplifies true(费率)。
+            case "f_unilevel_rule" -> {
+                String key = str(p, "key");
+                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
+                return updateUnilevelRule(idem, req, key);
+            }
+            // f_commission_status: F5 动资金 → updateCommissionEventStatus → postCommissionLedgerIfStatusChanged → postLedgerEntry。
+            // amplifies true(解锁放大可提余额)。A2ReplayContext 跳锁后执行完整 postLedgerEntry 资金路径,无 @T(自调用代理被绕过,靠 decide() 外层兜底)。
+            case "f_commission_status" -> {
+                String key = str(p, "key");
+                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
+                String eventId = commissionStatusEventId(key).orElse("");
+                return updateCommissionEventStatus(idem, req, key, eventId);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    /** 从 replay params 取 Boolean,null 安全。 */
+    private static Boolean boolVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Boolean b) return b;
+        if (v instanceof String s) return Boolean.parseBoolean(s.trim());
+        return null;
     }
 
 }
