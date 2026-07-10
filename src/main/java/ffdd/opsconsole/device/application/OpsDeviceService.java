@@ -50,6 +50,8 @@ import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -70,7 +72,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
-public class OpsDeviceService {
+public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED", "DEACTIVATED", "INACTIVE", "RETIRED");
     private static final Set<String> SKU_STATUSES = Set.of("on", "off", "pending");
     private static final Set<String> SKU_TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
@@ -133,6 +135,7 @@ public class OpsDeviceService {
     private final AuditLogService auditLogService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(deviceRepository.overviewCounters());
@@ -2146,6 +2149,319 @@ public class OpsDeviceService {
     }
 
     private record E3ConfigValue(String value, String valueType) {
+    }
+
+    // ===== A2 命令模式回放(批 6 E 域,复用批 0-5 AuditReplayable 框架) =====
+
+    @Override
+    public String domain() {
+        return "E";
+    }
+
+    @Override
+    public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        // replay 本身不带 @Transactional(与 G 域 replay 一致):原子性由外层
+        // OpsAuditCenterService.decide() 的 @Transactional(REQUIRED) 兜底。
+        Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
+        String operator = ctx.operator();
+        String reason = ctx.reason();
+        String idem = ctx.idempotencyKey();
+        switch (cmd.op()) {
+            case "e1_sku_create" -> {
+                return createSku(idem, buildSkuUpsertRequest(p, reason, operator));
+            }
+            case "e1_sku_update" -> {
+                return updateSku(str(p, "skuId"), idem, buildSkuUpsertRequest(p, reason, operator));
+            }
+            case "e1_sku_status" -> {
+                DeviceSkuStatusRequest req = new DeviceSkuStatusRequest(str(p, "status"), reason, operator);
+                return updateSkuStatus(str(p, "skuId"), idem, req);
+            }
+            case "e1_sku_delete" -> {
+                // deleteSku 复用 DeviceSkuStatusRequest(仅消费 reason/operator,status 不读)
+                DeviceSkuStatusRequest req = new DeviceSkuStatusRequest(str(p, "status"), reason, operator);
+                return deleteSku(str(p, "skuId"), idem, req);
+            }
+            case "e1_review_create" -> {
+                DeviceReviewUpsertRequest req = new DeviceReviewUpsertRequest(
+                        str(p, "skuId"), str(p, "author"), intVal(p, "rating"), str(p, "content"),
+                        str(p, "dateText"), str(p, "status"), reason, operator);
+                return createReview(idem, req);
+            }
+            case "e1_review_update" -> {
+                DeviceReviewUpsertRequest req = new DeviceReviewUpsertRequest(
+                        str(p, "skuId"), str(p, "author"), intVal(p, "rating"), str(p, "content"),
+                        str(p, "dateText"), str(p, "status"), reason, operator);
+                return updateReview(str(p, "reviewId"), idem, req);
+            }
+            case "e1_review_status" -> {
+                DeviceReviewStatusRequest req = new DeviceReviewStatusRequest(str(p, "status"), reason, operator);
+                return updateReviewStatus(str(p, "reviewId"), idem, req);
+            }
+            case "e1_review_delete" -> {
+                // deleteReview 复用 DeviceReviewStatusRequest(仅消费 reason/operator,status 不读)
+                DeviceReviewStatusRequest req = new DeviceReviewStatusRequest(str(p, "status"), reason, operator);
+                return deleteReview(str(p, "reviewId"), idem, req);
+            }
+            case "e1_phase_create" -> {
+                DevicePhaseUpsertRequest req = buildPhaseUpsertRequest(p, reason, operator);
+                return createE1Phase(idem, req);
+            }
+            case "e1_phase_patch" -> {
+                DevicePhaseUpsertRequest req = buildPhaseUpsertRequest(p, reason, operator);
+                return patchE1Phase(str(p, "phaseId"), idem, req);
+            }
+            case "e1_phase_archive" -> {
+                DevicePhaseArchiveRequest req = new DevicePhaseArchiveRequest(reason, operator);
+                return archiveE1Phase(str(p, "phaseId"), idem, req);
+            }
+            case "e1_phase_current" -> {
+                DevicePhaseCurrentRequest req = new DevicePhaseCurrentRequest(reason, operator);
+                return setE1CurrentPhase(str(p, "phaseId"), idem, req);
+            }
+            case "e1_gate_create" -> {
+                DeviceGenerationGateUpsertRequest req = new DeviceGenerationGateUpsertRequest(
+                        str(p, "skuId"), str(p, "name"), intVal(p, "releaseMonth"), str(p, "phase"),
+                        decimal(p, "discount"), boolVal(p, "eligibility"), intVal(p, "phaseOffset"),
+                        boolVal(p, "forceUnlock"), str(p, "status"), reason, operator);
+                return createE1GenerationGate(idem, req);
+            }
+            case "e1_gate_patch" -> {
+                DeviceGenerationGatePatchRequest req = new DeviceGenerationGatePatchRequest(
+                        str(p, "name"), intVal(p, "releaseMonth"), str(p, "phase"), decimal(p, "discount"),
+                        boolVal(p, "eligibility"), intVal(p, "phaseOffset"), boolVal(p, "forceUnlock"),
+                        str(p, "status"), reason, operator);
+                return patchE1GenerationGate(str(p, "skuId"), idem, req);
+            }
+            case "e1_gate_archive" -> {
+                DeviceGenerationGateArchiveRequest req = new DeviceGenerationGateArchiveRequest(reason, operator);
+                return archiveE1GenerationGate(str(p, "skuId"), idem, req);
+            }
+            case "e1_gate_field" -> {
+                // updateE1GenerationGate 复用 E3ConfigUpdateRequest(key,value,reason,operator)
+                E3ConfigUpdateRequest req = new E3ConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
+                return updateE1GenerationGate(idem, req);
+            }
+            case "e2_phone_tier" -> {
+                DevicePhoneTierRewardUpdateRequest req = new DevicePhoneTierRewardUpdateRequest(
+                        decimal(p, "dailyUsdt"), decimal(p, "dailyNex"), reason, operator);
+                return updatePhoneTierReward(intVal(p, "tier"), idem, req);
+            }
+            case "e2_task_create" -> {
+                DeviceTaskUpsertRequest req = buildTaskUpsertRequest(p, reason, operator);
+                return createTask(idem, req);
+            }
+            case "e2_task_update" -> {
+                DeviceTaskUpsertRequest req = buildTaskUpsertRequest(p, reason, operator);
+                return updateTask(str(p, "taskId"), idem, req);
+            }
+            case "e2_task_price" -> {
+                DeviceTaskPriceRequest req = new DeviceTaskPriceRequest(decimal(p, "price"), reason, operator);
+                return updateTaskPrice(str(p, "taskId"), idem, req);
+            }
+            case "e2_task_status" -> {
+                DeviceTaskStatusRequest req = new DeviceTaskStatusRequest(str(p, "status"), reason, operator);
+                return updateTaskStatus(str(p, "taskId"), idem, req);
+            }
+            case "e2_task_delete" -> {
+                // deleteTask 复用 DeviceTaskStatusRequest(仅消费 reason/operator,status 不读)
+                DeviceTaskStatusRequest req = new DeviceTaskStatusRequest(str(p, "status"), reason, operator);
+                return deleteTask(str(p, "taskId"), idem, req);
+            }
+            case "e3_config" -> {
+                E3ConfigUpdateRequest req = new E3ConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
+                return updateE3Config(idem, req);
+            }
+            case "e3_tradein" -> {
+                // @Transactional(rollbackFor=Exception.class) 自调用陷阱:replay 本身不带 @Transactional(与 G 域 op7 一致),
+                // 此处 this.executeTradeinAction(...) 是直接自调用,Spring 代理被绕过,
+                // @Transactional(含显式 rollbackFor=Exception.class 配置)不生效。原子性回退由外层
+                // OpsAuditCenterService.decide() 的 @Transactional(REQUIRED) 兜底:该方法业务失败走
+                // ApiResult.fail(不抛),并发/状态冲突抛 BizException(RuntimeException,decide 默认 @T 会回滚),
+                // rollbackFor=Exception.class 是冗余保险(经 getBean 调用代理本批不采用)。
+                DeviceTradeinActionRequest req = new DeviceTradeinActionRequest(longVal(p, "deviceId"), reason, operator);
+                return executeTradeinAction(str(p, "operation"), idem, req);
+            }
+            case "e3_restore" -> {
+                DeviceRestoreRequest req = new DeviceRestoreRequest(reason, operator);
+                return restoreDevice(longVal(p, "deviceId"), idem, req);
+            }
+            case "e4_order_refund" -> {
+                // refundOrder 复用 DeviceOrderActionRequest(忽略 terminalState,内部硬编码 "refunded")
+                DeviceOrderActionRequest req = new DeviceOrderActionRequest(str(p, "terminalState"), reason, operator);
+                return refundOrder(str(p, "orderNo"), idem, req);
+            }
+            case "e4_order_cancel" -> {
+                // cancelOrder 复用 DeviceOrderActionRequest(忽略 terminalState,内部硬编码 "cancelled")
+                DeviceOrderActionRequest req = new DeviceOrderActionRequest(str(p, "terminalState"), reason, operator);
+                return cancelOrder(str(p, "orderNo"), idem, req);
+            }
+            case "e4_order_terminal" -> {
+                DeviceOrderActionRequest req = new DeviceOrderActionRequest(str(p, "terminalState"), reason, operator);
+                return terminalOrder(str(p, "orderNo"), idem, req);
+            }
+            case "e4_order_state" -> {
+                DeviceOrderStateRequest req = new DeviceOrderStateRequest(str(p, "state"), reason, operator);
+                return updateOrderState(str(p, "orderNo"), idem, req);
+            }
+            case "e5_datacenter_create" -> {
+                DeviceDatacenterUpsertRequest req = buildDatacenterUpsertRequest(p, reason, operator);
+                return createDatacenter(idem, req);
+            }
+            case "e5_datacenter_update" -> {
+                DeviceDatacenterUpsertRequest req = buildDatacenterUpsertRequest(p, reason, operator);
+                return updateDatacenter(str(p, "dcLocation"), idem, req);
+            }
+            case "e5_datacenter_delete" -> {
+                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
+                return deleteDatacenter(str(p, "dcLocation"), idem, req);
+            }
+            case "e5_datacenter_pause" -> {
+                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
+                return pauseDatacenter(str(p, "dcLocation"), idem, req);
+            }
+            case "e5_datacenter_resume" -> {
+                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
+                return resumeDatacenter(str(p, "dcLocation"), idem, req);
+            }
+            case "e6_compute_config" -> {
+                ComputeConfigParamUpdateRequest req = new ComputeConfigParamUpdateRequest(str(p, "value"), reason, operator);
+                return updateComputeConfigParam(str(p, "paramKey"), idem, req);
+            }
+            default -> {
+                return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
+            }
+        }
+    }
+
+    /** 从 replay params 重建 DeviceSkuUpsertRequest(e1_sku_create/update 复用)。 */
+    private static DeviceSkuUpsertRequest buildSkuUpsertRequest(Map<String, Object> p, String reason, String operator) {
+        return new DeviceSkuUpsertRequest(
+                str(p, "skuId"), str(p, "name"), str(p, "tier"), str(p, "tagline"), str(p, "badge"),
+                str(p, "gpu"), str(p, "vram"), str(p, "hashRate"), str(p, "power"), str(p, "datacenter"),
+                decimal(p, "price"), decimal(p, "dailyEarn"), decimal(p, "dailyEarnNex"),
+                decimal(p, "shareYieldMin"), decimal(p, "shareYieldMax"), str(p, "baseRate"),
+                longVal(p, "sold"), str(p, "stock"), decimal(p, "rating"), longVal(p, "reviews"),
+                longVal(p, "aiImageGenPerMin"), longVal(p, "aiLlmTokensPerSec"),
+                longVal(p, "aiVideoMinPerHour"), longVal(p, "aiFineTuneMins"),
+                str(p, "aiUnlocks"), strList(p, "features"), intVal(p, "generation"),
+                str(p, "lifecycle"), str(p, "supersededBy"), decimal(p, "tradeinDiscount"),
+                str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
+                str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
+                str(p, "status"), reason, operator);
+    }
+
+    /** 从 replay params 的 purchaseGate 子 map 重建 DevicePurchaseGateView;缺失返回 null。 */
+    private static DevicePurchaseGateView buildPurchaseGate(Map<String, Object> p) {
+        Object raw = p.get("purchaseGate");
+        if (!(raw instanceof Map<?, ?> map)) {
+            return null;
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        map.forEach((k, v) -> m.put(String.valueOf(k), v));
+        return new DevicePurchaseGateView(
+                intVal(m, "rankMin"), intVal(m, "activeDirectMin"), decimal(m, "teamVolumeMin"),
+                str(m, "mode"), intVal(m, "quotaCap"), intVal(m, "quotaSold"),
+                str(m, "quotaPeriod"), boolVal(m, "enforce"));
+    }
+
+    /** 从 replay params 重建 DevicePhaseUpsertRequest(e1_phase_create/patch 复用)。 */
+    private static DevicePhaseUpsertRequest buildPhaseUpsertRequest(Map<String, Object> p, String reason, String operator) {
+        return new DevicePhaseUpsertRequest(
+                str(p, "phaseId"), str(p, "label"), str(p, "meta"), str(p, "skus"),
+                intVal(p, "sortOrder"), str(p, "status"), reason, operator);
+    }
+
+    /** 从 replay params 重建 DeviceTaskUpsertRequest(e2_task_create/update 复用)。 */
+    private static DeviceTaskUpsertRequest buildTaskUpsertRequest(Map<String, Object> p, String reason, String operator) {
+        return new DeviceTaskUpsertRequest(
+                str(p, "name"), decimal(p, "price"), str(p, "unit"), str(p, "requirement"),
+                decimal(p, "saturation"), str(p, "status"), str(p, "taskClass"), str(p, "model"),
+                decimal(p, "minReward"), decimal(p, "maxReward"), str(p, "minVram"), str(p, "killInit"),
+                reason, operator);
+    }
+
+    /** 从 replay params 重建 DeviceDatacenterUpsertRequest(e5_datacenter_create/update 复用)。 */
+    private static DeviceDatacenterUpsertRequest buildDatacenterUpsertRequest(Map<String, Object> p, String reason, String operator) {
+        return new DeviceDatacenterUpsertRequest(
+                str(p, "dcLocation"), str(p, "regionLabel"), str(p, "status"),
+                intVal(p, "sortOrder"), reason, operator);
+    }
+
+    /** 从 replay params 取字符串,null 安全。 */
+    private static String str(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        return v == null ? null : String.valueOf(v).trim();
+    }
+
+    /** 从 replay params 取 List<String>,null 安全(支持 List 与逗号分隔字符串)。 */
+    private static List<String> strList(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) {
+            return List.of();
+        }
+        if (v instanceof List<?> list) {
+            return list.stream()
+                    .map(item -> item == null ? "" : String.valueOf(item).trim())
+                    .filter(StringUtils::hasText)
+                    .toList();
+        }
+        String raw = String.valueOf(v).trim();
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(raw.split("[,\\s]+"))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .toList();
+    }
+
+    /** 从 replay params 取 Boolean,null 安全。 */
+    private static Boolean boolVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Boolean b) return b;
+        if (v instanceof String s) return Boolean.parseBoolean(s.trim());
+        return null;
+    }
+
+    /** 从 replay params 取 Integer,null 安全(缺失返回 null,由 DTO 默认逻辑兜底)。 */
+    private static Integer intVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /** 从 replay params 取 Long,null 安全(E 域 sku/task 含 Long 计数字段,deviceId 为 Long)。 */
+    private static Long longVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.longValue();
+        try {
+            return Long.parseLong(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /** 从 replay params 取 BigDecimal,null 安全(E 域 price/reward/discount 等大量 BigDecimal 字段)。 */
+    private static BigDecimal decimal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof BigDecimal bd) return bd;
+        if (v instanceof Number n) return new BigDecimal(n.toString());
+        String s = String.valueOf(v).trim();
+        if (s.isEmpty()) return null;
+        try {
+            return new BigDecimal(s);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
 }
