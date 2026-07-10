@@ -12,6 +12,8 @@ import ffdd.opsconsole.content.dto.NotificationCampaignActionRequest;
 import ffdd.opsconsole.content.dto.NotificationCampaignCreateRequest;
 import ffdd.opsconsole.content.dto.NotificationCampaignDraftRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -45,6 +47,7 @@ public class OpsNotificationCampaignService {
     private final AuditLogService auditLogService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final AuditObjectLockMapper lockMapper;
 
     public ApiResult<NotificationCampaignOverview> overview() {
         List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns();
@@ -171,6 +174,10 @@ public class OpsNotificationCampaignService {
         }
         if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("I", "notification_cap", normalizedTier) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         NotificationCapRuleView current = campaignRepository.findCapRule(normalizedTier).orElse(null);
         if (current == null) {

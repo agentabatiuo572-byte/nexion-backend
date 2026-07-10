@@ -18,6 +18,8 @@ import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -67,6 +69,7 @@ public class OpsI18nLearningService {
     private final TreasuryCoverageFacade coverageFacade;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final AuditObjectLockMapper lockMapper;
 
     public ApiResult<I18nLearningOverview> overview() {
         return ApiResult.ok(currentOverview());
@@ -199,6 +202,10 @@ public class OpsI18nLearningService {
         ApiResult<Void> guard = requireRewardUpdate(idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("I", "learning_course", courseId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         LearningCourseView current = findCourse(courseId);
         if (current == null) {

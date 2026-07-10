@@ -1,8 +1,10 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
@@ -12,6 +14,7 @@ import ffdd.opsconsole.content.dto.NotificationCampaignActionRequest;
 import ffdd.opsconsole.content.dto.NotificationCampaignCreateRequest;
 import ffdd.opsconsole.content.dto.NotificationCampaignDraftRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.math.BigDecimal;
@@ -25,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -32,11 +36,19 @@ class OpsNotificationCampaignServiceTest {
     private final FakeNotificationCampaignRepository repository = new FakeNotificationCampaignRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T08:30:00Z"), ZoneOffset.UTC);
+    private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final OpsNotificationCampaignService service = new OpsNotificationCampaignService(
             repository,
             auditLogService,
             clock,
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+            lockMapper);
+
+    @BeforeEach
+    void stubLockGuard() {
+        // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,updateCapRule 直通
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
 
     @Test
     void overviewReturnsCampaignsCapsAndServerSources() {
@@ -171,6 +183,31 @@ class OpsNotificationCampaignServiceTest {
         verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
                 "I3_NOTIFICATION_CAP_CHANGED".equals(request.getAction())
                         && "NOTIFICATION_CAP".equals(request.getResourceType())));
+    }
+
+    @Test
+    void updateCapBlockedByA2ObjectLockReturns409() {
+        when(lockMapper.countActiveByTarget("I", "notification_cap", "high")).thenReturn(1);
+
+        var result = service.updateCapRule("high", "idem-i3-cap-locked", new NotificationCapUpdateRequest(
+                "30 条",
+                "Marina K.",
+                "锁定档位改容量"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("OBJECT_LOCKED_BY_A2");
+    }
+
+    @Test
+    void updateCapPassesThroughWhenNoLock() {
+        // 默认无锁(countActiveByTarget=0),normal 档直通并写入
+        var result = service.updateCapRule("normal", "idem-i3-cap-nolock", new NotificationCapUpdateRequest(
+                "150 条",
+                "Marina K.",
+                "无锁直通改容量"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().cap()).isEqualTo("150 条");
     }
 
     private static NotificationCampaignCreateRequest createRequest() {

@@ -1,8 +1,10 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.I18nHardcodedFindingView;
@@ -17,6 +19,7 @@ import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -29,6 +32,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -36,12 +40,20 @@ class OpsI18nLearningServiceTest {
     private final FakeI18nLearningRepository repository = new FakeI18nLearningRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final TreasuryCoverageFacade coverageFacade = () -> new TreasuryCoverageSnapshot(new BigDecimal("128.4"), new BigDecimal("100"));
+    private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final OpsI18nLearningService service = new OpsI18nLearningService(
             repository,
             auditLogService,
             coverageFacade,
             Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+            lockMapper);
+
+    @BeforeEach
+    void stubLockGuard() {
+        // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,updateCourseReward 直通
+        when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
 
     @Test
     void overviewUsesBackendRecordsAndNoActivePremiumNamespace() {
@@ -100,7 +112,8 @@ class OpsI18nLearningServiceTest {
                 auditLogService,
                 () -> new TreasuryCoverageSnapshot(new BigDecimal("88"), new BigDecimal("100")),
                 Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
-                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                lockMapper);
 
         var result = redlineService.updateCourseReward("what-is-nexion", "idem-i7-reward", new LearningRewardUpdateRequest(
                 new BigDecimal("40"),
@@ -109,6 +122,31 @@ class OpsI18nLearningServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+    }
+
+    @Test
+    void updateCourseRewardBlockedByA2ObjectLockReturns409() {
+        when(lockMapper.countActiveByTarget("I", "learning_course", "what-is-nexion")).thenReturn(1);
+
+        var result = service.updateCourseReward("what-is-nexion", "idem-i7-cap-locked", new LearningRewardUpdateRequest(
+                new BigDecimal("25"),
+                "Marina K.",
+                "锁定课程调奖励"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("OBJECT_LOCKED_BY_A2");
+    }
+
+    @Test
+    void updateCourseRewardPassesThroughWhenNoLock() {
+        // 默认无锁(countActiveByTarget=0),课程直通并写入(coverage 高于红线,无放大方向不触发 422)
+        var result = service.updateCourseReward("what-is-nexion", "idem-i7-reward-nolock", new LearningRewardUpdateRequest(
+                new BigDecimal("15"),
+                "Marina K.",
+                "无锁直通调奖励"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().rewardNex()).isEqualByComparingTo("15");
     }
 
     @Test
