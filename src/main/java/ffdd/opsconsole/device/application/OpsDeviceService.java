@@ -50,6 +50,7 @@ import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -189,6 +190,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return guard;
         }
         String skuId = normalizeSkuId(request.skuId(), request.name());
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (catalogRepository.findSku(skuId).isPresent()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_ALREADY_EXISTS");
         }
@@ -207,6 +212,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalized = normalizeId(skuId);
         if (!StringUtils.hasText(normalized)) {
@@ -233,6 +242,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String status = normalizeSkuStatus(request.status());
         if (status == null) {
@@ -261,6 +274,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String normalized = normalizeId(skuId);
         DeviceSkuView before = catalogRepository.findSku(normalized).orElse(null);
         if (before == null) {
@@ -287,6 +304,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return guard;
         }
         String reviewId = nextReviewId();
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_review", reviewId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         DeviceReviewView created = catalogRepository.createReview(reviewId, request, LocalDateTime.now(clock));
         audit("E1_REVIEW_CREATED", "DEVICE_REVIEW", created.reviewId(), request.operator(), detail(
                 "reviewId", created.reviewId(),
@@ -301,6 +322,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceReviewView> guard = requireReviewCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_review", reviewId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalized = normalizeId(reviewId);
         DeviceReviewView before = catalogRepository.findReview(normalized).orElse(null);
@@ -322,6 +347,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_review", reviewId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String status = normalizeReviewStatus(request.status());
         if (status == null) {
@@ -349,6 +378,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_review", reviewId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalized = normalizeId(reviewId);
         DeviceReviewView before = catalogRepository.findReview(normalized).orElse(null);
@@ -402,6 +435,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "e6_compute_config", paramKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (!ComputeConfigRegistry.isComputeParamKey(paramKey)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMPUTE_PARAM_KEY_INVALID");
@@ -483,6 +520,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "phone_tier", String.valueOf(tier)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (tier == null || tier < 1 || tier > 5) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_INVALID");
         }
@@ -520,6 +561,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return guard;
         }
         String taskId = nextTaskId();
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         DeviceTaskView created = catalogRepository.createTask(taskId, request, LocalDateTime.now(clock));
         audit("E2_TASK_CREATED", "DEVICE_TASK", created.taskId(), request.operator(), detail(
                 "taskId", created.taskId(),
@@ -540,6 +585,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceTaskView> guard = requireTaskCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalized = normalizeId(taskId);
         DeviceTaskView before = catalogRepository.findTask(normalized).orElse(null);
@@ -577,6 +626,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (request.price() == null || request.price().compareTo(BigDecimal.ZERO) <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_PRICE_INVALID");
         }
@@ -599,6 +652,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String status = normalizeTaskStatus(request.status());
         if (status == null) {
@@ -627,6 +684,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return command;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalized = normalizeId(taskId);
         DeviceTaskView before = catalogRepository.findTask(normalized).orElse(null);
@@ -677,10 +738,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<DeviceOrderView> refundOrder(String orderNo, String idempotencyKey, DeviceOrderActionRequest request) {
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_order", orderNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         return transitionOrder(orderNo, idempotencyKey, request, "refunded", "E4_ORDER_REFUNDED");
     }
 
     public ApiResult<DeviceOrderView> cancelOrder(String orderNo, String idempotencyKey, DeviceOrderActionRequest request) {
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_order", orderNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         return transitionOrder(orderNo, idempotencyKey, request, "cancelled", "E4_ORDER_CANCELLED");
     }
 
@@ -688,6 +757,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_order", orderNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String terminal = normalizeOrderState(request.terminalState());
         if (!ORDER_TERMINAL_STATES.contains(terminal)) {
@@ -700,6 +773,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> command = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_order", orderNo) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String toState = normalizeOrderState(request.state());
         if (!ORDER_MAIN_FLOW.contains(toState)) {
@@ -768,6 +845,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_REQUEST_REQUIRED");
         }
         String label = normalizePhaseLabel(request.label());
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_phase", label) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (catalogRepository.findPhaseByLabel(E1_PHASE_SCOPE, label).isPresent()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_NAME_EXISTS");
         }
@@ -799,6 +880,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         if (request == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_REQUEST_REQUIRED");
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_phase", phaseId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String currentPhaseId = matchConfiguredE1PhaseId(phaseId, true);
         DevicePhaseView before = catalogRepository.findPhase(E1_PHASE_SCOPE, currentPhaseId).orElse(null);
@@ -835,6 +920,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_phase", phaseId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String normalized = matchConfiguredE1PhaseId(phaseId, true);
         DevicePhaseView before = catalogRepository.findPhase(E1_PHASE_SCOPE, normalized).orElse(null);
         if (before == null) {
@@ -864,6 +953,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_phase", phaseId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         List<DevicePhaseView> phases = e1PhaseDefs();
@@ -906,6 +999,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!StringUtils.hasText(skuId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_ID_INVALID");
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_generation_gate", skuId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         DeviceGenerationGateView existing = catalogRepository.findGenerationGate(skuId).orElse(null);
         if (existing != null && "active".equals(existing.status())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_ALREADY_EXISTS");
@@ -944,6 +1041,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_generation_gate", skuId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String normalized = normalizeGenerationId(skuId);
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
@@ -976,6 +1077,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_generation_gate", skuId) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String normalized = normalizeGenerationId(skuId);
         DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
         if (before == null) {
@@ -998,6 +1103,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         String[] key = normalizeE1GateKey(request.key());
         String value = normalizeE1GateValue(key[1], request.value());
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_generation_gate", key[0]) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         DeviceGenerationGateView before = catalogRepository.findGenerationGate(key[0]).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
@@ -1029,6 +1138,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return guard;
         }
         String key = normalizeE3Key(request.key());
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_e3_config", key) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         E3ConfigValue value = normalizeE3Value(key, request.value());
         Map<String, String> before = deviceRepository.e3Config();
         deviceRepository.upsertE3Config(key, value.value(), value.valueType(), operator(request.operator()));
@@ -1061,6 +1174,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device", String.valueOf(request.deviceId())) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String normalizedOperation = normalizeTradeinOperation(operation);
         LocalDateTime now = LocalDateTime.now(clock);
         String tradeInNo = "TI-" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss")) + "-" + request.deviceId();
@@ -1083,6 +1200,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceOpsView> guard = requireDeviceCommand(deviceId, idempotencyKey, request);
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device", String.valueOf(deviceId)) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         DeviceOpsView device = deviceRepository.findDevice(deviceId).orElse(null);
         if (device == null) {
@@ -1109,6 +1230,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return guard;
         }
         String dc = normalizeDc(request.dcLocation());
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         if (deviceRepository.findDatacenter(dc).isPresent()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_ALREADY_EXISTS");
         }
@@ -1127,6 +1252,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, false);
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_datacenter", dcLocation) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String dc = normalizeDc(dcLocation);
         DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
@@ -1154,6 +1283,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_datacenter", dcLocation) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String dc = normalizeDc(dcLocation);
         DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
         if (before == null) {
@@ -1174,6 +1307,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_datacenter", dcLocation) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
         String dc = normalizeDc(dcLocation);
         LocalDateTime now = LocalDateTime.now(clock);
         deviceRepository.pauseDatacenter(dc, request.reason().trim(), operator(request.operator()), now);
@@ -1188,6 +1325,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("E", "device_datacenter", dcLocation) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String dc = normalizeDc(dcLocation);
         deviceRepository.resumeDatacenter(dc, operator(request.operator()), LocalDateTime.now(clock));
