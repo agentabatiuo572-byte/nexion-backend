@@ -11,6 +11,16 @@ public record AdminLoginResponse(String accessToken, String tokenType, AdminSess
             String roleCode,
             List<String> authorities,
             List<String> effectiveMenus,
+            List<EffectiveMenuNode> effectiveMenuNodes,
             boolean passwordChangeRequired) {
+    }
+
+    /** A7 metadata filtered by the current admin's active A6 role-menu grants. */
+    public record EffectiveMenuNode(
+            String menuCode,
+            String menuName,
+            String routePath,
+            String parentCode,
+            Integer sortOrder) {
     }
 }

@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.auth.infrastructure.AdminRoleRelationEntity;
+import ffdd.opsconsole.auth.dto.AdminLoginResponse;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
@@ -69,6 +70,58 @@ public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEnt
              ORDER BY MIN(m.sort_order), MIN(m.id)
             """)
     List<String> selectActiveMenuCodes(@Param("adminId") Long adminId);
+
+    /**
+     * Only returns active A7 nodes reachable through this admin's active A6 role grants.
+     * The session never exposes the full menu catalog to a role that was not granted it.
+     */
+    @Select("""
+            SELECT m.menu_code AS menuCode,
+                   COALESCE(NULLIF(m.menu_name_zh, ''), NULLIF(m.menu_name, ''), m.menu_code) AS menuName,
+                   m.route_path AS routePath,
+                   p.menu_code AS parentCode,
+                   m.sort_order AS sortOrder
+              FROM nx_admin_role_relation rr
+              JOIN nx_admin_role r
+                ON r.id = rr.role_id
+               AND r.status = 1
+               AND r.is_deleted = 0
+              JOIN nx_admin_role_menu rm
+                ON rm.role_id = r.id
+               AND rm.is_deleted = 0
+              JOIN nx_admin_menu m
+                ON m.id = rm.menu_id
+               AND m.status = 1
+               AND m.is_deleted = 0
+              LEFT JOIN nx_admin_menu p
+                ON p.id = m.parent_id
+               AND p.status = 1
+               AND p.is_deleted = 0
+             WHERE rr.admin_id = #{adminId}
+               AND rr.is_deleted = 0
+             GROUP BY m.menu_code, m.menu_name_zh, m.menu_name, m.route_path,
+                      p.menu_code, m.sort_order, m.id
+             ORDER BY m.sort_order, m.id
+            """)
+    List<AdminLoginResponse.EffectiveMenuNode> selectActiveMenuNodes(@Param("adminId") Long adminId);
+
+    /** Super-admin navigation is independent of role bindings, but still excludes disabled/deleted A7 nodes. */
+    @Select("""
+            SELECT m.menu_code AS menuCode,
+                   COALESCE(NULLIF(m.menu_name_zh, ''), NULLIF(m.menu_name, ''), m.menu_code) AS menuName,
+                   m.route_path AS routePath,
+                   p.menu_code AS parentCode,
+                   m.sort_order AS sortOrder
+              FROM nx_admin_menu m
+              LEFT JOIN nx_admin_menu p
+                ON p.id = m.parent_id
+               AND p.status = 1
+               AND p.is_deleted = 0
+             WHERE m.status = 1
+               AND m.is_deleted = 0
+             ORDER BY m.sort_order, m.id
+            """)
+    List<AdminLoginResponse.EffectiveMenuNode> selectAllActiveMenuNodes();
 
     /** 查角色下所有 admin（A6 改角色绑定后精准 evict 用）。 */
     @Select("""

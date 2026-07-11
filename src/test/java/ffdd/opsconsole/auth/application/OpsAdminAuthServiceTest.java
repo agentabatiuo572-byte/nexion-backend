@@ -91,7 +91,9 @@ class OpsAdminAuthServiceTest {
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
         when(permissionCache.getPermissionCodes(4L))
                 .thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ", "PERM_RISK_WRITE")));
-        when(roleRelationMapper.selectActiveMenuCodes(4L)).thenReturn(List.of("risk", "risk_cases"));
+        when(roleRelationMapper.selectActiveMenuNodes(4L)).thenReturn(List.of(
+                new AdminLoginResponse.EffectiveMenuNode("risk", "风控", null, null, 1),
+                new AdminLoginResponse.EffectiveMenuNode("risk_cases", "风险案件", "/risk/cases", "risk", 2)));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
 
         ApiResult<AdminLoginResponse> result =
@@ -106,11 +108,34 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
+    void loginReturnsOnlyEffectiveA7MenuMetadataForA6GrantedMenus() {
+        AdminEntity admin = activeAdmin(4L, "content.shift", "内容值班", passwordEncoder.encode("ContentShift@123"));
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(roleRelationMapper.activeRoleCode(4L)).thenReturn("CONTENT");
+        when(permissionCache.getPermissionCodes(4L)).thenReturn(new LinkedHashSet<>(List.of("content_i7_read")));
+        when(roleRelationMapper.selectActiveMenuNodes(4L)).thenReturn(List.of(
+                new AdminLoginResponse.EffectiveMenuNode("I", "内容与合规 CMS", null, null, 9),
+                new AdminLoginResponse.EffectiveMenuNode("I7", "教程中心", "/content/learn", "I", 6)));
+        when(adminSessionRegistry.createSession(4L, "content.shift")).thenReturn("admin-session-content");
+
+        ApiResult<AdminLoginResponse> result =
+                service.login(new AdminLoginRequest("content.shift", "ContentShift@123"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().session().effectiveMenus()).containsExactly("I", "I7");
+        assertThat(result.getData().session().effectiveMenuNodes())
+                .extracting(AdminLoginResponse.EffectiveMenuNode::menuCode)
+                .containsExactly("I", "I7");
+    }
+
+    @Test
     void loginPreservesCustomRoleCodeInsteadOfDegradingToAuditor() {
         AdminEntity admin = activeAdmin(9L, "custom.ops", "Custom Ops", passwordEncoder.encode("CustomOps@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(roleRelationMapper.activeRoleCode(9L)).thenReturn("CUSTOM_SETTLEMENT");
-        when(roleRelationMapper.selectActiveMenuCodes(9L)).thenReturn(List.of("treasury", "settlement"));
+        when(roleRelationMapper.selectActiveMenuNodes(9L)).thenReturn(List.of(
+                new AdminLoginResponse.EffectiveMenuNode("treasury", "资金", null, null, 1),
+                new AdminLoginResponse.EffectiveMenuNode("settlement", "结算", "/treasury/settlement", "treasury", 2)));
         when(permissionCache.getPermissionCodes(9L))
                 .thenReturn(new LinkedHashSet<>(List.of("finance_d4_read")));
         when(adminSessionRegistry.createSession(9L, "custom.ops")).thenReturn("admin-session-9");
@@ -143,6 +168,8 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().passwordChangeRequired()).isTrue();
         assertThat(result.getData().session().authorities()).isEmpty();
+        assertThat(result.getData().session().effectiveMenus()).isEmpty();
+        assertThat(result.getData().session().effectiveMenuNodes()).isEmpty();
         Claims claims = tokenProvider.parse(result.getData().accessToken());
         assertThat(claims.get("authorities", List.class)).isEmpty();
     }

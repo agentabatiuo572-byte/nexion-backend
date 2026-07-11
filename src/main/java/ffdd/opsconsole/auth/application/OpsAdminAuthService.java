@@ -182,7 +182,16 @@ public class OpsAdminAuthService {
             List<String> authorities,
             boolean passwordChangeRequired) {
         String roleCode = effectiveRoleCode(admin);
-        List<String> effectiveMenus = roleRelationMapper.selectActiveMenuCodes(admin.getId());
+        List<AdminLoginResponse.EffectiveMenuNode> effectiveMenuNodes = passwordChangeRequired
+                ? List.of()
+                : superAdmin(admin)
+                        ? roleRelationMapper.selectAllActiveMenuNodes()
+                        : roleRelationMapper.selectActiveMenuNodes(admin.getId());
+        List<AdminLoginResponse.EffectiveMenuNode> safeMenuNodes =
+                effectiveMenuNodes == null ? List.of() : List.copyOf(effectiveMenuNodes);
+        List<String> effectiveMenus = safeMenuNodes.stream()
+                .map(AdminLoginResponse.EffectiveMenuNode::menuCode)
+                .toList();
         return new AdminLoginResponse.AdminSession(
                 admin.getId(),
                 admin.getUsername(),
@@ -190,7 +199,8 @@ public class OpsAdminAuthService {
                 frontendRole(roleCode),
                 roleCode,
                 List.copyOf(authorities),
-                effectiveMenus == null ? List.of() : List.copyOf(effectiveMenus),
+                effectiveMenus,
+                safeMenuNodes,
                 passwordChangeRequired);
     }
 
