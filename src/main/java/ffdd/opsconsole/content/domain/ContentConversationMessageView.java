@@ -10,5 +10,6 @@ public record ContentConversationMessageView(
         String senderType,
         String senderName,
         String content,
+        String receiptStatus,
         LocalDateTime createdAt) {
 }

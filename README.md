@@ -62,6 +62,12 @@ Initialize or refresh local schema and system baseline data with:
 
 The schema keeps existing business tables and adds the Ops Console tables needed by the monolith, such as user impersonation sessions, risk signals, weekly market curves, emergency gates, and BI reports.
 
+For an existing database, run dated migrations before deploying the matching application revision. The rhythm-configurable release requires:
+
+```powershell
+& '<mysql-bin>\mysql.exe' -h 127.0.0.1 -P 3306 -u <mysql-user> '-p<mysql-password>' <database-name> -e "source D:/workspace/nexion-backend/scripts/migrations/20260711_rhythm_configurable.sql;"
+```
+
 ## Module Boundaries
 
 The code boundary is stricter than the deployment boundary:

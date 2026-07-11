@@ -18,6 +18,8 @@ public interface ConversationRepository {
 
     List<ContentConversationMessageView> messages(String conversationNo);
 
+    boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now);
+
     List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit);
 
     void transferToPending(

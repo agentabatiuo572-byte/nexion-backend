@@ -122,6 +122,38 @@ public class OpsConversationService {
         return ApiResult.ok(new ContentConversationDetail(conversation, messages, customerProfile));
     }
 
+    public ApiResult<Void> markReadReceipt(String conversationNo, Long lastSeenMessageId, Long authenticatedUserId) {
+        String normalized = conversationNo == null ? "" : conversationNo.trim();
+        if (!StringUtils.hasText(normalized)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_NO_REQUIRED");
+        }
+        ContentConversationView conversation = conversationRepository.findByConversationNo(normalized).orElse(null);
+        if (conversation == null) {
+            return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
+        }
+        if (authenticatedUserId == null || !authenticatedUserId.equals(conversation.userId())) {
+            return ApiResult.fail(403, "CONVERSATION_USER_MISMATCH");
+        }
+        if (lastSeenMessageId == null || lastSeenMessageId <= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LAST_SEEN_MESSAGE_ID_REQUIRED");
+        }
+        boolean targetIsAgentMessage = conversationRepository.messages(normalized).stream()
+                .anyMatch(message -> lastSeenMessageId.equals(message.id())
+                        && "agent".equalsIgnoreCase(message.senderType()));
+        if (!targetIsAgentMessage) {
+            return ApiResult.fail(404, "CONVERSATION_AGENT_MESSAGE_NOT_FOUND");
+        }
+        boolean updated = conversationRepository.markAgentMessagesReadThrough(
+                normalized,
+                lastSeenMessageId,
+                "user:" + authenticatedUserId,
+                LocalDateTime.now(clock));
+        if (!updated) {
+            return ApiResult.fail(404, "CONVERSATION_AGENT_MESSAGE_NOT_FOUND");
+        }
+        return ApiResult.ok();
+    }
+
     /**
      * 跨域聚合会话客户档案(只读辅助)。
      *

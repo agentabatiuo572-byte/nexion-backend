@@ -293,6 +293,27 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void readReceiptPersistsOnLatestAgentMessageAndReturnsMinimalAck() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+
+        var result = service.markReadReceipt("CV-1", 1L, 1001L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isNull();
+        assertThat(conversationRepository.receiptStatus).isEqualTo("read");
+    }
+
+    @Test
+    void readReceiptRejectsAUserWhoDoesNotOwnTheConversation() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+
+        var result = service.markReadReceipt("CV-1", 1L, 9999L);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(conversationRepository.receiptStatus).isEqualTo("sent");
+    }
+
+    @Test
     void addCustomTagPersistsAndReturnsLatestList() {
         conversationRepository.conversation = conversation("CV-1", "OPEN");
         when(customerProfileRepository.findCustomTags(1001L)).thenReturn(List.of("高净值"));
@@ -552,6 +573,7 @@ class OpsConversationServiceTest {
         private LocalDateTime lastCutoff;
         private int lastLimit;
         private boolean fallbackClaimSucceeds = true;
+        private String receiptStatus = "sent";
 
         @Override
         public void ensureSeedData(LocalDateTime now) {
@@ -583,10 +605,17 @@ class OpsConversationServiceTest {
                     conversation == null ? 1L : conversation.id(),
                     conversationNo,
                     1001L,
-                    "user",
-                    "User",
+                    "agent",
+                    "Agent One",
                     "please help",
+                    receiptStatus,
                     LocalDateTime.now()));
+        }
+
+        @Override
+        public boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now) {
+            receiptStatus = "read";
+            return true;
         }
 
         @Override

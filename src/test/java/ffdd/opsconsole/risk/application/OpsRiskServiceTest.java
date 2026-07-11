@@ -15,6 +15,7 @@ import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
 import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
@@ -70,6 +71,7 @@ class OpsRiskServiceTest {
     private final FakeUserKycStatusFacade userKycStatusFacade = new FakeUserKycStatusFacade();
     private final FakeFinanceWithdrawalKycReviewFacade financeWithdrawalKycReviewFacade = new FakeFinanceWithdrawalKycReviewFacade();
     private final FakeMarketExchangeKycReviewFacade marketExchangeKycReviewFacade = new FakeMarketExchangeKycReviewFacade();
+    private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
@@ -78,12 +80,14 @@ class OpsRiskServiceTest {
             userKycStatusFacade,
             financeWithdrawalKycReviewFacade,
             marketExchangeKycReviewFacade,
+            configFacade,
             auditLogService,
             lockMapper);
 
     @BeforeEach
     void stubLockMapperNoActiveLock() {
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+        when(configFacade.activeValue(anyString())).thenReturn(Optional.empty());
     }
 
     @Test
@@ -308,6 +312,28 @@ class OpsRiskServiceTest {
                 new RiskArbitrageParamUpdateRequest("同一人多领就拦", "bad free text threshold", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    void otpGateParamRejectsValueBelowSafeMinimum() {
+        ApiResult<RiskArbitrageParamView> result = service.updateArbitrageParam(
+                "otpGate.otpTtlSeconds",
+                "idem-k2-otp",
+                new RiskArbitrageParamUpdateRequest("10", "unsafe ttl", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    void otpGateCooldownWritesCanonicalAuthRiskConfig() {
+        ApiResult<RiskArbitrageParamView> result = service.updateArbitrageParam(
+                "otpGate.resendSeconds",
+                "idem-k2-otp-cooldown",
+                new RiskArbitrageParamUpdateRequest("90", "tighten otp cooldown", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        verify(configFacade).upsertAdminValue(
+                "auth.risk.otp_cooldown_seconds", "90", "NUMBER", "auth-risk", "K2 OTP gate canonical configuration");
     }
 
     @Test
@@ -631,7 +657,10 @@ class OpsRiskServiceTest {
         private final List<RiskArbitrageParamView> arbitrageParams = new ArrayList<>(List.of(
                 new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "sub", "note"),
                 new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "sub", "note"),
-                new RiskArbitrageParamView("leaderboardVelocityMultiplier", "刷榜增速异常倍数", "> 5x 基线", "sub", "note")));
+                new RiskArbitrageParamView("leaderboardVelocityMultiplier", "刷榜增速异常倍数", "> 5x 基线", "sub", "note"),
+                new RiskArbitrageParamView("otpGate.resendSeconds", "重发冷却", "60", "sub", "note"),
+                new RiskArbitrageParamView("otpGate.captchaAfterSends", "图形验证触发次数", "3", "sub", "note"),
+                new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "sub", "note")));
         private final List<RiskArbitrageRowView> arbitrageRows = new ArrayList<>(List.of(
                 new RiskArbitrageRowView("T-318", "trial", "CL-318", List.of("CL-318", "7 次"), 3, List.of("freeze", "flag"), null)));
         private final List<RiskScoreDimensionView> scoreDimensions = new ArrayList<>(List.of(

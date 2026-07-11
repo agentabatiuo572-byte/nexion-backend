@@ -746,7 +746,13 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     RiskArbitrageParamView findArbitrageParam(@Param("key") String key);
 
-    @Insert("INSERT INTO nx_admin_risk_arbitrage_param (param_key,name,value_text,sub_text,note_text,is_deleted) VALUES (#{key},#{name},#{value},#{sub},#{note},0)")
+    @Insert("""
+            INSERT INTO nx_admin_risk_arbitrage_param (param_key,name,value_text,sub_text,note_text,is_deleted)
+            VALUES (#{key},#{name},#{value},#{sub},#{note},0)
+            ON DUPLICATE KEY UPDATE
+              name=VALUES(name),value_text=VALUES(value_text),sub_text=VALUES(sub_text),
+              note_text=VALUES(note_text),is_deleted=0,updated_at=NOW()
+            """)
     int insertArbitrageParam(@Param("key") String key, @Param("name") String name, @Param("value") String value,
                              @Param("sub") String sub, @Param("note") String note);
 

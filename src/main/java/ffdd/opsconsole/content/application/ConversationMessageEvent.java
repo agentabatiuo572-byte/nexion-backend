@@ -26,16 +26,19 @@ import lombok.Setter;
 @AllArgsConstructor
 public class ConversationMessageEvent {
 
-    /** 事件类型：消息 / 转交 / 状态变更 / 主动发起。 */
+    /** 事件类型：消息 / 转交 / 状态变更 / 主动发起 / 客户回执。 */
     public enum EventType {
         MESSAGE,
         TRANSFER,
         STATUS,
-        INITIATE
+        INITIATE,
+        RECEIPT
     }
 
     /** 会话编号（与 ContentConversationView.conversationNo 同源）。 */
     private String conversationNo;
+    /** 回执或消息明确指向的消息 id；避免并发新消息被误标已读。 */
+    private Long messageId;
     /** 事件类型。 */
     private EventType eventType;
     /** 发送方类型：AGENT / USER / SYSTEM（USER 当前仅供未来跨进程接入预留）。 */

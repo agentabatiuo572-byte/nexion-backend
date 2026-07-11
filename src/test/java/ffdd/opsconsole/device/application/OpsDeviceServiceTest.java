@@ -204,14 +204,44 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void updateE3ConfigStoresPromoMaxPerSessionAsInteger() {
+    void updateE3ConfigRejectsFractionalIntegerValue() {
         E3ConfigUpdateRequest request = new E3ConfigUpdateRequest("E.tradein.promo.maxPerSession", "2.9", "session cap", "superadmin");
 
         ApiResult<Map<String, Object>> result = service.updateE3Config("idem-e3", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(deviceRepository.config).containsEntry("promoMaxPerSession", "2");
-        assertThat(deviceRepository.lastConfigValueType).isEqualTo("NUMBER");
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(deviceRepository.config).doesNotContainKey("promoMaxPerSession");
+    }
+
+    @Test
+    void updateE3ConfigAcceptsRhythmCapacityTradeinAndEarlyAccessKeys() {
+        assertThat(service.updateE3Config(
+                "idem-capacity",
+                new E3ConfigUpdateRequest("E.device.capacity.band1DeltaPct", "-5", "capacity schedule", "superadmin")).getCode())
+                .isZero();
+        assertThat(service.updateE3Config(
+                "idem-tradein",
+                new E3ConfigUpdateRequest("E.tradein.enabled", "true", "trade-in ladder", "superadmin")).getCode())
+                .isZero();
+        assertThat(service.updateE3Config(
+                "idem-early-access",
+                new E3ConfigUpdateRequest("E.release.earlyAccess.leadDays", "7", "release early access", "superadmin")).getCode())
+                .isZero();
+
+        assertThat(deviceRepository.config)
+                .containsEntry("capacityBand1DeltaPct", "-5")
+                .containsEntry("tradeinEnabled", "true")
+                .containsEntry("earlyAccessLeadDays", "7");
+    }
+
+    @Test
+    void updateE3ConfigRejectsNonIncreasingTradeinLadderCut() {
+        ApiResult<Map<String, Object>> result = service.updateE3Config(
+                "idem-ladder-order",
+                new E3ConfigUpdateRequest("E.tradein.ladder.cut1", "60", "invalid ladder", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(deviceRepository.config).doesNotContainKey("tradeinLadderCut1");
     }
 
     @Test
@@ -1039,6 +1069,53 @@ class OpsDeviceServiceTest {
         assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_REFUNDED");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("idempotencyKey", "idem-replay-e4-refund");
+    }
+
+    @Test
+    void replayE3ConfigBatchValidatesAndWritesTheWholeCandidateAtomically() {
+        deviceRepository.config.putAll(Map.of(
+                "tradeinLadderCut1", "25", "tradeinLadderCut2", "50",
+                "tradeinLadderCut3", "75", "tradeinLadderCut4", "100"));
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("E.tradein.ladder.cut1", "60");
+        values.put("E.tradein.ladder.cut2", "70");
+        values.put("E.tradein.ladder.cut3", "80");
+        values.put("E.tradein.ladder.cut4", "90");
+        values.put("E.device.capacity.applyTo.phone", "true");
+        values.put("E.tradein.enabled", "false");
+        values.put("E.release.earlyAccess.enabled", "true");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e3_config_batch", Map.of("values", values)),
+                new AuditReplayContext("superadmin", "replace complete E3 ladder", "idem-replay-e3-batch"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(deviceRepository.config)
+                .containsEntry("tradeinLadderCut1", "60")
+                .containsEntry("tradeinLadderCut2", "70")
+                .containsEntry("tradeinLadderCut3", "80")
+                .containsEntry("tradeinLadderCut4", "90")
+                .containsEntry("capacityApplyToPhone", "true")
+                .containsEntry("tradeinEnabled", "false")
+                .containsEntry("earlyAccessEnabled", "true");
+    }
+
+    @Test
+    void replayE3ConfigBatchRejectsInvalidCandidateWithoutPartialWrites() {
+        deviceRepository.config.putAll(Map.of(
+                "tradeinLadderCut1", "25", "tradeinLadderCut2", "50",
+                "tradeinLadderCut3", "75", "tradeinLadderCut4", "100"));
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e3_config_batch", Map.of("values", Map.of(
+                        "E.tradein.ladder.cut1", "60",
+                        "E.tradein.ladder.cut2", "55"))),
+                new AuditReplayContext("superadmin", "invalid E3 ladder candidate", "idem-replay-e3-invalid"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(deviceRepository.config)
+                .containsEntry("tradeinLadderCut1", "25")
+                .containsEntry("tradeinLadderCut2", "50");
     }
 
     @Test

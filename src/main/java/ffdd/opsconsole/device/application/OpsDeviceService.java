@@ -128,7 +128,34 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "promoDelaySeconds",
             "promoMinAgeDays",
             "promoRoutes",
-            "inventorySoftMax");
+            "inventorySoftMax",
+            "capacityBand1DeltaPct",
+            "capacityBand2DeltaPct",
+            "capacityBand3DeltaPct",
+            "capacityFloorPct",
+            "capacitySubsidyDays",
+            "capacityApplyToPhone",
+            "capacityApplyToCloudShare",
+            "capacityApplyToPcGpu",
+            "capacityApplyToS1",
+            "capacityApplyToPro",
+            "capacityApplyToProV2",
+            "capacityApplyToRackP1",
+            "capacityApplyToRackP2",
+            "tradeinEnabled",
+            "tradeinLadderCut1",
+            "tradeinLadderCut2",
+            "tradeinLadderCut3",
+            "tradeinLadderCut4",
+            "tradeinLadderCredit1",
+            "tradeinLadderCredit2",
+            "tradeinLadderCredit3",
+            "tradeinLadderCredit4",
+            "tradeinLadderCredit5",
+            "tradeinRequireHigherPrice",
+            "tradeinMaxDevicesPerOrder",
+            "earlyAccessEnabled",
+            "earlyAccessLeadDays");
     private final DeviceOpsRepository deviceRepository;
     private final DeviceCatalogRepository catalogRepository;
     private final PlatformConfigFacade configFacade;
@@ -1137,13 +1164,24 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
-        String key = normalizeE3Key(request.key());
+        String key;
+        try {
+            key = normalizeE3Key(request.key());
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_e3_config", key) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        E3ConfigValue value = normalizeE3Value(key, request.value());
         Map<String, String> before = deviceRepository.e3Config();
+        E3ConfigValue value;
+        try {
+            value = normalizeE3Value(key, request.value());
+            validateE3Invariants(before, key, value.value());
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
         deviceRepository.upsertE3Config(key, value.value(), value.valueType(), operator(request.operator()));
         Map<String, String> after = deviceRepository.e3Config();
         audit("E3_CONFIG_CHANGED", "DEVICE_E3_CONFIG", key, request.operator(), detail(
@@ -1151,6 +1189,43 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "oldValue", before.get(key),
                 "newValue", after.get(key),
                 "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return e3Overview();
+    }
+
+    private ApiResult<Map<String, Object>> updateE3ConfigBatch(
+            String idempotencyKey,
+            Map<String, Object> rawValues,
+            String reason,
+            String operator) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, reason);
+        if (guard != null) {
+            return guard;
+        }
+        if (rawValues == null || rawValues.isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E3_CONFIG_VALUES_REQUIRED");
+        }
+        Map<String, String> before = deviceRepository.e3Config();
+        Map<String, E3ConfigValue> normalized = new LinkedHashMap<>();
+        Map<String, String> candidate = new LinkedHashMap<>(before);
+        try {
+            for (Map.Entry<String, Object> entry : rawValues.entrySet()) {
+                String key = normalizeE3Key(entry.getKey());
+                E3ConfigValue value = normalizeE3Value(key, entry.getValue() == null ? null : String.valueOf(entry.getValue()));
+                normalized.put(key, value);
+                candidate.put(key, value.value());
+            }
+            validateE3Candidate(candidate);
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
+        String actor = operator(operator);
+        normalized.forEach((key, value) -> deviceRepository.upsertE3Config(key, value.value(), value.valueType(), actor));
+        audit("E3_CONFIG_BATCH_CHANGED", "DEVICE_E3_CONFIG", String.join(",", normalized.keySet()), operator, detail(
+                "keys", List.copyOf(normalized.keySet()),
+                "oldValues", before,
+                "newValues", candidate,
+                "reason", reason.trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return e3Overview();
     }
@@ -2026,6 +2101,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             normalized = normalized.substring("E.device.".length());
         } else if (normalized.startsWith("E.tradein.")) {
             normalized = normalized.substring("E.tradein.".length());
+        } else if (normalized.startsWith("E.release.earlyAccess.")) {
+            normalized = "earlyAccess." + normalized.substring("E.release.earlyAccess.".length());
         }
         normalized = switch (normalized) {
             case "taskLock.s1" -> "taskLockS1";
@@ -2036,6 +2113,33 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             case "promo.delaySec", "promoDelaySec", "promo.delaySeconds", "promoDelaySeconds" -> "promoDelaySeconds";
             case "promo.minAgeDays", "promoMinAgeDays" -> "promoMinAgeDays";
             case "promo.routes", "promoRoutes" -> "promoRoutes";
+            case "capacity.band1DeltaPct" -> "capacityBand1DeltaPct";
+            case "capacity.band2DeltaPct" -> "capacityBand2DeltaPct";
+            case "capacity.band3DeltaPct" -> "capacityBand3DeltaPct";
+            case "capacity.floorPct" -> "capacityFloorPct";
+            case "capacity.subsidyDays" -> "capacitySubsidyDays";
+            case "capacity.applyTo.phone" -> "capacityApplyToPhone";
+            case "capacity.applyTo.cloud-share" -> "capacityApplyToCloudShare";
+            case "capacity.applyTo.pc-gpu" -> "capacityApplyToPcGpu";
+            case "capacity.applyTo.stellarbox-s1" -> "capacityApplyToS1";
+            case "capacity.applyTo.stellarbox-pro" -> "capacityApplyToPro";
+            case "capacity.applyTo.stellarbox-pro-v2" -> "capacityApplyToProV2";
+            case "capacity.applyTo.stellarrack-p1" -> "capacityApplyToRackP1";
+            case "capacity.applyTo.stellarrack-p2" -> "capacityApplyToRackP2";
+            case "enabled" -> "tradeinEnabled";
+            case "ladder.cut1" -> "tradeinLadderCut1";
+            case "ladder.cut2" -> "tradeinLadderCut2";
+            case "ladder.cut3" -> "tradeinLadderCut3";
+            case "ladder.cut4" -> "tradeinLadderCut4";
+            case "ladder.credit1" -> "tradeinLadderCredit1";
+            case "ladder.credit2" -> "tradeinLadderCredit2";
+            case "ladder.credit3" -> "tradeinLadderCredit3";
+            case "ladder.credit4" -> "tradeinLadderCredit4";
+            case "ladder.credit5" -> "tradeinLadderCredit5";
+            case "requireHigherPrice" -> "tradeinRequireHigherPrice";
+            case "maxDevicesPerOrder" -> "tradeinMaxDevicesPerOrder";
+            case "earlyAccess.enabled" -> "earlyAccessEnabled";
+            case "earlyAccess.leadDays" -> "earlyAccessLeadDays";
             default -> normalized;
         };
         if (!E3_CONFIG_KEYS.contains(normalized)) {
@@ -2059,6 +2163,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             return new E3ConfigValue(value, "STRING");
         }
+        if (key.startsWith("capacityApplyTo") || Set.of(
+                "tradeinEnabled", "tradeinRequireHigherPrice", "earlyAccessEnabled").contains(key)) {
+            String value = normalizeText(raw).toLowerCase(Locale.ROOT);
+            if (Set.of("true", "1", "on", "是").contains(value)) {
+                return new E3ConfigValue("true", "BOOLEAN");
+            }
+            if (Set.of("false", "0", "off", "否").contains(value)) {
+                return new E3ConfigValue("false", "BOOLEAN");
+            }
+            throw new IllegalArgumentException("boolean config is invalid");
+        }
         BigDecimal value = parseDecimal(raw);
         if (key.startsWith("degrade")) {
             if (value.compareTo(BigDecimal.valueOf(-100)) < 0 || value.compareTo(BigDecimal.ZERO) > 0) {
@@ -2072,15 +2187,77 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             return numberConfig(value.setScale(2, RoundingMode.HALF_UP));
         }
+        if (key.startsWith("capacityBand") && key.endsWith("DeltaPct")) {
+            if (value.compareTo(BigDecimal.valueOf(-100)) < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0) {
+                throw new IllegalArgumentException("capacity delta config must be -100-100");
+            }
+            return numberConfig(value.setScale(2, RoundingMode.HALF_UP));
+        }
+        if ("capacityFloorPct".equals(key) || key.startsWith("tradeinLadderCut") || key.startsWith("tradeinLadderCredit")) {
+            if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0) {
+                throw new IllegalArgumentException("percent config must be 0-100");
+            }
+            return numberConfig(value.setScale(2, RoundingMode.HALF_UP));
+        }
         if (key.endsWith("Days") || key.endsWith("Seconds") || key.endsWith("Max") || key.endsWith("Months")
                 || "stageEarlyEnd".equals(key) || "stageMidEnd".equals(key) || "cycleMonths".equals(key)
-                || "inventorySoftMax".equals(key) || "promoMaxPerSession".equals(key) || key.startsWith("taskLock")) {
+                || "inventorySoftMax".equals(key) || "promoMaxPerSession".equals(key) || key.startsWith("taskLock")
+                || "tradeinMaxDevicesPerOrder".equals(key)) {
             if (value.compareTo(BigDecimal.ZERO) < 0) {
                 throw new IllegalArgumentException("numeric config must be positive");
             }
-            return numberConfig(BigDecimal.valueOf(value.setScale(0, RoundingMode.DOWN).longValue()));
+            if (value.stripTrailingZeros().scale() > 0) {
+                throw new IllegalArgumentException("numeric config must be an integer");
+            }
+            return numberConfig(new BigDecimal(value.toBigIntegerExact()));
         }
         return numberConfig(value.setScale(4, RoundingMode.HALF_UP));
+    }
+
+    private void validateE3Invariants(Map<String, String> current, String changedKey, String changedValue) {
+        Map<String, String> candidate = new LinkedHashMap<>(current);
+        candidate.put(changedKey, changedValue);
+        validateE3Candidate(candidate);
+    }
+
+    private void validateE3Candidate(Map<String, String> candidate) {
+        if (candidate.keySet().stream().anyMatch(Set.of("stageEarlyEnd", "stageMidEnd", "cycleMonths")::contains)) {
+            BigDecimal early = e3Decimal(candidate, "stageEarlyEnd", "3");
+            BigDecimal mid = e3Decimal(candidate, "stageMidEnd", "8");
+            BigDecimal cycle = e3Decimal(candidate, "cycleMonths", "12");
+            if (!(early.compareTo(mid) < 0 && mid.compareTo(cycle) < 0)) {
+                throw new IllegalArgumentException("capacity stages must satisfy early < mid < cycle");
+            }
+        }
+        if (candidate.keySet().stream().anyMatch(key -> key.startsWith("tradeinLadderCut"))) {
+            List<BigDecimal> cuts = List.of(
+                    e3Decimal(candidate, "tradeinLadderCut1", "25"),
+                    e3Decimal(candidate, "tradeinLadderCut2", "50"),
+                    e3Decimal(candidate, "tradeinLadderCut3", "75"),
+                    e3Decimal(candidate, "tradeinLadderCut4", "100"));
+            for (int i = 1; i < cuts.size(); i++) {
+                if (cuts.get(i - 1).compareTo(cuts.get(i)) >= 0) {
+                    throw new IllegalArgumentException("trade-in ladder cuts must be strictly increasing");
+                }
+            }
+        }
+        if (candidate.keySet().stream().anyMatch(key -> key.startsWith("tradeinLadderCredit"))) {
+            List<BigDecimal> credits = List.of(
+                    e3Decimal(candidate, "tradeinLadderCredit1", "75"),
+                    e3Decimal(candidate, "tradeinLadderCredit2", "60"),
+                    e3Decimal(candidate, "tradeinLadderCredit3", "45"),
+                    e3Decimal(candidate, "tradeinLadderCredit4", "30"),
+                    e3Decimal(candidate, "tradeinLadderCredit5", "15"));
+            for (int i = 1; i < credits.size(); i++) {
+                if (credits.get(i - 1).compareTo(credits.get(i)) <= 0) {
+                    throw new IllegalArgumentException("trade-in ladder credits must be strictly decreasing");
+                }
+            }
+        }
+    }
+
+    private BigDecimal e3Decimal(Map<String, String> config, String key, String fallback) {
+        return new BigDecimal(config.getOrDefault(key, fallback));
     }
 
     private E3ConfigValue numberConfig(BigDecimal value) {
@@ -2412,6 +2589,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             case "e3_config" -> {
                 E3ConfigUpdateRequest req = new E3ConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
                 return updateE3Config(idem, req);
+            }
+            case "e3_config_batch" -> {
+                Object values = p.get("values");
+                if (!(values instanceof Map<?, ?> rawValues)) {
+                    return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E3_CONFIG_VALUES_REQUIRED");
+                }
+                Map<String, Object> batch = new LinkedHashMap<>();
+                rawValues.forEach((key, value) -> batch.put(String.valueOf(key), value));
+                return updateE3ConfigBatch(idem, batch, reason, operator);
             }
             case "e3_tradein" -> {
                 // @Transactional(rollbackFor=Exception.class) 自调用陷阱:replay 本身不带 @Transactional(与 G 域 op7 一致),

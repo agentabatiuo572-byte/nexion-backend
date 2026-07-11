@@ -857,6 +857,8 @@ class OpsGrowthServiceTest {
     @Test
     void updateRhythmCurrentMonthMirrorsH1PhaseForDownstreamReaders() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "10");
+        configFacade.values.put("growth.phase.month.11.genesisEmissionsOpen", "1");
 
         ApiResult<Map<String, Object>> result = service.updateRhythmParam(
                 "idem-h1-rhythm",
@@ -867,7 +869,9 @@ class OpsGrowthServiceTest {
         assertThat(configFacade.values)
                 .containsEntry("H1.rhythm.currentMonth", "11")
                 .containsEntry("growth.phase.current_month", "11")
-                .containsEntry("growth.phase.current", "P6");
+                .containsEntry("growth.phase.current", "P6")
+                .containsEntry("growth.phase.genesis_emissions_open", "1")
+                .containsEntry("withdrawal.nex_gate.hold_days", "21");
         GrowthRhythmSnapshot snapshot = GrowthRhythmSnapshot.from(configFacade, OpsReadTimeSeedPolicy.enabledForDirectConstruction());
         assertThat(snapshot.currentMonth()).isEqualTo(11);
         assertThat(snapshot.currentPhase()).isEqualTo("P6");
@@ -966,6 +970,136 @@ class OpsGrowthServiceTest {
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H1_MONTH_DIAL_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("month", 7);
+    }
+
+    @Test
+    void advancingMonthSynchronizesGenesisGateOpenAndClosedFromConfiguredCells() {
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "6");
+        configFacade.values.put("growth.phase.genesis_emissions_open", "0");
+        configFacade.values.put("growth.phase.month.7.genesisEmissionsOpen", "1");
+        configFacade.values.put("growth.phase.month.8.genesisEmissionsOpen", "0");
+
+        ApiResult<Map<String, Object>> open = service.updateRhythmParam(
+                "idem-month-seven", "currentMonth",
+                new GrowthConfigUpdateRequest("currentMonth", "7", "advance to listing month", "superadmin"));
+        assertThat(open.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.phase.genesis_emissions_open", "1");
+
+        ApiResult<Map<String, Object>> close = service.updateRhythmParam(
+                "idem-month-eight", "currentMonth",
+                new GrowthConfigUpdateRequest("currentMonth", "8", "advance beyond listing month", "superadmin"));
+        assertThat(close.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.phase.genesis_emissions_open", "0");
+    }
+
+    @Test
+    void advancingMonthCannotOpenGenesisGateBelowCoverageRedline() {
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "6");
+        configFacade.values.put("growth.phase.genesis_emissions_open", "0");
+        configFacade.values.put("growth.phase.month.7.genesisEmissionsOpen", "1");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+
+        ApiResult<Map<String, Object>> result = service.updateRhythmParam(
+                "idem-month-seven-redline", "currentMonth",
+                new GrowthConfigUpdateRequest("currentMonth", "7", "advance to listing month", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values)
+                .containsEntry("H1.rhythm.currentMonth", "6")
+                .containsEntry("growth.phase.genesis_emissions_open", "0");
+    }
+
+    @Test
+    void updateGenesisEmissionsDialAcceptsOperatorBooleanLabel() {
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "7");
+
+        ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
+                "idem-h1-emissions",
+                7,
+                "genesisEmissionsOpen",
+                new GrowthConfigUpdateRequest("genesisEmissionsOpen", "是", "open emissions at listing", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("growth.phase.month.7.genesisEmissionsOpen", "1")
+                .containsEntry("growth.phase.genesis_emissions_open", "1");
+    }
+
+    @Test
+    void openingGenesisEmissionsBelowCoverageRedlineReturns422() {
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("growth.phase.month.7.genesisEmissionsOpen", "0");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+
+        ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
+                "idem-h1-emissions-redline",
+                7,
+                "genesisEmissionsOpen",
+                new GrowthConfigUpdateRequest("genesisEmissionsOpen", "是", "open emissions at listing", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+    }
+
+    @Test
+    void updateMonthDialSupportsConfiguredEighteenMonthRhythm() {
+        configFacade.values.put("H1.rhythm.totalMonths", "18");
+
+        ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
+                "idem-h1-month-18",
+                18,
+                "campaignRewardNex",
+                new GrowthConfigUpdateRequest("campaignRewardNex", "80", "configure month eighteen", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.phase.month.18.campaignRewardNex", "80");
+    }
+
+    @Test
+    void phaseOverviewReturnsCompleteTwentyFourMonthMatrixWithoutReadTimeSeeds() {
+        configFacade.values.put("H1.rhythm.totalMonths", "24");
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+
+        ApiResult<Map<String, Object>> result = service.phases();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("monthlyDials")).asList().hasSize(24);
+        List<?> monthlyDials = (List<?>) result.getData().get("monthlyDials");
+        Map<String, Object> month24 = detailMap(monthlyDials.get(23));
+        assertThat(month24).containsEntry("month", 24);
+        assertThat(detailMap(month24.get("dials")))
+                .containsEntry("genesisEmissionsOpen", "是")
+                .containsEntry("withdrawNexHoldDays", 21);
+    }
+
+    @Test
+    void shorteningRhythmChecksCoverageBeforeClampingAndSyncsActiveDials() {
+        configFacade.values.put("H1.rhythm.totalMonths", "18");
+        configFacade.values.put("H1.rhythm.currentMonth", "18");
+        configFacade.values.put("growth.phase.campaign_reward_nex", "10");
+        configFacade.values.put("growth.phase.month.12.campaignRewardNex", "80");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+
+        ApiResult<Map<String, Object>> rejected = service.updateRhythmParam(
+                "idem-h1-shorten-redline",
+                "totalMonths",
+                new GrowthConfigUpdateRequest("totalMonths", "12", "shorten rhythm", "superadmin"));
+
+        assertThat(rejected.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values).containsEntry("H1.rhythm.totalMonths", "18");
+
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("90.00"), new BigDecimal("85.00"));
+        ApiResult<Map<String, Object>> accepted = service.updateRhythmParam(
+                "idem-h1-shorten-ok",
+                "totalMonths",
+                new GrowthConfigUpdateRequest("totalMonths", "12", "shorten rhythm safely", "superadmin"));
+
+        assertThat(accepted.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("H1.rhythm.currentMonth", "12")
+                .containsEntry("growth.phase.campaign_reward_nex", "80");
     }
 
     @Test
