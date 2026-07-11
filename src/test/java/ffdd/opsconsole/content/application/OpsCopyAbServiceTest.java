@@ -676,10 +676,16 @@ class OpsCopyAbServiceTest {
                 "40/60",
                 "Marina K.",
                 "调整分流默认"));
+        var repeated = service.updateFrameworkParam("split", "idem-i1-fw", new CopyFrameworkUpdateRequest(
+                "40/60",
+                "Marina K.",
+                "调整分流默认"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().current()).isEqualTo("40/60");
-        verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
+        assertThat(repeated.getCode()).isZero();
+        assertThat(repeated.getData().current()).isEqualTo("40/60");
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
                 "I1_EXPERIMENT_FRAMEWORK_UPDATED".equals(request.getAction())
                         && "HIGH".equals(request.getRiskLevel())));
     }

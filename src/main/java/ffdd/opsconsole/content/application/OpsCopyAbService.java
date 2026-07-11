@@ -13,6 +13,7 @@ import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyExperimentMutationResult;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantMetric;
+import ffdd.opsconsole.content.domain.CopyFrameworkMutationResult;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyMutationResult;
 import ffdd.opsconsole.content.domain.CopyPositionView;
@@ -72,6 +73,7 @@ public class OpsCopyAbService {
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_CREATE = "I1_COPY_VERSION_OPTION_CREATE";
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_UPDATE = "I1_COPY_VERSION_OPTION_UPDATE";
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_DELETE = "I1_COPY_VERSION_OPTION_DELETE";
+    private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_FRAMEWORK_UPDATE = "I1_COPY_EXPERIMENT_FRAMEWORK_UPDATE";
     private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_CREATE = "I1_COPY_EXPERIMENT_CREATE";
     private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_START = "I1_COPY_EXPERIMENT_START";
     private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_STOP = "I1_COPY_EXPERIMENT_STOP";
@@ -649,9 +651,13 @@ public class OpsCopyAbService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<CopyFrameworkParamView> updateFrameworkParam(String paramKey, String idempotencyKey, CopyFrameworkUpdateRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (idempotencyKey.trim().length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IDEMPOTENCY_KEY_INVALID");
         }
         if (request == null || !StringUtils.hasText(request.value()) || request.value().trim().length() > 80) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FRAMEWORK_VALUE_INVALID");
@@ -659,6 +665,17 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
+        String resourceId = StringUtils.hasText(paramKey) ? paramKey.trim() : "";
+        return executeFrameworkMutation(
+                IDEMPOTENCY_SCOPE_EXPERIMENT_FRAMEWORK_UPDATE,
+                resourceId,
+                idempotencyKey,
+                request,
+                () -> updateFrameworkParamOnce(resourceId, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyFrameworkParamView> updateFrameworkParamOnce(
+            String paramKey, String idempotencyKey, CopyFrameworkUpdateRequest request) {
         CopyFrameworkParamView current = findFramework(paramKey);
         if (current == null) {
             return ApiResult.fail(404, "COPY_FRAMEWORK_PARAM_NOT_FOUND");
@@ -668,7 +685,7 @@ public class OpsCopyAbService {
         }
         copyAbRepository.updateFrameworkParam(current.key(), request.value().trim(), operator(request.operator()), now());
         CopyFrameworkParamView updated = findFramework(current.key());
-        audit("I1_EXPERIMENT_FRAMEWORK_UPDATED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        auditRequired("I1_EXPERIMENT_FRAMEWORK_UPDATED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.current(),
                 "to", updated.current()));
         return ApiResult.ok(updated);
@@ -1387,6 +1404,16 @@ public class OpsCopyAbService {
                 scope, idempotencyKey.trim(), requestHash(scope, resourceId, request),
                 CopyExperimentMutationResult.class,
                 () -> CopyExperimentMutationResult.from(action.get()));
+        return result.toApiResult();
+    }
+
+    private ApiResult<CopyFrameworkParamView> executeFrameworkMutation(
+            String scope, String resourceId, String idempotencyKey, Object request,
+            Supplier<ApiResult<CopyFrameworkParamView>> action) {
+        CopyFrameworkMutationResult result = idempotencyService.execute(
+                scope, idempotencyKey.trim(), requestHash(scope, resourceId, request),
+                CopyFrameworkMutationResult.class,
+                () -> CopyFrameworkMutationResult.from(action.get()));
         return result.toApiResult();
     }
 
