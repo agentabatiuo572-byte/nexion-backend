@@ -1,6 +1,8 @@
 -- I1 copy pool: align the physical schema with the Vietnamese-copy and copy-position model.
 -- Every statement is idempotent so existing environments can safely re-run this migration.
 
+SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_content_copy' AND COLUMN_NAME = 'draft_vi') = 0,
   'ALTER TABLE nx_content_copy ADD COLUMN draft_vi TEXT NULL AFTER draft_en',
   'SELECT 1');
@@ -61,16 +63,40 @@ CREATE TABLE IF NOT EXISTS nx_content_copy_version_option (
 INSERT IGNORE INTO nx_content_copy_version_option
   (version_key, name, description, status, sort_order, revision, last_operator, created_at, updated_at, is_deleted)
 VALUES
-  ('v1', '版本 v1', '初始文案版本', 'ACTIVE', 10, 1, 'migration', NOW(), NOW(), 0),
-  ('v2', '版本 v2', '第二版文案', 'ACTIVE', 20, 1, 'migration', NOW(), NOW(), 0),
-  ('v3', '版本 v3', '第三版文案', 'ACTIVE', 30, 1, 'migration', NOW(), NOW(), 0),
-  ('v4', '版本 v4', '第四版文案', 'ACTIVE', 40, 1, 'migration', NOW(), NOW(), 0),
-  ('v5', '版本 v5', '第五版文案', 'ACTIVE', 50, 1, 'migration', NOW(), NOW(), 0);
+  ('v1', CONVERT(0xE78988E69CAC207631 USING utf8mb4), CONVERT(0xE5889DE5A78BE69687E6A188E78988E69CAC USING utf8mb4), 'ACTIVE', 10, 1, 'migration', NOW(), NOW(), 0),
+  ('v2', CONVERT(0xE78988E69CAC207632 USING utf8mb4), CONVERT(0xE7ACACE4BA8CE78988E69687E6A188 USING utf8mb4), 'ACTIVE', 20, 1, 'migration', NOW(), NOW(), 0),
+  ('v3', CONVERT(0xE78988E69CAC207633 USING utf8mb4), CONVERT(0xE7ACACE4B889E78988E69687E6A188 USING utf8mb4), 'ACTIVE', 30, 1, 'migration', NOW(), NOW(), 0),
+  ('v4', CONVERT(0xE78988E69CAC207634 USING utf8mb4), CONVERT(0xE7ACACE59B9BE78988E69687E6A188 USING utf8mb4), 'ACTIVE', 40, 1, 'migration', NOW(), NOW(), 0),
+  ('v5', CONVERT(0xE78988E69CAC207635 USING utf8mb4), CONVERT(0xE7ACACE4BA94E78988E69687E6A188 USING utf8mb4), 'ACTIVE', 50, 1, 'migration', NOW(), NOW(), 0);
+
+-- Repair seed rows written by a client with the wrong connection encoding. User-edited rows are preserved.
+UPDATE nx_content_copy_version_option
+SET name = CASE version_key
+      WHEN 'v1' THEN CONVERT(0xE78988E69CAC207631 USING utf8mb4)
+      WHEN 'v2' THEN CONVERT(0xE78988E69CAC207632 USING utf8mb4)
+      WHEN 'v3' THEN CONVERT(0xE78988E69CAC207633 USING utf8mb4)
+      WHEN 'v4' THEN CONVERT(0xE78988E69CAC207634 USING utf8mb4)
+      WHEN 'v5' THEN CONVERT(0xE78988E69CAC207635 USING utf8mb4)
+    END,
+    description = CASE version_key
+      WHEN 'v1' THEN CONVERT(0xE5889DE5A78BE69687E6A188E78988E69CAC USING utf8mb4)
+      WHEN 'v2' THEN CONVERT(0xE7ACACE4BA8CE78988E69687E6A188 USING utf8mb4)
+      WHEN 'v3' THEN CONVERT(0xE7ACACE4B889E78988E69687E6A188 USING utf8mb4)
+      WHEN 'v4' THEN CONVERT(0xE7ACACE59B9BE78988E69687E6A188 USING utf8mb4)
+      WHEN 'v5' THEN CONVERT(0xE7ACACE4BA94E78988E69687E6A188 USING utf8mb4)
+    END
+WHERE version_key IN ('v1', 'v2', 'v3', 'v4', 'v5')
+  AND is_deleted = 0
+  AND revision = 1
+  AND last_operator IN ('migration', 'schema');
 
 -- Preserve all existing historical version keys as selectable catalog data.
 INSERT IGNORE INTO nx_content_copy_version_option
   (version_key, name, description, status, sort_order, revision, last_operator, created_at, updated_at, is_deleted)
-SELECT version, CONCAT('版本 ', version), '由历史文案版本迁移', 'ACTIVE', 1000, 1, 'migration', NOW(), NOW(), 0
+SELECT version,
+       CONCAT(CONVERT(0xE78988E69CAC20 USING utf8mb4), version),
+       CONVERT(0xE794B1E58E86E58FB2E69687E6A188E78988E69CACE8BF81E7A7BB USING utf8mb4),
+       'ACTIVE', 1000, 1, 'migration', NOW(), NOW(), 0
 FROM nx_content_copy_version
 WHERE version IS NOT NULL AND version <> ''
 GROUP BY version;
