@@ -97,7 +97,8 @@ public class OpsGrowthService implements AuditReplayable {
             "commissionTighteningPct",
             "campaignRewardNex",
             "withdrawNexMinBalance",
-            "withdrawNexHoldDays");
+            "withdrawNexHoldDays",
+            "genesisEmissionsOpen");
     private static final List<Integer> RHYTHM_TOTAL_OPTIONS = List.of(9, 12, 15, 18, 24);
     private static final List<Integer> RHYTHM_PHASE_WEIGHTS = List.of(2, 2, 3, 1, 2, 2);
     private static final Set<String> PHASE_CONTROL_KEYS = Set.of("schedule", "pin", "override");
@@ -202,15 +203,32 @@ public class OpsGrowthService implements AuditReplayable {
             String normalizedValue = normalizeRhythmValue(normalizedKey, request.value(), totalMonths);
             int storedCurrentMonth = storedRhythmCurrentMonth();
             String configKey = rhythmConfigKey(normalizedKey);
+            if ("currentMonth".equals(normalizedKey)) {
+                int nextMonth = Integer.parseInt(normalizedValue);
+                if (monthTransitionAmplifiesPayout(storedCurrentMonth, nextMonth) && coverageBelowRedline()) {
+                    return coverageRedline();
+                }
+            }
+            if ("totalMonths".equals(normalizedKey)) {
+                int nextTotalMonths = Integer.parseInt(normalizedValue);
+                int mirroredMonth = Math.min(storedCurrentMonth, nextTotalMonths);
+                if (mirroredMonth > 0
+                        && monthTransitionAmplifiesPayout(storedCurrentMonth, mirroredMonth)
+                        && coverageBelowRedline()) {
+                    return coverageRedline();
+                }
+            }
             configFacade.upsertAdminValue(configKey, normalizedValue, "NUMBER", "growth", "H1 rhythm state");
             if ("currentMonth".equals(normalizedKey)) {
+                int nextMonth = Integer.parseInt(normalizedValue);
                 configFacade.upsertAdminValue(CURRENT_MONTH_KEY, normalizedValue, "NUMBER", "growth", "H1 rhythm current month mirror");
                 configFacade.upsertAdminValue(
                         CURRENT_PHASE_KEY,
-                        phaseForRhythmMonth(Integer.parseInt(normalizedValue), totalMonths),
+                        phaseForRhythmMonth(nextMonth, totalMonths),
                         "STRING",
                         "growth",
                         "H1 rhythm current phase mirror");
+                syncActivePhaseDialsFromMonth(nextMonth);
             }
             if ("totalMonths".equals(normalizedKey)) {
                 int nextTotalMonths = Integer.parseInt(normalizedValue);
@@ -225,6 +243,9 @@ public class OpsGrowthService implements AuditReplayable {
                         "STRING",
                         "growth",
                         "H1 rhythm current phase mirror");
+                if (mirroredMonth > 0) {
+                    syncActivePhaseDialsFromMonth(mirroredMonth);
+                }
             }
             audit("H1_RHYTHM_CHANGED", "GROWTH_RHYTHM", configKey, request.operator(), Map.of(
                     "key", normalizedKey,
@@ -274,7 +295,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
-        if (month < 1 || month > 12) {
+        if (month < 1 || month > rhythmTotalMonths()) {
             return validation("MONTH_OUT_OF_RANGE");
         }
         String normalizedKey = normalizePhaseDialKey(dialKey);
@@ -1916,7 +1937,7 @@ public class OpsGrowthService implements AuditReplayable {
         Map<String, Object> defaults = new LinkedHashMap<>();
         defaults.put("calendar", "12_MONTH");
         defaults.put("activePhase", "P1");
-        defaults.put("activeDialCount", 8);
+        defaults.put("activeDialCount", PHASE_DIAL_KEYS.size());
         return defaults;
     }
 
@@ -1930,7 +1951,7 @@ public class OpsGrowthService implements AuditReplayable {
         for (String key : PHASE_DIAL_KEYS) {
             seedIfMissing(phaseDialConfigKey(key), defaultPhaseDialValue(key).toPlainString(), "NUMBER", "growth", "H1 active phase dial seed");
         }
-        for (int month = 1; month <= 12; month++) {
+        for (int month = 1; month <= rhythmTotalMonths(); month++) {
             for (String key : PHASE_DIAL_KEYS) {
                 seedIfMissing(monthDialConfigKey(month, key), defaultPhaseMonthDialValue(month, key).toPlainString(), "NUMBER", "growth", "H1 monthly phase dial seed");
             }
@@ -2259,6 +2280,8 @@ public class OpsGrowthService implements AuditReplayable {
         putActiveDial(dials, "withdrawNexMinBalance", WITHDRAW_MIN_BALANCE_KEY, new BigDecimal("100"), false);
         configFacade.activeValue(WITHDRAW_HOLD_DAYS_KEY)
                 .ifPresent(value -> dials.put("withdrawNexHoldDays", configDecimal(WITHDRAW_HOLD_DAYS_KEY, new BigDecimal("7")).intValue()));
+        configFacade.activeValue("growth.phase.genesis_emissions_open")
+                .ifPresent(value -> dials.put("genesisEmissionsOpen", booleanDialLabel(value)));
         return dials;
     }
 
@@ -2336,14 +2359,7 @@ public class OpsGrowthService implements AuditReplayable {
         for (int month = 1; month <= totalMonths; month++) {
             Map<String, Object> dials = new LinkedHashMap<>();
             for (String key : PHASE_DIAL_KEYS) {
-                String configKey = monthDialConfigKey(month, key);
-                if (configFacade.activeValue(configKey).filter(StringUtils::hasText).isPresent()) {
-                    BigDecimal value = configDecimal(configKey, BigDecimal.ZERO);
-                    dials.put(key, displayPhaseDialValue(key, value));
-                }
-            }
-            if (dials.isEmpty()) {
-                continue;
+                dials.put(key, displayPhaseDialValue(key, monthDialValue(month, key)));
             }
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("month", month);
@@ -2424,6 +2440,7 @@ public class OpsGrowthService implements AuditReplayable {
             case "withdrawNexMinBalance" -> month <= 8 ? new BigDecimal("100") : new BigDecimal("200");
             case "withdrawNexHoldDays" -> month <= 7 ? new BigDecimal("7")
                     : month == 8 ? new BigDecimal("14") : new BigDecimal("21");
+            case "genesisEmissionsOpen" -> month >= 7 ? BigDecimal.ONE : BigDecimal.ZERO;
             default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };
     }
@@ -2432,6 +2449,7 @@ public class OpsGrowthService implements AuditReplayable {
         return switch (key) {
             case "deviceReleasePacingPct", "commissionTighteningPct" -> percent(value);
             case "withdrawNexHoldDays" -> value.intValue();
+            case "genesisEmissionsOpen" -> value.signum() > 0 ? "是" : "否";
             default -> value.stripTrailingZeros();
         };
     }
@@ -2769,6 +2787,7 @@ public class OpsGrowthService implements AuditReplayable {
             case "campaignRewardNex" -> "growth.phase.campaign_reward_nex";
             case "withdrawNexMinBalance" -> WITHDRAW_MIN_BALANCE_KEY;
             case "withdrawNexHoldDays" -> WITHDRAW_HOLD_DAYS_KEY;
+            case "genesisEmissionsOpen" -> "growth.phase.genesis_emissions_open";
             default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };
     }
@@ -2781,11 +2800,47 @@ public class OpsGrowthService implements AuditReplayable {
             case "campaignRewardNex" -> new BigDecimal("10");
             case "withdrawNexMinBalance" -> new BigDecimal("100");
             case "withdrawNexHoldDays" -> new BigDecimal("7");
+            case "genesisEmissionsOpen" -> BigDecimal.ZERO;
             default -> BigDecimal.ONE;
         };
     }
 
+    private BigDecimal monthDialValue(int month, String key) {
+        BigDecimal fallback = defaultPhaseMonthDialValue(month, key);
+        return configFacade.activeValue(monthDialConfigKey(month, key))
+                .map(value -> parseDecimal(value, fallback))
+                .orElse(fallback);
+    }
+
+    private boolean monthTransitionAmplifiesPayout(int currentMonth, int nextMonth) {
+        if (nextMonth < 1 || currentMonth == nextMonth) {
+            return false;
+        }
+        for (String key : PHASE_DIAL_KEYS) {
+            BigDecimal oldValue = configFacade.activeValue(phaseDialConfigKey(key))
+                    .filter(StringUtils::hasText)
+                    .map(ignored -> configDecimal(phaseDialConfigKey(key), defaultPhaseMonthDialValue(Math.max(1, currentMonth), key)))
+                    .orElseGet(() -> monthDialValue(Math.max(1, currentMonth), key));
+            if (amplifiesPhasePayout(key, oldValue, monthDialValue(nextMonth, key))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void syncActivePhaseDialsFromMonth(int month) {
+        for (String key : PHASE_DIAL_KEYS) {
+            writeActivePhaseDial(key, monthDialValue(month, key));
+        }
+    }
+
     private BigDecimal normalizePhaseDialValue(String key, String raw) {
+        if ("genesisEmissionsOpen".equals(key)) {
+            String value = requireText(raw, "Genesis emissions dial value is required").trim().toLowerCase(Locale.ROOT);
+            if (Set.of("1", "true", "on", "是").contains(value)) return BigDecimal.ONE;
+            if (Set.of("0", "false", "off", "否").contains(value)) return BigDecimal.ZERO;
+            throw new IllegalArgumentException("GENESIS_EMISSIONS_DIAL_INVALID");
+        }
         BigDecimal value = parseDecimal(raw);
         return switch (key) {
             case "inviteRewardMultiplier", "questRewardMultiplier" -> bounded(value, new BigDecimal("0.10"), new BigDecimal("4"));
@@ -2798,11 +2853,16 @@ public class OpsGrowthService implements AuditReplayable {
         };
     }
 
+    private String booleanDialLabel(String value) {
+        return Set.of("1", "true", "on", "是").contains(value.trim().toLowerCase(Locale.ROOT)) ? "是" : "否";
+    }
+
     private boolean amplifiesPhasePayout(String key, BigDecimal oldValue, BigDecimal newValue) {
         return switch (key) {
             case "inviteRewardMultiplier", "questRewardMultiplier", "trialOffsetCapUsdt", "deviceReleasePacingPct", "campaignRewardNex" ->
                     newValue.compareTo(oldValue) > 0;
             case "commissionTighteningPct", "withdrawNexMinBalance", "withdrawNexHoldDays" -> newValue.compareTo(oldValue) < 0;
+            case "genesisEmissionsOpen" -> newValue.compareTo(oldValue) > 0;
             default -> false;
         };
     }

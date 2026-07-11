@@ -684,7 +684,7 @@ class OpsNexMarketServiceTest {
         assertThat(detailMap(result.getData().get("market"))).containsEntry("enabled", false);
         assertThat((List<?>) result.getData().get("params"))
                 .extracting("key")
-                .contains("supply", "price", "dividend", "royalty", "divBase");
+                .contains("supply", "price", "dividend", "royalty", "divBase", "airdropPct", "emissionCurve", "airdropLockDays");
         assertThat((List<?>) result.getData().get("nodes"))
                 .extracting("id")
                 .contains("#0042", "#0117", "#0233");
@@ -694,6 +694,20 @@ class OpsNexMarketServiceTest {
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+    }
+
+    @Test
+    void genesisOverviewSuppressesLiveEmissionAmountsWhileH1GateIsClosed() {
+        configFacade.values.put("growth.phase.genesis_emissions_open", "false");
+
+        ApiResult<Map<String, Object>> result = service.genesisOverview();
+
+        assertThat(detailMap(result.getData().get("emissionGate"))).containsEntry("open", false);
+        assertThat(detailMap(result.getData().get("dividend")))
+                .containsEntry("poolToday", new BigDecimal("0.00"))
+                .containsEntry("payoutToday", new BigDecimal("0.00"));
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("genesisAccrualUsd", new BigDecimal("0.00"));
     }
 
     @Test
@@ -801,7 +815,23 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void updatingGenesisEmissionPolicyPersistsPlatformConfig() {
+        ApiResult<Map<String, Object>> result = service.updateGenesisParam(
+                "idem-g4-emission",
+                "airdropPct",
+                new NexMarketValueUpdateRequest("9", "adjust protocol emission allocation", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("G.genesis.airdropPct", "9");
+        assertThat((List<?>) result.getData().get("params"))
+                .anySatisfy(item -> assertThat((Map<String, Object>) item)
+                        .containsEntry("key", "airdropPct")
+                        .containsEntry("displayValue", "9%"));
+    }
+
+    @Test
     void rerunGenesisDividendBatchWritesMarkerAndAudits() {
+        configFacade.values.put("growth.phase.genesis_emissions_open", "true");
         ApiResult<Map<String, Object>> result = service.rerunGenesisDividendBatch(
                 "idem-g4-rerun",
                 "GD-0611",
@@ -825,6 +855,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void rerunGenesisDividendBatchRejectsWhenNoPositiveLedgerAmountExists() {
+        configFacade.values.put("growth.phase.genesis_emissions_open", "true");
         OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         marketRepository.genesisSecondaryStats = new GenesisSecondaryStatsView(
                 BigDecimal.ZERO,

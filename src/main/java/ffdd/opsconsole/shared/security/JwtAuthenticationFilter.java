@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -40,9 +41,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                             claims.getSubject(), null, authorities);
                     String username = claims.get("username", String.class);
+                    Map<String, String> details = new LinkedHashMap<>();
+                    details.put("subjectType", String.valueOf(claims.getOrDefault("subjectType", "USER")));
                     if (StringUtils.hasText(username)) {
-                        authentication.setDetails(Map.of("username", username.trim()));
+                        details.put("username", username.trim());
                     }
+                    authentication.setDetails(Map.copyOf(details));
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 } else {
                     SecurityContextHolder.clearContext();
@@ -63,8 +67,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
         String subjectId = request.getHeader(AuthHeaders.SUBJECT_ID);
+        String subjectType = request.getHeader(AuthHeaders.SUBJECT_TYPE);
         String authoritiesHeader = request.getHeader(AuthHeaders.AUTHORITIES);
-        if (!StringUtils.hasText(subjectId)) {
+        if (!StringUtils.hasText(subjectId) || !StringUtils.hasText(subjectType)) {
+            return;
+        }
+        String normalizedSubjectType = subjectType.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!List.of("USER", "ADMIN").contains(normalizedSubjectType)) {
             return;
         }
         List<SimpleGrantedAuthority> authorities = List.of();
@@ -78,9 +87,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                 subjectId, null, authorities);
         String username = request.getHeader(AuthHeaders.USERNAME);
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("subjectType", normalizedSubjectType);
         if (StringUtils.hasText(username)) {
-            authentication.setDetails(Map.of("username", username.trim()));
+            details.put("username", username.trim());
         }
+        authentication.setDetails(Map.copyOf(details));
         SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 

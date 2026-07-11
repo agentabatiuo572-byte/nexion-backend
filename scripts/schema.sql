@@ -3661,6 +3661,17 @@ CREATE TABLE IF NOT EXISTS nx_conversation_message (
   KEY idx_conversation_message_no_time (conversation_no, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_conversation_message_receipt (
+  message_id BIGINT PRIMARY KEY,
+  conversation_no VARCHAR(40) NOT NULL,
+  receipt_status VARCHAR(16) NOT NULL DEFAULT 'sent',
+  read_by VARCHAR(64) NULL,
+  read_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_conversation_receipt_no (conversation_no, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_support_ticket (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   ticket_no VARCHAR(40) NOT NULL,

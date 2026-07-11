@@ -3,11 +3,34 @@ package ffdd.opsconsole.content.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.LocalDateTime;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.junit.jupiter.api.Test;
 
 class ConversationMapperSqlTest {
+    @Test
+    void receiptWatermarkUsesExplicitMessageIdAndJdbcOperators() throws Exception {
+        String sql = String.join("\n", ConversationMessageMapper.class
+                .getMethod(
+                        "markAgentMessagesReadThrough",
+                        String.class,
+                        Long.class,
+                        String.class,
+                        LocalDateTime.class)
+                .getAnnotation(Insert.class)
+                .value());
+
+        assertThat(sql)
+                .contains("conversation_no=#{conversationNo}")
+                .contains("sender_type='agent'")
+                .contains("#{lastSeenMessageId} >= id")
+                .doesNotContain("ORDER BY")
+                .doesNotContain("LIMIT 1")
+                .doesNotContain("&lt;")
+                .doesNotContain("&gt;");
+    }
+
     @Test
     void overdueTransferQueryUsesJdbcOperators() throws Exception {
         String sql = String.join("\n", ConversationMapper.class

@@ -86,6 +86,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final String ACTIVE_DAY_INDEX_KEY = CONTROL_PREFIX + "active_day_index";
     private static final String GENESIS_KILLSWITCH_KEY = "killswitch.genesis";
     private static final String GENESIS_LEGACY_KILLSWITCH_KEY = "J.killswitch.genesis";
+    private static final String GENESIS_AIRDROP_PCT_KEY = "G.genesis.airdropPct";
+    private static final String GENESIS_EMISSION_CURVE_KEY = "G.genesis.emissionCurve";
+    private static final String GENESIS_AIRDROP_LOCK_DAYS_KEY = "G.genesis.airdropLockDays";
+    private static final String GENESIS_EMISSION_GATE_KEY = "growth.phase.genesis_emissions_open";
     private static final int GENESIS_NODE_DEFAULT_PAGE_SIZE = 10;
     private static final int GENESIS_NODE_MAX_PAGE_SIZE = 50;
     private static final String STAKING_PREFIX = "G.staking.";
@@ -668,7 +672,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         GenesisSecondaryStatsView secondaryStats = marketRepository.genesisSecondaryStats(LocalDateTime.now(clock).minusHours(24));
         BigDecimal supply = policy.map(value -> BigDecimal.valueOf(value.totalSupply() == null ? 0 : value.totalSupply())).orElse(BigDecimal.ZERO);
         BigDecimal unitPrice = policy.map(GenesisPolicyView::priceUsdt).map(this::safeBig).orElse(BigDecimal.ZERO);
-        BigDecimal dividendPct = policy.map(GenesisPolicyView::dailyDividendRatePct).map(this::safeBig).orElse(BigDecimal.ZERO);
+        BigDecimal configuredDividendPct = policy.map(GenesisPolicyView::dailyDividendRatePct).map(this::safeBig).orElse(BigDecimal.ZERO);
+        boolean emissionGateOpen = genesisEmissionGateOpen();
+        BigDecimal dividendPct = emissionGateOpen ? configuredDividendPct : BigDecimal.ZERO;
         BigDecimal royaltyPct = policy.map(GenesisPolicyView::royaltyPct).map(this::safeBig).orElse(BigDecimal.ZERO);
         long holdingCount = marketRepository.genesisHoldingCount();
         PageSpec nodePage = pageSpec(page, pageSize, holdingCount);
@@ -688,7 +694,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .multiply(dividendPct)
                 .divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
         BigDecimal payoutToday = perSlotPerDay.multiply(BigDecimal.valueOf(sold)).setScale(2, RoundingMode.HALF_UP);
-        BigDecimal genesisAccrual = safeBig(marketRepository.genesisAccrualUsd()).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal genesisAccrual = emissionGateOpen
+                ? safeBig(marketRepository.genesisAccrualUsd()).setScale(2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         BigDecimal secondaryFloor = safeBig(secondaryStats.floorUsdt());
         String todayBatch = genesisTodayBatch();
         Map<String, Object> response = new LinkedHashMap<>();
@@ -724,6 +732,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "payoutToday", payoutToday,
                 "batchNo", todayBatch,
                 "batchStatus", StringUtils.hasText(todayBatch) && marketRepository.genesisDividendBatchRerunExists(todayBatch) ? "done" : ""));
+        response.put("emissionGate", map(
+                "configKey", GENESIS_EMISSION_GATE_KEY,
+                "open", emissionGateOpen,
+                "owner", "H1"));
         boolean disclosureGate = disclosureGateActive("genesis");
         response.put("market", map(
                 "enabled", genesisMarketOn(),
@@ -746,6 +758,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("sources", List.of(
                 "nx_config_item:" + SUNSET_EXCLUSIONS_KEY,
                 "nx_config_item:" + GENESIS_KILLSWITCH_KEY,
+                "nx_config_item:" + GENESIS_AIRDROP_PCT_KEY,
+                "nx_config_item:" + GENESIS_EMISSION_CURVE_KEY,
+                "nx_config_item:" + GENESIS_AIRDROP_LOCK_DAYS_KEY,
+                "nx_config_item:" + GENESIS_EMISSION_GATE_KEY,
                 "nx_genesis_series",
                 "nx_genesis_holding",
                 "nx_genesis_order",
@@ -855,6 +871,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         String normalizedBatch = batchNo == null ? "" : batchNo.trim();
         if (!normalizedBatch.matches("[A-Za-z0-9-]{3,32}")) {
             return validation("G4_GENESIS_BATCH_NO_INVALID");
+        }
+        if (!genesisEmissionGateOpen()) {
+            return validation("G4_GENESIS_EMISSION_GATE_CLOSED");
         }
         String before = marketRepository.genesisDividendBatchRerunExists(normalizedBatch) ? "done" : "ready";
         BigDecimal rerunAmount = genesisDividendRerunAmount();
@@ -2089,7 +2108,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 genesisParamDef("price"),
                 genesisParamDef("dividend"),
                 genesisParamDef("royalty"),
-                genesisParamDef("divBase"));
+                genesisParamDef("divBase"),
+                genesisParamDef("airdropPct"),
+                genesisParamDef("emissionCurve"),
+                genesisParamDef("airdropLockDays"));
     }
 
     private GenesisParamDef genesisParamDef(String rawKey) {
@@ -2145,6 +2167,36 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "Changing the formula changes daily payout and triggers B1 coverage redline check",
                     true,
                     GenesisParamKind.TEXT);
+            case "airdropPct" -> new GenesisParamDef(
+                    key,
+                    GENESIS_AIRDROP_PCT_KEY,
+                    "NUMBER",
+                    "8",
+                    "Genesis emission allocation",
+                    "Protocol emission share reserved for Genesis nodes and their community umbrella",
+                    "Increasing the allocation amplifies future NEX emission liability and triggers B1 coverage redline check",
+                    true,
+                    GenesisParamKind.PERCENT);
+            case "emissionCurve" -> new GenesisParamDef(
+                    key,
+                    GENESIS_EMISSION_CURVE_KEY,
+                    "STRING",
+                    "TGE 10% · halve every 6 months",
+                    "Emission vesting curve",
+                    "Release cadence after Genesis emission gate opens",
+                    "Changing the curve changes liability timing and triggers B1 coverage redline check",
+                    true,
+                    GenesisParamKind.TEXT);
+            case "airdropLockDays" -> new GenesisParamDef(
+                    key,
+                    GENESIS_AIRDROP_LOCK_DAYS_KEY,
+                    "NUMBER",
+                    "180",
+                    "OG multiplier lock period",
+                    "Lock duration used by the Genesis emission priority multiplier",
+                    "Shortening the lock can accelerate emission eligibility and triggers B1 coverage redline check",
+                    true,
+                    GenesisParamKind.DAYS);
             default -> null;
         };
     }
@@ -2184,13 +2236,23 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             }
             return value.setScale(0, RoundingMode.HALF_UP).toPlainString();
         }
+        if (def.kind() == GenesisParamKind.DAYS) {
+            if (value.stripTrailingZeros().scale() > 0
+                    || value.compareTo(BigDecimal.ZERO) < 0
+                    || value.compareTo(new BigDecimal("3650")) > 0) {
+                return null;
+            }
+            return value.toBigIntegerExact().toString();
+        }
         if (def.kind() == GenesisParamKind.MONEY) {
             if (value.compareTo(BigDecimal.ZERO) <= 0 || value.compareTo(new BigDecimal("1000000")) > 0) {
                 return null;
             }
             return value.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
         }
-        BigDecimal max = "royalty".equals(def.key()) ? new BigDecimal("20") : new BigDecimal("5");
+        BigDecimal max = "royalty".equals(def.key())
+                ? new BigDecimal("20")
+                : "airdropPct".equals(def.key()) ? new BigDecimal("100") : new BigDecimal("5");
         if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(max) > 0) {
             return null;
         }
@@ -2205,18 +2267,24 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private boolean genesisParamLoosens(GenesisParamDef def, String oldValue, String newValue) {
-        if ("divBase".equals(def.key())) {
+        if ("divBase".equals(def.key()) || "emissionCurve".equals(def.key())) {
             return !oldValue.trim().equals(newValue.trim());
         }
         BigDecimal oldNumber = parseRepurchaseNumber(oldValue, BigDecimal.ZERO);
         BigDecimal newNumber = parseRepurchaseNumber(newValue, BigDecimal.ZERO);
-        if ("supply".equals(def.key()) || "price".equals(def.key()) || "dividend".equals(def.key())) {
+        if ("supply".equals(def.key()) || "price".equals(def.key()) || "dividend".equals(def.key()) || "airdropPct".equals(def.key())) {
             return newNumber.compareTo(oldNumber) > 0;
+        }
+        if ("airdropLockDays".equals(def.key())) {
+            return newNumber.compareTo(oldNumber) < 0;
         }
         return false;
     }
 
     private String genesisValue(GenesisParamDef def, GenesisPolicyView policy) {
+        if ("airdropPct".equals(def.key()) || "emissionCurve".equals(def.key()) || "airdropLockDays".equals(def.key())) {
+            return configFacade.activeValue(def.configKey()).filter(StringUtils::hasText).orElse(def.defaultValue());
+        }
         if (policy == null) {
             return "";
         }
@@ -2237,6 +2305,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "dividend" -> marketRepository.updateGenesisDailyDividendRate(parseRepurchaseNumber(value, BigDecimal.ZERO));
             case "royalty" -> marketRepository.updateGenesisRoyalty(parseRepurchaseNumber(value, BigDecimal.ZERO));
             case "divBase" -> marketRepository.updateGenesisDividendBaseFormula(value);
+            case "airdropPct", "emissionCurve", "airdropLockDays" -> {
+                configFacade.upsertAdminValue(def.configKey(), value, def.valueType(), "market", "G4 Genesis emission policy");
+                yield true;
+            }
             default -> false;
         };
     }
@@ -2246,6 +2318,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private BigDecimal genesisDividendRerunAmount() {
+        if (!genesisEmissionGateOpen()) {
+            return BigDecimal.ZERO;
+        }
         BigDecimal dividendPct = marketRepository.activeGenesisPolicy()
                 .map(GenesisPolicyView::dailyDividendRatePct)
                 .map(this::safeBig)
@@ -2261,6 +2336,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case INTEGER -> value + " slots";
             case MONEY -> displayUsd(parseRepurchaseNumber(value, BigDecimal.ZERO));
             case PERCENT -> "dividend".equals(def.key()) ? value + "% / day" : value + "%";
+            case DAYS -> value + " days";
             case TEXT -> value;
         };
     }
@@ -2270,6 +2346,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .or(() -> controlValue(GENESIS_LEGACY_KILLSWITCH_KEY))
                 .map(this::parseSwitchEnabled)
                 .orElse(true);
+    }
+
+    private boolean genesisEmissionGateOpen() {
+        return configFacade.activeValue(GENESIS_EMISSION_GATE_KEY)
+                .map(this::parseSwitchEnabled)
+                .orElse(false);
     }
 
     private Map<String, Object> genesisCoverage() {
@@ -2716,6 +2798,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private enum GenesisParamKind {
         INTEGER,
+        DAYS,
         MONEY,
         PERCENT,
         TEXT

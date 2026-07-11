@@ -13,6 +13,7 @@ import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
@@ -64,12 +65,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
+import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -95,6 +98,12 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Set<String> K3_ADDRESS_REPUTATION_RULES = Set.of(
             "黑名单 / 低信誉地址", "内部黑名单 + 链上信誉", "内部黑名单", "链上信誉", "第三方链上信誉", "内部 + 第三方信誉");
     private static final Set<String> K5_TICKET_FILTERS = Set.of("all", "大额提现", "大额兑换", "累计过线", "overdue");
+    private static final Map<String, String> OTP_CANONICAL_CONFIG_KEYS = Map.of(
+            "otpGate.resendSeconds", "auth.risk.otp_cooldown_seconds",
+            "otpGate.captchaAfterSends", "auth.risk.otp_max_24h",
+            "otpGate.otpTtlSeconds", "auth.risk.otp_ttl_minutes",
+            "otpGate.maxVerifyAttempts", "auth.risk.otp_max_verify_attempts",
+            "otpGate.captchaTicketTtlSeconds", "auth.risk.captcha_ticket_ttl_seconds");
     private static final Map<String, K2ActionSpec> K2_ACTIONS = Map.of(
             "mark", new K2ActionSpec("flag", "已标记套利", "K2_ARBITRAGE_MARKED"),
             "block-gift", new K2ActionSpec("blockgift", "新人礼已拦截", "K2_WELCOME_GIFT_BLOCKED"),
@@ -127,6 +136,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final UserKycStatusFacade userKycStatusFacade;
     private final FinanceWithdrawalKycReviewFacade financeWithdrawalKycReviewFacade;
     private final MarketExchangeKycReviewFacade marketExchangeKycReviewFacade;
+    private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
 
@@ -618,7 +628,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         byView.getOrDefault(spec.key(), List.of())))
                 .toList();
         Map<String, Object> response = new LinkedHashMap<>();
-        List<RiskArbitrageParamView> params = riskRepository.arbitrageParams();
+        List<RiskArbitrageParamView> params = riskRepository.arbitrageParams().stream()
+                .map(this::withCanonicalOtpValue)
+                .toList();
         response.put("stats", riskRepository.arbitrageStats());
         response.put("params", params);
         response.put("views", views);
@@ -627,6 +639,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<RiskArbitrageParamView> updateArbitrageParam(String key, String idempotencyKey, RiskArbitrageParamUpdateRequest request) {
         ApiResult<RiskArbitrageParamView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -648,12 +661,13 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (updated == null) {
             return ApiResult.fail(404, "K2_PARAM_NOT_FOUND");
         }
+        persistCanonicalOtpValue(normalizedKey, value);
         audit("K2_PARAM_CHANGED", "RISK_ARBITRAGE_PARAM", normalizedKey, null, operator(request.operator()), Map.of(
                 "key", normalizedKey,
                 "value", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        return ApiResult.ok(withCanonicalOtpValue(updated));
     }
 
     public ApiResult<RiskArbitrageRowView> executeArbitrageAction(String rowId, String action, String idempotencyKey, RiskArbitrageActionRequest request) {
@@ -1160,8 +1174,65 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             case "trialCycleThreshold" -> normalizeTrialCycleThreshold(value);
             case "welcomeGiftAnomalyThreshold" -> normalizeWelcomeGiftThreshold(value);
             case "leaderboardVelocityMultiplier" -> normalizeLeaderboardThreshold(value);
+            case "rewardRisk.lockMode" -> Set.of("risk_bucket", "direct").contains(value) ? value : "";
+            case "rewardRisk.usdtAmount" -> normalizeBoundedInteger(value, 0, 10_000);
+            case "rewardRisk.nexAmount" -> normalizeBoundedInteger(value, 0, 1_000_000);
+            case "otpGate.resendSeconds" -> normalizeBoundedInteger(value, 30, 300);
+            case "otpGate.captchaAfterSends" -> normalizeBoundedInteger(value, 1, 10);
+            case "otpGate.otpTtlSeconds" -> normalizeOtpTtlSeconds(value);
+            case "otpGate.maxVerifyAttempts" -> normalizeBoundedInteger(value, 1, 10);
+            case "otpGate.captchaTicketTtlSeconds" -> normalizeBoundedInteger(value, 30, 600);
             default -> value;
         };
+    }
+
+    private String normalizeBoundedInteger(String value, int min, int max) {
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed >= min && parsed <= max ? String.valueOf(parsed) : "";
+        } catch (NumberFormatException ex) {
+            return "";
+        }
+    }
+
+    private String normalizeOtpTtlSeconds(String value) {
+        String normalized = normalizeBoundedInteger(value, 60, 900);
+        if (!StringUtils.hasText(normalized)) {
+            return "";
+        }
+        int seconds = Integer.parseInt(normalized);
+        return seconds % 60 == 0 ? normalized : "";
+    }
+
+    private RiskArbitrageParamView withCanonicalOtpValue(RiskArbitrageParamView param) {
+        String configKey = OTP_CANONICAL_CONFIG_KEYS.get(param.key());
+        if (configKey == null) {
+            return param;
+        }
+        Optional<String> configured = configFacade.activeValue(configKey).filter(StringUtils::hasText);
+        if (configured.isEmpty()) {
+            return param;
+        }
+        String value = configured.get();
+        if ("otpGate.otpTtlSeconds".equals(param.key())) {
+            try {
+                value = normalizeBoundedInteger(String.valueOf(Integer.parseInt(value) * 60), 60, 900);
+            } catch (NumberFormatException ex) {
+                return param;
+            }
+        }
+        return new RiskArbitrageParamView(param.key(), param.name(), value, param.sub(), param.note());
+    }
+
+    private void persistCanonicalOtpValue(String key, String value) {
+        String configKey = OTP_CANONICAL_CONFIG_KEYS.get(key);
+        if (configKey == null) {
+            return;
+        }
+        String canonicalValue = "otpGate.otpTtlSeconds".equals(key)
+                ? String.valueOf(Integer.parseInt(value) / 60)
+                : value;
+        configFacade.upsertAdminValue(configKey, canonicalValue, "NUMBER", "auth-risk", "K2 OTP gate canonical configuration");
     }
 
     private String normalizeWithdrawRuleCondition(String dimension, String value) {

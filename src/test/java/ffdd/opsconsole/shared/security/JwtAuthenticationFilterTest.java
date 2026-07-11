@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -86,6 +87,36 @@ class JwtAuthenticationFilterTest {
         assertThat(invoked).isTrue();
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
         verifyNoInteractions(adminSessionRegistry);
+    }
+
+    @Test
+    void trustedGatewayHeadersPreserveUserSubjectTypeForAppEndpoints() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest(
+                "POST", "/content/app/conversations/CV-1/receipts/read");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
+        request.addHeader(AuthHeaders.SUBJECT_ID, "1001");
+        request.addHeader(AuthHeaders.SUBJECT_TYPE, "user");
+        request.addHeader(AuthHeaders.USERNAME, "customer-1001");
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(authentication).isNotNull();
+        assertThat(authentication.getPrincipal()).isEqualTo("1001");
+        assertThat(authentication.getDetails()).isEqualTo(Map.of(
+                "subjectType", "USER",
+                "username", "customer-1001"));
+    }
+
+    @Test
+    void trustedGatewayHeadersWithoutSubjectTypeDoNotAuthenticate() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/content/app/test");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
+        request.addHeader(AuthHeaders.SUBJECT_ID, "1001");
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
     }
 
     private MockHttpServletRequest requestWithBearer(String token) {

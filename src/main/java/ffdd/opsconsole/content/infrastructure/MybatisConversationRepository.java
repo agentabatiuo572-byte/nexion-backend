@@ -65,6 +65,11 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now) {
+        return messageMapper.markAgentMessagesReadThrough(conversationNo, lastSeenMessageId, operator, now) > 0;
+    }
+
+    @Override
     public List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit) {
         return mapper.overdueTransferredConversations(cutoff, Math.max(1, Math.min(limit, 200)));
     }

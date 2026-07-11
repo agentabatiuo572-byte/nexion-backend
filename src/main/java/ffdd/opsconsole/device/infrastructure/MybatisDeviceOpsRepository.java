@@ -46,7 +46,28 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             "promoDelaySeconds",
             "promoMinAgeDays",
             "promoRoutes",
-            "inventorySoftMax");
+            "inventorySoftMax",
+            "capacityBand1DeltaPct", "capacityBand2DeltaPct", "capacityBand3DeltaPct",
+            "capacityFloorPct", "capacitySubsidyDays",
+            "capacityApplyToPhone", "capacityApplyToCloudShare", "capacityApplyToPcGpu",
+            "capacityApplyToS1", "capacityApplyToPro", "capacityApplyToProV2",
+            "capacityApplyToRackP1", "capacityApplyToRackP2",
+            "tradeinEnabled", "tradeinLadderCut1", "tradeinLadderCut2", "tradeinLadderCut3", "tradeinLadderCut4",
+            "tradeinLadderCredit1", "tradeinLadderCredit2", "tradeinLadderCredit3", "tradeinLadderCredit4", "tradeinLadderCredit5",
+            "tradeinRequireHigherPrice", "tradeinMaxDevicesPerOrder", "earlyAccessEnabled", "earlyAccessLeadDays");
+    private static final Map<String, String> E3_RHYTHM_DEFAULTS = Map.ofEntries(
+            Map.entry("capacityBand1DeltaPct", "-4"), Map.entry("capacityBand2DeltaPct", "-6"), Map.entry("capacityBand3DeltaPct", "-23.7"),
+            Map.entry("stageEarlyEnd", "3"), Map.entry("stageMidEnd", "8"), Map.entry("cycleMonths", "12"),
+            Map.entry("capacityFloorPct", "22"), Map.entry("capacitySubsidyDays", "30"),
+            Map.entry("capacityApplyToPhone", "false"), Map.entry("capacityApplyToCloudShare", "false"), Map.entry("capacityApplyToPcGpu", "false"),
+            Map.entry("capacityApplyToS1", "true"), Map.entry("capacityApplyToPro", "true"), Map.entry("capacityApplyToProV2", "true"),
+            Map.entry("capacityApplyToRackP1", "true"), Map.entry("capacityApplyToRackP2", "true"),
+            Map.entry("tradeinEnabled", "true"), Map.entry("tradeinLadderCut1", "25"), Map.entry("tradeinLadderCut2", "50"),
+            Map.entry("tradeinLadderCut3", "75"), Map.entry("tradeinLadderCut4", "100"),
+            Map.entry("tradeinLadderCredit1", "75"), Map.entry("tradeinLadderCredit2", "60"), Map.entry("tradeinLadderCredit3", "45"),
+            Map.entry("tradeinLadderCredit4", "30"), Map.entry("tradeinLadderCredit5", "15"),
+            Map.entry("tradeinRequireHigherPrice", "true"), Map.entry("tradeinMaxDevicesPerOrder", "3"),
+            Map.entry("earlyAccessEnabled", "false"), Map.entry("earlyAccessLeadDays", "30"));
     private final DeviceOpsMapper mapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
@@ -155,6 +176,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         mapper.e3ConfigRows().stream()
                 .filter(row -> E3_CONFIG_KEYS.contains(row.configKey()))
                 .forEach(row -> config.put(row.configKey(), row.configValue()));
+        config.putIfAbsent("capacityBand1DeltaPct", config.getOrDefault("degradeEarly", "0"));
+        config.putIfAbsent("capacityBand2DeltaPct", config.getOrDefault("degradeMid", "-10"));
+        config.putIfAbsent("capacityBand3DeltaPct", config.getOrDefault("degradeLate", "-20"));
+        config.putIfAbsent("capacityFloorPct", config.getOrDefault("minEfficiency", "50"));
+        E3_RHYTHM_DEFAULTS.forEach(config::putIfAbsent);
         return config;
     }
 
