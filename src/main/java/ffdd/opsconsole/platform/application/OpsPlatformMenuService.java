@@ -15,6 +15,7 @@ import ffdd.opsconsole.platform.mapper.AdminRoleMenuMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,7 +49,7 @@ public class OpsPlatformMenuService {
     @Transactional
     public ApiResult<MenuNodeView> createNode(String idempotencyKey, PlatformMenuNodeCreateRequest request) {
         ApiResult<Void> guard = requireMutation(idempotencyKey,
-                request == null ? null : request.reason(), request == null ? null : request.operator());
+                request == null ? null : request.reason(), actor(request == null ? null : request.operator()));
         if (guard != null) {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
         }
@@ -88,7 +89,7 @@ public class OpsPlatformMenuService {
     @Transactional
     public ApiResult<MenuNodeView> updateNode(Long menuId, String idempotencyKey, PlatformMenuNodeUpdateRequest request) {
         ApiResult<Void> guard = requireMutation(idempotencyKey,
-                request == null ? null : request.reason(), request == null ? null : request.operator());
+                request == null ? null : request.reason(), actor(request == null ? null : request.operator()));
         if (guard != null) {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
         }
@@ -123,7 +124,7 @@ public class OpsPlatformMenuService {
     @Transactional
     public ApiResult<Void> deleteNode(Long menuId, String idempotencyKey, AdminAccountActionRequest request) {
         ApiResult<Void> guard = requireMutation(idempotencyKey,
-                request == null ? null : request.reason(), request == null ? null : request.operator());
+                request == null ? null : request.reason(), actor(request == null ? null : request.operator()));
         if (guard != null) {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
         }
@@ -196,10 +197,14 @@ public class OpsPlatformMenuService {
                 .resourceType(RESOURCE_TYPE)
                 .resourceId(resourceId)
                 .actorType("ADMIN")
-                .actorUsername(operator == null ? null : operator.trim())
+                .actorUsername(actor(operator))
                 .result("SUCCESS")
                 .riskLevel("MEDIUM")
                 .detail(fullDetail)
                 .build());
+    }
+
+    private String actor(String fallback) {
+        return AdminActorResolver.resolve(fallback);
     }
 }

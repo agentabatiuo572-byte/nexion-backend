@@ -46,4 +46,15 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
             LIMIT 1
             """)
     AuditOperationTicketEntity selectActiveByOperationId(@Param("operationId") String operationId);
+
+    /** Serializes terminal decisions so a pending ticket can be replayed at most once. */
+    @Select("""
+            SELECT *
+            FROM nx_audit_operation_ticket
+            WHERE operation_id = #{operationId}
+              AND is_deleted = 0
+            LIMIT 1
+            FOR UPDATE
+            """)
+    AuditOperationTicketEntity selectActiveByOperationIdForUpdate(@Param("operationId") String operationId);
 }

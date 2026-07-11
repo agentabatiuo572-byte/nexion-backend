@@ -397,7 +397,7 @@ public class OpsAuditCenterService {
         if (guard != null) {
             return guard;
         }
-        AuditOperationTicketEntity ticket = ticket(operationId).orElse(null);
+        AuditOperationTicketEntity ticket = ticketForUpdate(operationId).orElse(null);
         if (ticket == null) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A2_OPERATION_NOT_FOUND");
         }
@@ -870,9 +870,9 @@ public class OpsAuditCenterService {
         // Intentionally empty: A2 reads audit logs from the audit table only.
     }
 
-    private Optional<AuditOperationTicketEntity> ticket(String operationId) {
+    private Optional<AuditOperationTicketEntity> ticketForUpdate(String operationId) {
         String normalized = normalizeText(operationId).toUpperCase(Locale.ROOT);
-        return Optional.ofNullable(ticketMapper.selectActiveByOperationId(normalized));
+        return Optional.ofNullable(ticketMapper.selectActiveByOperationIdForUpdate(normalized));
     }
 
     private List<AuditOperationTicketEntity> terminalTickets() {

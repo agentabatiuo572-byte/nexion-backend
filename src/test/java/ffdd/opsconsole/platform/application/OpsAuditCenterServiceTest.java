@@ -107,7 +107,8 @@ class OpsAuditCenterServiceTest {
                     .sorted(Comparator.comparing(AuditOperationTicketEntity::getOperationId).reversed())
                     .toList();
         });
-        when(ticketMapper.selectActiveByOperationId(any())).thenAnswer(invocation -> ticketRows.get(invocation.getArgument(0)));
+        when(ticketMapper.selectActiveByOperationIdForUpdate(any()))
+                .thenAnswer(invocation -> ticketRows.get(invocation.getArgument(0)));
         when(ticketMapper.updateById(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
             AuditOperationTicketEntity row = invocation.getArgument(0);
             ticketRows.put(row.getOperationId(), row);
