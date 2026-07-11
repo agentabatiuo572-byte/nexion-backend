@@ -4167,6 +4167,7 @@ CREATE TABLE IF NOT EXISTS nx_content_copy (
   draft_audience_json JSON NULL,
   draft_traffic_split VARCHAR(32) NULL,
   draft_note VARCHAR(255) NULL,
+  revision BIGINT NOT NULL DEFAULT 0,
   last_operator VARCHAR(64) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -4247,6 +4248,7 @@ CREATE TABLE IF NOT EXISTS nx_content_experiment_variant (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   experiment_id VARCHAR(64) NOT NULL,
   variant_name VARCHAR(128) NOT NULL,
+  copy_version VARCHAR(32) NULL,
   split_pct INT NOT NULL,
   cvr_pct DECIMAL(8,2) NOT NULL,
   sort_order INT NOT NULL DEFAULT 0,
@@ -4254,6 +4256,7 @@ CREATE TABLE IF NOT EXISTS nx_content_experiment_variant (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_content_experiment_variant (experiment_id, variant_name),
+  KEY idx_content_experiment_variant_version (experiment_id, copy_version),
   KEY idx_content_experiment_variant_order (experiment_id, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

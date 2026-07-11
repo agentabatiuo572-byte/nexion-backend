@@ -108,6 +108,16 @@ public class OpsCopyAbController {
         return copyAbService.rollbackVersion(copyKey, version, idempotencyKey, request);
     }
 
+    @DeleteMapping("/copies/{copyKey}/versions/{version}")
+    @PreAuthorize("hasAuthority('content_i1_write')")
+    public ApiResult<CopyContentRow> deleteDraftVersion(
+            @PathVariable String copyKey,
+            @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyActionRequest request) {
+        return copyAbService.deleteDraftVersion(copyKey, version, idempotencyKey, request);
+    }
+
     @PostMapping("/copies/{copyKey}/archive")
     @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyContentRow> archiveCurrent(

@@ -57,6 +57,8 @@ public class OpsCopyAbService {
     private static final String IDEMPOTENCY_SCOPE_CREATE = "I1_COPY_CREATE";
     private static final String IDEMPOTENCY_SCOPE_DRAFT = "I1_COPY_DRAFT_SAVE";
     private static final String IDEMPOTENCY_SCOPE_PUBLISH = "I1_COPY_VERSION_PUBLISH";
+    private static final String IDEMPOTENCY_SCOPE_DELETE_DRAFT = "I1_COPY_DRAFT_VERSION_DELETE";
+    private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 128;
     private static final int VERSION_COLUMN_LENGTH = 32;
     private static final List<String> SURFACES = List.of("home", "store", "earn", "me");
     private static final List<String> AUDIENCES = List.of("全量", "P3 · 全语言", "zh · 注册>30天", "注册 ≤14 天", "P2-P3");
@@ -406,6 +408,79 @@ public class OpsCopyAbService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<CopyContentRow> deleteDraftVersion(
+            String copyKey,
+            String version,
+            String idempotencyKey,
+            CopyActionRequest request) {
+        ApiResult<CopyContentRow> guard = requireAction(idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        if (!StringUtils.hasText(copyKey) || !COPY_KEY_PATTERN.matcher(copyKey.trim()).matches()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_INVALID");
+        }
+        if (!StringUtils.hasText(version) || !VERSION_PATTERN.matcher(version.trim()).matches()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_INVALID");
+        }
+        String normalizedCopyKey = copyKey.trim();
+        String normalizedVersion = version.trim();
+        return executeIdempotentMutation(
+                IDEMPOTENCY_SCOPE_DELETE_DRAFT,
+                normalizedCopyKey + ":" + normalizedVersion,
+                idempotencyKey,
+                request,
+                () -> deleteDraftVersionOnce(normalizedCopyKey, normalizedVersion, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyContentRow> deleteDraftVersionOnce(
+            String copyKey,
+            String version,
+            String idempotencyKey,
+            CopyActionRequest request) {
+        CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "COPY_NOT_FOUND");
+        }
+        CopyVersionRow target = copyAbRepository.findVersion(current.key(), version).orElse(null);
+        if (target == null) {
+            return ApiResult.fail(404, "COPY_VERSION_NOT_FOUND");
+        }
+        if (!"draft".equals(target.status())) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "COPY_VERSION_DELETE_FORBIDDEN");
+        }
+        if (!StringUtils.hasText(current.draftVersion())
+                || !current.draftVersion().trim().equalsIgnoreCase(target.version())
+                || (StringUtils.hasText(request.expectedVersion())
+                && !request.expectedVersion().trim().equalsIgnoreCase(target.version()))) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "COPY_DRAFT_VERSION_CONFLICT");
+        }
+        if (request.expectedRevision() == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_DRAFT_REVISION_REQUIRED");
+        }
+        if (current.revision() == null || !current.revision().equals(request.expectedRevision())) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "COPY_DRAFT_REVISION_CONFLICT");
+        }
+        if (copyAbRepository.isVersionReferencedByExperiment(current.key(), target.version())) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "COPY_DRAFT_USED_BY_EXPERIMENT");
+        }
+        CopyContentRow updated = copyAbRepository.deleteDraftVersion(
+                current.key(), target.version(), operator(request.operator()), now());
+        auditRequired("I1_COPY_DRAFT_VERSION_DELETED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+                "version", target.version(),
+                "restoredStatus", updated.status()));
+        return ApiResult.ok(updated);
+    }
+
     public ApiResult<CopyFrameworkParamView> updateFrameworkParam(String paramKey, String idempotencyKey, CopyFrameworkUpdateRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
@@ -675,6 +750,9 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
+        if (idempotencyKey.trim().length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IDEMPOTENCY_KEY_INVALID");
+        }
         if (request == null || !StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
@@ -717,8 +795,7 @@ public class OpsCopyAbService {
         if (StringUtils.hasText(current.draftVersion())) {
             return current.draftVersion().trim();
         }
-        BigInteger maximum = copyAbRepository.listVersions(current.key()).stream()
-                .map(CopyVersionRow::version)
+        BigInteger maximum = copyAbRepository.listAllVersionNumbers(current.key()).stream()
                 .map(SEQUENTIAL_VERSION_PATTERN::matcher)
                 .filter(Matcher::matches)
                 .map(matcher -> new BigInteger(matcher.group(1)))
@@ -845,11 +922,19 @@ public class OpsCopyAbService {
     }
 
     private void audit(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
+        auditLogService.record(auditRequest(action, resourceId, operator, idempotencyKey, reason, extra));
+    }
+
+    private void auditRequired(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
+        auditLogService.recordRequired(auditRequest(action, resourceId, operator, idempotencyKey, reason, extra));
+    }
+
+    private AuditLogWriteRequest auditRequest(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("reason", reason.trim());
         detail.putAll(extra);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        return AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(action.contains("POSITION") ? "CONTENT_COPY_POSITION"
                         : action.contains("EXPERIMENT") ? "CONTENT_EXPERIMENT"
@@ -861,6 +946,6 @@ public class OpsCopyAbService {
                 .result("SUCCESS")
                 .riskLevel("LOW")
                 .detail(detail)
-                .build());
+                .build();
     }
 }

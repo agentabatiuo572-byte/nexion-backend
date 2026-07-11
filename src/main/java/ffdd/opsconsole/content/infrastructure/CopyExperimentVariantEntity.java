@@ -12,6 +12,7 @@ import lombok.EqualsAndHashCode;
 public class CopyExperimentVariantEntity extends BaseEntity {
     private String experimentId;
     private String variantName;
+    private String copyVersion;
     private Integer splitPct;
     private BigDecimal cvrPct;
     private Integer sortOrder;

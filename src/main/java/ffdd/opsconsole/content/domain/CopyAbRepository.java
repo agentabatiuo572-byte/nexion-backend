@@ -25,9 +25,15 @@ public interface CopyAbRepository {
 
     Optional<CopyVersionRow> findVersion(String copyKey, String version);
 
+    /** Includes soft-deleted rows so automatically assigned version numbers are never reused. */
+    List<String> listAllVersionNumbers(String copyKey);
+
     List<CopyExperimentRow> listExperiments();
 
     Optional<CopyExperimentRow> findExperiment(String experimentId);
+
+    /** True when an experiment references the version, or contains an unversioned legacy variant. */
+    boolean isVersionReferencedByExperiment(String copyKey, String version);
 
     List<CopyFrameworkParamView> listFrameworkParams();
 
@@ -41,6 +47,8 @@ public interface CopyAbRepository {
     CopyContentRow rollbackVersion(String copyKey, String version, String operator, LocalDateTime now);
 
     CopyContentRow archiveCurrent(String copyKey, String operator, LocalDateTime now);
+
+    CopyContentRow deleteDraftVersion(String copyKey, String version, String operator, LocalDateTime now);
 
     void updateFrameworkParam(String paramKey, String value, String operator, LocalDateTime now);
 

@@ -1,12 +1,14 @@
 package ffdd.opsconsole.shared.audit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 
 import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import java.time.LocalDateTime;
@@ -64,6 +66,20 @@ class AuditLogServiceTest {
         assertThat(params.getValue().detailJson())
                 .contains("\"signature\":\"[REDACTED]\"")
                 .doesNotContain("secret-signature");
+    }
+
+    @Test
+    void recordRequiredPropagatesWriteFailureEvenWhenNormalAuditIsFailOpen() {
+        doThrow(new IllegalStateException("audit unavailable"))
+                .when(auditLogMapper).insertAuditLog(any());
+
+        assertThatThrownBy(() -> service.recordRequired(AuditLogWriteRequest.builder()
+                .action("I1_COPY_DRAFT_VERSION_DELETED")
+                .resourceType("CONTENT_COPY")
+                .resourceId("home.hero")
+                .build()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audit unavailable");
     }
 
     @Test

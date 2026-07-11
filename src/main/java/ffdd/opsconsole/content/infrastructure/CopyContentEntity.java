@@ -28,5 +28,6 @@ public class CopyContentEntity extends BaseEntity {
     private String draftAudienceJson;
     private String draftTrafficSplit;
     private String draftNote;
+    private Long revision;
     private String lastOperator;
 }

@@ -449,6 +449,183 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
+    void deleteDraftVersionSoftDeletesOnlyTheCurrentDraftAndRestoresPublishedCopy() {
+        repository.putDraft("home.conversionBanner", "v8");
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-draft", actionRequest());
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("published");
+        assertThat(result.getData().draftVersion()).isNull();
+        assertThat(repository.findVersion("home.conversionBanner", "v8")).isEmpty();
+        assertThat(repository.deleteDraftCalls).isEqualTo(1);
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
+                "I1_COPY_DRAFT_VERSION_DELETED".equals(request.getAction())
+                        && request.getDetail() instanceof Map<?, ?> detail
+                        && "v8".equals(detail.get("version"))));
+    }
+
+    @Test
+    void deleteDraftVersionRestoresArchivedCopyState() {
+        repository.copies.put("home.conversionBanner",
+                FakeCopyAbRepository.copy("home.conversionBanner", "v7", "draft-saved", "v8", "zh", "en"));
+        repository.versions.put(FakeCopyAbRepository.key("home.conversionBanner", "v7"),
+                FakeCopyAbRepository.version("home.conversionBanner", "v7", "archived"));
+        repository.versions.put(FakeCopyAbRepository.key("home.conversionBanner", "v8"),
+                FakeCopyAbRepository.version("home.conversionBanner", "v8", "draft"));
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-archived-draft", actionRequest());
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("archived");
+    }
+
+    @Test
+    void deleteDraftVersionRejectsPublishedAndArchivedHistory() {
+        var published = service.deleteDraftVersion(
+                "home.conversionBanner", "v7", "idem-i1-delete-published", actionRequest());
+        var archived = service.deleteDraftVersion(
+                "home.conversionBanner", "v6", "idem-i1-delete-archived", actionRequest());
+
+        assertThat(published.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(published.getMessage()).isEqualTo("COPY_VERSION_DELETE_FORBIDDEN");
+        assertThat(archived.getMessage()).isEqualTo("COPY_VERSION_DELETE_FORBIDDEN");
+        assertThat(repository.deleteDraftCalls).isZero();
+    }
+
+    @Test
+    void deleteDraftVersionRejectsANonCurrentDraft() {
+        repository.putDraft("home.conversionBanner", "v8");
+        repository.versions.put(FakeCopyAbRepository.key("home.conversionBanner", "v9"),
+                FakeCopyAbRepository.version("home.conversionBanner", "v9", "draft"));
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v9", "idem-i1-delete-stale-draft", actionRequest());
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_DRAFT_VERSION_CONFLICT");
+        assertThat(repository.deleteDraftCalls).isZero();
+    }
+
+    @Test
+    void deleteDraftVersionRejectsMismatchedExpectedVersion() {
+        repository.putDraft("home.conversionBanner", "v8");
+        CopyActionRequest request = new CopyActionRequest("Marina K.", "确认删除当前草稿版本", "v9");
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-expected-conflict", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_DRAFT_VERSION_CONFLICT");
+    }
+
+    @Test
+    void deleteDraftVersionRejectsStaleDraftRevision() {
+        repository.putDraft("home.conversionBanner", "v8");
+        CopyActionRequest request = new CopyActionRequest(
+                "Marina K.", "确认删除当前草稿版本", "v8", 0L);
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-stale-revision", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_DRAFT_REVISION_CONFLICT");
+        assertThat(repository.deleteDraftCalls).isZero();
+    }
+
+    @Test
+    void deleteDraftVersionRequiresRevisionToken() {
+        repository.putDraft("home.conversionBanner", "v8");
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-no-revision",
+                new CopyActionRequest("Marina K.", "确认删除当前草稿版本", "v8"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_DRAFT_REVISION_REQUIRED");
+        assertThat(repository.deleteDraftCalls).isZero();
+    }
+
+    @Test
+    void deleteDraftVersionRejectsDraftReferencedByAnyExperimentHistory() {
+        repository.putDraft("home.conversionBanner", "v8");
+        repository.experiments.put("EXP-DRAFT", new CopyExperimentRow(
+                "EXP-DRAFT",
+                "home.conversionBanner",
+                List.of(
+                        new CopyExperimentVariantView("A · v7", 50, new BigDecimal("4.1")),
+                        new CopyExperimentVariantView("B · v8", 50, new BigDecimal("4.8"))),
+                "全量", "12K", "800", "concluded", "历史实验"));
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-experiment-reference", actionRequest());
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_DRAFT_USED_BY_EXPERIMENT");
+        assertThat(repository.deleteDraftCalls).isZero();
+    }
+
+    @Test
+    void deleteDraftVersionConservativelyRejectsLegacyExperimentWithoutStructuredVersion() {
+        repository.putDraft("home.conversionBanner", "v8");
+        repository.experiments.put("EXP-LEGACY", new CopyExperimentRow(
+                "EXP-LEGACY", "home.conversionBanner",
+                List.of(new CopyExperimentVariantView("A", 50, new BigDecimal("4.1"))),
+                "全量", "12K", "800", "stopped", "旧实验"));
+
+        var result = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-legacy-experiment", actionRequest());
+
+        assertThat(result.getMessage()).isEqualTo("COPY_DRAFT_USED_BY_EXPERIMENT");
+        assertThat(repository.deleteDraftCalls).isZero();
+    }
+
+    @Test
+    void deleteDraftVersionIsIdempotentAndDoesNotDuplicateAudit() {
+        repository.putDraft("home.conversionBanner", "v8");
+
+        var first = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-repeat", actionRequest());
+        var replay = service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-repeat", actionRequest());
+
+        assertThat(first.getCode()).isZero();
+        assertThat(replay.getCode()).isZero();
+        assertThat(repository.deleteDraftCalls).isEqualTo(1);
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
+                "I1_COPY_DRAFT_VERSION_DELETED".equals(request.getAction())));
+    }
+
+    @Test
+    void deletingTheHighestDraftDoesNotAllowItsVersionNumberToBeReused() {
+        repository.putDraft("home.conversionBanner", "v8");
+        assertThat(service.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-before-next", actionRequest()).getCode()).isZero();
+
+        var result = service.saveDraft(
+                "home.conversionBanner", "idem-i1-save-after-delete", draftRequest(null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v9");
+        assertThat(repository.findVersion("home.conversionBanner", "v8")).isEmpty();
+        assertThat(repository.findVersion("home.conversionBanner", "v9")).isPresent();
+    }
+
+    @Test
+    void deleteDraftVersionValidatesCopyKeyVersionAndAction() {
+        assertThat(service.deleteDraftVersion("!", "v8", "idem", actionRequest()).getMessage())
+                .isEqualTo("COPY_KEY_INVALID");
+        assertThat(service.deleteDraftVersion("home.conversionBanner", "!", "idem", actionRequest()).getMessage())
+                .isEqualTo("COPY_VERSION_INVALID");
+        assertThat(service.deleteDraftVersion("home.conversionBanner", "v8", "x".repeat(129), actionRequest()).getMessage())
+                .isEqualTo("IDEMPOTENCY_KEY_INVALID");
+        assertThat(service.deleteDraftVersion("home.conversionBanner", "v8", null, actionRequest()).getMessage())
+                .isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+    }
+
+    @Test
     void saveDraftIgnoresMalformedClientVersionNumbers() {
         var request = new CopyDraftSaveRequest(
                 "vér7", "Home", "全量", "50", "版本号必须规范",
@@ -563,12 +740,13 @@ class OpsCopyAbServiceTest {
     }
 
     private static CopyActionRequest actionRequest() {
-        return new CopyActionRequest("Marina K.", "确认执行本次内容操作");
+        return new CopyActionRequest("Marina K.", "确认执行本次内容操作", null, 1L);
     }
 
     private static final class FakeCopyAbRepository implements CopyAbRepository {
         private final Map<String, CopyContentRow> copies = new LinkedHashMap<>();
         private final Map<String, CopyVersionRow> versions = new LinkedHashMap<>();
+        private final java.util.Set<String> allVersionNumbers = new java.util.LinkedHashSet<>();
         private final Map<String, CopyExperimentRow> experiments = new LinkedHashMap<>();
         private final Map<String, CopyFrameworkParamView> framework = new LinkedHashMap<>();
         private final Map<String, CopyPositionView> positions = new LinkedHashMap<>();
@@ -577,6 +755,7 @@ class OpsCopyAbServiceTest {
         private int createCalls;
         private int saveDraftCalls;
         private int publishCalls;
+        private int deleteDraftCalls;
         private boolean failNextCreateWithDuplicate;
 
         private FakeCopyAbRepository() {
@@ -584,6 +763,8 @@ class OpsCopyAbServiceTest {
             copies.put("home.heroCta", copy("home.heroCta", "v9", "published", null, null, null));
             versions.put(key("home.conversionBanner", "v7"), version("home.conversionBanner", "v7", "published"));
             versions.put(key("home.conversionBanner", "v6"), version("home.conversionBanner", "v6", "archived"));
+            allVersionNumbers.add(key("home.conversionBanner", "v7"));
+            allVersionNumbers.add(key("home.conversionBanner", "v6"));
             experiments.put("EXP-2611", experiment("EXP-2611", "running"));
             experiments.put("EXP-2598", experiment("EXP-2598", "discarded"));
             framework.put("split", new CopyFrameworkParamView("split", "分流比例默认", "变体等分", "新实验默认变体等分"));
@@ -618,6 +799,16 @@ class OpsCopyAbServiceTest {
         }
 
         @Override
+        public List<String> listAllVersionNumbers(String copyKey) {
+            java.util.Set<String> numbers = new java.util.LinkedHashSet<>(allVersionNumbers);
+            numbers.addAll(versions.keySet());
+            return numbers.stream()
+                    .filter(value -> value.startsWith(copyKey + "::"))
+                    .map(value -> value.substring(value.indexOf("::") + 2))
+                    .toList();
+        }
+
+        @Override
         public List<CopyExperimentRow> listExperiments() {
             return new ArrayList<>(experiments.values());
         }
@@ -625,6 +816,19 @@ class OpsCopyAbServiceTest {
         @Override
         public Optional<CopyExperimentRow> findExperiment(String experimentId) {
             return Optional.ofNullable(experiments.get(experimentId));
+        }
+
+        @Override
+        public boolean isVersionReferencedByExperiment(String copyKey, String version) {
+            java.util.regex.Pattern versionToken = java.util.regex.Pattern.compile(
+                    "(?i)(?:^|[^a-z0-9])" + java.util.regex.Pattern.quote(version) + "(?:$|[^a-z0-9])");
+            return experiments.values().stream()
+                    .filter(experiment -> copyKey.equals(experiment.copyKey()))
+                    .flatMap(experiment -> experiment.variants().stream())
+                    .map(CopyExperimentVariantView::name)
+                    .anyMatch(name -> name == null
+                            || !name.matches("(?i).*v\\d+.*")
+                            || versionToken.matcher(name).find());
         }
 
         @Override
@@ -657,6 +861,7 @@ class OpsCopyAbServiceTest {
                     request.audienceTarget(),
                     request.trafficSplit(),
                     request.versionNote()));
+            allVersionNumbers.add(key(copyKey, versionNo));
             return copies.get(copyKey);
         }
 
@@ -680,6 +885,7 @@ class OpsCopyAbServiceTest {
                     request.audienceTarget(),
                     request.trafficSplit(),
                     request.versionNote()));
+            allVersionNumbers.add(key(copyKey, request.version()));
         }
 
         @Override
@@ -701,6 +907,7 @@ class OpsCopyAbServiceTest {
                     request.audienceTarget(),
                     request.trafficSplit(),
                     request.versionNote()));
+            allVersionNumbers.add(key(copyKey, request.version()));
             return copies.get(copyKey);
         }
 
@@ -740,6 +947,20 @@ class OpsCopyAbServiceTest {
         @Override
         public List<CopyPositionView> listPositions() {
             return new ArrayList<>(positions.values());
+        }
+
+        @Override
+        public CopyContentRow deleteDraftVersion(String copyKey, String version, String operator, LocalDateTime now) {
+            deleteDraftCalls += 1;
+            versions.remove(key(copyKey, version));
+            CopyContentRow current = copies.get(copyKey);
+            String restoredStatus = Optional.ofNullable(versions.get(key(copyKey, current.version())))
+                    .map(CopyVersionRow::status)
+                    .filter("published"::equals)
+                    .map(ignored -> "published")
+                    .orElse("archived");
+            copies.put(copyKey, copy(copyKey, current.version(), restoredStatus, null, null, null));
+            return copies.get(copyKey);
         }
 
         @Override
@@ -786,10 +1007,13 @@ class OpsCopyAbServiceTest {
                     draftEn,
                     null,
                     null,
+                    null,
                     "Home",
                     "全量",
+                    null,
                     "50",
-                    "测试");
+                    "测试",
+                    1L);
         }
 
         private static CopyVersionRow version(String copyKey, String version, String status) {
@@ -799,13 +1023,20 @@ class OpsCopyAbServiceTest {
                     "50", "seed");
         }
 
+        private void putDraft(String copyKey, String version) {
+            CopyContentRow current = copies.get(copyKey);
+            copies.put(copyKey, copy(copyKey, current.version(), "draft-saved", version, "zh", "en"));
+            versions.put(key(copyKey, version), version(copyKey, version, "draft"));
+            allVersionNumbers.add(key(copyKey, version));
+        }
+
         private static CopyExperimentRow experiment(String id, String state) {
             return new CopyExperimentRow(
                     id,
                     "home.conversionBanner",
                     List.of(
-                            new CopyExperimentVariantView("A", 50, new BigDecimal("4.1")),
-                            new CopyExperimentVariantView("B", 50, new BigDecimal("4.8"))),
+                            new CopyExperimentVariantView("A · v7", 50, new BigDecimal("4.1")),
+                            new CopyExperimentVariantView("B · v6", 50, new BigDecimal("4.8"))),
                     "全量",
                     "412K",
                     "18.3K",

@@ -81,6 +81,19 @@ class OpsCopyAbControllerTest {
     }
 
     @Test
+    void deleteDraftVersionDelegatesWithIdempotencyHeader() {
+        CopyActionRequest request = actionRequest();
+        when(copyAbService.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-draft", request)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-draft", request).getCode()).isZero();
+
+        verify(copyAbService).deleteDraftVersion(
+                "home.conversionBanner", "v8", "idem-i1-delete-draft", request);
+    }
+
+    @Test
     void updateFrameworkDelegatesWithIdempotencyHeader() {
         CopyFrameworkUpdateRequest request = new CopyFrameworkUpdateRequest("40/60", "Marina K.", "调整分流默认");
         when(copyAbService.updateFrameworkParam("split", "idem-i1-fw", request)).thenReturn(ApiResult.ok(null));

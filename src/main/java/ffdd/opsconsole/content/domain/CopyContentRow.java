@@ -19,7 +19,8 @@ public record CopyContentRow(
         String draftAudience,
         CopyAudienceTarget draftAudienceTarget,
         String draftTrafficSplit,
-        String draftNote) {
+        String draftNote,
+        Long revision) {
 
     public CopyContentRow(
             String key, String desc, String surface, String version, String status, String i18nKey,
@@ -27,6 +28,6 @@ public record CopyContentRow(
             String draftVi, String copyPosition, String draftSurface, String draftAudience,
             String draftTrafficSplit, String draftNote) {
         this(key, desc, surface, version, status, i18nKey, expId, lastChange, draftVersion, draftZh,
-                draftEn, draftVi, copyPosition, null, draftSurface, draftAudience, null, draftTrafficSplit, draftNote);
+                draftEn, draftVi, copyPosition, null, draftSurface, draftAudience, null, draftTrafficSplit, draftNote, null);
     }
 }

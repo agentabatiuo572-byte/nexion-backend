@@ -47,6 +47,20 @@ public class AuditLogService {
         }
     }
 
+    /**
+     * Writes an audit record as part of a mutation that is not allowed to succeed without audit.
+     * Unlike {@link #record(AuditLogWriteRequest)}, this method is deliberately fail-closed.
+     */
+    public void recordRequired(AuditLogWriteRequest request) {
+        if (!auditProperties.isEnabled()) {
+            throw new IllegalStateException("AUDIT_REQUIRED_DISABLED");
+        }
+        if (request == null || !StringUtils.hasText(request.getAction())) {
+            throw new IllegalArgumentException("AUDIT_REQUIRED_INVALID");
+        }
+        auditLogMapper.insertAuditLog(buildWrite(request));
+    }
+
     public List<AuditLogRecord> list(AuditLogQueryRequest request) {
         AuditLogQueryRequest query = request == null ? new AuditLogQueryRequest() : request;
         return auditLogMapper.list(

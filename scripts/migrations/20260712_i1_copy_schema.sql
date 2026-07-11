@@ -6,6 +6,11 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_content_copy' AND COLUMN_NAME = 'revision') = 0,
+  'ALTER TABLE nx_content_copy ADD COLUMN revision BIGINT NOT NULL DEFAULT 0 AFTER draft_note',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_content_copy' AND COLUMN_NAME = 'copy_position') = 0,
   'ALTER TABLE nx_content_copy ADD COLUMN copy_position VARCHAR(96) NULL AFTER draft_vi',
   'SELECT 1');
@@ -137,3 +142,23 @@ SET audience_json = CASE audience
   ELSE NULL
 END
 WHERE audience_json IS NULL AND audience IS NOT NULL;
+
+-- Experiment variants must reference copy versions structurally. Legacy variants that cannot
+-- be backfilled remain NULL and conservatively block draft deletion for their copy.
+SET @sql = IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_content_experiment_variant' AND COLUMN_NAME = 'copy_version') = 0,
+  'ALTER TABLE nx_content_experiment_variant ADD COLUMN copy_version VARCHAR(32) NULL AFTER variant_name',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+UPDATE nx_content_experiment_variant
+SET copy_version = LOWER(REGEXP_SUBSTR(variant_name, 'v[0-9]+'))
+WHERE copy_version IS NULL AND variant_name REGEXP '(^|[^A-Za-z0-9])v[0-9]+($|[^A-Za-z0-9])';
+
+SET @sql = IF(
+  (SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_content_experiment_variant' AND INDEX_NAME = 'idx_content_experiment_variant_version') = 0,
+  'ALTER TABLE nx_content_experiment_variant ADD INDEX idx_content_experiment_variant_version (experiment_id, copy_version)',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
