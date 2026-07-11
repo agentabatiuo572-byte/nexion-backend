@@ -50,7 +50,7 @@ public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEnt
     String activeRoleCode(@Param("adminId") Long adminId);
 
     @Select("""
-            SELECT DISTINCT m.menu_code
+            SELECT m.menu_code
               FROM nx_admin_role_relation rr
               JOIN nx_admin_role r
                 ON r.id = rr.role_id
@@ -65,7 +65,8 @@ public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEnt
                AND m.is_deleted = 0
              WHERE rr.admin_id = #{adminId}
                AND rr.is_deleted = 0
-             ORDER BY m.sort_order, m.id
+             GROUP BY m.menu_code
+             ORDER BY MIN(m.sort_order), MIN(m.id)
             """)
     List<String> selectActiveMenuCodes(@Param("adminId") Long adminId);
 

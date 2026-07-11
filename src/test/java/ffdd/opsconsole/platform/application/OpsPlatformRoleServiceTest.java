@@ -104,6 +104,7 @@ class OpsPlatformRoleServiceTest {
 
     @Test
     void roleEnableAlsoCreatesA2ProposalBecauseItRestoresTheAuthorizationSurface() {
+        authenticate("41", "alice.admin");
         when(roleMapper.selectById(9L)).thenReturn(role(9L, "CUSTOM_OPS", 0));
         when(auditCenterService.createProposal(eq("idem-role-enable"), any())).thenReturn(ApiResult.ok(null));
 
@@ -116,6 +117,8 @@ class OpsPlatformRoleServiceTest {
         verify(auditCenterService).createProposal(eq("idem-role-enable"), proposal.capture());
         assertThat(proposal.getValue().command().op()).isEqualTo("a6_role_status_update");
         assertThat(proposal.getValue().command().params()).containsEntry("status", 1);
+        assertThat(proposal.getValue().type()).isEqualTo("acct");
+        assertThat(proposal.getValue().operator()).isEqualTo("alice.admin");
         verify(roleMapper, never()).updateById(any(AdminRoleEntity.class));
     }
 
@@ -150,6 +153,7 @@ class OpsPlatformRoleServiceTest {
 
     @Test
     void roleDeleteCreatesA2ProposalAndLeavesRelationsUntouched() {
+        authenticate("41", "alice.admin");
         when(roleMapper.selectById(9L)).thenReturn(role(9L, "CUSTOM_OPS", 1));
         when(auditCenterService.createProposal(eq("idem-delete"), any())).thenReturn(ApiResult.ok(null));
 
@@ -163,6 +167,8 @@ class OpsPlatformRoleServiceTest {
         assertThat(proposal.getValue().command().op()).isEqualTo("a6_role_delete");
         assertThat(proposal.getValue().target().type()).isEqualTo("a6_role");
         assertThat(proposal.getValue().target().id()).isEqualTo("9");
+        assertThat(proposal.getValue().type()).isEqualTo("acct");
+        assertThat(proposal.getValue().operator()).isEqualTo("alice.admin");
         verify(roleRelationMapper, never()).disableRelationsByRole(9L);
         verify(roleMapper, never()).updateById(any(AdminRoleEntity.class));
     }
@@ -181,6 +187,7 @@ class OpsPlatformRoleServiceTest {
 
     @Test
     void highRiskGrantChangeCreatesA2ProposalWithoutMutatingBindings() {
+        authenticate("41", "alice.admin");
         when(roleMapper.selectById(9L)).thenReturn(role(9L, "CUSTOM_OPS", 1));
         when(rolePermissionMapper.selectActivePermissionCodesByRole(9L)).thenReturn(List.of("user_c1_read"));
         when(roleMenuMapper.selectActiveMenuIdsByRole(9L)).thenReturn(List.of(3L));
@@ -191,7 +198,12 @@ class OpsPlatformRoleServiceTest {
                         "expand support", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        verify(auditCenterService).createProposal(eq("idem-grants"), any());
+        ArgumentCaptor<AuditOperationProposalRequest> proposal =
+                ArgumentCaptor.forClass(AuditOperationProposalRequest.class);
+        verify(auditCenterService).createProposal(eq("idem-grants"), proposal.capture());
+        assertThat(proposal.getValue().type()).isEqualTo("acct");
+        assertThat(proposal.getValue().operator()).isEqualTo("alice.admin");
+        assertThat(proposal.getValue().command().params()).containsEntry("operator", "alice.admin");
         verify(rolePermissionMapper, never()).disableRolePermissionsExcept(any(), any());
         verify(roleMenuMapper, never()).disableRoleMenusExcept(any(), any());
     }

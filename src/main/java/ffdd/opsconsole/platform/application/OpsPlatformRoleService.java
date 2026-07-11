@@ -130,7 +130,7 @@ public class OpsPlatformRoleService {
             String action = requestedStatus == 1 ? "A6_ROLE_ENABLED" : "A6_ROLE_DISABLED";
             return auditCenterService.createProposal(idempotencyKey, new AuditOperationProposalRequest(
                     action, entity.getRoleCode(), String.valueOf(entity.getStatus()), String.valueOf(requestedStatus),
-                    request.operator(), "ADMIN", "HIGH", true, false, "TWO_PERSON", request.reason(), "A",
+                    actor(request.operator()), "ADMIN", "acct", true, false, "TWO_PERSON", request.reason(), "A",
                     new AuditReplayCommand("A", "a6_role_status_update", params),
                     new AuditLockTarget("A", "a6_role", roleId.toString()), List.of()));
         }
@@ -168,7 +168,7 @@ public class OpsPlatformRoleService {
         if (!A2ReplayContext.isReplaying()) {
             return auditCenterService.createProposal(idempotencyKey, new AuditOperationProposalRequest(
                     "A6_ROLE_DELETED", entity.getRoleCode(), "active", "deleted",
-                    request.operator(), "ADMIN", "HIGH", true, false, "TWO_PERSON", request.reason(), "A",
+                    actor(request.operator()), "ADMIN", "acct", true, false, "TWO_PERSON", request.reason(), "A",
                     new AuditReplayCommand("A", "a6_role_delete", Map.of("roleId", roleId)),
                     new AuditLockTarget("A", "a6_role", roleId.toString()), List.of()));
         }
@@ -204,12 +204,13 @@ public class OpsPlatformRoleService {
         List<Long> desiredMenus = request.menuIds() == null ? List.of() : request.menuIds();
 
         if (!A2ReplayContext.isReplaying()) {
+            String authenticatedOperator = actor(request.operator());
             Map<String, Object> params = new LinkedHashMap<>();
             params.put("roleId", roleId);
             params.put("permissionCodes", desiredPerms);
             params.put("menuIds", desiredMenus);
             params.put("reason", request.reason());
-            params.put("operator", request.operator());
+            params.put("operator", authenticatedOperator);
             AuditOperationProposalRequest proposal = new AuditOperationProposalRequest(
                     "A6_ROLE_GRANTS_CHANGED",
                     roleCode,
@@ -217,9 +218,9 @@ public class OpsPlatformRoleService {
                             "permissionCodes", rolePermissionMapper.selectActivePermissionCodesByRole(roleId),
                             "menuIds", roleMenuMapper.selectActiveMenuIdsByRole(roleId))),
                     String.valueOf(Map.of("permissionCodes", desiredPerms, "menuIds", desiredMenus)),
-                    request.operator(),
+                    authenticatedOperator,
                     "ADMIN",
-                    "HIGH",
+                    "acct",
                     true,
                     false,
                     "TWO_PERSON",
