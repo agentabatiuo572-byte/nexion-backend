@@ -4280,6 +4280,7 @@ CREATE TABLE IF NOT EXISTS nx_content_experiment (
   experiment_id VARCHAR(64) NOT NULL,
   copy_key VARCHAR(96) NOT NULL,
   audience VARCHAR(96) NOT NULL,
+  audience_snapshot_json JSON NULL,
   impressions_label VARCHAR(32) NOT NULL,
   conversions_label VARCHAR(32) NOT NULL,
   state VARCHAR(32) NOT NULL DEFAULT 'RUNNING',
@@ -4306,6 +4307,59 @@ CREATE TABLE IF NOT EXISTS nx_content_experiment_variant (
   UNIQUE KEY uk_content_experiment_variant (experiment_id, variant_name),
   KEY idx_content_experiment_variant_version (experiment_id, copy_version),
   KEY idx_content_experiment_variant_order (experiment_id, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Backfill only when every live variant resolves to one safe audience snapshot.
+UPDATE nx_content_experiment experiment
+JOIN (
+  SELECT candidate.experiment_id,
+         MIN(CAST(version.audience_json AS CHAR)) AS audience_snapshot_json
+    FROM nx_content_experiment candidate
+    JOIN nx_content_experiment_variant variant
+      ON variant.experiment_id = candidate.experiment_id
+     AND variant.is_deleted = 0
+    LEFT JOIN nx_content_copy_version version
+      ON version.copy_key = candidate.copy_key
+     AND version.version = variant.copy_version
+     AND version.is_deleted = 0
+   WHERE candidate.is_deleted = 0
+     AND candidate.state IN ('SCHEDULED', 'RUNNING')
+   GROUP BY candidate.experiment_id
+  HAVING COUNT(*) > 0
+     AND COUNT(version.id) = COUNT(*)
+     AND COUNT(version.audience_json) = COUNT(*)
+     AND COUNT(DISTINCT CAST(version.audience_json AS CHAR)) = 1
+) safe_snapshot
+  ON safe_snapshot.experiment_id = experiment.experiment_id
+   SET experiment.audience_snapshot_json = safe_snapshot.audience_snapshot_json
+ WHERE experiment.audience_snapshot_json IS NULL
+   AND experiment.is_deleted = 0
+   AND experiment.state IN ('SCHEDULED', 'RUNNING');
+
+CREATE TABLE IF NOT EXISTS nx_content_experiment_assignment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  experiment_id VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  variant_name VARCHAR(128) NOT NULL,
+  copy_version VARCHAR(32) NOT NULL,
+  bucket_no INT NOT NULL,
+  exposed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_content_experiment_assignment (experiment_id, user_id),
+  KEY idx_content_experiment_assignment_variant (experiment_id, variant_name),
+  KEY idx_content_experiment_assignment_exposed (experiment_id, exposed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_content_experiment_conversion (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  experiment_id VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  conversion_key VARCHAR(96) NOT NULL,
+  variant_name VARCHAR(128) NOT NULL,
+  converted_at DATETIME NOT NULL,
+  UNIQUE KEY uk_content_experiment_conversion (experiment_id, user_id),
+  KEY idx_content_experiment_conversion_variant (experiment_id, variant_name, converted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_content_experiment_framework (

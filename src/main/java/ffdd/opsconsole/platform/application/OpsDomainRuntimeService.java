@@ -248,7 +248,7 @@ public class OpsDomainRuntimeService {
                 api("CopyAbOverview", "/api/admin/content/copy-ab/overview", "content_i1_read", "content_i1_write", false),
                 api("CopyCreate", "/api/admin/content/copy-ab/copies", "content_i1_read", "content_i1_copy_create", false),
                 api("CopyVersion", "/api/admin/content/copy-ab/copies/{copyKey}/versions", "content_i1_read", "content_i1_write", false),
-                api("CopyExperiment", "/api/admin/content/copy-ab/experiments/{experimentId}/{action}", "content_i1_read", "content_i1_write", false),
+                api("CopyExperiment", "/api/admin/content/copy-ab/experiments/{experimentId}/{action}", "content_i1_read", "content_i1_experiment_manage", false),
                 api("NotificationCampaign", "/api/admin/content/campaigns/overview", "content_i3_read", "content_i3_write", false),
                 api("NotificationCampaignAction", "/api/admin/content/campaigns/{campaignNo}/{action}", "content_i3_read", "content_i3_write", false),
                 api("NotificationCapRule", "/api/admin/content/campaigns/caps/{tier}", "content_i3_read", "content_i3_cap_adjust", false),

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.auth.application;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -8,6 +9,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 class AdminRbacBaselineInitializerTest {
@@ -17,8 +21,8 @@ class AdminRbacBaselineInitializerTest {
 
     @Test
     void ensuresClassicRolesWithoutReintroducingLegacyPermissionTruth() {
-        when(mapper.countActiveClassicPermissions()).thenReturn(272L);
-        when(mapper.countActiveSuperAdminClassicPermissions()).thenReturn(272L);
+        when(mapper.countActiveClassicPermissions()).thenReturn(273L);
+        when(mapper.countActiveSuperAdminClassicPermissions()).thenReturn(273L);
 
         initializer.ensureBaseline();
 
@@ -40,5 +44,25 @@ class AdminRbacBaselineInitializerTest {
         assertThatThrownBy(initializer::ensureBaseline)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("RBAC_CLASSIC_MIGRATION_REQUIRED");
+    }
+
+    @Test
+    void rejectsPreviousBaselineThatLacksExperimentManagePermission() {
+        when(mapper.countActiveClassicPermissions()).thenReturn(272L);
+        when(mapper.countActiveSuperAdminClassicPermissions()).thenReturn(272L);
+
+        assertThatThrownBy(initializer::ensureBaseline)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("RBAC_CLASSIC_MIGRATION_REQUIRED");
+    }
+
+    @Test
+    void classicSeedGrantsDedicatedExperimentPermissionOnlyThroughSuperAdminAndContentBaselines() throws Exception {
+        String permissions = Files.readString(Path.of("scripts/rbac-classic-seed/IJ.sql"), StandardCharsets.UTF_8);
+        String grants = Files.readString(Path.of("scripts/rbac-classic-seed/02-role-permission-seed.sql"), StandardCharsets.UTF_8);
+
+        assertThat(permissions).contains("content_i1_experiment_manage");
+        assertThat(grants).contains("r.role_code='SUPER_ADMIN'", "r.role_code='CONTENT'");
+        assertThat(grants).doesNotContain("r.role_code='GROWTH' AND p.permission_code LIKE 'content_%'");
     }
 }

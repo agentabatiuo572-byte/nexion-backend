@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -33,6 +34,24 @@ public interface CopyAbRepository {
     List<CopyExperimentRow> listExperiments();
 
     Optional<CopyExperimentRow> findExperiment(String experimentId);
+
+    default Optional<CopyExperimentRow> findExperimentForUpdate(String experimentId) {
+        return findExperiment(experimentId);
+    }
+
+    /** scheduled/running experiment exists for this copy, optionally excluding one experiment id. */
+    boolean hasOtherActiveExperimentForCopy(String copyKey, String excludedExperimentId);
+
+    CopyExperimentRow createExperiment(
+            String experimentId, CopyExperimentCreateRequest request, String audience, LocalDateTime now);
+
+    CopyExperimentRow startExperiment(
+            String experimentId, String copyKey, String operator, LocalDateTime now);
+
+    List<CopyExperimentVariantMetric> listExperimentVariantMetrics(String experimentId);
+
+    CopyExperimentRow adoptExperimentWinner(
+            String experimentId, String copyKey, String winningVersion, String operator, LocalDateTime now);
 
     /** True when an experiment references the version, or contains an unversioned legacy variant. */
     boolean isVersionReferencedByExperiment(String copyKey, String version);

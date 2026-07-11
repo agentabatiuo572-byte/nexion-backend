@@ -11,6 +11,8 @@ import ffdd.opsconsole.content.domain.CopyAudienceTarget;
 import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
+import ffdd.opsconsole.content.domain.CopyExperimentMutationResult;
+import ffdd.opsconsole.content.domain.CopyExperimentVariantMetric;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyMutationResult;
 import ffdd.opsconsole.content.domain.CopyPositionView;
@@ -27,6 +29,8 @@ import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentVariantRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -35,6 +39,7 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -45,9 +50,11 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Supplier;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -65,6 +72,12 @@ public class OpsCopyAbService {
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_CREATE = "I1_COPY_VERSION_OPTION_CREATE";
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_UPDATE = "I1_COPY_VERSION_OPTION_UPDATE";
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_DELETE = "I1_COPY_VERSION_OPTION_DELETE";
+    private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_CREATE = "I1_COPY_EXPERIMENT_CREATE";
+    private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_START = "I1_COPY_EXPERIMENT_START";
+    private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_STOP = "I1_COPY_EXPERIMENT_STOP";
+    private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_ADOPT = "I1_COPY_EXPERIMENT_ADOPT";
+    private static final String IDEMPOTENCY_SCOPE_EXPERIMENT_DISCARD = "I1_COPY_EXPERIMENT_DISCARD";
+    private static final long EXPERIMENT_MIN_IMPRESSIONS_PER_VARIANT = 100L;
     private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 128;
     private static final List<String> SURFACES = List.of("home", "store", "earn", "me");
     private static final List<String> AUDIENCES = List.of("全量", "P3 · 全语言", "zh · 注册>30天", "注册 ≤14 天", "P2-P3");
@@ -661,35 +674,259 @@ public class OpsCopyAbService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<CopyExperimentRow> createExperiment(
+            String idempotencyKey, CopyExperimentCreateRequest request) {
+        ApiResult<CopyExperimentRow> guard = validateExperimentCreateCommand(idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        return executeExperimentMutation(
+                IDEMPOTENCY_SCOPE_EXPERIMENT_CREATE, request.copyKey().trim(), idempotencyKey, request,
+                () -> createExperimentOnce(idempotencyKey, request));
+    }
+
+    private ApiResult<CopyExperimentRow> createExperimentOnce(
+            String idempotencyKey, CopyExperimentCreateRequest request) {
+        String copyKey = request.copyKey().trim();
+        CopyContentRow copy = copyAbRepository.findCopyForUpdate(copyKey).orElse(null);
+        if (copy == null) {
+            return ApiResult.fail(404, "COPY_NOT_FOUND");
+        }
+        if (copyAbRepository.hasOtherActiveExperimentForCopy(copyKey, null)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_EXPERIMENT_ACTIVE_EXISTS");
+        }
+        ExperimentAudienceSnapshot snapshot = validateExperimentVersions(copyKey, request.variants());
+        if (snapshot.error() != null) {
+            return ApiResult.fail(snapshot.errorCode(), snapshot.error());
+        }
+        String experimentId = "EXP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
+        CopyExperimentCreateRequest normalized = new CopyExperimentCreateRequest(
+                copyKey,
+                request.variants().stream()
+                        .map(variant -> new CopyExperimentVariantRequest(variant.version().trim(), variant.splitPct()))
+                        .toList(),
+                trimToNull(request.note()), operator(request.operator()), request.reason().trim());
+        CopyExperimentRow created = copyAbRepository.createExperiment(
+                experimentId, normalized, snapshot.audienceLabel(), now());
+        auditRequired("I1_EXPERIMENT_CREATED", experimentId, request.operator(), idempotencyKey, request.reason(), Map.of(
+                "copyKey", copyKey,
+                "versions", normalized.variants().stream().map(CopyExperimentVariantRequest::version).toList()));
+        return ApiResult.ok(created);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<CopyExperimentRow> startExperiment(
+            String experimentId, String idempotencyKey, CopyActionRequest request) {
+        ApiResult<CopyContentRow> actionGuard = requireExperimentAction(idempotencyKey, request);
+        if (actionGuard != null) {
+            return ApiResult.fail(actionGuard.getCode(), actionGuard.getMessage());
+        }
+        if (!StringUtils.hasText(experimentId) || experimentId.trim().length() > 64) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_ID_INVALID");
+        }
+        return executeExperimentMutation(
+                IDEMPOTENCY_SCOPE_EXPERIMENT_START, experimentId.trim(), idempotencyKey, request,
+                () -> startExperimentOnce(experimentId.trim(), idempotencyKey, request));
+    }
+
+    private ApiResult<CopyExperimentRow> startExperimentOnce(
+            String experimentId, String idempotencyKey, CopyActionRequest request) {
+        CopyExperimentRow observed = copyAbRepository.findExperiment(experimentId).orElse(null);
+        if (observed == null) {
+            return ApiResult.fail(404, "COPY_EXPERIMENT_NOT_FOUND");
+        }
+        CopyContentRow copy = copyAbRepository.findCopyForUpdate(observed.copyKey()).orElse(null);
+        if (copy == null) {
+            return ApiResult.fail(404, "COPY_NOT_FOUND");
+        }
+        CopyExperimentRow current = copyAbRepository.findExperimentForUpdate(experimentId).orElse(null);
+        if (current == null || !observed.copyKey().equals(current.copyKey())) {
+            return ApiResult.fail(404, "COPY_EXPERIMENT_NOT_FOUND");
+        }
+        if (!"scheduled".equalsIgnoreCase(current.state())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_EXPERIMENT_NOT_SCHEDULED");
+        }
+        if (copyAbRepository.hasOtherActiveExperimentForCopy(current.copyKey(), current.id())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_EXPERIMENT_ACTIVE_EXISTS");
+        }
+        List<CopyExperimentVariantRequest> variants = current.variants().stream()
+                .map(variant -> new CopyExperimentVariantRequest(variant.version(), variant.split()))
+                .toList();
+        String variantError = experimentVariantError(variants);
+        if (variantError != null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), variantError);
+        }
+        ExperimentAudienceSnapshot snapshot = validateExperimentVersions(current.copyKey(), variants);
+        if (snapshot.error() != null) {
+            return ApiResult.fail(snapshot.errorCode(), snapshot.error());
+        }
+        CopyExperimentRow running = copyAbRepository.startExperiment(
+                current.id(), current.copyKey(), operator(request.operator()), now());
+        auditRequired("I1_EXPERIMENT_STARTED", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
+                "copyKey", current.copyKey(),
+                "versions", variants.stream().map(CopyExperimentVariantRequest::version).toList()));
+        return ApiResult.ok(running);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<CopyExperimentRow> stopExperiment(String experimentId, String idempotencyKey, CopyActionRequest request) {
-        return updateExperimentState(experimentId, "stopped", Set.of("running"), "I1_EXPERIMENT_STOPPED", idempotencyKey, request);
+        ApiResult<CopyExperimentRow> guard = validateExperimentStateCommand(experimentId, idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        String normalizedId = experimentId.trim();
+        return executeExperimentMutation(
+                IDEMPOTENCY_SCOPE_EXPERIMENT_STOP, normalizedId, idempotencyKey, request,
+                () -> updateExperimentStateOnce(normalizedId, "concluded", Set.of("running"),
+                        "I1_EXPERIMENT_STOPPED", idempotencyKey, request));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<CopyExperimentRow> adoptExperiment(String experimentId, String idempotencyKey, CopyActionRequest request) {
-        return updateExperimentState(experimentId, "adopted", Set.of("discarded", "stopped"), "I1_EXPERIMENT_WINNER_ADOPTED", idempotencyKey, request);
+        ApiResult<CopyExperimentRow> guard = validateExperimentStateCommand(experimentId, idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        String normalizedId = experimentId.trim();
+        return executeExperimentMutation(
+                IDEMPOTENCY_SCOPE_EXPERIMENT_ADOPT, normalizedId, idempotencyKey, request,
+                () -> adoptExperimentWinnerOnce(normalizedId, idempotencyKey, request));
     }
 
-    private ApiResult<CopyExperimentRow> updateExperimentState(
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<CopyExperimentRow> discardExperiment(
+            String experimentId, String idempotencyKey, CopyActionRequest request) {
+        ApiResult<CopyExperimentRow> guard = validateExperimentStateCommand(experimentId, idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        String normalizedId = experimentId.trim();
+        return executeExperimentMutation(
+                IDEMPOTENCY_SCOPE_EXPERIMENT_DISCARD, normalizedId, idempotencyKey, request,
+                () -> updateExperimentStateOnce(normalizedId, "discarded", Set.of("scheduled", "concluded"),
+                        "I1_EXPERIMENT_DISCARDED", idempotencyKey, request));
+    }
+
+    private ApiResult<CopyExperimentRow> adoptExperimentWinnerOnce(
+            String experimentId, String idempotencyKey, CopyActionRequest request) {
+        CopyExperimentRow observed = copyAbRepository.findExperiment(experimentId).orElse(null);
+        if (observed == null) {
+            return ApiResult.fail(404, "COPY_EXPERIMENT_NOT_FOUND");
+        }
+        if (copyAbRepository.findCopyForUpdate(observed.copyKey()).isEmpty()) {
+            return ApiResult.fail(404, "COPY_NOT_FOUND");
+        }
+        CopyExperimentRow current = copyAbRepository.findExperimentForUpdate(observed.id()).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "COPY_EXPERIMENT_NOT_FOUND");
+        }
+        if (!StringUtils.hasText(current.state())
+                || !Set.of("concluded", "stopped")
+                        .contains(current.state().trim().toLowerCase(Locale.ROOT))) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+
+        List<CopyExperimentVariantMetric> metrics = copyAbRepository.listExperimentVariantMetrics(current.id());
+        if (metrics == null || metrics.size() < 2) {
+            return ApiResult.fail(409, "COPY_EXPERIMENT_WINNER_NOT_UNIQUE");
+        }
+        BigInteger totalImpressions = metrics.stream()
+                .map(metric -> BigInteger.valueOf(Math.max(0L, metric.impressions())))
+                .reduce(BigInteger.ZERO, BigInteger::add);
+        if (totalImpressions.signum() == 0) {
+            return ApiResult.fail(409, "COPY_EXPERIMENT_NO_EXPOSURE");
+        }
+        if (metrics.stream().anyMatch(metric -> metric.impressions() < EXPERIMENT_MIN_IMPRESSIONS_PER_VARIANT)) {
+            return ApiResult.fail(409, "COPY_EXPERIMENT_MIN_SAMPLE_NOT_MET");
+        }
+
+        CopyExperimentVariantMetric winner = metrics.get(0);
+        boolean tied = false;
+        for (int index = 1; index < metrics.size(); index++) {
+            CopyExperimentVariantMetric candidate = metrics.get(index);
+            int comparison = compareConversionRate(candidate, winner);
+            if (comparison > 0) {
+                winner = candidate;
+                tied = false;
+            } else if (comparison == 0) {
+                tied = true;
+            }
+        }
+        if (tied) {
+            return ApiResult.fail(409, "COPY_EXPERIMENT_WINNER_NOT_UNIQUE");
+        }
+        if (!StringUtils.hasText(winner.version())) {
+            return ApiResult.fail(409, "COPY_EXPERIMENT_WINNER_VERSION_INVALID");
+        }
+
+        CopyExperimentRow adopted = copyAbRepository.adoptExperimentWinner(
+                current.id(), current.copyKey(), winner.version().trim(), operator(request.operator()), now());
+        if (adopted == null) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        auditRequired("I1_EXPERIMENT_WINNER_ADOPTED", current.id(), request.operator(), idempotencyKey,
+                request.reason(), Map.of(
+                        "from", current.state(),
+                        "to", "adopted",
+                        "copyKey", current.copyKey(),
+                        "winnerVersion", winner.version().trim(),
+                        "impressions", winner.impressions(),
+                        "conversions", winner.conversions()));
+        return ApiResult.ok(adopted);
+    }
+
+    private static int compareConversionRate(
+            CopyExperimentVariantMetric left, CopyExperimentVariantMetric right) {
+        BigInteger leftConversions = BigInteger.valueOf(Math.max(0L, left.conversions()));
+        BigInteger leftImpressions = BigInteger.valueOf(Math.max(0L, left.impressions()));
+        BigInteger rightConversions = BigInteger.valueOf(Math.max(0L, right.conversions()));
+        BigInteger rightImpressions = BigInteger.valueOf(Math.max(0L, right.impressions()));
+        return leftConversions.multiply(rightImpressions)
+                .compareTo(rightConversions.multiply(leftImpressions));
+    }
+
+    private ApiResult<CopyExperimentRow> validateExperimentStateCommand(
+            String experimentId, String idempotencyKey, CopyActionRequest request) {
+        ApiResult<CopyContentRow> guard = requireExperimentAction(idempotencyKey, request);
+        if (guard != null) {
+            return ApiResult.fail(guard.getCode(), guard.getMessage());
+        }
+        if (!StringUtils.hasText(experimentId) || experimentId.trim().length() > 64) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_ID_INVALID");
+        }
+        return null;
+    }
+
+    private ApiResult<CopyExperimentRow> updateExperimentStateOnce(
             String experimentId,
             String targetState,
             Set<String> allowedCurrentStates,
             String auditAction,
             String idempotencyKey,
             CopyActionRequest request) {
-        ApiResult<CopyContentRow> guard = requireAction(idempotencyKey, request);
-        if (guard != null) {
-            return ApiResult.fail(guard.getCode(), guard.getMessage());
+        CopyExperimentRow observed = copyAbRepository.findExperiment(experimentId).orElse(null);
+        if (observed == null) {
+            return ApiResult.fail(404, "COPY_EXPERIMENT_NOT_FOUND");
         }
-        CopyExperimentRow current = StringUtils.hasText(experimentId) ? copyAbRepository.findExperiment(experimentId.trim()).orElse(null) : null;
+        if (copyAbRepository.findCopyForUpdate(observed.copyKey()).isEmpty()) {
+            return ApiResult.fail(404, "COPY_NOT_FOUND");
+        }
+        CopyExperimentRow current = copyAbRepository.findExperimentForUpdate(observed.id()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_EXPERIMENT_NOT_FOUND");
         }
-        if (!allowedCurrentStates.contains(current.state())) {
+        if (!StringUtils.hasText(current.state())
+                || !allowedCurrentStates.contains(current.state().trim().toLowerCase(Locale.ROOT))) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         copyAbRepository.updateExperimentState(current.id(), targetState, operator(request.operator()), now());
         CopyExperimentRow updated = copyAbRepository.findExperiment(current.id()).orElse(current);
-        audit(auditAction, current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        auditRequired(auditAction, current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.state(),
                 "to", targetState,
                 "copyKey", current.copyKey()));
@@ -736,6 +973,96 @@ public class OpsCopyAbService {
             return audienceGuard;
         }
         return validateCopyPayload(request.surface(), request.trafficSplit(), request.zh(), request.en(), request.vi(), request.reason());
+    }
+
+    private ApiResult<CopyExperimentRow> validateExperimentCreateCommand(
+            String idempotencyKey, CopyExperimentCreateRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (idempotencyKey.trim().length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IDEMPOTENCY_KEY_INVALID");
+        }
+        if (request == null || !StringUtils.hasText(request.copyKey())
+                || request.variants() == null || request.variants().size() < 2
+                || request.variants().stream().anyMatch(Objects::isNull)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_FIELDS_REQUIRED");
+        }
+        if (!COPY_KEY_PATTERN.matcher(request.copyKey().trim()).matches()
+                || (request.note() != null && request.note().trim().length() > 255)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_METADATA_INVALID");
+        }
+        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8
+                || request.reason().trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (request.variants().stream().anyMatch(variant -> !StringUtils.hasText(variant.version())
+                || !VERSION_PATTERN.matcher(variant.version().trim()).matches()
+                || variant.splitPct() == null || variant.splitPct() < 1 || variant.splitPct() > 99)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_VARIANT_INVALID");
+        }
+        long distinctVersions = request.variants().stream().map(variant -> variant.version().trim().toLowerCase(Locale.ROOT))
+                .distinct().count();
+        if (distinctVersions != request.variants().size()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_VERSIONS_DUPLICATED");
+        }
+        int total = request.variants().stream().mapToInt(CopyExperimentVariantRequest::splitPct).sum();
+        if (total != 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_SPLIT_TOTAL_INVALID");
+        }
+        return null;
+    }
+
+    private ExperimentAudienceSnapshot validateExperimentVersions(
+            String copyKey, List<CopyExperimentVariantRequest> requestedVariants) {
+        CopyAudienceTarget firstTarget = null;
+        String firstLegacyAudience = null;
+        boolean first = true;
+        for (CopyExperimentVariantRequest requested : requestedVariants) {
+            if (requested == null || !StringUtils.hasText(requested.version())) {
+                return ExperimentAudienceSnapshot.failure(
+                        OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_VERSION_INVALID");
+            }
+            CopyVersionRow version = copyAbRepository.findVersion(copyKey, requested.version().trim()).orElse(null);
+            if (version == null || "draft".equalsIgnoreCase(version.status())) {
+                return ExperimentAudienceSnapshot.failure(
+                        OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_VERSION_INVALID");
+            }
+            if (first) {
+                firstTarget = version.audienceTarget();
+                firstLegacyAudience = version.audience();
+                first = false;
+            } else if (!Objects.equals(firstTarget, version.audienceTarget())
+                    || (firstTarget == null && !Objects.equals(firstLegacyAudience, version.audience()))) {
+                return ExperimentAudienceSnapshot.failure(
+                        OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_EXPERIMENT_AUDIENCE_MISMATCH");
+            }
+        }
+        String label = audienceLabel(firstTarget, firstLegacyAudience);
+        return new ExperimentAudienceSnapshot(label, null, 0);
+    }
+
+    private String experimentVariantError(List<CopyExperimentVariantRequest> variants) {
+        if (variants == null || variants.size() < 2 || variants.stream().anyMatch(Objects::isNull)) {
+            return "COPY_EXPERIMENT_FIELDS_REQUIRED";
+        }
+        if (variants.stream().anyMatch(variant -> !StringUtils.hasText(variant.version())
+                || !VERSION_PATTERN.matcher(variant.version().trim()).matches()
+                || variant.splitPct() == null || variant.splitPct() < 1 || variant.splitPct() > 99)) {
+            return "COPY_EXPERIMENT_VARIANT_INVALID";
+        }
+        if (variants.stream().map(variant -> variant.version().trim().toLowerCase(Locale.ROOT)).distinct().count()
+                != variants.size()) {
+            return "COPY_EXPERIMENT_VERSIONS_DUPLICATED";
+        }
+        return variants.stream().mapToInt(CopyExperimentVariantRequest::splitPct).sum() == 100
+                ? null : "COPY_EXPERIMENT_SPLIT_TOTAL_INVALID";
+    }
+
+    private record ExperimentAudienceSnapshot(String audienceLabel, String error, int errorCode) {
+        private static ExperimentAudienceSnapshot failure(int code, String error) {
+            return new ExperimentAudienceSnapshot(null, error, code);
+        }
     }
 
     private boolean isCurrentDraft(CopyContentRow current, CopyVersionRow target) {
@@ -1007,6 +1334,17 @@ public class OpsCopyAbService {
         return null;
     }
 
+    private ApiResult<CopyContentRow> requireExperimentAction(String idempotencyKey, CopyActionRequest request) {
+        ApiResult<CopyContentRow> guard = requireAction(idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        if (request.reason().trim().length() < 8 || request.reason().trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
     private ApiResult<CopyContentRow> executeIdempotentMutation(
             String scope,
             String resourceId,
@@ -1039,6 +1377,16 @@ public class OpsCopyAbService {
                 scope, idempotencyKey.trim(), requestHash(scope, resourceId, request),
                 CopyVoidMutationResult.class,
                 () -> CopyVoidMutationResult.from(action.get()));
+        return result.toApiResult();
+    }
+
+    private ApiResult<CopyExperimentRow> executeExperimentMutation(
+            String scope, String resourceId, String idempotencyKey, Object request,
+            Supplier<ApiResult<CopyExperimentRow>> action) {
+        CopyExperimentMutationResult result = idempotencyService.execute(
+                scope, idempotencyKey.trim(), requestHash(scope, resourceId, request),
+                CopyExperimentMutationResult.class,
+                () -> CopyExperimentMutationResult.from(action.get()));
         return result.toApiResult();
     }
 
@@ -1167,7 +1515,7 @@ public class OpsCopyAbService {
                 .actorType("ADMIN")
                 .actorUsername(operator(operator))
                 .result("SUCCESS")
-                .riskLevel("LOW")
+                .riskLevel(action.startsWith("I1_EXPERIMENT_") ? "HIGH" : "LOW")
                 .detail(detail)
                 .build();
     }

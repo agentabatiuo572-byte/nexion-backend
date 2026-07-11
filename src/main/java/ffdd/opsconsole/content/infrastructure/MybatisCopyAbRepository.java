@@ -5,9 +5,11 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.CopyAbRepository;
+import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.content.domain.CopyAudienceTarget;
 import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
+import ffdd.opsconsole.content.domain.CopyExperimentVariantMetric;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyPositionView;
@@ -20,6 +22,7 @@ import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
 import ffdd.opsconsole.content.mapper.CopyContentMapper;
 import ffdd.opsconsole.content.mapper.CopyPositionMapper;
 import ffdd.opsconsole.content.mapper.CopyExperimentMapper;
@@ -27,13 +30,18 @@ import ffdd.opsconsole.content.mapper.CopyExperimentVariantMapper;
 import ffdd.opsconsole.content.mapper.CopyFrameworkParamMapper;
 import ffdd.opsconsole.content.mapper.CopyVersionMapper;
 import ffdd.opsconsole.content.mapper.CopyVersionOptionMapper;
+import ffdd.opsconsole.content.mapper.ContentAudienceEstimateMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -53,6 +61,8 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     private final CopyFrameworkParamMapper frameworkMapper;
     private final CopyPositionMapper positionMapper;
     private final CopyVersionOptionMapper versionOptionMapper;
+    private final ContentAudienceEstimateMapper audienceEstimateMapper;
+    private final CopyAudiencePhaseProvider audiencePhaseProvider;
     private final ObjectMapper objectMapper;
 
     private static final List<CopySeed> COPY_SEEDS = List.of();
@@ -124,6 +134,138 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     @Override
     public Optional<CopyExperimentRow> findExperiment(String experimentId) {
         return Optional.ofNullable(findExperimentEntity(experimentId)).map(this::toExperimentRow);
+    }
+
+    @Override
+    public Optional<CopyExperimentRow> findExperimentForUpdate(String experimentId) {
+        return Optional.ofNullable(findExperimentEntityForUpdate(experimentId)).map(this::toExperimentRow);
+    }
+
+    @Override
+    public boolean hasOtherActiveExperimentForCopy(String copyKey, String excludedExperimentId) {
+        Long count = experimentMapper.selectCount(new LambdaQueryWrapper<CopyExperimentEntity>()
+                .eq(CopyExperimentEntity::getCopyKey, copyKey)
+                .in(CopyExperimentEntity::getState, List.of("SCHEDULED", "RUNNING"))
+                .ne(StringUtils.hasText(excludedExperimentId), CopyExperimentEntity::getExperimentId, excludedExperimentId)
+                .eq(CopyExperimentEntity::getIsDeleted, 0));
+        return count != null && count > 0;
+    }
+
+    @Override
+    public CopyExperimentRow createExperiment(
+            String experimentId, CopyExperimentCreateRequest request, String audience, LocalDateTime now) {
+        CopyExperimentEntity entity = new CopyExperimentEntity();
+        entity.setExperimentId(experimentId);
+        entity.setCopyKey(request.copyKey().trim());
+        entity.setAudience(audience);
+        CopyVersionEntity audienceSource = request.variants().isEmpty()
+                ? null
+                : findVersionEntity(request.copyKey().trim(), request.variants().get(0).version().trim());
+        entity.setAudienceSnapshotJson(audienceSource == null ? null : audienceSource.getAudienceJson());
+        entity.setImpressionsLabel("0");
+        entity.setConversionsLabel("0");
+        entity.setState("SCHEDULED");
+        entity.setNote(trimToNull(request.note()));
+        entity.setLastOperator(operator(request.operator()));
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        experimentMapper.insert(entity);
+        for (int index = 0; index < request.variants().size(); index++) {
+            var requested = request.variants().get(index);
+            CopyExperimentVariantEntity variant = new CopyExperimentVariantEntity();
+            variant.setExperimentId(experimentId);
+            variant.setVariantName(((char) ('A' + index)) + " · " + requested.version().trim());
+            variant.setCopyVersion(requested.version().trim());
+            variant.setSplitPct(requested.splitPct());
+            variant.setCvrPct(BigDecimal.ZERO);
+            variant.setSortOrder(index);
+            variant.setCreatedAt(now);
+            variant.setUpdatedAt(now);
+            variant.setIsDeleted(0);
+            variantMapper.insert(variant);
+        }
+        return toExperimentRow(entity);
+    }
+
+    @Override
+    public CopyExperimentRow startExperiment(
+            String experimentId, String copyKey, String operator, LocalDateTime now) {
+        CopyExperimentEntity experiment = findExperimentEntityForUpdate(experimentId);
+        CopyContentEntity copy = findCopyEntityForUpdate(copyKey);
+        if (experiment == null || copy == null) {
+            return null;
+        }
+        String normalizedOperator = operator(operator);
+        experiment.setState("RUNNING");
+        experiment.setLastOperator(normalizedOperator);
+        experiment.setUpdatedAt(now);
+        experimentMapper.updateById(experiment);
+        copy.setExperimentId(experimentId);
+        copy.setRevision(nextRevision(copy));
+        copy.setLastOperator(normalizedOperator);
+        copy.setUpdatedAt(now);
+        copyMapper.updateById(copy);
+        return toExperimentRow(experiment);
+    }
+
+    @Override
+    public List<CopyExperimentVariantMetric> listExperimentVariantMetrics(String experimentId) {
+        List<CopyExperimentVariantMetric> metrics = variantMapper.listRuntimeMetrics(experimentId);
+        return metrics == null ? List.of() : metrics;
+    }
+
+    @Override
+    public CopyExperimentRow adoptExperimentWinner(
+            String experimentId, String copyKey, String winningVersion, String operator, LocalDateTime now) {
+        CopyExperimentEntity experiment = findExperimentEntityForUpdate(experimentId);
+        CopyContentEntity copy = findCopyEntityForUpdate(copyKey);
+        if (experiment == null || copy == null || !copyKey.equals(experiment.getCopyKey())
+                || !Set.of("CONCLUDED", "DISCARDED", "STOPPED").contains(normalizedStatus(experiment.getState()))) {
+            return null;
+        }
+        boolean winnerBelongsToExperiment = variantMapper.selectList(
+                        new LambdaQueryWrapper<CopyExperimentVariantEntity>()
+                                .eq(CopyExperimentVariantEntity::getExperimentId, experimentId)
+                                .eq(CopyExperimentVariantEntity::getIsDeleted, 0))
+                .stream()
+                .anyMatch(variant -> winningVersion.equalsIgnoreCase(variant.getCopyVersion()));
+        CopyVersionEntity winner = findVersionEntityForUpdate(copyKey, winningVersion);
+        if (!winnerBelongsToExperiment || winner == null || "DRAFT".equalsIgnoreCase(winner.getStatus())) {
+            return null;
+        }
+
+        String normalizedOperator = operator(operator);
+        archivePublishedVersion(copyKey, now);
+        winner.setStatus("PUBLISHED");
+        winner.setChain(normalizedOperator + " / experiment " + experimentId + " adopted");
+        winner.setTsLabel(TS_LABEL.format(now));
+        winner.setLastOperator(normalizedOperator);
+        winner.setUpdatedAt(now);
+        versionMapper.updateById(winner);
+
+        copy.setCurrentVersion(winner.getVersion());
+        copy.setSurface(winner.getSurface());
+        copy.setCopyPosition(winner.getCopyPosition());
+        if (!StringUtils.hasText(copy.getDraftVersion())) {
+            copy.setStatus("PUBLISHED");
+        }
+        copy.setExperimentId(null);
+        copy.setLastChange(DAY_LABEL.format(now));
+        copy.setRevision(nextRevision(copy));
+        copy.setLastOperator(normalizedOperator);
+        copy.setUpdatedAt(now);
+        copyMapper.updateById(copy);
+        copyMapper.update(null, new UpdateWrapper<CopyContentEntity>()
+                .eq("id", copy.getId())
+                .eq("is_deleted", 0)
+                .set("experiment_id", null));
+
+        experiment.setState("ADOPTED");
+        experiment.setLastOperator(normalizedOperator);
+        experiment.setUpdatedAt(now);
+        experimentMapper.updateById(experiment);
+        return toExperimentRow(experiment);
     }
 
     @Override
@@ -410,6 +552,24 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setLastOperator(operator(operator));
         entity.setUpdatedAt(now);
         experimentMapper.updateById(entity);
+        if ("CONCLUDED".equals(entity.getState()) || "STOPPED".equals(entity.getState())
+                || "DISCARDED".equals(entity.getState())) {
+            CopyContentEntity copy = copyMapper.selectOne(new LambdaQueryWrapper<CopyContentEntity>()
+                    .eq(CopyContentEntity::getCopyKey, entity.getCopyKey())
+                    .eq(CopyContentEntity::getExperimentId, experimentId)
+                    .eq(CopyContentEntity::getIsDeleted, 0)
+                    .last("LIMIT 1 FOR UPDATE"));
+            if (copy != null) {
+                copyMapper.update(null, new UpdateWrapper<CopyContentEntity>()
+                        .eq("id", copy.getId())
+                        .eq("is_deleted", 0)
+                        .eq("experiment_id", experimentId)
+                        .set("experiment_id", null)
+                        .set("revision", nextRevision(copy))
+                        .set("last_operator", operator(operator))
+                        .set("updated_at", now));
+            }
+        }
     }
 
     @Override
@@ -745,6 +905,25 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 .last("LIMIT 1"));
     }
 
+    private CopyVersionEntity findVersionEntityForUpdate(String copyKey, String version) {
+        return versionMapper.selectOne(new LambdaQueryWrapper<CopyVersionEntity>()
+                .eq(CopyVersionEntity::getCopyKey, copyKey)
+                .eq(CopyVersionEntity::getVersion, version)
+                .eq(CopyVersionEntity::getIsDeleted, 0)
+                .last("LIMIT 1 FOR UPDATE"));
+    }
+
+    private static String normalizedStatus(String status) {
+        return status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private CopyExperimentEntity findExperimentEntityForUpdate(String experimentId) {
+        return experimentMapper.selectOne(new LambdaQueryWrapper<CopyExperimentEntity>()
+                .eq(CopyExperimentEntity::getExperimentId, experimentId)
+                .eq(CopyExperimentEntity::getIsDeleted, 0)
+                .last("LIMIT 1 FOR UPDATE"));
+    }
+
     private CopyFrameworkParamEntity findFrameworkEntity(String paramKey) {
         return frameworkMapper.selectOne(new LambdaQueryWrapper<CopyFrameworkParamEntity>()
                 .eq(CopyFrameworkParamEntity::getParamKey, paramKey)
@@ -778,6 +957,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     }
 
     private CopyVersionRow toVersionRow(CopyVersionEntity entity) {
+        CopyAudienceTarget audienceTarget = readAudience(entity.getAudienceJson(), entity.getAudience());
         return new CopyVersionRow(
                 entity.getCopyKey(),
                 entity.getVersion(),
@@ -790,32 +970,57 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 entity.getCopyPosition(),
                 entity.getSurface(),
                 entity.getAudience(),
-                readAudience(entity.getAudienceJson(), entity.getAudience()),
+                audienceTarget,
                 entity.getTrafficSplit(),
-                entity.getVersionNote());
+                entity.getVersionNote(),
+                estimateAudience(audienceTarget));
     }
 
     private CopyExperimentRow toExperimentRow(CopyExperimentEntity entity) {
+        List<CopyExperimentVariantMetric> runtimeMetrics = listExperimentVariantMetrics(entity.getExperimentId());
+        Map<String, CopyExperimentVariantMetric> metricsByVariant = new HashMap<>();
+        runtimeMetrics.forEach(metric -> metricsByVariant.put(metricKey(metric.name(), metric.version()), metric));
+        long totalImpressions = runtimeMetrics.stream().mapToLong(CopyExperimentVariantMetric::impressions).sum();
+        long totalConversions = runtimeMetrics.stream().mapToLong(CopyExperimentVariantMetric::conversions).sum();
         List<CopyExperimentVariantView> variants = variantMapper.selectList(new LambdaQueryWrapper<CopyExperimentVariantEntity>()
                         .eq(CopyExperimentVariantEntity::getExperimentId, entity.getExperimentId())
                         .eq(CopyExperimentVariantEntity::getIsDeleted, 0)
                         .orderByAsc(CopyExperimentVariantEntity::getSortOrder)
                         .orderByAsc(CopyExperimentVariantEntity::getId))
                 .stream()
-                .map(variant -> new CopyExperimentVariantView(
-                        variant.getVariantName(),
-                        variant.getSplitPct() == null ? 0 : variant.getSplitPct(),
-                        variant.getCvrPct()))
+                .map(variant -> {
+                    CopyExperimentVariantMetric metric = metricsByVariant.get(
+                            metricKey(variant.getVariantName(), variant.getCopyVersion()));
+                    long impressions = metric == null ? 0L : metric.impressions();
+                    long conversions = metric == null ? 0L : metric.conversions();
+                    BigDecimal cvr = impressions == 0
+                            ? BigDecimal.ZERO.setScale(2)
+                            : BigDecimal.valueOf(conversions)
+                                    .multiply(BigDecimal.valueOf(100))
+                                    .divide(BigDecimal.valueOf(impressions), 2, RoundingMode.HALF_UP);
+                    return new CopyExperimentVariantView(
+                            variant.getVariantName(),
+                            variant.getCopyVersion(),
+                            variant.getSplitPct() == null ? 0 : variant.getSplitPct(),
+                            cvr);
+                })
                 .toList();
+        CopyAudienceTarget audienceSnapshot = readAudience(
+                entity.getAudienceSnapshotJson(), entity.getAudience());
         return new CopyExperimentRow(
                 entity.getExperimentId(),
                 entity.getCopyKey(),
                 variants,
                 entity.getAudience(),
-                entity.getImpressionsLabel(),
-                entity.getConversionsLabel(),
+                Long.toString(totalImpressions),
+                Long.toString(totalConversions),
                 toViewStatus(entity.getState()),
-                entity.getNote());
+                entity.getNote(),
+                estimateAudience(audienceSnapshot));
+    }
+
+    private static String metricKey(String name, String version) {
+        return String.valueOf(name) + "\u0000" + String.valueOf(version);
     }
 
     private void fillVersion(
@@ -930,6 +1135,42 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             return new CopyAudienceTarget("structured", List.of(), List.of("P2", "P3"), null, null);
         }
         return null;
+    }
+
+    private long estimateAudience(CopyAudienceTarget target) {
+        if (target == null) {
+            return 0L;
+        }
+        List<String> tiers = target.tiers() == null
+                ? List.of()
+                : target.tiers().stream()
+                        .filter(StringUtils::hasText)
+                        .map(value -> value.trim().toUpperCase(Locale.ROOT))
+                        .distinct()
+                        .toList();
+        if (!tiers.isEmpty()) {
+            String currentPhase = audiencePhaseProvider.currentPhase();
+            if (!StringUtils.hasText(currentPhase)
+                    || tiers.stream().noneMatch(currentPhase.trim()::equalsIgnoreCase)) {
+                return 0L;
+            }
+        }
+        List<String> locales = target.locales() == null
+                ? List.of()
+                : target.locales().stream()
+                        .filter(StringUtils::hasText)
+                        .map(MybatisCopyAbRepository::normalizeLocale)
+                        .filter(StringUtils::hasText)
+                        .distinct()
+                        .toList();
+        return audienceEstimateMapper.countEstimatedAudience(
+                locales, target.registrationDaysMin(), target.registrationDaysMax());
+    }
+
+    private static String normalizeLocale(String locale) {
+        String normalized = locale.trim().toLowerCase(Locale.ROOT).replace('_', '-');
+        int separator = normalized.indexOf('-');
+        return separator < 0 ? normalized : normalized.substring(0, separator);
     }
 
     private String trimToNull(String value) {

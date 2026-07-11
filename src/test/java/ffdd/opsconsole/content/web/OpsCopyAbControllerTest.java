@@ -13,8 +13,11 @@ import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentVariantRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsCopyAbControllerTest {
     private final OpsCopyAbService copyAbService = mock(OpsCopyAbService.class);
@@ -128,16 +131,56 @@ class OpsCopyAbControllerTest {
     }
 
     @Test
+    void experimentFrameworkRequiresDedicatedManageAuthority() throws Exception {
+        assertThat(OpsCopyAbController.class
+                .getMethod("updateFrameworkParam", String.class, String.class, CopyFrameworkUpdateRequest.class)
+                .getAnnotation(PreAuthorize.class).value())
+                .isEqualTo("hasAuthority('content_i1_experiment_manage')");
+    }
+
+    @Test
     void experimentActionsDelegateWithIdempotencyHeader() {
         CopyActionRequest request = actionRequest();
         when(copyAbService.stopExperiment("EXP-2611", "idem-i1-stop", request)).thenReturn(ApiResult.ok(null));
         when(copyAbService.adoptExperiment("EXP-2598", "idem-i1-adopt", request)).thenReturn(ApiResult.ok(null));
+        when(copyAbService.discardExperiment("EXP-2598", "idem-i1-discard", request)).thenReturn(ApiResult.ok(null));
 
         assertThat(controller.stopExperiment("EXP-2611", "idem-i1-stop", request).getCode()).isZero();
         assertThat(controller.adoptExperiment("EXP-2598", "idem-i1-adopt", request).getCode()).isZero();
+        assertThat(controller.discardExperiment("EXP-2598", "idem-i1-discard", request).getCode()).isZero();
 
         verify(copyAbService).stopExperiment("EXP-2611", "idem-i1-stop", request);
         verify(copyAbService).adoptExperiment("EXP-2598", "idem-i1-adopt", request);
+        verify(copyAbService).discardExperiment("EXP-2598", "idem-i1-discard", request);
+    }
+
+    @Test
+    void experimentLifecycleDelegatesAndRequiresDedicatedManageAuthority() throws Exception {
+        var create = new CopyExperimentCreateRequest("home.conversionBanner", java.util.List.of(
+                new CopyExperimentVariantRequest("v6", 50),
+                new CopyExperimentVariantRequest("v7", 50)),
+                "越南首页实验", "Marina K.", "创建两版本文案实验");
+        var start = new CopyActionRequest("Marina K.", "启动两版本文案实验");
+        when(copyAbService.createExperiment("idem-exp-create", create)).thenReturn(ApiResult.ok(null));
+        when(copyAbService.startExperiment("EXP-1", "idem-exp-start", start)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.createExperiment("idem-exp-create", create).getCode()).isZero();
+        assertThat(controller.startExperiment("EXP-1", "idem-exp-start", start).getCode()).isZero();
+        verify(copyAbService).createExperiment("idem-exp-create", create);
+        verify(copyAbService).startExperiment("EXP-1", "idem-exp-start", start);
+
+        assertThat(OpsCopyAbController.class
+                .getMethod("createExperiment", String.class, CopyExperimentCreateRequest.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('content_i1_experiment_manage')");
+        assertThat(OpsCopyAbController.class
+                .getMethod("startExperiment", String.class, String.class, CopyActionRequest.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('content_i1_experiment_manage')");
+        for (String method : java.util.List.of("stopExperiment", "adoptExperiment", "discardExperiment")) {
+            assertThat(OpsCopyAbController.class
+                    .getMethod(method, String.class, String.class, CopyActionRequest.class)
+                    .getAnnotation(PreAuthorize.class).value())
+                    .isEqualTo("hasAuthority('content_i1_experiment_manage')");
+        }
     }
 
     private static CopyVersionPublishRequest publishRequest() {

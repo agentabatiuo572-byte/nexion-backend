@@ -3,7 +3,6 @@ package ffdd.opsconsole.content.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -14,9 +13,9 @@ import ffdd.opsconsole.content.domain.CopyAbRepository;
 import ffdd.opsconsole.content.domain.CopyAudienceTarget;
 import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
+import ffdd.opsconsole.content.domain.CopyExperimentVariantMetric;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
-import ffdd.opsconsole.content.domain.CopyMutationResult;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.domain.CopyVersionOptionView;
@@ -29,6 +28,7 @@ import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -42,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -53,15 +54,15 @@ class OpsCopyAbServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T09:30:00Z"), ZoneOffset.UTC);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
-    private final Map<String, CopyMutationResult> idempotencyCache = new LinkedHashMap<>();
+    private final Map<String, Object> idempotencyCache = new LinkedHashMap<>();
     private final OpsCopyAbService service;
 
     @SuppressWarnings("unchecked")
     OpsCopyAbServiceTest() {
-        when(idempotencyService.execute(anyString(), anyString(), anyString(), eq(CopyMutationResult.class), any()))
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> {
                     String cacheKey = invocation.getArgument(0) + ":" + invocation.getArgument(1) + ":" + invocation.getArgument(2);
-                    Supplier<CopyMutationResult> action = invocation.getArgument(4);
+                    Supplier<Object> action = invocation.getArgument(4);
                     return idempotencyCache.computeIfAbsent(cacheKey, ignored -> action.get());
                 });
         service = new OpsCopyAbService(
@@ -679,7 +680,8 @@ class OpsCopyAbServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().current()).isEqualTo("40/60");
         verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
-                "I1_EXPERIMENT_FRAMEWORK_UPDATED".equals(request.getAction())));
+                "I1_EXPERIMENT_FRAMEWORK_UPDATED".equals(request.getAction())
+                        && "HIGH".equals(request.getRiskLevel())));
     }
 
     @Test
@@ -694,15 +696,18 @@ class OpsCopyAbServiceTest {
         var result = service.stopExperiment("EXP-2611", "idem-i1-stop", actionRequest());
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().state()).isEqualTo("stopped");
+        assertThat(result.getData().state()).isEqualTo("concluded");
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
+                "I1_EXPERIMENT_STOPPED".equals(request.getAction())
+                        && "HIGH".equals(request.getRiskLevel())));
     }
 
     @Test
-    void adoptDiscardedExperimentUpdatesState() {
+    void adoptDiscardedExperimentIsRejectedAsTerminal() {
         var result = service.adoptExperiment("EXP-2598", "idem-i1-adopt", actionRequest());
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().state()).isEqualTo("adopted");
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.name());
     }
 
     private static CopyVersionPublishRequest publishRequest() {
@@ -832,6 +837,58 @@ class OpsCopyAbServiceTest {
         @Override
         public Optional<CopyExperimentRow> findExperiment(String experimentId) {
             return Optional.ofNullable(experiments.get(experimentId));
+        }
+
+        @Override
+        public boolean hasOtherActiveExperimentForCopy(String copyKey, String excludedExperimentId) {
+            return experiments.values().stream().anyMatch(experiment -> copyKey.equals(experiment.copyKey())
+                    && !experiment.id().equals(excludedExperimentId)
+                    && Set.of("scheduled", "running").contains(experiment.state()));
+        }
+
+        @Override
+        public CopyExperimentRow createExperiment(
+                String experimentId, CopyExperimentCreateRequest request, String audience, LocalDateTime now) {
+            CopyExperimentRow created = new CopyExperimentRow(experimentId, request.copyKey(),
+                    java.util.stream.IntStream.range(0, request.variants().size())
+                            .mapToObj(index -> new CopyExperimentVariantView(
+                                    ((char) ('A' + index)) + " · " + request.variants().get(index).version(),
+                                    request.variants().get(index).version(), request.variants().get(index).splitPct(), BigDecimal.ZERO))
+                            .toList(), audience, "0", "0", "scheduled", request.note());
+            experiments.put(experimentId, created);
+            return created;
+        }
+
+        @Override
+        public CopyExperimentRow startExperiment(String experimentId, String copyKey, String operator, LocalDateTime now) {
+            CopyExperimentRow current = experiments.get(experimentId);
+            CopyExperimentRow running = new CopyExperimentRow(current.id(), current.copyKey(), current.variants(),
+                    current.audience(), current.impressions(), current.conversions(), "running", current.note());
+            experiments.put(experimentId, running);
+            return running;
+        }
+
+        @Override
+        public List<CopyExperimentVariantMetric> listExperimentVariantMetrics(String experimentId) {
+            return List.of(
+                    new CopyExperimentVariantMetric("A · v7", "v7", 100, 10),
+                    new CopyExperimentVariantMetric("B · v6", "v6", 100, 20));
+        }
+
+        @Override
+        public CopyExperimentRow adoptExperimentWinner(
+                String experimentId, String copyKey, String winningVersion, String operator, LocalDateTime now) {
+            CopyExperimentRow current = experiments.get(experimentId);
+            if (current == null) {
+                return null;
+            }
+            CopyExperimentRow adopted = new CopyExperimentRow(
+                    current.id(), current.copyKey(), current.variants(), current.audience(),
+                    current.impressions(), current.conversions(), "adopted", current.note());
+            experiments.put(experimentId, adopted);
+            CopyContentRow copy = copies.get(copyKey);
+            copies.put(copyKey, copy(copyKey, winningVersion, "published", null, null, null));
+            return adopted;
         }
 
         @Override

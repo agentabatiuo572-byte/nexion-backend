@@ -17,6 +17,7 @@ import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -164,7 +165,7 @@ public class OpsCopyAbController {
     }
 
     @PatchMapping("/framework/{paramKey}")
-    @PreAuthorize("hasAuthority('content_i1_write')")
+    @PreAuthorize("hasAuthority('content_i1_experiment_manage')")
     public ApiResult<CopyFrameworkParamView> updateFrameworkParam(
             @PathVariable String paramKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -172,8 +173,25 @@ public class OpsCopyAbController {
         return copyAbService.updateFrameworkParam(paramKey, idempotencyKey, request);
     }
 
+    @PostMapping("/experiments")
+    @PreAuthorize("hasAuthority('content_i1_experiment_manage')")
+    public ApiResult<CopyExperimentRow> createExperiment(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyExperimentCreateRequest request) {
+        return copyAbService.createExperiment(idempotencyKey, request);
+    }
+
+    @PostMapping("/experiments/{experimentId}/start")
+    @PreAuthorize("hasAuthority('content_i1_experiment_manage')")
+    public ApiResult<CopyExperimentRow> startExperiment(
+            @PathVariable String experimentId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyActionRequest request) {
+        return copyAbService.startExperiment(experimentId, idempotencyKey, request);
+    }
+
     @PostMapping("/experiments/{experimentId}/stop")
-    @PreAuthorize("hasAuthority('content_i1_write')")
+    @PreAuthorize("hasAuthority('content_i1_experiment_manage')")
     public ApiResult<CopyExperimentRow> stopExperiment(
             @PathVariable String experimentId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -182,11 +200,20 @@ public class OpsCopyAbController {
     }
 
     @PostMapping("/experiments/{experimentId}/adopt")
-    @PreAuthorize("hasAuthority('content_i1_write')")
+    @PreAuthorize("hasAuthority('content_i1_experiment_manage')")
     public ApiResult<CopyExperimentRow> adoptExperiment(
             @PathVariable String experimentId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody CopyActionRequest request) {
         return copyAbService.adoptExperiment(experimentId, idempotencyKey, request);
+    }
+
+    @PostMapping("/experiments/{experimentId}/discard")
+    @PreAuthorize("hasAuthority('content_i1_experiment_manage')")
+    public ApiResult<CopyExperimentRow> discardExperiment(
+            @PathVariable String experimentId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyActionRequest request) {
+        return copyAbService.discardExperiment(experimentId, idempotencyKey, request);
     }
 }

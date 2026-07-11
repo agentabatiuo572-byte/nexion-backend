@@ -12,6 +12,7 @@ public class CopyExperimentEntity extends BaseEntity {
     private String experimentId;
     private String copyKey;
     private String audience;
+    private String audienceSnapshotJson;
     private String impressionsLabel;
     private String conversionsLabel;
     private String state;

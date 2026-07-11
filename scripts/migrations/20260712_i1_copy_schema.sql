@@ -43,6 +43,110 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_content_experiment' AND COLUMN_NAME = 'audience_snapshot_json') = 0,
+  'ALTER TABLE nx_content_experiment ADD COLUMN audience_snapshot_json JSON NULL AFTER audience',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_content_experiment_variant' AND COLUMN_NAME = 'copy_version') = 0,
+  'ALTER TABLE nx_content_experiment_variant ADD COLUMN copy_version VARCHAR(32) NULL AFTER variant_name',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Backfill only when every live variant resolves to the same immutable audience JSON.
+-- Missing versions, NULL audiences, or differing variant audiences remain NULL so runtime is fail-closed.
+UPDATE nx_content_experiment experiment
+JOIN (
+  SELECT candidate.experiment_id,
+         MIN(CAST(version.audience_json AS CHAR)) AS audience_snapshot_json
+    FROM nx_content_experiment candidate
+    JOIN nx_content_experiment_variant variant
+      ON variant.experiment_id = candidate.experiment_id
+     AND variant.is_deleted = 0
+    LEFT JOIN nx_content_copy_version version
+      ON version.copy_key = candidate.copy_key
+     AND version.version = variant.copy_version
+     AND version.is_deleted = 0
+   WHERE candidate.is_deleted = 0
+     AND candidate.state IN ('SCHEDULED', 'RUNNING')
+   GROUP BY candidate.experiment_id
+  HAVING COUNT(*) > 0
+     AND COUNT(version.id) = COUNT(*)
+     AND COUNT(version.audience_json) = COUNT(*)
+     AND COUNT(DISTINCT CAST(version.audience_json AS CHAR)) = 1
+) safe_snapshot
+  ON safe_snapshot.experiment_id = experiment.experiment_id
+   SET experiment.audience_snapshot_json = safe_snapshot.audience_snapshot_json
+ WHERE experiment.audience_snapshot_json IS NULL
+   AND experiment.is_deleted = 0
+   AND experiment.state IN ('SCHEDULED', 'RUNNING');
+
+CREATE TABLE IF NOT EXISTS nx_content_experiment_assignment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  experiment_id VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  variant_name VARCHAR(128) NOT NULL,
+  copy_version VARCHAR(32) NOT NULL,
+  bucket_no INT NOT NULL,
+  exposed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_content_experiment_assignment (experiment_id, user_id),
+  KEY idx_content_experiment_assignment_variant (experiment_id, variant_name),
+  KEY idx_content_experiment_assignment_exposed (experiment_id, exposed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_content_experiment_conversion (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  experiment_id VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  conversion_key VARCHAR(96) NOT NULL,
+  variant_name VARCHAR(128) NOT NULL,
+  converted_at DATETIME NOT NULL,
+  UNIQUE KEY uk_content_experiment_conversion (experiment_id, user_id),
+  KEY idx_content_experiment_conversion_variant (experiment_id, variant_name, converted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- A conversion is counted at most once per experiment/user. Preserve the oldest
+-- legacy business trace before replacing the former conversion_key-scoped index.
+DELETE newer
+  FROM nx_content_experiment_conversion newer
+  JOIN nx_content_experiment_conversion older
+    ON older.experiment_id = newer.experiment_id
+   AND older.user_id = newer.user_id
+   AND older.id < newer.id;
+
+SET @drop_old_conversion_unique = IF(
+  EXISTS (
+    SELECT 1
+      FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'nx_content_experiment_conversion'
+       AND INDEX_NAME = 'uk_content_experiment_conversion'
+       AND COLUMN_NAME = 'conversion_key'
+  ),
+  'ALTER TABLE nx_content_experiment_conversion DROP INDEX uk_content_experiment_conversion',
+  'SELECT 1'
+);
+PREPARE stmt FROM @drop_old_conversion_unique;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @add_conversion_unique = IF(
+  NOT EXISTS (
+    SELECT 1
+      FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'nx_content_experiment_conversion'
+       AND INDEX_NAME = 'uk_content_experiment_conversion'
+  ),
+  'ALTER TABLE nx_content_experiment_conversion ADD UNIQUE KEY uk_content_experiment_conversion (experiment_id, user_id)',
+  'SELECT 1'
+);
+PREPARE stmt FROM @add_conversion_unique;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_content_copy_version_option (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   version_key VARCHAR(32) NOT NULL,

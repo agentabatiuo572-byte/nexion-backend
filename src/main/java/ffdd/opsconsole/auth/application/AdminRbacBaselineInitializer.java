@@ -10,7 +10,7 @@ import lombok.RequiredArgsConstructor;
 @ApplicationService
 @RequiredArgsConstructor
 public class AdminRbacBaselineInitializer {
-    private static final long MIN_CLASSIC_PERMISSION_COUNT = 272;
+    private static final long MIN_CLASSIC_PERMISSION_COUNT = 273;
     private static final List<RoleDef> ROLES = List.of(
             new RoleDef("SUPER_ADMIN", "超级管理员", "平台全域管理员"),
             new RoleDef("CONFIG_ADMIN", "配置运营", "平台配置与系统参数管理员"),

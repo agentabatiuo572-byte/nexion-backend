@@ -10,5 +10,12 @@ public record CopyExperimentRow(
         String impressions,
         String conversions,
         String state,
-        String note) {
+        String note,
+        long estimatedAudience) {
+
+    public CopyExperimentRow(
+            String id, String copyKey, List<CopyExperimentVariantView> variants, String audience,
+            String impressions, String conversions, String state, String note) {
+        this(id, copyKey, variants, audience, impressions, conversions, state, note, 0L);
+    }
 }

@@ -26,6 +26,6 @@ SOURCE scripts/rbac-classic-seed/IJ.sql;
 SOURCE scripts/rbac-classic-seed/KLM.sql;
 SOURCE scripts/rbac-classic-seed/02-role-permission-seed.sql;
 
-SELECT IF(COUNT(*) >= 272, 'RBAC_CLASSIC_OK', 'RBAC_CLASSIC_INCOMPLETE') AS migration_status
+SELECT IF(COUNT(*) >= 273, 'RBAC_CLASSIC_OK', 'RBAC_CLASSIC_INCOMPLETE') AS migration_status
   FROM nx_admin_permission
  WHERE status=1 AND is_deleted=0 AND resource_type='API' AND permission_code NOT LIKE 'PERM\\_%';

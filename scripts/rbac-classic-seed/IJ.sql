@@ -9,9 +9,10 @@
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
   -- ===== I 域 · 内容与合规（slug=content）6 页 18 点 =====
 
-  -- I1 转化文案 A/B（3 点）
+  -- I1 转化文案 A/B（4 点）
   ('content_i1_read',                 '转化文案A/B-读',                'API', '/content/copy-ab',      'READ',  0, 1, 0),
-  ('content_i1_write',                '转化文案A/B-写(发布/草稿/回滚/下架/实验启停/采纳/框架调整)', 'API', '/content/copy-ab', 'WRITE', 0, 1, 0),
+  ('content_i1_write',                '转化文案A/B-普通文案写(草稿/发布/回滚/下架/位置/版本目录)', 'API', '/content/copy-ab', 'WRITE', 0, 1, 0),
+  ('content_i1_experiment_manage',    '转化文案A/B-实验管理(框架参数/创建/启动/停止/采纳/弃用)', 'API', '/content/copy-ab', 'HIGH', 0, 1, 0),
   ('content_i1_copy_create',          '转化文案A/B-新建文案位(建位即带首版)', 'API', '/content/copy-ab', 'WRITE', 0, 1, 0),
 
   -- I2 Nova 推送运营（2 点）
@@ -74,13 +75,13 @@ ON DUPLICATE KEY UPDATE
   is_deleted      = 0;
 
 -- ===== 统计 =====
--- 30 点 = 9 READ + 9 WRITE + 12 HIGH
--- I 域 14 点（5 页）：9 READ/WRITE + 4 HIGH
--- J 域 16 点（4 页）：9 READ/WRITE + 8 HIGH
+-- 34 点 = 10 READ + 11 WRITE + 13 HIGH
+-- I 域 19 点（6 页）：6 READ + 7 WRITE + 6 HIGH
+-- J 域 15 点（4 页）：4 READ + 4 WRITE + 7 HIGH
 -- amplifies=1 共 8 个：
 --   I 域 2：content_i4_gate_adjust / content_i6_course_reward_adjust
 --   J 域 6：emergency_j1_gate_kill / _gate_resume / _batch_kill /
 --           emergency_j2_country_manage / _emergency_block /
 --           emergency_j4_playbook_execute
--- amplifies=0 高敏 4 个：content_i3_cap_adjust / content_i4_trust_section_manage /
+-- amplifies=0 高敏 5 个：content_i1_experiment_manage / content_i3_cap_adjust / content_i4_trust_section_manage /
 --                        content_i4_disclosure_publish / emergency_j3_alert_config
