@@ -41,6 +41,40 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+CREATE TABLE IF NOT EXISTS nx_content_copy_version_option (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  version_key VARCHAR(32) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  description VARCHAR(255) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  sort_order INT NOT NULL DEFAULT 0,
+  revision BIGINT NOT NULL DEFAULT 1,
+  last_operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_content_copy_version_option_key (version_key),
+  KEY idx_content_copy_version_option_list (is_deleted, status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Default catalog entries match the five versions already used by the I1 prototype.
+INSERT IGNORE INTO nx_content_copy_version_option
+  (version_key, name, description, status, sort_order, revision, last_operator, created_at, updated_at, is_deleted)
+VALUES
+  ('v1', '版本 v1', '初始文案版本', 'ACTIVE', 10, 1, 'migration', NOW(), NOW(), 0),
+  ('v2', '版本 v2', '第二版文案', 'ACTIVE', 20, 1, 'migration', NOW(), NOW(), 0),
+  ('v3', '版本 v3', '第三版文案', 'ACTIVE', 30, 1, 'migration', NOW(), NOW(), 0),
+  ('v4', '版本 v4', '第四版文案', 'ACTIVE', 40, 1, 'migration', NOW(), NOW(), 0),
+  ('v5', '版本 v5', '第五版文案', 'ACTIVE', 50, 1, 'migration', NOW(), NOW(), 0);
+
+-- Preserve all existing historical version keys as selectable catalog data.
+INSERT IGNORE INTO nx_content_copy_version_option
+  (version_key, name, description, status, sort_order, revision, last_operator, created_at, updated_at, is_deleted)
+SELECT version, CONCAT('版本 ', version), '由历史文案版本迁移', 'ACTIVE', 1000, 1, 'migration', NOW(), NOW(), 0
+FROM nx_content_copy_version
+WHERE version IS NOT NULL AND version <> ''
+GROUP BY version;
+
 CREATE TABLE IF NOT EXISTS nx_content_copy_position (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   position_key VARCHAR(96) NOT NULL,
@@ -122,23 +156,23 @@ WHERE surface IN ('Home', 'home', 'Store', 'store', '商城', 'Earn', 'earn', 'M
 
 -- Backfill structured audience snapshots for legacy rows without discarding the legacy label.
 UPDATE nx_content_copy
-SET draft_audience_json = CASE draft_audience
-  WHEN '全量' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY())
-  WHEN 'P3 · 全语言' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P3'))
-  WHEN 'zh · 注册>30天' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY('zh'), 'tiers', JSON_ARRAY(), 'registrationDaysMin', 31)
-  WHEN '注册 ≤14 天' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY(), 'registrationDaysMax', 14)
-  WHEN 'P2-P3' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P2', 'P3'))
+SET draft_audience_json = CASE CAST(draft_audience AS BINARY)
+  WHEN CAST('全量' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY())
+  WHEN CAST('P3 · 全语言' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P3'))
+  WHEN CAST('zh · 注册>30天' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY('zh'), 'tiers', JSON_ARRAY(), 'registrationDaysMin', 31)
+  WHEN CAST('注册 ≤14 天' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY(), 'registrationDaysMax', 14)
+  WHEN CAST('P2-P3' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P2', 'P3'))
   ELSE NULL
 END
 WHERE draft_audience_json IS NULL AND draft_audience IS NOT NULL;
 
 UPDATE nx_content_copy_version
-SET audience_json = CASE audience
-  WHEN '全量' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY())
-  WHEN 'P3 · 全语言' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P3'))
-  WHEN 'zh · 注册>30天' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY('zh'), 'tiers', JSON_ARRAY(), 'registrationDaysMin', 31)
-  WHEN '注册 ≤14 天' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY(), 'registrationDaysMax', 14)
-  WHEN 'P2-P3' THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P2', 'P3'))
+SET audience_json = CASE CAST(audience AS BINARY)
+  WHEN CAST('全量' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY())
+  WHEN CAST('P3 · 全语言' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P3'))
+  WHEN CAST('zh · 注册>30天' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY('zh'), 'tiers', JSON_ARRAY(), 'registrationDaysMin', 31)
+  WHEN CAST('注册 ≤14 天' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY(), 'registrationDaysMax', 14)
+  WHEN CAST('P2-P3' AS BINARY) THEN JSON_OBJECT('mode', 'structured', 'locales', JSON_ARRAY(), 'tiers', JSON_ARRAY('P2', 'P3'))
   ELSE NULL
 END
 WHERE audience_json IS NULL AND audience IS NOT NULL;

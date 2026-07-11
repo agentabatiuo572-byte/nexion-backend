@@ -4203,6 +4203,31 @@ CREATE TABLE IF NOT EXISTS nx_content_copy_version (
   KEY idx_content_copy_version_position (copy_position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_content_copy_version_option (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  version_key VARCHAR(32) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  description VARCHAR(255) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  sort_order INT NOT NULL DEFAULT 0,
+  revision BIGINT NOT NULL DEFAULT 1,
+  last_operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_content_copy_version_option_key (version_key),
+  KEY idx_content_copy_version_option_list (is_deleted, status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO nx_content_copy_version_option
+  (version_key, name, description, status, sort_order, revision, last_operator, created_at, updated_at, is_deleted)
+VALUES
+  ('v1', '版本 v1', '初始文案版本', 'ACTIVE', 10, 1, 'schema', NOW(), NOW(), 0),
+  ('v2', '版本 v2', '第二版文案', 'ACTIVE', 20, 1, 'schema', NOW(), NOW(), 0),
+  ('v3', '版本 v3', '第三版文案', 'ACTIVE', 30, 1, 'schema', NOW(), NOW(), 0),
+  ('v4', '版本 v4', '第四版文案', 'ACTIVE', 40, 1, 'schema', NOW(), NOW(), 0),
+  ('v5', '版本 v5', '第五版文案', 'ACTIVE', 50, 1, 'schema', NOW(), NOW(), 0);
+
 CREATE TABLE IF NOT EXISTS nx_content_copy_position (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   position_key VARCHAR(96) NOT NULL,

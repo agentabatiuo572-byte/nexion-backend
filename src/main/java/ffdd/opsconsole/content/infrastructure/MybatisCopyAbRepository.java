@@ -12,17 +12,22 @@ import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
+import ffdd.opsconsole.content.domain.CopyVersionOptionView;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
 import ffdd.opsconsole.content.mapper.CopyContentMapper;
 import ffdd.opsconsole.content.mapper.CopyPositionMapper;
 import ffdd.opsconsole.content.mapper.CopyExperimentMapper;
 import ffdd.opsconsole.content.mapper.CopyExperimentVariantMapper;
 import ffdd.opsconsole.content.mapper.CopyFrameworkParamMapper;
 import ffdd.opsconsole.content.mapper.CopyVersionMapper;
+import ffdd.opsconsole.content.mapper.CopyVersionOptionMapper;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -47,6 +52,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     private final CopyExperimentVariantMapper variantMapper;
     private final CopyFrameworkParamMapper frameworkMapper;
     private final CopyPositionMapper positionMapper;
+    private final CopyVersionOptionMapper versionOptionMapper;
     private final ObjectMapper objectMapper;
 
     private static final List<CopySeed> COPY_SEEDS = List.of();
@@ -418,6 +424,91 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     }
 
     @Override
+    public List<CopyVersionOptionView> listVersionOptions() {
+        return versionOptionMapper.selectList(new LambdaQueryWrapper<CopyVersionOptionEntity>()
+                        .eq(CopyVersionOptionEntity::getIsDeleted, 0)
+                        .orderByAsc(CopyVersionOptionEntity::getSortOrder)
+                        .orderByAsc(CopyVersionOptionEntity::getId))
+                .stream().map(this::toVersionOptionView).toList();
+    }
+
+    @Override
+    public Optional<CopyVersionOptionView> findVersionOption(String versionKey) {
+        return Optional.ofNullable(findVersionOptionEntity(versionKey, false)).map(this::toVersionOptionView);
+    }
+
+    @Override
+    public Optional<CopyVersionOptionView> findVersionOptionForUpdate(String versionKey) {
+        return Optional.ofNullable(findVersionOptionEntity(versionKey, true)).map(this::toVersionOptionView);
+    }
+
+    @Override
+    public CopyVersionOptionView createVersionOption(CopyVersionOptionCreateRequest request, LocalDateTime now) {
+        CopyVersionOptionEntity entity = new CopyVersionOptionEntity();
+        entity.setVersionKey(request.versionKey().trim());
+        entity.setName(request.name().trim());
+        entity.setDescription(trimToNull(request.description()));
+        entity.setStatus(request.status().trim().toUpperCase(Locale.ROOT));
+        entity.setSortOrder(request.sortOrder());
+        entity.setRevision(1L);
+        entity.setLastOperator(operator(request.operator()));
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        versionOptionMapper.insert(entity);
+        return toVersionOptionView(entity);
+    }
+
+    @Override
+    public CopyVersionOptionView updateVersionOption(
+            String versionKey, CopyVersionOptionUpdateRequest request, LocalDateTime now) {
+        CopyVersionOptionEntity entity = findVersionOptionEntity(versionKey, true);
+        if (entity == null) {
+            return null;
+        }
+        entity.setName(request.name().trim());
+        entity.setDescription(trimToNull(request.description()));
+        entity.setStatus(request.status().trim().toUpperCase(Locale.ROOT));
+        entity.setSortOrder(request.sortOrder());
+        entity.setRevision((entity.getRevision() == null ? 0L : entity.getRevision()) + 1L);
+        entity.setLastOperator(operator(request.operator()));
+        entity.setUpdatedAt(now);
+        int updatedRows = versionOptionMapper.update(null, new UpdateWrapper<CopyVersionOptionEntity>()
+                .eq("id", entity.getId())
+                .eq("is_deleted", 0)
+                .eq("revision", request.expectedRevision())
+                .set("name", entity.getName())
+                .set("description", entity.getDescription())
+                .set("status", entity.getStatus())
+                .set("sort_order", entity.getSortOrder())
+                .set("revision", entity.getRevision())
+                .set("last_operator", entity.getLastOperator())
+                .set("updated_at", now));
+        if (updatedRows != 1) {
+            throw new BizException(409, "COPY_VERSION_OPTION_REVISION_CONFLICT");
+        }
+        return toVersionOptionView(entity);
+    }
+
+    @Override
+    public void deleteVersionOption(String versionKey, String operator, LocalDateTime now) {
+        CopyVersionOptionEntity entity = findVersionOptionEntity(versionKey, true);
+        if (entity == null) {
+            return;
+        }
+        entity.setIsDeleted(1);
+        entity.setRevision((entity.getRevision() == null ? 0L : entity.getRevision()) + 1L);
+        entity.setLastOperator(operator(operator));
+        entity.setUpdatedAt(now);
+        versionOptionMapper.updateById(entity);
+    }
+
+    @Override
+    public boolean isVersionOptionReferenced(String versionKey) {
+        return versionOptionUsageCount(versionKey) > 0;
+    }
+
+    @Override
     public Optional<CopyPositionView> findPosition(String positionKey) {
         return Optional.ofNullable(findPositionEntity(positionKey)).map(this::toPositionView);
     }
@@ -682,7 +773,8 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 readAudience(entity.getDraftAudienceJson(), entity.getDraftAudience()),
                 entity.getDraftTrafficSplit(),
                 entity.getDraftNote(),
-                entity.getRevision());
+                entity.getRevision(),
+                listAllVersionNumbers(entity.getCopyKey()));
     }
 
     private CopyVersionRow toVersionRow(CopyVersionEntity entity) {
@@ -772,6 +864,27 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     private CopyPositionView toPositionView(CopyPositionEntity entity) {
         return new CopyPositionView(entity.getPositionKey(), entity.getName(), entity.getSurface(),
                 entity.getSortOrder() == null ? 0 : entity.getSortOrder(), toViewStatus(entity.getStatus()));
+    }
+
+    private CopyVersionOptionEntity findVersionOptionEntity(String versionKey, boolean forUpdate) {
+        LambdaQueryWrapper<CopyVersionOptionEntity> query = new LambdaQueryWrapper<CopyVersionOptionEntity>()
+                .eq(CopyVersionOptionEntity::getVersionKey, versionKey)
+                .eq(CopyVersionOptionEntity::getIsDeleted, 0)
+                .last(forUpdate ? "LIMIT 1 FOR UPDATE" : "LIMIT 1");
+        return versionOptionMapper.selectOne(query);
+    }
+
+    private CopyVersionOptionView toVersionOptionView(CopyVersionOptionEntity entity) {
+        return new CopyVersionOptionView(entity.getVersionKey(), entity.getName(), entity.getDescription(),
+                toViewStatus(entity.getStatus()), entity.getSortOrder() == null ? 0 : entity.getSortOrder(),
+                entity.getRevision() == null ? 0L : entity.getRevision(),
+                versionOptionUsageCount(entity.getVersionKey()));
+    }
+
+    private long versionOptionUsageCount(String versionKey) {
+        Long refs = versionMapper.selectCount(new LambdaQueryWrapper<CopyVersionEntity>()
+                .eq(CopyVersionEntity::getVersion, versionKey));
+        return refs == null ? 0L : refs;
     }
 
     private String writeAudience(CopyAudienceTarget audienceTarget) {

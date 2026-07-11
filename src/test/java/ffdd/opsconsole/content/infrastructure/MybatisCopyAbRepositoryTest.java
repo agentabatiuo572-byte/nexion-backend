@@ -15,6 +15,8 @@ import ffdd.opsconsole.content.mapper.CopyExperimentVariantMapper;
 import ffdd.opsconsole.content.mapper.CopyFrameworkParamMapper;
 import ffdd.opsconsole.content.mapper.CopyPositionMapper;
 import ffdd.opsconsole.content.mapper.CopyVersionMapper;
+import ffdd.opsconsole.content.mapper.CopyVersionOptionMapper;
+import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,7 @@ class MybatisCopyAbRepositoryTest {
     private final CopyVersionMapper versionMapper = mock(CopyVersionMapper.class);
     private final CopyExperimentMapper experimentMapper = mock(CopyExperimentMapper.class);
     private final CopyExperimentVariantMapper variantMapper = mock(CopyExperimentVariantMapper.class);
+    private final CopyVersionOptionMapper versionOptionMapper = mock(CopyVersionOptionMapper.class);
     private final MybatisCopyAbRepository repository = new MybatisCopyAbRepository(
             copyMapper,
             versionMapper,
@@ -32,7 +35,91 @@ class MybatisCopyAbRepositoryTest {
             variantMapper,
             mock(CopyFrameworkParamMapper.class),
             mock(CopyPositionMapper.class),
+            versionOptionMapper,
             new ObjectMapper());
+
+    @Test
+    void deletingVersionOptionUsesSoftDeleteAndIncrementsRevision() {
+        CopyVersionOptionEntity option = new CopyVersionOptionEntity();
+        option.setId(9L);
+        option.setVersionKey("release-2026.07");
+        option.setName("七月版本");
+        option.setStatus("ACTIVE");
+        option.setSortOrder(10);
+        option.setRevision(4L);
+        option.setIsDeleted(0);
+        when(versionOptionMapper.selectOne(any())).thenReturn(option);
+        LocalDateTime now = LocalDateTime.of(2026, 7, 12, 0, 0);
+
+        repository.deleteVersionOption("release-2026.07", "Marina K.", now);
+
+        ArgumentCaptor<CopyVersionOptionEntity> captor = ArgumentCaptor.forClass(CopyVersionOptionEntity.class);
+        verify(versionOptionMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getIsDeleted()).isEqualTo(1);
+        assertThat(captor.getValue().getRevision()).isEqualTo(5L);
+        assertThat(captor.getValue().getLastOperator()).isEqualTo("Marina K.");
+        assertThat(captor.getValue().getUpdatedAt()).isEqualTo(now);
+    }
+
+    @Test
+    void catalogReferenceCheckCountsAllVersionHistoryIncludingTombstones() {
+        when(versionMapper.selectCount(any())).thenReturn(1L);
+
+        assertThat(repository.isVersionOptionReferenced("v8")).isTrue();
+    }
+
+    @Test
+    void versionOptionViewsExposeUsageCountFromAllHistory() {
+        CopyVersionOptionEntity option = new CopyVersionOptionEntity();
+        option.setId(1L);
+        option.setVersionKey("v8");
+        option.setName("版本 v8");
+        option.setStatus("ACTIVE");
+        option.setSortOrder(80);
+        option.setRevision(2L);
+        option.setIsDeleted(0);
+        when(versionOptionMapper.selectList(any())).thenReturn(List.of(option));
+        when(versionMapper.selectCount(any())).thenReturn(3L);
+
+        assertThat(repository.listVersionOptions()).singleElement()
+                .satisfies(view -> assertThat(view.usageCount()).isEqualTo(3L));
+    }
+
+    @Test
+    void updatingVersionOptionCanExplicitlyClearDescriptionAndKeepsRevisionFieldsAtomic() {
+        CopyVersionOptionEntity option = new CopyVersionOptionEntity();
+        option.setId(11L);
+        option.setVersionKey("release-2026.09");
+        option.setName("九月版本");
+        option.setDescription("待清空说明");
+        option.setStatus("ACTIVE");
+        option.setSortOrder(90);
+        option.setRevision(6L);
+        option.setIsDeleted(0);
+        when(versionOptionMapper.selectOne(any())).thenReturn(option);
+        when(versionMapper.selectCount(any())).thenReturn(0L);
+        when(versionOptionMapper.update(isNull(), any())).thenReturn(1);
+        LocalDateTime now = LocalDateTime.of(2026, 7, 12, 1, 0);
+        var request = new CopyVersionOptionUpdateRequest(
+                "九月版本调整", "", "INACTIVE", 95, 6L, "Marina K.", "清空版本说明并停用");
+
+        var result = repository.updateVersionOption("release-2026.09", request, now);
+
+        assertThat(result.description()).isNull();
+        assertThat(result.revision()).isEqualTo(7L);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<CopyVersionOptionEntity>> updateCaptor =
+                ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(versionOptionMapper).update(isNull(), updateCaptor.capture());
+        assertThat(updateCaptor.getValue().getSqlSet())
+                .contains("description=")
+                .contains("name=")
+                .contains("status=")
+                .contains("sort_order=")
+                .contains("revision=")
+                .contains("last_operator=")
+                .contains("updated_at=");
+    }
 
     @Test
     void deleteDraftVersionSoftDeletesVersionAndClearsDraftFields() {
@@ -88,6 +175,19 @@ class MybatisCopyAbRepositoryTest {
 
         assertThat(repository.listAllVersionNumbers("home.conversionBanner"))
                 .containsExactly("v7", "v8");
+    }
+
+    @Test
+    void listCopiesExposesUsedVersionKeysIncludingSoftDeletedTombstones() {
+        CopyContentEntity copy = copy("PUBLISHED");
+        CopyVersionEntity active = version("v7", "PUBLISHED");
+        CopyVersionEntity deleted = version("v8", "DRAFT");
+        deleted.setIsDeleted(1);
+        when(copyMapper.selectList(any())).thenReturn(List.of(copy));
+        when(versionMapper.selectList(any())).thenReturn(List.of(active, deleted));
+
+        assertThat(repository.listCopies()).singleElement()
+                .satisfies(row -> assertThat(row.usedVersionKeys()).containsExactly("v7", "v8"));
     }
 
     @Test

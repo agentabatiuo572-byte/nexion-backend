@@ -15,6 +15,9 @@ import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyMutationResult;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
+import ffdd.opsconsole.content.domain.CopyVersionOptionView;
+import ffdd.opsconsole.content.domain.CopyVersionOptionMutationResult;
+import ffdd.opsconsole.content.domain.CopyVoidMutationResult;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
@@ -22,6 +25,8 @@ import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -30,7 +35,6 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -58,14 +62,15 @@ public class OpsCopyAbService {
     private static final String IDEMPOTENCY_SCOPE_DRAFT = "I1_COPY_DRAFT_SAVE";
     private static final String IDEMPOTENCY_SCOPE_PUBLISH = "I1_COPY_VERSION_PUBLISH";
     private static final String IDEMPOTENCY_SCOPE_DELETE_DRAFT = "I1_COPY_DRAFT_VERSION_DELETE";
+    private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_CREATE = "I1_COPY_VERSION_OPTION_CREATE";
+    private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_UPDATE = "I1_COPY_VERSION_OPTION_UPDATE";
+    private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_DELETE = "I1_COPY_VERSION_OPTION_DELETE";
     private static final int IDEMPOTENCY_KEY_MAX_LENGTH = 128;
-    private static final int VERSION_COLUMN_LENGTH = 32;
     private static final List<String> SURFACES = List.of("home", "store", "earn", "me");
     private static final List<String> AUDIENCES = List.of("全量", "P3 · 全语言", "zh · 注册>30天", "注册 ≤14 天", "P2-P3");
     private static final List<String> TRAFFIC_SPLITS = List.of("50", "34", "25", "10");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
     private static final Pattern VERSION_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$");
-    private static final Pattern SEQUENTIAL_VERSION_PATTERN = Pattern.compile("^[vV](\\d+)$");
     private static final Pattern POSITION_KEY_PATTERN = Pattern.compile("^[a-z][a-z0-9._-]{1,95}$");
     private static final Pattern COPY_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{1,95}$");
     private static final Set<String> AUDIENCE_MODES = Set.of("STRUCTURED", "ALL", "FILTERED");
@@ -86,6 +91,7 @@ public class OpsCopyAbService {
         List<CopyExperimentRow> experiments = copyAbRepository.listExperiments();
         return ApiResult.ok(new CopyAbOverview(
                 stats(copies, experiments),
+                copyAbRepository.listVersionOptions(),
                 copies,
                 copyAbRepository.listVersions(null),
                 experiments,
@@ -94,8 +100,130 @@ public class OpsCopyAbService {
                 SURFACES,
                 AUDIENCES,
                 TRAFFIC_SPLITS,
-                List.of("nx_content_copy", "nx_content_copy_version", "nx_content_copy_position",
+                List.of("nx_content_copy_version_option", "nx_content_copy", "nx_content_copy_version", "nx_content_copy_position",
                         "nx_content_experiment", "nx_content_experiment_variant", "nx_content_experiment_framework")));
+    }
+
+    public ApiResult<List<CopyVersionOptionView>> listVersionOptions() {
+        return ApiResult.ok(copyAbRepository.listVersionOptions());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<CopyVersionOptionView> createVersionOption(
+            String idempotencyKey, CopyVersionOptionCreateRequest request) {
+        ApiResult<CopyVersionOptionView> guard = validateVersionOptionCommand(
+                idempotencyKey,
+                request == null ? null : request.versionKey(),
+                request == null ? null : request.name(),
+                request == null ? null : request.description(),
+                request == null ? null : request.status(),
+                request == null ? null : request.sortOrder(),
+                request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        return executeVersionOptionMutation(
+                IDEMPOTENCY_SCOPE_VERSION_OPTION_CREATE,
+                request.versionKey().trim(), idempotencyKey, request,
+                () -> createVersionOptionOnce(idempotencyKey, request));
+    }
+
+    private ApiResult<CopyVersionOptionView> createVersionOptionOnce(
+            String idempotencyKey, CopyVersionOptionCreateRequest request) {
+        String key = request.versionKey().trim();
+        if (copyAbRepository.findVersionOptionForUpdate(key).isPresent()) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_OPTION_EXISTS");
+        }
+        CopyVersionOptionCreateRequest normalized = new CopyVersionOptionCreateRequest(
+                key, request.name().trim(), trimToNull(request.description()), normalizeOptionStatus(request.status()),
+                request.sortOrder(), operator(request.operator()), request.reason().trim());
+        CopyVersionOptionView created;
+        try {
+            created = copyAbRepository.createVersionOption(normalized, now());
+        } catch (DuplicateKeyException ignored) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_OPTION_EXISTS");
+        }
+        auditRequired("I1_COPY_VERSION_OPTION_CREATED", key, request.operator(), idempotencyKey, request.reason(),
+                Map.of("status", created.status(), "sortOrder", created.sortOrder()));
+        return ApiResult.ok(created);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<CopyVersionOptionView> updateVersionOption(
+            String versionKey, String idempotencyKey, CopyVersionOptionUpdateRequest request) {
+        ApiResult<CopyVersionOptionView> guard = validateVersionOptionCommand(
+                idempotencyKey, versionKey,
+                request == null ? null : request.name(),
+                request == null ? null : request.description(),
+                request == null ? null : request.status(),
+                request == null ? null : request.sortOrder(),
+                request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (request.expectedRevision() == null || request.expectedRevision() < 1) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_OPTION_REVISION_REQUIRED");
+        }
+        return executeVersionOptionMutation(
+                IDEMPOTENCY_SCOPE_VERSION_OPTION_UPDATE,
+                versionKey.trim(), idempotencyKey, request,
+                () -> updateVersionOptionOnce(versionKey, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyVersionOptionView> updateVersionOptionOnce(
+            String versionKey, String idempotencyKey, CopyVersionOptionUpdateRequest request) {
+        String key = versionKey.trim();
+        CopyVersionOptionView current = copyAbRepository.findVersionOptionForUpdate(key).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "COPY_VERSION_OPTION_NOT_FOUND");
+        }
+        if (!request.expectedRevision().equals(current.revision())) {
+            return ApiResult.fail(409, "COPY_VERSION_OPTION_REVISION_CONFLICT");
+        }
+        CopyVersionOptionUpdateRequest normalized = new CopyVersionOptionUpdateRequest(
+                request.name().trim(), trimToNull(request.description()), normalizeOptionStatus(request.status()),
+                request.sortOrder(), request.expectedRevision(), operator(request.operator()), request.reason().trim());
+        CopyVersionOptionView updated = copyAbRepository.updateVersionOption(key, normalized, now());
+        auditRequired("I1_COPY_VERSION_OPTION_UPDATED", key, request.operator(), idempotencyKey, request.reason(),
+                Map.of("fromStatus", current.status(), "toStatus", updated.status(), "revision", updated.revision()));
+        return ApiResult.ok(updated);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Void> deleteVersionOption(String versionKey, String idempotencyKey, CopyActionRequest request) {
+        ApiResult<CopyContentRow> actionGuard = requireAction(idempotencyKey, request);
+        if (actionGuard != null) {
+            return ApiResult.fail(actionGuard.getCode(), actionGuard.getMessage());
+        }
+        if (!StringUtils.hasText(versionKey) || !VERSION_PATTERN.matcher(versionKey.trim()).matches()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_OPTION_KEY_INVALID");
+        }
+        if (request.expectedRevision() == null || request.expectedRevision() < 1) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_OPTION_REVISION_REQUIRED");
+        }
+        return executeVoidMutation(
+                IDEMPOTENCY_SCOPE_VERSION_OPTION_DELETE,
+                versionKey.trim(), idempotencyKey, request,
+                () -> deleteVersionOptionOnce(versionKey, idempotencyKey, request));
+    }
+
+    private ApiResult<Void> deleteVersionOptionOnce(
+            String versionKey, String idempotencyKey, CopyActionRequest request) {
+        String key = versionKey.trim();
+        CopyVersionOptionView current = copyAbRepository.findVersionOptionForUpdate(key).orElse(null);
+        if (current == null) {
+            return ApiResult.fail(404, "COPY_VERSION_OPTION_NOT_FOUND");
+        }
+        if (!request.expectedRevision().equals(current.revision())) {
+            return ApiResult.fail(409, "COPY_VERSION_OPTION_REVISION_CONFLICT");
+        }
+        if (copyAbRepository.isVersionOptionReferenced(key)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_OPTION_IN_USE");
+        }
+        copyAbRepository.deleteVersionOption(key, operator(request.operator()), now());
+        auditRequired("I1_COPY_VERSION_OPTION_DELETED", key, request.operator(), idempotencyKey, request.reason(),
+                Map.of("revision", current.revision()));
+        return ApiResult.ok(null);
     }
 
     public ApiResult<List<CopyPositionView>> listPositions() {
@@ -194,9 +322,20 @@ public class OpsCopyAbService {
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
-        String version = resolveVersion(current);
+        String version = resolveRequestedVersion(current, request.version());
         if (version == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_SEQUENCE_EXHAUSTED");
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_REQUIRED");
+        }
+        if (StringUtils.hasText(current.draftVersion())
+                && StringUtils.hasText(request.version())
+                && !current.draftVersion().trim().equalsIgnoreCase(request.version().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_DRAFT_VERSION_IMMUTABLE");
+        }
+        if (!StringUtils.hasText(current.draftVersion())) {
+            ApiResult<CopyContentRow> versionGuard = validateNewVersionSelection(current.key(), version);
+            if (versionGuard != null) {
+                return versionGuard;
+            }
         }
         if (current.version().equalsIgnoreCase(version)) {
             return ApiResult.fail(
@@ -238,9 +377,20 @@ public class OpsCopyAbService {
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
-        String version = resolveVersion(current);
+        String version = resolveRequestedVersion(current, request.version());
         if (version == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_SEQUENCE_EXHAUSTED");
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_REQUIRED");
+        }
+        if (StringUtils.hasText(current.draftVersion())
+                && StringUtils.hasText(request.version())
+                && !current.draftVersion().trim().equalsIgnoreCase(request.version().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_DRAFT_VERSION_IMMUTABLE");
+        }
+        if (!StringUtils.hasText(current.draftVersion())) {
+            ApiResult<CopyContentRow> versionGuard = validateNewVersionSelection(current.key(), version);
+            if (versionGuard != null) {
+                return versionGuard;
+            }
         }
         if (current.version().equalsIgnoreCase(version)) {
             return ApiResult.fail(
@@ -271,6 +421,7 @@ public class OpsCopyAbService {
         }
         if (request == null || !StringUtils.hasText(request.copyKey()) || !StringUtils.hasText(request.description())
                 || !StringUtils.hasText(request.surface()) || !StringUtils.hasText(request.i18nKey())
+                || !StringUtils.hasText(request.version())
                 || !StringUtils.hasText(request.versionNote())
                 || (!StringUtils.hasText(request.audience()) && request.audienceTarget() == null) || !StringUtils.hasText(request.trafficSplit())
                 || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.en())
@@ -307,6 +458,10 @@ public class OpsCopyAbService {
         if (findCopy(request.copyKey()) != null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_EXISTS");
         }
+        ApiResult<CopyContentRow> versionGuard = validateNewVersionSelection(request.copyKey().trim(), request.version());
+        if (versionGuard != null) {
+            return versionGuard;
+        }
         CopyContentRow created;
         try {
             created = copyAbRepository.createCopy(normalizeCreate(request), now());
@@ -326,7 +481,7 @@ public class OpsCopyAbService {
                 request.description().trim(),
                 normalizeSurface(request.surface()),
                 request.i18nKey().trim(),
-                "v1",
+                request.version().trim(),
                 audienceLabel(request.audienceTarget(), request.audience()),
                 normalizeAudience(request.audienceTarget()),
                 String.valueOf(parseSplit(request.trafficSplit())),
@@ -695,6 +850,39 @@ public class OpsCopyAbService {
         return null;
     }
 
+    private ApiResult<CopyVersionOptionView> validateVersionOptionCommand(
+            String idempotencyKey, String versionKey, String name, String description,
+            String status, Integer sortOrder, String reason) {
+        if (!StringUtils.hasText(idempotencyKey)
+                || idempotencyKey.trim().length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(),
+                    StringUtils.hasText(idempotencyKey) ? "IDEMPOTENCY_KEY_INVALID" : OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (!StringUtils.hasText(versionKey) || !VERSION_PATTERN.matcher(versionKey.trim()).matches()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_OPTION_KEY_INVALID");
+        }
+        if (!StringUtils.hasText(name) || name.trim().length() > 128
+                || (description != null && description.trim().length() > 255)
+                || sortOrder == null || sortOrder < 0 || sortOrder > 999999) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_OPTION_FIELDS_INVALID");
+        }
+        if (!Set.of("ACTIVE", "INACTIVE").contains(normalizeOptionStatus(status))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_OPTION_STATUS_INVALID");
+        }
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
+    private String normalizeOptionStatus(String status) {
+        return StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : "";
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
     private boolean negative(Integer value) {
         return value != null && value < 0;
     }
@@ -791,18 +979,32 @@ public class OpsCopyAbService {
                 request.reason().trim());
     }
 
-    private String resolveVersion(CopyContentRow current) {
+    private String resolveRequestedVersion(CopyContentRow current, String requestedVersion) {
         if (StringUtils.hasText(current.draftVersion())) {
             return current.draftVersion().trim();
         }
-        BigInteger maximum = copyAbRepository.listAllVersionNumbers(current.key()).stream()
-                .map(SEQUENTIAL_VERSION_PATTERN::matcher)
-                .filter(Matcher::matches)
-                .map(matcher -> new BigInteger(matcher.group(1)))
-                .max(BigInteger::compareTo)
-                .orElse(BigInteger.ZERO);
-        String next = "v" + maximum.add(BigInteger.ONE);
-        return next.length() <= VERSION_COLUMN_LENGTH ? next : null;
+        return StringUtils.hasText(requestedVersion) ? requestedVersion.trim() : null;
+    }
+
+    private ApiResult<CopyContentRow> validateNewVersionSelection(String copyKey, String requestedVersion) {
+        if (!StringUtils.hasText(requestedVersion)
+                || !VERSION_PATTERN.matcher(requestedVersion.trim()).matches()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_INVALID");
+        }
+        String version = requestedVersion.trim();
+        CopyVersionOptionView option = copyAbRepository.findVersionOptionForUpdate(version).orElse(null);
+        if (option == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_OPTION_NOT_FOUND");
+        }
+        if (!"active".equalsIgnoreCase(option.status())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_OPTION_INACTIVE");
+        }
+        if (copyAbRepository.listAllVersionNumbers(copyKey).stream()
+                .filter(StringUtils::hasText)
+                .anyMatch(version::equalsIgnoreCase)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_ALREADY_USED");
+        }
+        return null;
     }
 
     private ApiResult<CopyContentRow> executeIdempotentMutation(
@@ -817,6 +1019,26 @@ public class OpsCopyAbService {
                 requestHash(scope, resourceId, request),
                 CopyMutationResult.class,
                 () -> CopyMutationResult.from(action.get()));
+        return result.toApiResult();
+    }
+
+    private ApiResult<CopyVersionOptionView> executeVersionOptionMutation(
+            String scope, String resourceId, String idempotencyKey, Object request,
+            Supplier<ApiResult<CopyVersionOptionView>> action) {
+        CopyVersionOptionMutationResult result = idempotencyService.execute(
+                scope, idempotencyKey.trim(), requestHash(scope, resourceId, request),
+                CopyVersionOptionMutationResult.class,
+                () -> CopyVersionOptionMutationResult.from(action.get()));
+        return result.toApiResult();
+    }
+
+    private ApiResult<Void> executeVoidMutation(
+            String scope, String resourceId, String idempotencyKey, Object request,
+            Supplier<ApiResult<Void>> action) {
+        CopyVoidMutationResult result = idempotencyService.execute(
+                scope, idempotencyKey.trim(), requestHash(scope, resourceId, request),
+                CopyVoidMutationResult.class,
+                () -> CopyVoidMutationResult.from(action.get()));
         return result.toApiResult();
     }
 
@@ -936,7 +1158,8 @@ public class OpsCopyAbService {
         detail.putAll(extra);
         return AuditLogWriteRequest.builder()
                 .action(action)
-                .resourceType(action.contains("POSITION") ? "CONTENT_COPY_POSITION"
+                .resourceType(action.contains("VERSION_OPTION") ? "CONTENT_COPY_VERSION_OPTION"
+                        : action.contains("POSITION") ? "CONTENT_COPY_POSITION"
                         : action.contains("EXPERIMENT") ? "CONTENT_EXPERIMENT"
                         : action.contains("FRAMEWORK") ? "CONTENT_EXPERIMENT_FRAMEWORK" : "CONTENT_COPY")
                 .resourceId(resourceId)

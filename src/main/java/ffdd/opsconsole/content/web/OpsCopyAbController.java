@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyPositionView;
+import ffdd.opsconsole.content.domain.CopyVersionOptionView;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
@@ -14,6 +15,8 @@ import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +26,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -46,6 +50,38 @@ public class OpsCopyAbController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody CopyCreateRequest request) {
         return copyAbService.createCopy(idempotencyKey, request);
+    }
+
+    @GetMapping("/version-options")
+    @PreAuthorize("hasAuthority('content_i1_read')")
+    public ApiResult<List<CopyVersionOptionView>> listVersionOptions() {
+        return copyAbService.listVersionOptions();
+    }
+
+    @PostMapping("/version-options")
+    @PreAuthorize("hasAuthority('content_i1_write')")
+    public ApiResult<CopyVersionOptionView> createVersionOption(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyVersionOptionCreateRequest request) {
+        return copyAbService.createVersionOption(idempotencyKey, request);
+    }
+
+    @PutMapping("/version-options/{versionKey}")
+    @PreAuthorize("hasAuthority('content_i1_write')")
+    public ApiResult<CopyVersionOptionView> updateVersionOption(
+            @PathVariable String versionKey,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyVersionOptionUpdateRequest request) {
+        return copyAbService.updateVersionOption(versionKey, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/version-options/{versionKey}")
+    @PreAuthorize("hasAuthority('content_i1_write')")
+    public ApiResult<Void> deleteVersionOption(
+            @PathVariable String versionKey,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyActionRequest request) {
+        return copyAbService.deleteVersionOption(versionKey, idempotencyKey, request);
     }
 
     @GetMapping("/positions")

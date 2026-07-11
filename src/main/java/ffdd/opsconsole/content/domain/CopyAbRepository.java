@@ -5,6 +5,8 @@ import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
 import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -36,6 +38,23 @@ public interface CopyAbRepository {
     boolean isVersionReferencedByExperiment(String copyKey, String version);
 
     List<CopyFrameworkParamView> listFrameworkParams();
+
+    List<CopyVersionOptionView> listVersionOptions();
+
+    Optional<CopyVersionOptionView> findVersionOption(String versionKey);
+
+    default Optional<CopyVersionOptionView> findVersionOptionForUpdate(String versionKey) {
+        return findVersionOption(versionKey);
+    }
+
+    CopyVersionOptionView createVersionOption(CopyVersionOptionCreateRequest request, LocalDateTime now);
+
+    CopyVersionOptionView updateVersionOption(String versionKey, CopyVersionOptionUpdateRequest request, LocalDateTime now);
+
+    void deleteVersionOption(String versionKey, String operator, LocalDateTime now);
+
+    /** Includes deleted version-history tombstones: a catalog key can never be removed once used. */
+    boolean isVersionOptionReferenced(String versionKey);
 
     void saveDraft(String copyKey, CopyDraftSaveRequest request, LocalDateTime now);
 

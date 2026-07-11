@@ -11,6 +11,8 @@ import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import org.junit.jupiter.api.Test;
 
@@ -38,6 +40,28 @@ class OpsCopyAbControllerTest {
         assertThat(controller.createCopy("idem-i1-create", request).getCode()).isZero();
 
         verify(copyAbService).createCopy("idem-i1-create", request);
+    }
+
+    @Test
+    void versionOptionCrudDelegatesWithIdempotencyAndRevision() {
+        var create = new CopyVersionOptionCreateRequest(
+                "release-2026.07", "七月版本", "越南文案", "ACTIVE", 10,
+                "Marina K.", "新增文案版本配置");
+        var update = new CopyVersionOptionUpdateRequest(
+                "七月版本调整", "越南文案", "INACTIVE", 20, 1L,
+                "Marina K.", "调整文案版本配置");
+        var delete = new CopyActionRequest("Marina K.", "删除未使用文案版本配置", null, 2L);
+        when(copyAbService.createVersionOption("idem-create-option", create)).thenReturn(ApiResult.ok(null));
+        when(copyAbService.updateVersionOption("release-2026.07", "idem-update-option", update)).thenReturn(ApiResult.ok(null));
+        when(copyAbService.deleteVersionOption("release-2026.07", "idem-delete-option", delete)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.createVersionOption("idem-create-option", create).getCode()).isZero();
+        assertThat(controller.updateVersionOption("release-2026.07", "idem-update-option", update).getCode()).isZero();
+        assertThat(controller.deleteVersionOption("release-2026.07", "idem-delete-option", delete).getCode()).isZero();
+
+        verify(copyAbService).createVersionOption("idem-create-option", create);
+        verify(copyAbService).updateVersionOption("release-2026.07", "idem-update-option", update);
+        verify(copyAbService).deleteVersionOption("release-2026.07", "idem-delete-option", delete);
     }
 
     @Test

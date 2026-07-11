@@ -4,6 +4,7 @@ import java.util.List;
 
 public record CopyAbOverview(
         CopyAbStats stats,
+        List<CopyVersionOptionView> versionOptions,
         List<CopyContentRow> copies,
         List<CopyVersionRow> versions,
         List<CopyExperimentRow> experiments,
