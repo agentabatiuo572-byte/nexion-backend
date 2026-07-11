@@ -8,6 +8,7 @@ public record CopyAbOverview(
         List<CopyVersionRow> versions,
         List<CopyExperimentRow> experiments,
         List<CopyFrameworkParamView> frameworkParams,
+        List<CopyPositionView> positions,
         List<String> surfaces,
         List<String> audiences,
         List<String> trafficSplits,

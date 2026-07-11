@@ -5,6 +5,11 @@ public record CopyPositionCreateRequest(
         String positionKey,
         String name,
         String surface,
+        Integer sortOrder,
         String operator,
         String reason) {
+
+    public CopyPositionCreateRequest(String positionKey, String name, String surface, String operator, String reason) {
+        this(positionKey, name, surface, 0, operator, reason);
+    }
 }

@@ -20,6 +20,7 @@ public class CopyVersionEntity extends BaseEntity {
     private String copyPosition;
     private String surface;
     private String audience;
+    private String audienceJson;
     private String trafficSplit;
     private String versionNote;
     private String lastOperator;

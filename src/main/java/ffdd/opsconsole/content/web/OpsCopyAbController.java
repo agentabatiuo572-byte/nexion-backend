@@ -6,14 +6,19 @@ import ffdd.opsconsole.content.domain.CopyAbOverview;
 import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
+import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -41,6 +46,38 @@ public class OpsCopyAbController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody CopyCreateRequest request) {
         return copyAbService.createCopy(idempotencyKey, request);
+    }
+
+    @GetMapping("/positions")
+    @PreAuthorize("hasAuthority('content_i1_read')")
+    public ApiResult<List<CopyPositionView>> listPositions() {
+        return copyAbService.listPositions();
+    }
+
+    @PostMapping("/positions")
+    @PreAuthorize("hasAuthority('content_i1_write')")
+    public ApiResult<CopyPositionView> createPosition(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyPositionCreateRequest request) {
+        return copyAbService.createPosition(idempotencyKey, request);
+    }
+
+    @PatchMapping("/positions/{positionKey}")
+    @PreAuthorize("hasAuthority('content_i1_write')")
+    public ApiResult<CopyPositionView> updatePosition(
+            @PathVariable String positionKey,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyPositionUpdateRequest request) {
+        return copyAbService.updatePosition(positionKey, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/positions/{positionKey}")
+    @PreAuthorize("hasAuthority('content_i1_write')")
+    public ApiResult<Void> deletePosition(
+            @PathVariable String positionKey,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyActionRequest request) {
+        return copyAbService.deletePosition(positionKey, idempotencyKey, request);
     }
 
     @PatchMapping("/copies/{copyKey}/draft")

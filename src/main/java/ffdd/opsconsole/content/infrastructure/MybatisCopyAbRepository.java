@@ -1,7 +1,10 @@
 package ffdd.opsconsole.content.infrastructure;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.CopyAbRepository;
+import ffdd.opsconsole.content.domain.CopyAudienceTarget;
 import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
@@ -11,6 +14,7 @@ import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.mapper.CopyContentMapper;
 import ffdd.opsconsole.content.mapper.CopyPositionMapper;
@@ -40,6 +44,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     private final CopyExperimentVariantMapper variantMapper;
     private final CopyFrameworkParamMapper frameworkMapper;
     private final CopyPositionMapper positionMapper;
+    private final ObjectMapper objectMapper;
 
     private static final List<CopySeed> COPY_SEEDS = List.of();
     private static final List<VersionSeed> HCB_VERSIONS = List.of();
@@ -64,6 +69,11 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     @Override
     public Optional<CopyContentRow> findCopy(String copyKey) {
         return Optional.ofNullable(findCopyEntity(copyKey)).map(this::toCopyRow);
+    }
+
+    @Override
+    public Optional<CopyContentRow> findCopyForUpdate(String copyKey) {
+        return Optional.ofNullable(findCopyEntityForUpdate(copyKey)).map(this::toCopyRow);
     }
 
     @Override
@@ -121,8 +131,11 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         copy.setDraftVersion(request.version().trim());
         copy.setDraftZh(request.zh().trim());
         copy.setDraftEn(request.en().trim());
+        copy.setDraftVi(trimToNull(request.vi()));
+        copy.setDraftCopyPosition(trimToNull(request.copyPosition()));
         copy.setDraftSurface(request.surface().trim());
         copy.setDraftAudience(request.audience().trim());
+        copy.setDraftAudienceJson(writeAudience(request.audienceTarget()));
         copy.setDraftTrafficSplit(request.trafficSplit().trim());
         copy.setDraftNote(request.versionNote().trim());
         copy.setStatus("DRAFT_SAVED");
@@ -138,7 +151,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setCreatedAt(now);
             version.setIsDeleted(0);
         }
-        fillVersion(version, request.surface(), request.audience(), request.trafficSplit(), request.versionNote(),
+        fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
                 request.zh(), request.en(), request.vi(), request.copyPosition(), "DRAFT", operator(request.operator()), now);
         version.setTsLabel(TS_LABEL.format(now));
         if (version.getId() == null) {
@@ -164,7 +177,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setCreatedAt(now);
             version.setIsDeleted(0);
         }
-        fillVersion(version, request.surface(), request.audience(), request.trafficSplit(), request.versionNote(),
+        fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
                 request.zh(), request.en(), request.vi(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
         version.setTsLabel(TS_LABEL.format(now));
         if (version.getId() == null) {
@@ -180,8 +193,12 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         copy.setDraftVersion(null);
         copy.setDraftZh(null);
         copy.setDraftEn(null);
+        copy.setDraftVi(null);
+        copy.setCopyPosition(trimToNull(request.copyPosition()));
+        copy.setDraftCopyPosition(null);
         copy.setDraftSurface(null);
         copy.setDraftAudience(null);
+        copy.setDraftAudienceJson(null);
         copy.setDraftTrafficSplit(null);
         copy.setDraftNote(null);
         copy.setLastOperator(operator(request.operator()));
@@ -202,6 +219,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         copy.setCurrentVersion(request.version().trim());
         copy.setStatus("PUBLISHED");
         copy.setI18nKey(request.i18nKey().trim());
+        copy.setCopyPosition(trimToNull(request.copyPosition()));
         copy.setLastChange(DAY_LABEL.format(now));
         copy.setLastOperator(op);
         copy.setCreatedAt(now);
@@ -214,7 +232,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         version.setVersion(request.version().trim());
         version.setCreatedAt(now);
         version.setIsDeleted(0);
-        fillVersion(version, request.surface(), request.audience(), request.trafficSplit(), request.versionNote(),
+        fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
                 request.zh(), request.en(), request.vi(), request.copyPosition(), "PUBLISHED", op, now);
         version.setTsLabel(TS_LABEL.format(now));
         versionMapper.insert(version);
@@ -239,6 +257,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
 
         copy.setCurrentVersion(target.getVersion());
         copy.setSurface(target.getSurface());
+        copy.setCopyPosition(target.getCopyPosition());
         copy.setStatus("PUBLISHED");
         copy.setLastChange(DAY_LABEL.format(now));
         copy.setLastOperator(operator(operator));
@@ -300,28 +319,50 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                         .orderByAsc(CopyPositionEntity::getSortOrder)
                         .orderByAsc(CopyPositionEntity::getId))
                 .stream()
-                .map(entity -> new CopyPositionView(
-                        entity.getPositionKey(),
-                        entity.getName(),
-                        entity.getSurface(),
-                        entity.getSortOrder() == null ? 0 : entity.getSortOrder(),
-                        entity.getStatus()))
+                .map(this::toPositionView)
                 .toList();
     }
 
     @Override
-    public void createPosition(CopyPositionCreateRequest request, LocalDateTime now) {
+    public Optional<CopyPositionView> findPosition(String positionKey) {
+        return Optional.ofNullable(findPositionEntity(positionKey)).map(this::toPositionView);
+    }
+
+    @Override
+    public Optional<CopyPositionView> findPositionForUpdate(String positionKey) {
+        return Optional.ofNullable(findPositionEntityForUpdate(positionKey)).map(this::toPositionView);
+    }
+
+    @Override
+    public CopyPositionView createPosition(CopyPositionCreateRequest request, LocalDateTime now) {
         CopyPositionEntity entity = new CopyPositionEntity();
         entity.setPositionKey(request.positionKey().trim());
         entity.setName(request.name().trim());
         entity.setSurface(request.surface().trim());
-        entity.setSortOrder(0);
+        entity.setSortOrder(request.sortOrder() == null ? 0 : request.sortOrder());
         entity.setStatus("ACTIVE");
         entity.setLastOperator(operator(request.operator()));
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         positionMapper.insert(entity);
+        return toPositionView(entity);
+    }
+
+    @Override
+    public CopyPositionView updatePosition(String positionKey, CopyPositionUpdateRequest request, LocalDateTime now) {
+        CopyPositionEntity entity = findPositionEntityForUpdate(positionKey);
+        if (entity == null) {
+            return null;
+        }
+        entity.setName(request.name().trim());
+        entity.setSurface(request.surface().trim());
+        entity.setSortOrder(request.sortOrder());
+        entity.setStatus(request.status().trim().toUpperCase(Locale.ROOT));
+        entity.setLastOperator(operator(request.operator()));
+        entity.setUpdatedAt(now);
+        positionMapper.updateById(entity);
+        return toPositionView(entity);
     }
 
     @Override
@@ -333,10 +374,19 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         if (entity == null) {
             return;
         }
-        entity.setIsDeleted(1);
-        entity.setLastOperator(operator(null));
-        entity.setUpdatedAt(now);
-        positionMapper.updateById(entity);
+        positionMapper.deleteById(entity.getId());
+    }
+
+    @Override
+    public boolean isPositionReferenced(String positionKey) {
+        Long copyRefs = copyMapper.selectCount(new LambdaQueryWrapper<CopyContentEntity>()
+                .eq(CopyContentEntity::getIsDeleted, 0)
+                .and(wrapper -> wrapper.eq(CopyContentEntity::getCopyPosition, positionKey)
+                        .or().eq(CopyContentEntity::getDraftCopyPosition, positionKey)));
+        Long versionRefs = versionMapper.selectCount(new LambdaQueryWrapper<CopyVersionEntity>()
+                .eq(CopyVersionEntity::getIsDeleted, 0)
+                .eq(CopyVersionEntity::getCopyPosition, positionKey));
+        return copyRefs > 0 || versionRefs > 0;
     }
 
     private void archivePublishedVersion(String copyKey, LocalDateTime now) {
@@ -474,6 +524,13 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 .last("LIMIT 1"));
     }
 
+    private CopyContentEntity findCopyEntityForUpdate(String copyKey) {
+        return copyMapper.selectOne(new LambdaQueryWrapper<CopyContentEntity>()
+                .eq(CopyContentEntity::getCopyKey, copyKey)
+                .eq(CopyContentEntity::getIsDeleted, 0)
+                .last("LIMIT 1 FOR UPDATE"));
+    }
+
     private CopyVersionEntity findVersionEntity(String copyKey, String version) {
         return versionMapper.selectOne(new LambdaQueryWrapper<CopyVersionEntity>()
                 .eq(CopyVersionEntity::getCopyKey, copyKey)
@@ -511,8 +568,10 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 entity.getDraftEn(),
                 entity.getDraftVi(),
                 entity.getCopyPosition(),
+                entity.getDraftCopyPosition(),
                 entity.getDraftSurface(),
                 entity.getDraftAudience(),
+                readAudience(entity.getDraftAudienceJson(), entity.getDraftAudience()),
                 entity.getDraftTrafficSplit(),
                 entity.getDraftNote());
     }
@@ -530,6 +589,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 entity.getCopyPosition(),
                 entity.getSurface(),
                 entity.getAudience(),
+                readAudience(entity.getAudienceJson(), entity.getAudience()),
                 entity.getTrafficSplit(),
                 entity.getVersionNote());
     }
@@ -561,6 +621,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             CopyVersionEntity entity,
             String surface,
             String audience,
+            CopyAudienceTarget audienceTarget,
             String trafficSplit,
             String versionNote,
             String zh,
@@ -578,10 +639,79 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setCopyPosition(copyPosition == null ? null : copyPosition.trim());
         entity.setSurface(surface.trim());
         entity.setAudience(audience.trim());
+        entity.setAudienceJson(writeAudience(audienceTarget));
         entity.setTrafficSplit(trafficSplit.trim());
         entity.setVersionNote(versionNote.trim());
         entity.setLastOperator(operator);
         entity.setUpdatedAt(now);
+    }
+
+    private CopyPositionEntity findPositionEntity(String positionKey) {
+        return positionMapper.selectOne(new LambdaQueryWrapper<CopyPositionEntity>()
+                .eq(CopyPositionEntity::getPositionKey, positionKey)
+                .eq(CopyPositionEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+    }
+
+    private CopyPositionEntity findPositionEntityForUpdate(String positionKey) {
+        return positionMapper.selectOne(new LambdaQueryWrapper<CopyPositionEntity>()
+                .eq(CopyPositionEntity::getPositionKey, positionKey)
+                .eq(CopyPositionEntity::getIsDeleted, 0)
+                .last("LIMIT 1 FOR UPDATE"));
+    }
+
+    private CopyPositionView toPositionView(CopyPositionEntity entity) {
+        return new CopyPositionView(entity.getPositionKey(), entity.getName(), entity.getSurface(),
+                entity.getSortOrder() == null ? 0 : entity.getSortOrder(), toViewStatus(entity.getStatus()));
+    }
+
+    private String writeAudience(CopyAudienceTarget audienceTarget) {
+        if (audienceTarget == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(audienceTarget);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalArgumentException("COPY_AUDIENCE_INVALID", ex);
+        }
+    }
+
+    private CopyAudienceTarget readAudience(String json, String legacyAudience) {
+        if (StringUtils.hasText(json)) {
+            try {
+                return objectMapper.readValue(json, CopyAudienceTarget.class);
+            } catch (JsonProcessingException ex) {
+                throw new IllegalStateException("COPY_AUDIENCE_CORRUPTED", ex);
+            }
+        }
+        return legacyAudienceTarget(legacyAudience);
+    }
+
+    private CopyAudienceTarget legacyAudienceTarget(String legacyAudience) {
+        if (!StringUtils.hasText(legacyAudience)) {
+            return null;
+        }
+        String value = legacyAudience.trim();
+        if ("全量".equals(value)) {
+            return new CopyAudienceTarget("structured", List.of(), List.of(), null, null);
+        }
+        if ("P3 · 全语言".equals(value)) {
+            return new CopyAudienceTarget("structured", List.of(), List.of("P3"), null, null);
+        }
+        if ("zh · 注册>30天".equals(value)) {
+            return new CopyAudienceTarget("structured", List.of("zh"), List.of(), 31, null);
+        }
+        if ("注册 ≤14 天".equals(value)) {
+            return new CopyAudienceTarget("structured", List.of(), List.of(), null, 14);
+        }
+        if ("P2-P3".equals(value)) {
+            return new CopyAudienceTarget("structured", List.of(), List.of("P2", "P3"), null, null);
+        }
+        return null;
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
 
     private String toViewStatus(String status) {

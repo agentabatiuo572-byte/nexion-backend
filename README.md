@@ -65,7 +65,7 @@ The schema keeps existing business tables and adds the Ops Console tables needed
 For an existing database, run dated migrations in order before deploying the matching application revision. The rhythm-configurable and classic RBAC releases require UTF-8 input:
 
 ```powershell
-& '<mysql-bin>\mysql.exe' --default-character-set=utf8mb4 -h 127.0.0.1 -P 3306 -u <mysql-user> '-p<mysql-password>' <database-name> -e "source D:/workspace/nexion-backend/scripts/migrations/20260711_rhythm_configurable.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_rbac_classic.sql;"
+& '<mysql-bin>\mysql.exe' --default-character-set=utf8mb4 -h 127.0.0.1 -P 3306 -u <mysql-user> '-p<mysql-password>' <database-name> -e "source D:/workspace/nexion-backend/scripts/migrations/20260711_rhythm_configurable.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_i1_copy_schema.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_rbac_classic.sql;"
 ```
 
 ## Module Boundaries

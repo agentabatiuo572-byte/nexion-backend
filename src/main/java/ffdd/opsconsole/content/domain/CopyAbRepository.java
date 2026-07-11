@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.domain;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyPositionCreateRequest;
+import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -14,6 +15,11 @@ public interface CopyAbRepository {
     List<CopyContentRow> listCopies();
 
     Optional<CopyContentRow> findCopy(String copyKey);
+
+    /** Locks the copy row for a version-changing transaction. */
+    default Optional<CopyContentRow> findCopyForUpdate(String copyKey) {
+        return findCopy(copyKey);
+    }
 
     List<CopyVersionRow> listVersions(String copyKey);
 
@@ -43,7 +49,17 @@ public interface CopyAbRepository {
     /** 文案位置槽位配置(独立表 nx_content_copy_position)。 */
     List<CopyPositionView> listPositions();
 
-    void createPosition(CopyPositionCreateRequest request, LocalDateTime now);
+    Optional<CopyPositionView> findPosition(String positionKey);
+
+    default Optional<CopyPositionView> findPositionForUpdate(String positionKey) {
+        return findPosition(positionKey);
+    }
+
+    CopyPositionView createPosition(CopyPositionCreateRequest request, LocalDateTime now);
+
+    CopyPositionView updatePosition(String positionKey, CopyPositionUpdateRequest request, LocalDateTime now);
 
     void deletePosition(String positionKey, LocalDateTime now);
+
+    boolean isPositionReferenced(String positionKey);
 }

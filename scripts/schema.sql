@@ -4159,8 +4159,12 @@ CREATE TABLE IF NOT EXISTS nx_content_copy (
   draft_version VARCHAR(32) NULL,
   draft_zh TEXT NULL,
   draft_en TEXT NULL,
+  draft_vi TEXT NULL,
+  copy_position VARCHAR(96) NULL,
+  draft_copy_position VARCHAR(96) NULL,
   draft_surface VARCHAR(32) NULL,
   draft_audience VARCHAR(96) NULL,
+  draft_audience_json JSON NULL,
   draft_traffic_split VARCHAR(32) NULL,
   draft_note VARCHAR(255) NULL,
   last_operator VARCHAR(64) NULL,
@@ -4168,7 +4172,9 @@ CREATE TABLE IF NOT EXISTS nx_content_copy (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_content_copy_key (copy_key),
-  KEY idx_content_copy_surface_status (surface, status)
+  KEY idx_content_copy_surface_status (surface, status),
+  KEY idx_content_copy_position (copy_position),
+  KEY idx_content_copy_draft_position (draft_copy_position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_content_copy_version (
@@ -4180,8 +4186,11 @@ CREATE TABLE IF NOT EXISTS nx_content_copy_version (
   ts_label VARCHAR(32) NULL,
   zh_text TEXT NOT NULL,
   en_text TEXT NOT NULL,
+  vi_text TEXT NULL,
+  copy_position VARCHAR(96) NULL,
   surface VARCHAR(32) NOT NULL,
   audience VARCHAR(96) NOT NULL,
+  audience_json JSON NULL,
   traffic_split VARCHAR(32) NOT NULL,
   version_note VARCHAR(255) NULL,
   last_operator VARCHAR(64) NULL,
@@ -4189,8 +4198,33 @@ CREATE TABLE IF NOT EXISTS nx_content_copy_version (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_content_copy_version (copy_key, version),
-  KEY idx_content_copy_version_status (copy_key, status)
+  KEY idx_content_copy_version_status (copy_key, status),
+  KEY idx_content_copy_version_position (copy_position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_content_copy_position (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  position_key VARCHAR(96) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  surface VARCHAR(32) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  last_operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_content_copy_position_key (position_key),
+  KEY idx_content_copy_position_surface (surface, status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO nx_content_copy_position
+  (position_key, name, surface, sort_order, status, last_operator, created_at, updated_at, is_deleted)
+VALUES
+  ('home.hero', '首页顶部主视觉', 'home', 10, 'ACTIVE', 'schema', NOW(), NOW(), 0),
+  ('home.conversion-banner', '首页转化横幅', 'home', 20, 'ACTIVE', 'schema', NOW(), NOW(), 0),
+  ('store.hero', '商城顶部横幅', 'store', 30, 'ACTIVE', 'schema', NOW(), NOW(), 0),
+  ('earn.hero', '赚取顶部横幅', 'earn', 40, 'ACTIVE', 'schema', NOW(), NOW(), 0),
+  ('me.notice', '我的页面提示', 'me', 50, 'ACTIVE', 'schema', NOW(), NOW(), 0);
 
 CREATE TABLE IF NOT EXISTS nx_content_experiment (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
