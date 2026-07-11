@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsCopyAbService;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
+import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
@@ -24,6 +25,19 @@ class OpsCopyAbControllerTest {
         assertThat(controller.overview().getCode()).isZero();
 
         verify(copyAbService).overview();
+    }
+
+    @Test
+    void createCopyAcceptsAnOmittedClientVersionAndDelegatesToService() {
+        CopyCreateRequest request = new CopyCreateRequest(
+                "home.newBanner", "新增横幅", "home", "home.newBanner", null,
+                "全量", "50", "新增首版", "中文", "English", "Tiếng Việt", "home.hero",
+                "Marina K.", "新增文案首版");
+        when(copyAbService.createCopy("idem-i1-create", request)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.createCopy("idem-i1-create", request).getCode()).isZero();
+
+        verify(copyAbService).createCopy("idem-i1-create", request);
     }
 
     @Test

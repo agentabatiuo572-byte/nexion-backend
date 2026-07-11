@@ -1,9 +1,14 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.CopyAbRepository;
 import ffdd.opsconsole.content.domain.CopyAudienceTarget;
@@ -11,6 +16,7 @@ import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
+import ffdd.opsconsole.content.domain.CopyMutationResult;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
@@ -22,6 +28,7 @@ import ffdd.opsconsole.content.dto.CopyPositionUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -32,18 +39,36 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DuplicateKeyException;
 
 class OpsCopyAbServiceTest {
     private final FakeCopyAbRepository repository = new FakeCopyAbRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T09:30:00Z"), ZoneOffset.UTC);
-    private final OpsCopyAbService service = new OpsCopyAbService(
-            repository,
-            auditLogService,
-            clock,
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final Map<String, CopyMutationResult> idempotencyCache = new LinkedHashMap<>();
+    private final OpsCopyAbService service;
+
+    @SuppressWarnings("unchecked")
+    OpsCopyAbServiceTest() {
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), eq(CopyMutationResult.class), any()))
+                .thenAnswer(invocation -> {
+                    String cacheKey = invocation.getArgument(0) + ":" + invocation.getArgument(1) + ":" + invocation.getArgument(2);
+                    Supplier<CopyMutationResult> action = invocation.getArgument(4);
+                    return idempotencyCache.computeIfAbsent(cacheKey, ignored -> action.get());
+                });
+        service = new OpsCopyAbService(
+                repository,
+                auditLogService,
+                clock,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                idempotencyService,
+                objectMapper);
+    }
 
     @Test
     void overviewReturnsCopyExperimentsFrameworkAndSources() {
@@ -133,17 +158,31 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
-    void createCopyRejectsNonAsciiVersionNumbers() {
+    void createCopyAssignsV1WhenVersionIsOmitted() {
         var request = new CopyCreateRequest(
-                "home.newBanner", "新增横幅", "Home", "home.newBanner", "版本一",
+                "home.newBanner", "新增横幅", "Home", "home.newBanner", null,
                 "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
                 "Marina K.", "新增文案首版");
 
         var result = service.createCopy("idem-i1-create-version", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("COPY_VERSION_INVALID");
-        assertThat(repository.findCopy("home.newBanner")).isEmpty();
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v1");
+        assertThat(repository.findVersion("home.newBanner", "v1")).isPresent();
+    }
+
+    @Test
+    void createCopyIgnoresClientVersionAndStillAssignsV1() {
+        var request = new CopyCreateRequest(
+                "home.newBanner", "新增横幅", "Home", "home.newBanner", "v99",
+                "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
+                "Marina K.", "新增文案首版");
+
+        var result = service.createCopy("idem-i1-create-version", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v1");
+        assertThat(repository.findVersion("home.newBanner", "v99")).isEmpty();
     }
 
     @Test
@@ -182,7 +221,7 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
-    void publishRejectsReusingThePublishedVersionNumberIgnoringCase() {
+    void publishIgnoresClientAttemptToReusePublishedVersionNumber() {
         var request = new CopyVersionPublishRequest(
                 "V7", "Home", "全量", "50", "不能覆盖发布版",
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
@@ -192,13 +231,13 @@ class OpsCopyAbServiceTest {
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-current", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("COPY_PUBLISH_VERSION_MUST_DIFFER_FROM_PUBLISHED");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v8");
         assertThat(repository.findVersion("home.conversionBanner", "v7").orElseThrow().status()).isEqualTo("published");
     }
 
     @Test
-    void publishRejectsOverwritingAnArchivedVersion() {
+    void publishIgnoresClientAttemptToOverwriteArchivedVersion() {
         var request = new CopyVersionPublishRequest(
                 "v6", "Home", "全量", "50", "不能覆盖历史版",
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
@@ -208,8 +247,8 @@ class OpsCopyAbServiceTest {
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-archived", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("COPY_VERSION_HISTORY_IMMUTABLE");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v8");
         assertThat(repository.findVersion("home.conversionBanner", "v6").orElseThrow().status()).isEqualTo("archived");
     }
 
@@ -223,7 +262,27 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
-    void saveDraftRejectsReusingThePublishedVersionNumber() {
+    void saveDraftGeneratesNextVersionWhenVersionIsOmitted() {
+        var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-auto", draftRequest(null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v8");
+        assertThat(repository.findVersion("home.conversionBanner", "v8")).isPresent();
+    }
+
+    @Test
+    void saveDraftReusesExistingDraftVersionWhenVersionIsOmitted() {
+        service.saveDraft("home.conversionBanner", "idem-i1-draft-v8", draftRequest("v8"));
+
+        var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-auto", draftRequest(null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v8");
+        assertThat(repository.listVersions("home.conversionBanner")).filteredOn(row -> "v8".equals(row.version())).hasSize(1);
+    }
+
+    @Test
+    void saveDraftIgnoresClientAttemptToReusePublishedVersionNumber() {
         var request = new CopyDraftSaveRequest(
                 "V7", "Home", "全量", "50", "不能用大小写变体覆盖发布版",
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
@@ -233,13 +292,13 @@ class OpsCopyAbServiceTest {
 
         var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-current", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("COPY_DRAFT_VERSION_MUST_DIFFER_FROM_PUBLISHED");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v8");
         assertThat(repository.findVersion("home.conversionBanner", "v7").orElseThrow().status()).isEqualTo("published");
     }
 
     @Test
-    void saveDraftRejectsOverwritingAnArchivedVersion() {
+    void saveDraftIgnoresClientAttemptToOverwriteArchivedVersion() {
         var request = new CopyDraftSaveRequest(
                 "v6", "Home", "全量", "50", "不能覆盖历史版",
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
@@ -249,8 +308,8 @@ class OpsCopyAbServiceTest {
 
         var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-archived", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("COPY_VERSION_HISTORY_IMMUTABLE");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v8");
         assertThat(repository.findVersion("home.conversionBanner", "v6").orElseThrow().status()).isEqualTo("archived");
     }
 
@@ -265,7 +324,132 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
-    void saveDraftRejectsNonAsciiVersionNumbers() {
+    void publishReusesExistingDraftVersionWhenVersionIsOmitted() {
+        service.saveDraft("home.conversionBanner", "idem-i1-draft-v8", draftRequest("v8"));
+
+        var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-auto", publishRequest(null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v8");
+    }
+
+    @Test
+    void publishGeneratesNextVersionWhenVersionAndDraftAreAbsent() {
+        var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-auto", publishRequest(null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v8");
+    }
+
+    @Test
+    void publishReplayWithSameIdempotencyKeyDoesNotCreateAnotherVersion() {
+        var first = service.publishVersion("home.conversionBanner", "idem-i1-pub-replay", publishRequest(null));
+        var replay = service.publishVersion("home.conversionBanner", "idem-i1-pub-replay", publishRequest(null));
+
+        assertThat(first.getData().version()).isEqualTo("v8");
+        assertThat(replay.getData().version()).isEqualTo("v8");
+        assertThat(repository.publishCalls).isEqualTo(1);
+        assertThat(repository.findVersion("home.conversionBanner", "v9")).isEmpty();
+    }
+
+    @Test
+    void publishIgnoresClientChosenVersionWhenThereIsNoCurrentDraft() {
+        var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-server-version", publishRequest("v999"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v8");
+        assertThat(repository.findVersion("home.conversionBanner", "v999")).isEmpty();
+    }
+
+    @Test
+    void publishReusesCurrentDraftAndIgnoresAConflictingClientVersion() {
+        service.saveDraft("home.conversionBanner", "idem-i1-draft-current", draftRequest("v8"));
+
+        var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-current", publishRequest("v999"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v8");
+        assertThat(repository.findVersion("home.conversionBanner", "v999")).isEmpty();
+    }
+
+    @Test
+    void automaticVersionSequenceDoesNotOverflowAtLongMaxValue() {
+        repository.versions.put(
+                FakeCopyAbRepository.key("home.conversionBanner", "v9223372036854775807"),
+                FakeCopyAbRepository.version("home.conversionBanner", "v9223372036854775807", "archived"));
+
+        var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-long-max", draftRequest(null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v9223372036854775808");
+    }
+
+    @Test
+    void automaticVersionSequenceFailsCleanlyWhenTheVersionColumnIsExhausted() {
+        String maximumStoredVersion = "v" + "9".repeat(31);
+        repository.versions.put(
+                FakeCopyAbRepository.key("home.conversionBanner", maximumStoredVersion),
+                FakeCopyAbRepository.version("home.conversionBanner", maximumStoredVersion, "archived"));
+
+        var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-sequence-exhausted", draftRequest(null));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_VERSION_SEQUENCE_EXHAUSTED");
+        assertThat(repository.saveDraftCalls).isZero();
+    }
+
+    @Test
+    void duplicateCopyKeyFromConcurrentCreateMapsToStableDomainFailure() {
+        repository.failNextCreateWithDuplicate = true;
+        var request = new CopyCreateRequest(
+                "home.newBanner", "新增横幅", "Home", "home.newBanner", null,
+                "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
+                "Marina K.", "新增文案首版");
+
+        var result = service.createCopy("idem-i1-create-race", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_KEY_EXISTS");
+    }
+
+    @Test
+    void createCopyReplayReturnsTheOriginalV1WithoutAnotherInsert() {
+        var request = new CopyCreateRequest(
+                "home.newBanner", "新增横幅", "Home", "home.newBanner", "v99",
+                "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
+                "Marina K.", "新增文案首版");
+
+        var first = service.createCopy("idem-i1-create-replay", request);
+        var replay = service.createCopy("idem-i1-create-replay", request);
+
+        assertThat(first.getData().version()).isEqualTo("v1");
+        assertThat(replay.getData().version()).isEqualTo("v1");
+        assertThat(repository.createCalls).isEqualTo(1);
+    }
+
+    @Test
+    void saveDraftReplayDoesNotWriteOrAuditTheDraftTwice() {
+        var first = service.saveDraft("home.conversionBanner", "idem-i1-draft-replay", draftRequest(null));
+        var replay = service.saveDraft("home.conversionBanner", "idem-i1-draft-replay", draftRequest(null));
+
+        assertThat(first.getData().draftVersion()).isEqualTo("v8");
+        assertThat(replay.getData().draftVersion()).isEqualTo("v8");
+        assertThat(repository.saveDraftCalls).isEqualTo(1);
+    }
+
+    @Test
+    void archiveRejectsAStaleExpectedVersionAfterLockingTheCopy() {
+        var request = new CopyActionRequest("Marina K.", "确认下架当前文案版本", "v6");
+
+        var result = service.archiveCurrent("home.conversionBanner", "idem-i1-archive-stale", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("COPY_VERSION_CONFLICT");
+        assertThat(repository.copies.get("home.conversionBanner").status()).isEqualTo("published");
+    }
+
+    @Test
+    void saveDraftIgnoresMalformedClientVersionNumbers() {
         var request = new CopyDraftSaveRequest(
                 "vér7", "Home", "全量", "50", "版本号必须规范",
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
@@ -275,8 +459,9 @@ class OpsCopyAbServiceTest {
 
         var result = service.saveDraft("home.conversionBanner", "idem-i1-draft-accent", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("COPY_VERSION_INVALID");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v8");
+        assertThat(repository.findVersion("home.conversionBanner", "vér7")).isEmpty();
     }
 
     @Test
@@ -340,8 +525,12 @@ class OpsCopyAbServiceTest {
     }
 
     private static CopyVersionPublishRequest publishRequest() {
+        return publishRequest("v8");
+    }
+
+    private static CopyVersionPublishRequest publishRequest(String version) {
         return new CopyVersionPublishRequest(
-                "v8",
+                version,
                 "Home",
                 "全量",
                 "50",
@@ -355,8 +544,12 @@ class OpsCopyAbServiceTest {
     }
 
     private static CopyDraftSaveRequest draftRequest() {
+        return draftRequest("v8");
+    }
+
+    private static CopyDraftSaveRequest draftRequest(String version) {
         return new CopyDraftSaveRequest(
-                "v8",
+                version,
                 "Home",
                 "全量",
                 "50",
@@ -381,6 +574,10 @@ class OpsCopyAbServiceTest {
         private final Map<String, CopyPositionView> positions = new LinkedHashMap<>();
         private final java.util.Set<String> referencedPositions = new java.util.HashSet<>();
         private int seedCalls;
+        private int createCalls;
+        private int saveDraftCalls;
+        private int publishCalls;
+        private boolean failNextCreateWithDuplicate;
 
         private FakeCopyAbRepository() {
             copies.put("home.conversionBanner", copy("home.conversionBanner", "v7", "published", null, null, null));
@@ -437,6 +634,11 @@ class OpsCopyAbServiceTest {
 
         @Override
         public CopyContentRow createCopy(CopyCreateRequest request, LocalDateTime now) {
+            createCalls += 1;
+            if (failNextCreateWithDuplicate) {
+                failNextCreateWithDuplicate = false;
+                throw new DuplicateKeyException("uk_content_copy_key");
+            }
             String copyKey = request.copyKey().trim();
             String versionNo = request.version().trim();
             copies.put(copyKey, copy(copyKey, versionNo, "published", null, null, null));
@@ -460,6 +662,7 @@ class OpsCopyAbServiceTest {
 
         @Override
         public void saveDraft(String copyKey, CopyDraftSaveRequest request, LocalDateTime now) {
+            saveDraftCalls += 1;
             CopyContentRow current = copies.get(copyKey);
             copies.put(copyKey, copy(copyKey, current.version(), "draft-saved", request.version(), request.zh(), request.en()));
             versions.put(key(copyKey, request.version()), new CopyVersionRow(
@@ -481,6 +684,7 @@ class OpsCopyAbServiceTest {
 
         @Override
         public CopyContentRow publishVersion(String copyKey, CopyVersionPublishRequest request, LocalDateTime now) {
+            publishCalls += 1;
             copies.put(copyKey, copy(copyKey, request.version(), "published", null, null, null));
             versions.put(key(copyKey, request.version()), new CopyVersionRow(
                     copyKey,

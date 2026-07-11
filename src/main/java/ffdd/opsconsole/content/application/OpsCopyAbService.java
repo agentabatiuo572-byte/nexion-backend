@@ -1,5 +1,7 @@
 package ffdd.opsconsole.content.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.CopyAbOverview;
@@ -10,6 +12,7 @@ import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
+import ffdd.opsconsole.content.domain.CopyMutationResult;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
@@ -22,31 +25,45 @@ import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsCopyAbService {
+    private static final String IDEMPOTENCY_SCOPE_CREATE = "I1_COPY_CREATE";
+    private static final String IDEMPOTENCY_SCOPE_DRAFT = "I1_COPY_DRAFT_SAVE";
+    private static final String IDEMPOTENCY_SCOPE_PUBLISH = "I1_COPY_VERSION_PUBLISH";
+    private static final int VERSION_COLUMN_LENGTH = 32;
     private static final List<String> SURFACES = List.of("home", "store", "earn", "me");
     private static final List<String> AUDIENCES = List.of("全量", "P3 · 全语言", "zh · 注册>30天", "注册 ≤14 天", "P2-P3");
     private static final List<String> TRAFFIC_SPLITS = List.of("50", "34", "25", "10");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
     private static final Pattern VERSION_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$");
+    private static final Pattern SEQUENTIAL_VERSION_PATTERN = Pattern.compile("^[vV](\\d+)$");
     private static final Pattern POSITION_KEY_PATTERN = Pattern.compile("^[a-z][a-z0-9._-]{1,95}$");
     private static final Pattern COPY_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{1,95}$");
     private static final Set<String> AUDIENCE_MODES = Set.of("STRUCTURED", "ALL", "FILTERED");
@@ -59,6 +76,8 @@ public class OpsCopyAbService {
     private final AuditLogService auditLogService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final AdminIdempotencyService idempotencyService;
+    private final ObjectMapper objectMapper;
 
     public ApiResult<CopyAbOverview> overview() {
         List<CopyContentRow> copies = copyAbRepository.listCopies();
@@ -160,16 +179,29 @@ public class OpsCopyAbService {
         if (guard != null) {
             return guard;
         }
+        return executeIdempotentMutation(
+                IDEMPOTENCY_SCOPE_DRAFT,
+                copyKey.trim(),
+                idempotencyKey,
+                request,
+                () -> saveDraftOnce(copyKey, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyContentRow> saveDraftOnce(String copyKey, String idempotencyKey, CopyDraftSaveRequest request) {
         CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
-        if (current.version().equalsIgnoreCase(request.version().trim())) {
+        String version = resolveVersion(current);
+        if (version == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_SEQUENCE_EXHAUSTED");
+        }
+        if (current.version().equalsIgnoreCase(version)) {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     "COPY_DRAFT_VERSION_MUST_DIFFER_FROM_PUBLISHED");
         }
-        CopyVersionRow target = copyAbRepository.findVersion(current.key(), request.version().trim()).orElse(null);
+        CopyVersionRow target = copyAbRepository.findVersion(current.key(), version).orElse(null);
         if (target != null && !isCurrentDraft(current, target)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_HISTORY_IMMUTABLE");
         }
@@ -177,10 +209,10 @@ public class OpsCopyAbService {
         if (positionGuard != null) {
             return positionGuard;
         }
-        copyAbRepository.saveDraft(current.key(), normalizeDraft(request), now());
+        copyAbRepository.saveDraft(current.key(), normalizeDraft(request, version), now());
         CopyContentRow updated = findCopy(current.key());
         audit("I1_COPY_DRAFT_SAVED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "version", request.version().trim(),
+                "version", version,
                 "surface", request.surface().trim()));
         return ApiResult.ok(updated);
     }
@@ -191,16 +223,29 @@ public class OpsCopyAbService {
         if (guard != null) {
             return guard;
         }
+        return executeIdempotentMutation(
+                IDEMPOTENCY_SCOPE_PUBLISH,
+                copyKey.trim(),
+                idempotencyKey,
+                request,
+                () -> publishVersionOnce(copyKey, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyContentRow> publishVersionOnce(String copyKey, String idempotencyKey, CopyVersionPublishRequest request) {
         CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
-        if (current.version().equalsIgnoreCase(request.version().trim())) {
+        String version = resolveVersion(current);
+        if (version == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_SEQUENCE_EXHAUSTED");
+        }
+        if (current.version().equalsIgnoreCase(version)) {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     "COPY_PUBLISH_VERSION_MUST_DIFFER_FROM_PUBLISHED");
         }
-        CopyVersionRow target = copyAbRepository.findVersion(current.key(), request.version().trim()).orElse(null);
+        CopyVersionRow target = copyAbRepository.findVersion(current.key(), version).orElse(null);
         if (target != null && !isCurrentDraft(current, target)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_HISTORY_IMMUTABLE");
         }
@@ -208,10 +253,10 @@ public class OpsCopyAbService {
         if (positionGuard != null) {
             return positionGuard;
         }
-        CopyContentRow updated = copyAbRepository.publishVersion(current.key(), normalizePublish(request), now());
+        CopyContentRow updated = copyAbRepository.publishVersion(current.key(), normalizePublish(request, version), now());
         audit("I1_COPY_VERSION_PUBLISHED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
-                "to", request.version().trim(),
+                "to", version,
                 "surface", request.surface().trim(),
                 "audience", audienceLabel(request.audienceTarget(), request.audience())));
         return ApiResult.ok(updated);
@@ -224,14 +269,11 @@ public class OpsCopyAbService {
         }
         if (request == null || !StringUtils.hasText(request.copyKey()) || !StringUtils.hasText(request.description())
                 || !StringUtils.hasText(request.surface()) || !StringUtils.hasText(request.i18nKey())
-                || !StringUtils.hasText(request.version()) || !StringUtils.hasText(request.versionNote())
+                || !StringUtils.hasText(request.versionNote())
                 || (!StringUtils.hasText(request.audience()) && request.audienceTarget() == null) || !StringUtils.hasText(request.trafficSplit())
                 || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.en())
                 || !StringUtils.hasText(request.vi()) || !StringUtils.hasText(request.copyPosition())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
-        }
-        if (!VERSION_PATTERN.matcher(request.version().trim()).matches()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_INVALID");
         }
         if (!COPY_KEY_PATTERN.matcher(request.copyKey().trim()).matches()
                 || request.description().trim().length() > 255
@@ -247,14 +289,28 @@ public class OpsCopyAbService {
         if (guard != null) {
             return guard;
         }
-        if (findCopy(request.copyKey()) != null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_EXISTS");
-        }
+        return executeIdempotentMutation(
+                IDEMPOTENCY_SCOPE_CREATE,
+                request.copyKey().trim(),
+                idempotencyKey,
+                request,
+                () -> createCopyOnce(idempotencyKey, request));
+    }
+
+    private ApiResult<CopyContentRow> createCopyOnce(String idempotencyKey, CopyCreateRequest request) {
         ApiResult<CopyContentRow> positionGuard = validatePositionReference(request.copyPosition(), request.surface());
         if (positionGuard != null) {
             return positionGuard;
         }
-        CopyContentRow created = copyAbRepository.createCopy(normalizeCreate(request), now());
+        if (findCopy(request.copyKey()) != null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_EXISTS");
+        }
+        CopyContentRow created;
+        try {
+            created = copyAbRepository.createCopy(normalizeCreate(request), now());
+        } catch (DuplicateKeyException ignored) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_EXISTS");
+        }
         audit("I1_COPY_CREATED", created.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "copyKey", created.key(),
                 "version", created.version(),
@@ -268,7 +324,7 @@ public class OpsCopyAbService {
                 request.description().trim(),
                 normalizeSurface(request.surface()),
                 request.i18nKey().trim(),
-                request.version().trim(),
+                "v1",
                 audienceLabel(request.audienceTarget(), request.audience()),
                 normalizeAudience(request.audienceTarget()),
                 String.valueOf(parseSplit(request.trafficSplit())),
@@ -336,6 +392,10 @@ public class OpsCopyAbService {
                 : null;
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
+        }
+        if (StringUtils.hasText(request.expectedVersion())
+                && !current.version().equalsIgnoreCase(request.expectedVersion().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_CONFLICT");
         }
         if ("archived".equals(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
@@ -410,15 +470,12 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(copyKey) || request == null || !StringUtils.hasText(request.version())
+        if (!StringUtils.hasText(copyKey) || request == null
                 || !StringUtils.hasText(request.surface()) || (!StringUtils.hasText(request.audience()) && request.audienceTarget() == null)
                 || !StringUtils.hasText(request.trafficSplit()) || !StringUtils.hasText(request.versionNote())
                 || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.en())
                 || !StringUtils.hasText(request.vi()) || !StringUtils.hasText(request.copyPosition())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
-        }
-        if (!VERSION_PATTERN.matcher(request.version().trim()).matches()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_INVALID");
         }
         if (copyKey.trim().length() > 96 || request.versionNote().trim().length() > 255) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_METADATA_INVALID");
@@ -434,15 +491,12 @@ public class OpsCopyAbService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(copyKey) || request == null || !StringUtils.hasText(request.version())
+        if (!StringUtils.hasText(copyKey) || request == null
                 || !StringUtils.hasText(request.surface()) || (!StringUtils.hasText(request.audience()) && request.audienceTarget() == null)
                 || !StringUtils.hasText(request.trafficSplit()) || !StringUtils.hasText(request.versionNote())
                 || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.en())
                 || !StringUtils.hasText(request.vi()) || !StringUtils.hasText(request.copyPosition())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FIELDS_REQUIRED");
-        }
-        if (!VERSION_PATTERN.matcher(request.version().trim()).matches()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_INVALID");
         }
         if (copyKey.trim().length() > 96 || request.versionNote().trim().length() > 255) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_METADATA_INVALID");
@@ -627,9 +681,9 @@ public class OpsCopyAbService {
         return null;
     }
 
-    private CopyDraftSaveRequest normalizeDraft(CopyDraftSaveRequest request) {
+    private CopyDraftSaveRequest normalizeDraft(CopyDraftSaveRequest request, String version) {
         return new CopyDraftSaveRequest(
-                request.version().trim(),
+                version,
                 normalizeSurface(request.surface()),
                 audienceLabel(request.audienceTarget(), request.audience()),
                 normalizeAudience(request.audienceTarget()),
@@ -643,9 +697,9 @@ public class OpsCopyAbService {
                 request.reason().trim());
     }
 
-    private CopyVersionPublishRequest normalizePublish(CopyVersionPublishRequest request) {
+    private CopyVersionPublishRequest normalizePublish(CopyVersionPublishRequest request, String version) {
         return new CopyVersionPublishRequest(
-                request.version().trim(),
+                version,
                 normalizeSurface(request.surface()),
                 audienceLabel(request.audienceTarget(), request.audience()),
                 normalizeAudience(request.audienceTarget()),
@@ -657,6 +711,55 @@ public class OpsCopyAbService {
                 request.copyPosition() == null ? null : request.copyPosition().trim(),
                 operator(request.operator()),
                 request.reason().trim());
+    }
+
+    private String resolveVersion(CopyContentRow current) {
+        if (StringUtils.hasText(current.draftVersion())) {
+            return current.draftVersion().trim();
+        }
+        BigInteger maximum = copyAbRepository.listVersions(current.key()).stream()
+                .map(CopyVersionRow::version)
+                .map(SEQUENTIAL_VERSION_PATTERN::matcher)
+                .filter(Matcher::matches)
+                .map(matcher -> new BigInteger(matcher.group(1)))
+                .max(BigInteger::compareTo)
+                .orElse(BigInteger.ZERO);
+        String next = "v" + maximum.add(BigInteger.ONE);
+        return next.length() <= VERSION_COLUMN_LENGTH ? next : null;
+    }
+
+    private ApiResult<CopyContentRow> executeIdempotentMutation(
+            String scope,
+            String resourceId,
+            String idempotencyKey,
+            Object request,
+            Supplier<ApiResult<CopyContentRow>> action) {
+        CopyMutationResult result = idempotencyService.execute(
+                scope,
+                idempotencyKey.trim(),
+                requestHash(scope, resourceId, request),
+                CopyMutationResult.class,
+                () -> CopyMutationResult.from(action.get()));
+        return result.toApiResult();
+    }
+
+    private String requestHash(String scope, String resourceId, Object request) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateDigest(digest, scope);
+            updateDigest(digest, resourceId);
+            digest.update(objectMapper.writeValueAsBytes(request));
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (JsonProcessingException ex) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_REQUEST_HASH_FAILED");
+        } catch (NoSuchAlgorithmException ex) {
+            throw new BizException(500, "SHA256_UNAVAILABLE");
+        }
+    }
+
+    private void updateDigest(MessageDigest digest, String value) {
+        digest.update(value.getBytes(StandardCharsets.UTF_8));
+        digest.update((byte) 0);
     }
 
     private CopyContentRow findCopy(String copyKey) {
