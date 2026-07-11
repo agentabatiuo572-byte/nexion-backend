@@ -4,21 +4,19 @@ import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 @Component
+@RequiredArgsConstructor
 public class AuditReplayDispatcher {
-    private final Map<String, AuditReplayable> byDomain;
-
-    public AuditReplayDispatcher(List<AuditReplayable> replayables) {
-        this.byDomain = replayables.stream()
-                .collect(Collectors.toMap(AuditReplayable::domain, r -> r, (a, b) -> a));
-    }
+    private final List<AuditReplayable> replayables;
 
     public ApiResult<?> dispatch(AuditReplayCommand cmd, AuditReplayContext ctx) {
-        AuditReplayable target = byDomain.get(cmd.domain());
+        AuditReplayable target = replayables.stream()
+                .filter(candidate -> candidate.domain().equals(cmd.domain()))
+                .findFirst()
+                .orElse(null);
         if (target == null) {
             return ApiResult.fail(422, "UNKNOWN_REPLAY_DOMAIN:" + cmd.domain());
         }

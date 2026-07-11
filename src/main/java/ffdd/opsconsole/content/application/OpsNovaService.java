@@ -3,7 +3,6 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.NovaChannelView;
-import ffdd.opsconsole.content.domain.NovaEventDrivenView;
 import ffdd.opsconsole.content.domain.NovaOverview;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
@@ -55,14 +54,6 @@ public class OpsNovaService {
             .stream()
             .collect(Collectors.toMap(PoolOption::key, Function.identity(), (left, right) -> left, LinkedHashMap::new));
 
-    // 事件驱动频道固定目录(DB 空→不可调事件流)。
-    private static final List<NovaEventDrivenView> EVENT_DRIVEN_SEEDS = List.of(
-            new NovaEventDrivenView("首充到账推送", "用户首次充值成功后即时触发", "growth@nexion", "success", "active"),
-            new NovaEventDrivenView("Genesis 成交通知", "节点成交后广播动态", "genesis@nexion", "highlight", "active"),
-            new NovaEventDrivenView("提现到账提醒", "提现完成推送到账", "risk@nexion", "info", "active"),
-            new NovaEventDrivenView("V 等级晋升", "用户 V 等级提升时推送", "growth@nexion", "highlight", "active"),
-            new NovaEventDrivenView("AI 客户消费", "AI 客户消费事件展示", "ops@nexion", "info", "active"));
-
     private final NovaRepository novaRepository;
     private final AuditLogService auditLogService;
 
@@ -72,9 +63,9 @@ public class OpsNovaService {
         return ApiResult.ok(new NovaOverview(
                 novaStats(stats),
                 channels,
-                EVENT_DRIVEN_SEEDS,
+                List.of(),
                 novaRepository.templates(),
-                mergeSocialDistribution(novaRepository.socialDistribution()),
+                novaRepository.socialDistribution(),
                 novaRepository.socialPools(),
                 List.copyOf(TEMPLATE_STATUSES),
                 List.of(
@@ -83,19 +74,6 @@ public class OpsNovaService {
                         "nx_nova_social_distribution",
                         "nx_nova_social_pool",
                         "nx_notification")));
-    }
-
-    private List<NovaSocialDistributionItem> mergeSocialDistribution(List<NovaSocialDistributionItem> dbItems) {
-        // DB 社交分布优先;DB 未覆盖的渠道用 DISTRIBUTION_OPTIONS 兜底,DB 全空时均分 100%。
-        java.util.Set<String> dbKeys = dbItems.stream()
-                .map(NovaSocialDistributionItem::key)
-                .collect(java.util.stream.Collectors.toSet());
-        List<NovaSocialDistributionItem> merged = new java.util.ArrayList<>(dbItems);
-        int fallbackPct = dbItems.isEmpty() ? 100 / Math.max(1, DISTRIBUTION_OPTIONS.size()) : 0;
-        DISTRIBUTION_OPTIONS.values().stream()
-                .filter(option -> !dbKeys.contains(option.key()))
-                .forEach(option -> merged.add(new NovaSocialDistributionItem(option.key(), option.name(), fallbackPct, option.color())));
-        return merged;
     }
 
     public ApiResult<NovaChannelView> createChannel(String idempotencyKey, NovaChannelUpsertRequest request) {

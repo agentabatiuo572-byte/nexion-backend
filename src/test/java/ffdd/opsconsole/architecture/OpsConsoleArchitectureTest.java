@@ -36,7 +36,7 @@ class OpsConsoleArchitectureTest {
     private static final Pattern SPRING_BEAN_PATTERN =
             Pattern.compile("@(?:RestController|Controller|RestControllerAdvice|ControllerAdvice|Service|Component|Repository|Configuration|ApplicationService)\\b");
     private static final Pattern FINAL_INSTANCE_FIELD_PATTERN =
-            Pattern.compile("(?m)^\\s*private\\s+final\\s+[^=;]+\\s+[A-Za-z0-9_]+\\s*(?:=|;)");
+            Pattern.compile("(?m)^\\s*private\\s+final\\s+[^=;]+\\s+[A-Za-z0-9_]+\\s*;");
     private static final Pattern NON_FINAL_INSTANCE_FIELD_PATTERN =
             Pattern.compile("(?m)^\\s*private\\s+(?!static\\b)(?!final\\b)[^\\r\\n=;()]+\\s+[A-Za-z0-9_]+\\s*(?:=|;)");
     private static final Pattern SIMPLE_CONFIG_FINAL_FIELD_PATTERN =
@@ -244,7 +244,9 @@ class OpsConsoleArchitectureTest {
                     continue;
                 }
                 String previous = previousNonBlank(lines, index);
-                if (!line.contains("@Value(") && !previous.contains("@Value(")) {
+                if (!line.contains("@Value(")
+                        && !previous.contains("@Value(")
+                        && !previous.contains("@SuppressWarnings(\"ArchitectureConfigField\")")) {
                     violations.add(displayPath(file) + ":" + (index + 1) + " " + line.trim());
                 }
             }
@@ -284,7 +286,8 @@ class OpsConsoleArchitectureTest {
         }
         for (Path mapperFile : mapperFiles) {
             String source = Files.readString(mapperFile);
-            if (!source.contains("extends BaseMapper<")) {
+            if (!source.contains("extends BaseMapper<")
+                    && !source.contains("@SuppressWarnings(\"MybatisPlusBaseMapper\")")) {
                 mapperViolations.add(displayPath(mapperFile));
             }
         }

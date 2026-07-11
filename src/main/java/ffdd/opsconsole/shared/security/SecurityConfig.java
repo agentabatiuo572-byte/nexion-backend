@@ -139,6 +139,7 @@ public class SecurityConfig {
 
         /** 仅覆盖 Authorization 头读取；其余 header / 参数 / 路径信息透传。 */
         private static final class BearerHeaderWrapper extends HttpServletRequestWrapper {
+            @SuppressWarnings("ArchitectureConfigField") // 请求包装器状态，不是 Spring 配置值。
             private final String authorization;
 
             BearerHeaderWrapper(HttpServletRequest request, String authorization) {

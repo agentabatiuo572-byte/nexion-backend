@@ -39,12 +39,6 @@ public class OpsCopyAbService {
     private static final List<String> SURFACES = List.of("Home", "Me", "商城");
     private static final List<String> AUDIENCES = List.of("全量", "P3 · 全语言", "zh · 注册>30天", "注册 ≤14 天", "P2-P3");
     private static final List<String> TRAFFIC_SPLITS = List.of("50", "34", "25", "10");
-    // 实验框架四项固定参数(DB 空时兜底,保证框架配置非空)。
-    private static final List<CopyFrameworkParamView> FRAMEWORK_SEEDS = List.of(
-            new CopyFrameworkParamView("significanceLevel", "显著性水平", "0.05", "实验判定可信度阈值,越低越严格,典型值 0.05"),
-            new CopyFrameworkParamView("minSampleSize", "最小样本量", "1000", "低于该曝光量的实验结论不采纳"),
-            new CopyFrameworkParamView("holdoutPct", "留存对照比例", "10%", "保留不参与实验的对照组比例"),
-            new CopyFrameworkParamView("split", "流量分配精度", "5%", "实验分组的最小流量粒度"));
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
     private static final Pattern MANUAL_URL_PATTERN = Pattern.compile("https?://", Pattern.CASE_INSENSITIVE);
@@ -62,23 +56,11 @@ public class OpsCopyAbService {
                 copies,
                 copyAbRepository.listVersions(null),
                 experiments,
-                mergeFrameworkParams(copyAbRepository.listFrameworkParams()),
+                copyAbRepository.listFrameworkParams(),
                 SURFACES,
                 AUDIENCES,
                 TRAFFIC_SPLITS,
                 List.of("nx_content_copy", "nx_content_copy_version", "nx_content_experiment", "nx_content_experiment_variant", "nx_content_experiment_framework")));
-    }
-
-    private List<CopyFrameworkParamView> mergeFrameworkParams(List<CopyFrameworkParamView> dbParams) {
-        // DB 框架参数优先;DB 未覆盖的 key 用 FRAMEWORK_SEEDS 兜底。
-        java.util.Set<String> dbKeys = dbParams.stream()
-                .map(CopyFrameworkParamView::key)
-                .collect(java.util.stream.Collectors.toSet());
-        List<CopyFrameworkParamView> merged = new java.util.ArrayList<>(dbParams);
-        FRAMEWORK_SEEDS.stream()
-                .filter(seed -> !dbKeys.contains(seed.key()))
-                .forEach(merged::add);
-        return merged;
     }
 
     public ApiResult<CopyContentRow> saveDraft(String copyKey, String idempotencyKey, CopyDraftSaveRequest request) {

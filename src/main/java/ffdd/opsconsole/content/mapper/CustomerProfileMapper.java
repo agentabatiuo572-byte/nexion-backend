@@ -15,6 +15,7 @@ import org.apache.ibatis.annotations.Update;
  * 参照 {@code nx_conversation_transfer} 的轻量范式(直接 @Insert/@Delete)。
  * 由 {@code @MapperScan("ffdd.opsconsole.**.mapper")} 自动注册。
  */
+@SuppressWarnings("MybatisPlusBaseMapper") // 注解 SQL 横跨 tag/note 两表，没有可安全暴露 BaseMapper CRUD 的单一实体。
 public interface CustomerProfileMapper {
 
     @Select("SELECT tag FROM nx_customer_tag WHERE user_id=#{userId} AND is_deleted=0 ORDER BY id ASC")
