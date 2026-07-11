@@ -1,5 +1,5 @@
 -- 经典 RBAC 正式迁移入口。请从仓库根目录用 MySQL client 执行：
--- mysql -uroot -p nexion < scripts/migrations/20260712_rbac_classic.sql
+-- mysql --default-character-set=utf8mb4 -uroot -p nexion < scripts/migrations/20260712_rbac_classic.sql
 -- 顺序是闭环约束：表结构 -> 角色 -> 菜单 -> 权限 -> 绑定 -> 校验。
 
 SOURCE scripts/rbac-classic-seed/00-permission-alter.sql;
