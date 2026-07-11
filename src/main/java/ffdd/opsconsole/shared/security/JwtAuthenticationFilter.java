@@ -9,6 +9,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final AuthSessionMapper authSessionMapper;
     private final GatewaySecurityProperties gatewayProperties;
     private final AdminSessionRegistry adminSessionRegistry;
+    private final AdminPermissionCache permissionCache;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -36,13 +38,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 Claims claims = tokenProvider.parse(token);
                 if (isSessionActive(claims)) {
-                    List<SimpleGrantedAuthority> authorities = extractAuthorities(claims);
+                    List<SimpleGrantedAuthority> authorities = resolveAuthorities(claims);
                     UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                             claims.getSubject(), null, authorities);
                     String username = claims.get("username", String.class);
+                    Map<String, String> details = new LinkedHashMap<>();
+                    details.put("subjectType", String.valueOf(claims.getOrDefault("subjectType", "USER")));
                     if (StringUtils.hasText(username)) {
-                        authentication.setDetails(Map.of("username", username.trim()));
+                        details.put("username", username.trim());
                     }
+                    authentication.setDetails(Map.copyOf(details));
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 } else {
                     SecurityContextHolder.clearContext();
@@ -63,8 +68,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
         String subjectId = request.getHeader(AuthHeaders.SUBJECT_ID);
+        String subjectType = request.getHeader(AuthHeaders.SUBJECT_TYPE);
         String authoritiesHeader = request.getHeader(AuthHeaders.AUTHORITIES);
-        if (!StringUtils.hasText(subjectId)) {
+        if (!StringUtils.hasText(subjectId) || !StringUtils.hasText(subjectType)) {
+            return;
+        }
+        String normalizedSubjectType = subjectType.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!List.of("USER", "ADMIN").contains(normalizedSubjectType)) {
             return;
         }
         List<SimpleGrantedAuthority> authorities = List.of();
@@ -78,9 +88,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                 subjectId, null, authorities);
         String username = request.getHeader(AuthHeaders.USERNAME);
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("subjectType", normalizedSubjectType);
         if (StringUtils.hasText(username)) {
-            authentication.setDetails(Map.of("username", username.trim()));
+            details.put("username", username.trim());
         }
+        authentication.setDetails(Map.copyOf(details));
         SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 
@@ -131,5 +144,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 .map(String.class::cast)
                 .map(SimpleGrantedAuthority::new)
                 .toList();
+    }
+
+    /** ADMIN 权限从 Redis 缓存读（miss 回源 MySQL）；USER 仍从 JWT claim 读（本次只改管理端 RBAC）。 */
+    private List<SimpleGrantedAuthority> resolveAuthorities(Claims claims) {
+        Object subjectTypeClaim = claims.get("subjectType");
+        String subjectType = subjectTypeClaim == null ? "USER" : String.valueOf(subjectTypeClaim);
+        if ("ADMIN".equals(subjectType)) {
+            try {
+                Long adminId = Long.valueOf(claims.getSubject());
+                return permissionCache.getPermissionCodes(adminId).stream()
+                        .map(SimpleGrantedAuthority::new)
+                        .toList();
+            } catch (RuntimeException ex) {
+                return List.of();
+            }
+        }
+        return extractAuthorities(claims);
     }
 }

@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/runtime")
-@PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
+@PreAuthorize("hasAuthority('platform_a1_read')")
 @RequiredArgsConstructor
 public class OpsDomainRuntimeController {
     private final OpsDomainRuntimeService runtimeService;
@@ -36,7 +36,7 @@ public class OpsDomainRuntimeController {
     }
 
     @PostMapping("/contracts/{adminResource}/commands/validate")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_write')")
     public ApiResult<OpsDomainCommandValidationResponse> validateCommand(
             @PathVariable String adminResource,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

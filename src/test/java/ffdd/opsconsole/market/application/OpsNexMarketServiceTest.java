@@ -2,6 +2,7 @@ package ffdd.opsconsole.market.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -40,6 +41,7 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -55,9 +57,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsNexMarketServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
@@ -67,6 +73,7 @@ class OpsNexMarketServiceTest {
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsNexMarketService service = service();
@@ -87,8 +94,33 @@ class OpsNexMarketServiceTest {
                 new ObjectMapper(),
                 clock,
                 seedPolicy,
+                permissionCache,
                 lockMapper);
         return service;
+    }
+
+    @BeforeEach
+    void seedPermissionContext() {
+        // update* service 层二次校验需 admin id + 权限码;默认 stub 全 G 域 write 码让校验通过
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(1L, null, List.of()));
+        when(permissionCache.getPermissionCodes(anyLong())).thenReturn(Set.of(
+                "finprod_g1_apy_write", "finprod_g1_penalty_write", "finprod_g1_min_write",
+                "finprod_g1_write", "finprod_g1_kill_toggle",
+                "finprod_g2_cap_user_write", "finprod_g2_cap_platform_write", "finprod_g2_fee_rate_write",
+                "finprod_g2_write", "finprod_g2_swap_toggle",
+                "finprod_g3_write", "finprod_g3_override_price_write", "finprod_g3_engine_pause_toggle",
+                "finprod_g3_curve_target_price_write", "finprod_g3_curve_pump_prob_write",
+                "finprod_g4_write", "finprod_g4_price_write", "finprod_g4_dividend_rate_write",
+                "finprod_g4_royalty_write", "finprod_g4_market_toggle",
+                "finprod_g4_airdrop_pct_write", "finprod_g4_emission_curve_write",
+                "finprod_g4_airdrop_lock_days_write",
+                "finprod_g7_apy_write", "finprod_g7_nurture_write", "finprod_g7_write"));
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
     }
 
     @BeforeEach
@@ -684,7 +716,7 @@ class OpsNexMarketServiceTest {
         assertThat(detailMap(result.getData().get("market"))).containsEntry("enabled", false);
         assertThat((List<?>) result.getData().get("params"))
                 .extracting("key")
-                .contains("supply", "price", "dividend", "royalty", "divBase");
+                .contains("supply", "price", "dividend", "royalty", "divBase", "airdropPct", "emissionCurve", "airdropLockDays");
         assertThat((List<?>) result.getData().get("nodes"))
                 .extracting("id")
                 .contains("#0042", "#0117", "#0233");
@@ -694,6 +726,20 @@ class OpsNexMarketServiceTest {
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+    }
+
+    @Test
+    void genesisOverviewSuppressesLiveEmissionAmountsWhileH1GateIsClosed() {
+        configFacade.values.put("growth.phase.genesis_emissions_open", "false");
+
+        ApiResult<Map<String, Object>> result = service.genesisOverview();
+
+        assertThat(detailMap(result.getData().get("emissionGate"))).containsEntry("open", false);
+        assertThat(detailMap(result.getData().get("dividend")))
+                .containsEntry("poolToday", new BigDecimal("0.00"))
+                .containsEntry("payoutToday", new BigDecimal("0.00"));
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("genesisAccrualUsd", new BigDecimal("0.00"));
     }
 
     @Test
@@ -801,7 +847,23 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void updatingGenesisEmissionPolicyPersistsPlatformConfig() {
+        ApiResult<Map<String, Object>> result = service.updateGenesisParam(
+                "idem-g4-emission",
+                "airdropPct",
+                new NexMarketValueUpdateRequest("9", "adjust protocol emission allocation", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("G.genesis.airdropPct", "9");
+        assertThat((List<?>) result.getData().get("params"))
+                .anySatisfy(item -> assertThat((Map<String, Object>) item)
+                        .containsEntry("key", "airdropPct")
+                        .containsEntry("displayValue", "9%"));
+    }
+
+    @Test
     void rerunGenesisDividendBatchWritesMarkerAndAudits() {
+        configFacade.values.put("growth.phase.genesis_emissions_open", "true");
         ApiResult<Map<String, Object>> result = service.rerunGenesisDividendBatch(
                 "idem-g4-rerun",
                 "GD-0611",
@@ -825,6 +887,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void rerunGenesisDividendBatchRejectsWhenNoPositiveLedgerAmountExists() {
+        configFacade.values.put("growth.phase.genesis_emissions_open", "true");
         OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         marketRepository.genesisSecondaryStats = new GenesisSecondaryStatsView(
                 BigDecimal.ZERO,

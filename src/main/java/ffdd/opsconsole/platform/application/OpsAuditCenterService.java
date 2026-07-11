@@ -34,6 +34,7 @@ import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -133,9 +134,10 @@ public class OpsAuditCenterService {
     @Transactional
     public ApiResult<AuditOperationTicket> createProposal(String idempotencyKey, AuditOperationProposalRequest request) {
         ensureSeedData();
+        String authenticatedOperator = AdminActorResolver.resolve(request == null ? null : request.operator());
         ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey,
                 request == null ? null : request.reason(),
-                request == null ? null : request.operator());
+                authenticatedOperator);
         if (guard != null) {
             return guard;
         }
@@ -155,7 +157,7 @@ public class OpsAuditCenterService {
             objectText = normalizeLimitedText(request.obj(), "OBJECT_REQUIRED", 255);
             beforeValue = normalizeOptionalText(request.beforeValue(), "—", 128);
             afterValue = normalizeOptionalText(request.afterValue(), "—", 128);
-            operator = normalizeLimitedText(request.operator(), "OPERATOR_REQUIRED", 128);
+            operator = normalizeLimitedText(authenticatedOperator, "OPERATOR_REQUIRED", 128);
             operatorRole = normalizeOptionalText(request.operatorRole(), "operator", 32);
             roleGate = normalizeOptionalText(request.roleGate(), "超管", 255);
             reason = normalizeLimitedText(request.reason(), "REASON_REQUIRED", 512);
@@ -389,8 +391,9 @@ public class OpsAuditCenterService {
             String nextStatus,
             String auditAction) {
         ensureSeedData();
+        String authenticatedOperator = AdminActorResolver.resolve(request == null ? null : request.operator());
         ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey, request == null ? null : request.reason(),
-                request == null ? null : request.operator());
+                authenticatedOperator);
         if (guard != null) {
             return guard;
         }
@@ -401,6 +404,11 @@ public class OpsAuditCenterService {
         if (!STATUS_PENDING.equals(status(ticket.getStatus()))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
         }
+        if (STATUS_APPROVED.equals(nextStatus)
+                && requiresIndependentApprover(ticket)
+                && sameActor(authenticatedOperator, ticket.getOperatorName())) {
+            return ApiResult.fail(403, "A2_TWO_PERSON_SELF_APPROVAL_FORBIDDEN");
+        }
         // approve 才回放目标域;reject/withdrawn 只删锁不回放(原值天然保持)
         if (STATUS_APPROVED.equals(nextStatus)) {
             AuditReplayCommand cmd = deserializeCommand(ticket.getCommandJson());
@@ -408,7 +416,7 @@ public class OpsAuditCenterService {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
             }
             AuditReplayContext ctx = new AuditReplayContext(
-                    request.operator().trim(), request.reason().trim(), idempotencyKey.trim());
+                    authenticatedOperator, request.reason().trim(), idempotencyKey.trim());
             A2ReplayContext.enterReplay();
             try {
                 ApiResult<?> replayResult = replayDispatcher.dispatch(cmd, ctx);
@@ -434,12 +442,21 @@ public class OpsAuditCenterService {
                 .resourceId(ticket.getOperationId())
                 .bizNo(ticket.getOperationId())
                 .actorType("ADMIN")
-                .actorUsername(request.operator().trim())
+                .actorUsername(authenticatedOperator)
                 .result("SUCCESS")
                 .riskLevel(operationRiskLevel(ticket))
                 .detail(decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()))
                 .build());
         return ApiResult.ok(toTicket(ticket));
+    }
+
+    private boolean requiresIndependentApprover(AuditOperationTicketEntity ticket) {
+        return isTrue(ticket.getAmplifies())
+                || "TWO_PERSON".equalsIgnoreCase(ticket.getRoleGate() == null ? "" : ticket.getRoleGate().trim());
+    }
+
+    private boolean sameActor(String left, String right) {
+        return StringUtils.hasText(left) && StringUtils.hasText(right) && left.trim().equalsIgnoreCase(right.trim());
     }
 
     private String operationRiskLevel(AuditOperationTicketEntity ticket) {

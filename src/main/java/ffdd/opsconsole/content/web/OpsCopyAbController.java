@@ -7,11 +7,13 @@ import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
+import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
 import ffdd.opsconsole.content.dto.CopyFrameworkUpdateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,11 +30,21 @@ public class OpsCopyAbController {
     private final OpsCopyAbService copyAbService;
 
     @GetMapping("/overview")
+    @PreAuthorize("hasAuthority('content_i1_read')")
     public ApiResult<CopyAbOverview> overview() {
         return copyAbService.overview();
     }
 
+    @PostMapping("/copies")
+    @PreAuthorize("hasAuthority('content_i1_copy_create')")
+    public ApiResult<CopyContentRow> createCopy(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody CopyCreateRequest request) {
+        return copyAbService.createCopy(idempotencyKey, request);
+    }
+
     @PatchMapping("/copies/{copyKey}/draft")
+    @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyContentRow> saveDraft(
             @PathVariable String copyKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -41,6 +53,7 @@ public class OpsCopyAbController {
     }
 
     @PostMapping("/copies/{copyKey}/versions")
+    @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyContentRow> publishVersion(
             @PathVariable String copyKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -49,6 +62,7 @@ public class OpsCopyAbController {
     }
 
     @PostMapping("/copies/{copyKey}/versions/{version}/rollback")
+    @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyContentRow> rollbackVersion(
             @PathVariable String copyKey,
             @PathVariable String version,
@@ -58,6 +72,7 @@ public class OpsCopyAbController {
     }
 
     @PostMapping("/copies/{copyKey}/archive")
+    @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyContentRow> archiveCurrent(
             @PathVariable String copyKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -66,6 +81,7 @@ public class OpsCopyAbController {
     }
 
     @PatchMapping("/framework/{paramKey}")
+    @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyFrameworkParamView> updateFrameworkParam(
             @PathVariable String paramKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -74,6 +90,7 @@ public class OpsCopyAbController {
     }
 
     @PostMapping("/experiments/{experimentId}/stop")
+    @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyExperimentRow> stopExperiment(
             @PathVariable String experimentId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -82,6 +99,7 @@ public class OpsCopyAbController {
     }
 
     @PostMapping("/experiments/{experimentId}/adopt")
+    @PreAuthorize("hasAuthority('content_i1_write')")
     public ApiResult<CopyExperimentRow> adoptExperiment(
             @PathVariable String experimentId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

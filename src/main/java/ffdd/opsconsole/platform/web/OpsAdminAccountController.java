@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform")
-@PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
+@PreAuthorize("hasAuthority('platform_a1_read')")
 @RequiredArgsConstructor
 public class OpsAdminAccountController {
     private final OpsAdminAccountService accountService;
@@ -38,7 +38,7 @@ public class OpsAdminAccountController {
     }
 
     @PostMapping("/accounts")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_write')")
     public ApiResult<AdminAccountOverview.OperatorRecord> createAccount(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AdminAccountCreateRequest request) {
@@ -46,7 +46,7 @@ public class OpsAdminAccountController {
     }
 
     @PatchMapping("/accounts/{accountId}/role")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_account_role_change')")
     public ApiResult<AdminAccountOverview.OperatorRecord> changeRole(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
@@ -55,7 +55,7 @@ public class OpsAdminAccountController {
     }
 
     @PatchMapping("/accounts/{accountId}/profile")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_write')")
     public ApiResult<AdminAccountOverview.OperatorRecord> updateProfile(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
@@ -64,7 +64,7 @@ public class OpsAdminAccountController {
     }
 
     @PatchMapping("/accounts/{accountId}/status")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_account_disable')")
     public ApiResult<AdminAccountOverview.OperatorRecord> updateStatus(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
@@ -73,7 +73,7 @@ public class OpsAdminAccountController {
     }
 
     @DeleteMapping("/accounts/{accountId}")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_account_delete')")
     public ApiResult<AdminAccountOverview.OperatorRecord> deleteAccount(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
@@ -82,7 +82,7 @@ public class OpsAdminAccountController {
     }
 
     @PostMapping("/accounts/{accountId}/reset-2fa")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_account_2fa_reset')")
     public ApiResult<AdminAccountOverview.OperatorRecord> reset2fa(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
@@ -91,7 +91,7 @@ public class OpsAdminAccountController {
     }
 
     @PostMapping("/accounts/{accountId}/password/reset")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_account_password_reset')")
     public ApiResult<AdminAccountPasswordResetResponse> resetPassword(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
@@ -100,7 +100,7 @@ public class OpsAdminAccountController {
     }
 
     @PostMapping("/accounts/{accountId}/sessions/revoke")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_account_sessions_revoke')")
     public ApiResult<AdminAccountOverview.OperatorRecord> revokeSessions(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
@@ -109,7 +109,7 @@ public class OpsAdminAccountController {
     }
 
     @PatchMapping("/accounts/security-baselines/{baselineKey}")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_write')")
     public ApiResult<AdminAccountOverview.SecurityBaseline> updateSecurityBaseline(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String baselineKey,
@@ -118,7 +118,7 @@ public class OpsAdminAccountController {
     }
 
     @PatchMapping("/rbac/actions/{actionId}/grants")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_rbac_grants_update')")
     public ApiResult<AdminAccountOverview.RbacAction> updateRbacGrants(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String actionId,
@@ -127,7 +127,7 @@ public class OpsAdminAccountController {
     }
 
     @PostMapping("/rbac/actions")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a1_rbac_grants_update')")
     public ApiResult<AdminAccountOverview.RbacAction> registerRbacAction(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AdminRbacActionCreateRequest request) {

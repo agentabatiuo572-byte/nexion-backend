@@ -17,6 +17,7 @@ import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -34,11 +35,13 @@ public class OpsNovaController {
     private final OpsNovaService novaService;
 
     @GetMapping("/overview")
+    @PreAuthorize("hasAuthority('content_i2_read')")
     public ApiResult<NovaOverview> overview() {
         return novaService.overview();
     }
 
     @PostMapping("/channels")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<NovaChannelView> createChannel(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaChannelUpsertRequest request) {
@@ -46,6 +49,7 @@ public class OpsNovaController {
     }
 
     @PatchMapping("/channels/{key}")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<NovaChannelView> updateChannel(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -54,6 +58,7 @@ public class OpsNovaController {
     }
 
     @PatchMapping("/channels/{key}/status")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<NovaChannelView> updateChannelStatus(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -62,6 +67,7 @@ public class OpsNovaController {
     }
 
     @DeleteMapping("/channels/{key}")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<Void> deleteChannel(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -70,6 +76,7 @@ public class OpsNovaController {
     }
 
     @PostMapping("/templates")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<NovaTemplateView> createTemplate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaTemplateCreateRequest request) {
@@ -77,6 +84,7 @@ public class OpsNovaController {
     }
 
     @PatchMapping("/templates/{channel}/status")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<NovaTemplateView> updateTemplateStatus(
             @PathVariable String channel,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -85,6 +93,7 @@ public class OpsNovaController {
     }
 
     @PatchMapping("/social-distribution")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<List<NovaSocialDistributionItem>> updateDistribution(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaDistributionUpdateRequest request) {
@@ -92,6 +101,7 @@ public class OpsNovaController {
     }
 
     @PatchMapping("/social-pools/{poolKey}")
+    @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<NovaSocialPoolView> updatePool(
             @PathVariable String poolKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

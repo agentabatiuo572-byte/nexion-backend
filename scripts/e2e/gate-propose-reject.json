@@ -1,0 +1,12 @@
+{
+  "action": "I4 disclosure gate scope adjust (reject test)",
+  "obj": "disclosure.gate.restricted-actions",
+  "operator": "e2e_tester",
+  "operatorRole": "super",
+  "type": "param",
+  "amplifies": true,
+  "reason": "e2e verify reject releases lock without replay",
+  "sourceDomain": "I",
+  "command": {"domain": "I", "op": "i4_gate_adjust", "params": {"scope": "transfer"}},
+  "target": {"domain": "I", "type": "disclosure_gate", "id": "restricted-actions"}
+}

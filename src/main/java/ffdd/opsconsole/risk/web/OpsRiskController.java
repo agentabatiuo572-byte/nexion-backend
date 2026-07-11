@@ -39,6 +39,7 @@ import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
 import java.util.List;
 import java.util.Map;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -57,21 +58,25 @@ public class OpsRiskController {
     private final OpsRiskService riskService;
 
     @GetMapping("/overview")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read','risk_k6_read')")
     public ApiResult<Map<String, Object>> overview() {
         return riskService.overview();
     }
 
     @GetMapping("/cases")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read','risk_k6_read')")
     public ApiResult<PageResult<RiskCaseView>> cases(@ModelAttribute RiskCaseQueryRequest request) {
         return riskService.cases(request);
     }
 
     @GetMapping("/cases/{caseNo}")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read','risk_k6_read')")
     public ApiResult<RiskCaseView> detail(@PathVariable String caseNo) {
         return riskService.detail(caseNo);
     }
 
     @PostMapping("/cases/{caseNo}/decision")
+    @PreAuthorize("hasAnyAuthority('risk_k1_cluster_freeze','risk_k1_cluster_release','risk_k1_cluster_cleared','risk_k1_cluster_flag','risk_k2_row_freeze','risk_k2_row_flag')")
     public ApiResult<RiskCaseView> decide(
             @PathVariable String caseNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -80,6 +85,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/signals")
+    @PreAuthorize("hasAnyAuthority('risk_k1_write','risk_k2_write')")
     public ApiResult<Map<String, Object>> recordSignal(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskSignalRequest request) {
@@ -87,6 +93,7 @@ public class OpsRiskController {
     }
 
     @GetMapping("/multi-account/overview")
+    @PreAuthorize("hasAuthority('risk_k1_read')")
     public ApiResult<Map<String, Object>> multiAccountOverview(
             @RequestParam(value = "clusterPageNum", required = false) Integer clusterPageNum,
             @RequestParam(value = "clusterPageSize", required = false) Integer clusterPageSize,
@@ -97,6 +104,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/multi-account/params/{key}")
+    @PreAuthorize("hasAuthority('risk_k1_write')")
     public ApiResult<Map<String, Object>> updateMultiAccountParam(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -105,6 +113,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/multi-account/clusters/{clusterId}/status")
+    @PreAuthorize("hasAnyAuthority('risk_k1_cluster_freeze','risk_k1_cluster_release','risk_k1_cluster_cleared','risk_k1_cluster_flag')")
     public ApiResult<Map<String, Object>> updateMultiAccountClusterStatus(
             @PathVariable String clusterId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -113,6 +122,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/multi-account/whitelist")
+    @PreAuthorize("hasAuthority('risk_k1_write')")
     public ApiResult<Map<String, Object>> upsertIpWhitelist(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskIpWhitelistRequest request) {
@@ -120,6 +130,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/multi-account/whitelist")
+    @PreAuthorize("hasAuthority('risk_k1_write')")
     public ApiResult<Map<String, Object>> disableIpWhitelist(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskIpWhitelistRequest request) {
@@ -127,16 +138,19 @@ public class OpsRiskController {
     }
 
     @GetMapping("/withdraw-rules/overview")
+    @PreAuthorize("hasAuthority('risk_k3_read')")
     public ApiResult<Map<String, Object>> withdrawRuleOverview(@ModelAttribute RiskRuleOverviewQueryRequest request) {
         return riskService.withdrawRuleOverview(request);
     }
 
     @GetMapping("/withdraw-rules/hits")
+    @PreAuthorize("hasAuthority('risk_k3_read')")
     public ApiResult<PageResult<RiskRuleHitView>> withdrawRuleHits(@ModelAttribute RiskRuleHitQueryRequest request) {
         return riskService.withdrawRuleHits(request);
     }
 
     @PostMapping("/withdraw-rules")
+    @PreAuthorize("hasAuthority('risk_k3_rule_create')")
     public ApiResult<RiskRuleView> createWithdrawRule(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskRuleCreateRequest request) {
@@ -144,6 +158,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/withdraw-rules/{ruleId}/status")
+    @PreAuthorize("hasAuthority('risk_k3_rule_toggle')")
     public ApiResult<RiskRuleView> updateWithdrawRuleState(
             @PathVariable String ruleId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -152,6 +167,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/withdraw-rules/{ruleId}/condition")
+    @PreAuthorize("hasAuthority('risk_k3_write')")
     public ApiResult<RiskRuleView> updateWithdrawRuleCondition(
             @PathVariable String ruleId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -160,6 +176,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/withdraw-rules/dry-runs")
+    @PreAuthorize("hasAuthority('risk_k3_write')")
     public ApiResult<Map<String, Object>> dryRunWithdrawRules(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskRuleDryRunRequest request) {
@@ -167,11 +184,13 @@ public class OpsRiskController {
     }
 
     @GetMapping("/arbitrage/overview")
+    @PreAuthorize("hasAuthority('risk_k2_read')")
     public ApiResult<Map<String, Object>> arbitrageOverview() {
         return riskService.arbitrageOverview();
     }
 
     @PatchMapping("/arbitrage/params/{key}")
+    @PreAuthorize("hasAuthority('risk_k2_write')")
     public ApiResult<RiskArbitrageParamView> updateArbitrageParam(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -180,6 +199,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/arbitrage/rows/{rowId}/{action}")
+    @PreAuthorize("hasAnyAuthority('risk_k2_row_freeze','risk_k2_row_flag','risk_k2_row_blockgift','risk_k2_row_boardflag')")
     public ApiResult<RiskArbitrageRowView> executeArbitrageAction(
             @PathVariable String rowId,
             @PathVariable String action,
@@ -189,11 +209,13 @@ public class OpsRiskController {
     }
 
     @GetMapping("/scoring/overview")
+    @PreAuthorize("hasAuthority('risk_k4_read')")
     public ApiResult<Map<String, Object>> scoringOverview(@ModelAttribute RiskScoringOverviewQueryRequest request) {
         return riskService.scoringOverview(request);
     }
 
     @GetMapping("/scoring/users")
+    @PreAuthorize("hasAuthority('risk_k4_read')")
     public ApiResult<List<RiskScoreUserSearchView>> searchScoreUsers(
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "limit", required = false) Integer limit) {
@@ -201,11 +223,13 @@ public class OpsRiskController {
     }
 
     @GetMapping("/scoring/users/{userNo}")
+    @PreAuthorize("hasAuthority('risk_k4_read')")
     public ApiResult<RiskScoreUserView> scoreUser(@PathVariable String userNo) {
         return riskService.scoreUser(userNo);
     }
 
     @PatchMapping("/scoring/weights")
+    @PreAuthorize("hasAuthority('risk_k4_write')")
     public ApiResult<Map<String, Object>> updateScoringWeights(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskScoringWeightsRequest request) {
@@ -213,6 +237,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/scoring/source")
+    @PreAuthorize("hasAuthority('risk_k4_write')")
     public ApiResult<Map<String, Object>> updateScoringSource(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskScoringSourceRequest request) {
@@ -220,6 +245,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/scoring/band")
+    @PreAuthorize("hasAuthority('risk_k4_write')")
     public ApiResult<Map<String, Object>> updateScoringBand(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskScoringBandRequest request) {
@@ -227,6 +253,7 @@ public class OpsRiskController {
     }
 
     @PatchMapping("/scoring/escalate")
+    @PreAuthorize("hasAuthority('risk_k4_write')")
     public ApiResult<Map<String, Object>> updateScoringEscalate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskScoringEscalateRequest request) {
@@ -234,6 +261,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/scoring/users/{userNo}/override")
+    @PreAuthorize("hasAuthority('risk_k4_user_override')")
     public ApiResult<RiskScoreUserView> overrideScore(
             @PathVariable String userNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -242,6 +270,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/scoring/users/{userNo}/recompute")
+    @PreAuthorize("hasAuthority('risk_k4_user_recompute')")
     public ApiResult<RiskScoreUserView> recomputeScore(
             @PathVariable String userNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -250,11 +279,13 @@ public class OpsRiskController {
     }
 
     @GetMapping("/kyc-review/overview")
+    @PreAuthorize("hasAuthority('risk_k5_read')")
     public ApiResult<Map<String, Object>> kycReviewOverview(@ModelAttribute RiskKycReviewOverviewQueryRequest request) {
         return riskService.kycReviewOverview(request);
     }
 
     @PatchMapping("/kyc-review/params/{key}")
+    @PreAuthorize("hasAuthority('risk_k5_write')")
     public ApiResult<Map<String, Object>> updateKycReviewParam(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -263,6 +294,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/kyc-review/tickets/manual")
+    @PreAuthorize("hasAuthority('risk_k5_ticket_manual')")
     public ApiResult<Map<String, Object>> createManualKycReviewTicket(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskKycManualReviewRequest request) {
@@ -270,6 +302,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/kyc-review/tickets/{ticketId}/decision")
+    @PreAuthorize("hasAnyAuthority('risk_k5_ticket_pass','risk_k5_ticket_reject')")
     public ApiResult<Map<String, Object>> decideKycReviewTicket(
             @PathVariable String ticketId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

@@ -12,6 +12,7 @@ import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
 import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -28,16 +29,22 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsSupportAgentController {
     private final OpsSupportAgentService supportAgentService;
 
+    // 坐席总览（4KPI/坐席负载） — M1 客服总览 读
+    @PreAuthorize("hasAuthority('service_m1_read')")
     @GetMapping
     public ApiResult<SupportAgentOverview> overview() {
         return supportAgentService.overview();
     }
 
+    // 坐席分页列表 — M1 客服总览 读
+    @PreAuthorize("hasAuthority('service_m1_read')")
     @GetMapping("/page")
     public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {
         return supportAgentService.agents(request);
     }
 
+    // 更新坐席资料 — M1 客服总览 写
+    @PreAuthorize("hasAuthority('service_m1_write')")
     @PatchMapping("/{adminId}/profile")
     public ApiResult<SupportAgentProfileView> updateProfile(
             @PathVariable Long adminId,
@@ -46,6 +53,8 @@ public class OpsSupportAgentController {
         return supportAgentService.updateProfile(adminId, idempotencyKey, request);
     }
 
+    // 坐席上限/接派单分配 — M1 客服总览 写
+    @PreAuthorize("hasAuthority('service_m1_write')")
     @PatchMapping("/{adminId}/seat-assignment")
     public ApiResult<SupportAgentProfileView> assignSeat(
             @PathVariable Long adminId,
@@ -54,6 +63,8 @@ public class OpsSupportAgentController {
         return supportAgentService.assignSeat(adminId, idempotencyKey, request);
     }
 
+    // 指派顾问用户 — M1 客服总览 写
+    @PreAuthorize("hasAuthority('service_m1_write')")
     @PostMapping("/{adminId}/assignments")
     public ApiResult<SupportAgentAssignmentView> assignAdvisorUser(
             @PathVariable Long adminId,
@@ -62,6 +73,8 @@ public class OpsSupportAgentController {
         return supportAgentService.assignAdvisorUser(adminId, idempotencyKey, request);
     }
 
+    // 停用顾问指派 — M1 客服总览 写
+    @PreAuthorize("hasAuthority('service_m1_write')")
     @DeleteMapping("/{adminId}/assignments/{assignmentId}")
     public ApiResult<SupportAgentAssignmentView> deactivateAdvisorAssignment(
             @PathVariable Long adminId,

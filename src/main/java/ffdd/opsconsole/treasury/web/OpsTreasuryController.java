@@ -32,25 +32,25 @@ public class OpsTreasuryController {
     private final OpsTreasuryService treasuryService;
 
     @GetMapping("/overview")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_READ')")
+    @PreAuthorize("hasAuthority('finance_d3_read')")
     public ApiResult<Map<String, Object>> overview(@RequestParam(defaultValue = "7") int days) {
         return treasuryService.overview(days);
     }
 
     @GetMapping("/dual-ledger")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_READ')")
+    @PreAuthorize("hasAuthority('finance_d3_read')")
     public ApiResult<Map<String, Object>> dualLedger() {
         return treasuryService.dualLedger();
     }
 
     @GetMapping("/b-domain")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_READ')")
+    @PreAuthorize("hasAuthority('overview_b1_read')")
     public ApiResult<Map<String, Object>> bDomainDashboard() {
         return treasuryService.bDomainDashboard();
     }
 
     @PostMapping("/b-domain/alerts/{alertId}/ack")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_WRITE')")
+    @PreAuthorize("hasAuthority('overview_b1_write')")
     public ApiResult<Map<String, Object>> acknowledgeBDomainAlert(
             @PathVariable String alertId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -59,7 +59,7 @@ public class OpsTreasuryController {
     }
 
     @PostMapping("/injections")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_WRITE')")
+    @PreAuthorize("hasAuthority('finance_d3_injection_create')")
     public ApiResult<Map<String, Object>> createInjection(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TreasuryInjectionRequest request) {
@@ -67,7 +67,7 @@ public class OpsTreasuryController {
     }
 
     @PatchMapping("/dual-ledger/scope")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_WRITE')")
+    @PreAuthorize("hasAuthority('finance_d3_write')")
     public ApiResult<Map<String, Object>> updateScope(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TreasuryScopeRequest request) {
@@ -75,7 +75,7 @@ public class OpsTreasuryController {
     }
 
     @PatchMapping("/dual-ledger/thresholds")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_WRITE')")
+    @PreAuthorize("hasAnyAuthority('finance_d3_redline_pct_write','finance_d3_healthy_pct_write','finance_d3_runrisk_pct_write')")
     public ApiResult<Map<String, Object>> updateThresholds(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TreasuryThresholdRequest request) {
@@ -83,7 +83,7 @@ public class OpsTreasuryController {
     }
 
     @GetMapping("/ledger/bills")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_READ')")
+    @PreAuthorize("hasAuthority('finance_d4_read')")
     public ApiResult<PageResult<TreasuryLedgerBillView>> ledgerBills(
             @RequestParam(required = false) String type,
             @RequestParam(required = false) Long userId,
@@ -94,13 +94,13 @@ public class OpsTreasuryController {
     }
 
     @GetMapping("/ledger/users/{userId}")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_READ')")
+    @PreAuthorize("hasAuthority('finance_d4_read')")
     public ApiResult<Map<String, Object>> userLedger(@org.springframework.web.bind.annotation.PathVariable Long userId) {
         return treasuryService.userLedger(userId);
     }
 
     @PostMapping("/ledger/adjustments")
-    @PreAuthorize("hasAuthority('PERM_TREASURY_WRITE')")
+    @PreAuthorize("hasAuthority('finance_d4_adjustment_create')")
     public ApiResult<Map<String, Object>> createLedgerAdjustment(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TreasuryLedgerAdjustmentRequest request) {

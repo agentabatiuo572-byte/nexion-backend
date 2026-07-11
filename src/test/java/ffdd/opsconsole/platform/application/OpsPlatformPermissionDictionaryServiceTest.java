@@ -1,0 +1,25 @@
+package ffdd.opsconsole.platform.application;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import ffdd.opsconsole.platform.mapper.AdminPermissionMapper;
+import org.junit.jupiter.api.Test;
+
+class OpsPlatformPermissionDictionaryServiceTest {
+    @Test
+    void nullQueryUsesBoundedDefaultsAndReturnsEmptyPage() {
+        AdminPermissionMapper mapper = mock(AdminPermissionMapper.class);
+        when(mapper.countPermissions(any(), any(), any())).thenReturn(0L);
+        OpsPlatformPermissionDictionaryService service = new OpsPlatformPermissionDictionaryService(mapper);
+
+        var result = service.list(null);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().getPageNum()).isEqualTo(1);
+        assertThat(result.getData().getPageSize()).isEqualTo(20);
+        assertThat(result.getData().getRecords()).isEmpty();
+    }
+}

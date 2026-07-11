@@ -20,6 +20,7 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -27,11 +28,19 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.api.AfterEach;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsAuditControllerTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
     private final OpsAuditController controller = new OpsAuditController(auditLogService, auditCenterService);
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
 
     @Test
     void overviewDelegatesToA2AuditCenterService() {
@@ -134,6 +143,31 @@ class OpsAuditControllerTest {
 
         assertThat(controller.approveOperation("idem-1", "WO-8852", request).getData()).isSameAs(ticket);
         assertThat(controller.rejectOperation("idem-2", "WO-8851", request).getData()).isSameAs(ticket);
+    }
+
+    @Test
+    void webEndpointsReplaceSpoofedOperatorsWithAuthenticatedUsername() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("41", null, List.of());
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "username", "alice.admin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        AuditOperationDecisionRequest spoofedDecision = new AuditOperationDecisionRequest("verified", "mallory");
+        AuditOperationProposalRequest spoofedProposal = new AuditOperationProposalRequest(
+                "A6 grant", "role:9", "read", "write", "mallory", "ADMIN", "HIGH",
+                true, false, "TWO_PERSON", "grant review", "A", null, null, null);
+
+        controller.approveOperation("idem-approve", "WO-1", spoofedDecision);
+        controller.rejectOperation("idem-reject", "WO-2", spoofedDecision);
+        controller.createOperation("idem-create", spoofedProposal);
+
+        verify(auditCenterService).approve("idem-approve", "WO-1",
+                new AuditOperationDecisionRequest("verified", "alice.admin"));
+        verify(auditCenterService).reject("idem-reject", "WO-2",
+                new AuditOperationDecisionRequest("verified", "alice.admin"));
+        ArgumentCaptor<AuditOperationProposalRequest> proposal =
+                ArgumentCaptor.forClass(AuditOperationProposalRequest.class);
+        verify(auditCenterService).createProposal(org.mockito.ArgumentMatchers.eq("idem-create"), proposal.capture());
+        assertThat(proposal.getValue().operator()).isEqualTo("alice.admin");
     }
 
     @Test

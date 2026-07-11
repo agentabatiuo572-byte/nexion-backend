@@ -1,0 +1,1 @@
+{"scope": "withdraw", "operator": "e2e_tester", "reason": "direct domain call must be blocked by lock"}

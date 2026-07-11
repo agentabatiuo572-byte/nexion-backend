@@ -1,0 +1,12 @@
+{
+  "action": "I7 course reward adjust (course-001)",
+  "obj": "learning_course.course-001",
+  "operator": "e2e_tester",
+  "operatorRole": "super",
+  "type": "fund",
+  "amplifies": true,
+  "reason": "e2e verify i7_course_reward_adjust enqueue lock (table missing followup)",
+  "sourceDomain": "I",
+  "command": {"domain": "I", "op": "i7_course_reward_adjust", "params": {"courseId": "course-001", "rewardNex": 12.5}},
+  "target": {"domain": "I", "type": "learning_course", "id": "course-001"}
+}

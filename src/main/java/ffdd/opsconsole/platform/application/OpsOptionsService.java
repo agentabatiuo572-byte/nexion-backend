@@ -8,6 +8,7 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.common.domain.OpsDomainCatalog;
 import ffdd.opsconsole.platform.dto.AdminOption;
 import ffdd.opsconsole.platform.infrastructure.AdminRoleOptionEntity;
+import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
 import ffdd.opsconsole.risk.domain.RiskScoringSourceCatalog;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -23,6 +24,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsOptionsService {
     private final OpsOptionsMapper optionsMapper;
+    private final AdminRolePermissionMapper permissionMapper;
 
     public ApiResult<List<AdminOption>> options(String domain, String name) {
         String normalizedDomain = normalize(domain);
@@ -126,18 +128,10 @@ public class OpsOptionsService {
     }
 
     private List<AdminOption> permissionOptions() {
-        return options(
-                "系统读取", "PERM_SYSTEM_READ",
-                "系统写入", "PERM_SYSTEM_WRITE",
-                "审计读取", "PERM_AUDIT_READ",
-                "用户读取", "PERM_USER_READ",
-                "用户写入", "PERM_USER_WRITE",
-                "提现读取", "PERM_WITHDRAWAL_READ",
-                "提现审核", "PERM_WITHDRAWAL_REVIEW",
-                "设备读取", "PERM_DEVICE_READ",
-                "设备写入", "PERM_DEVICE_WRITE",
-                "内容读取", "PERM_CONTENT_READ",
-                "内容写入", "PERM_CONTENT_WRITE");
+        // 经典 RBAC：权限下拉从 DB 动态读（265 细点），数据驱动；#9 A8 权限字典按域/页面分组优化
+        return permissionMapper.selectAllPermissionOptions().stream()
+                .map(row -> AdminOption.of(row.permissionName(), row.permissionCode()))
+                .toList();
     }
 
     private List<AdminOption> datacenterOptions() {

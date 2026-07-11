@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.platform.dto.AdminOption;
 import ffdd.opsconsole.platform.infrastructure.AdminRoleOptionEntity;
 import ffdd.opsconsole.platform.mapper.OpsOptionsMapper;
@@ -17,7 +18,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 class OpsOptionsServiceTest {
-    private final OpsOptionsService service = new OpsOptionsService(mock(OpsOptionsMapper.class));
+    private final OpsOptionsService service = new OpsOptionsService(mock(OpsOptionsMapper.class), mock(AdminRolePermissionMapper.class));
 
     @BeforeAll
     static void initializeMybatisPlusTableInfo() {
@@ -47,7 +48,7 @@ class OpsOptionsServiceTest {
     @Test
     void rolesPreferDatabaseValuesAndFilterBlankRows() {
         OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
-        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper);
+        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
         when(mapper.selectList(any())).thenReturn(List.of(
                 role("Finance Reviewer"),
                 role("Risk Analyst"),
@@ -63,7 +64,7 @@ class OpsOptionsServiceTest {
     @Test
     void rolesFallbackWhenDatabaseQueryFails() {
         OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
-        OpsOptionsService fallbackService = new OpsOptionsService(mapper);
+        OpsOptionsService fallbackService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
         when(mapper.selectList(any())).thenThrow(new IllegalStateException("db unavailable"));
 
         List<AdminOption> options = fallbackService.options("platform", "roles").getData();
@@ -84,7 +85,7 @@ class OpsOptionsServiceTest {
     @Test
     void datacentersPreferDatabaseValues() {
         OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
-        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper);
+        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
         when(mapper.datacenters()).thenReturn(List.of("HK-1", "SG-1", "US-1"));
 
         List<AdminOption> options = databaseBackedService.options("devices", "datacenters").getData();
@@ -97,7 +98,7 @@ class OpsOptionsServiceTest {
     @Test
     void datacentersReturnEmptyWhenDatabaseReturnsNoRows() {
         OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
-        OpsOptionsService fallbackService = new OpsOptionsService(mapper);
+        OpsOptionsService fallbackService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
         when(mapper.datacenters()).thenReturn(List.of());
 
         List<AdminOption> options = fallbackService.options("devices", "datacenters").getData();
@@ -110,7 +111,7 @@ class OpsOptionsServiceTest {
     @Test
     void supportBusinessOptionsComeFromDatabaseRows() {
         OpsOptionsMapper mapper = mock(OpsOptionsMapper.class);
-        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper);
+        OpsOptionsService databaseBackedService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
         when(mapper.supportAgents()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("alice", "101")));
         when(mapper.transferTargets()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("alice · support", "101")));
         when(mapper.sessionReplyTemplates()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("KYC · tpl-1", "reply body")));

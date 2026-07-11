@@ -9,6 +9,7 @@ import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import java.util.Map;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,21 +28,25 @@ public class OpsNexMarketController {
     private final OpsNexMarketService marketService;
 
     @GetMapping("/curve")
+    @PreAuthorize("hasAuthority('finprod_g3_read')")
     public ApiResult<Map<String, Object>> curve() {
         return marketService.overview();
     }
 
     @GetMapping("/curve/history")
+    @PreAuthorize("hasAuthority('finprod_g3_read')")
     public ApiResult<Map<String, Object>> curveHistory() {
         return marketService.curveHistory();
     }
 
     @GetMapping("/repurchase")
+    @PreAuthorize("hasAuthority('finprod_g7_read')")
     public ApiResult<Map<String, Object>> repurchase() {
         return marketService.repurchaseOverview();
     }
 
     @GetMapping("/genesis")
+    @PreAuthorize("hasAuthority('finprod_g4_read')")
     public ApiResult<Map<String, Object>> genesis(
             @RequestParam(value = "page", required = false, defaultValue = "1") Integer page,
             @RequestParam(value = "pageSize", required = false, defaultValue = "10") Integer pageSize) {
@@ -49,6 +54,7 @@ public class OpsNexMarketController {
     }
 
     @PutMapping("/curve")
+    @PreAuthorize("hasAnyAuthority('finprod_g3_curve_target_price_write','finprod_g3_curve_pump_prob_write')")
     public ApiResult<Map<String, Object>> updateCurve(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NexMarketCurveUpdateRequest request) {
@@ -56,6 +62,7 @@ public class OpsNexMarketController {
     }
 
     @PostMapping("/curve/advance")
+    @PreAuthorize("hasAuthority('finprod_g3_write')")
     public ApiResult<Map<String, Object>> advance(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NexMarketAdvanceRequest request) {
@@ -63,6 +70,7 @@ public class OpsNexMarketController {
     }
 
     @PatchMapping("/curve/controls/{controlKey}")
+    @PreAuthorize("hasAuthority('finprod_g3_write')")
     public ApiResult<Map<String, Object>> updateControl(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String controlKey,
@@ -71,6 +79,7 @@ public class OpsNexMarketController {
     }
 
     @PatchMapping("/overrides/{overrideKey}")
+    @PreAuthorize("hasAnyAuthority('finprod_g3_override_price_write','finprod_g3_engine_pause_toggle','finprod_g3_write')")
     public ApiResult<Map<String, Object>> updateOverride(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String overrideKey,
@@ -79,6 +88,7 @@ public class OpsNexMarketController {
     }
 
     @PatchMapping("/repurchase/params/{paramKey}")
+    @PreAuthorize("hasAnyAuthority('finprod_g7_apy_write','finprod_g7_nurture_write','finprod_g7_write')")
     public ApiResult<Map<String, Object>> updateRepurchaseParam(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
@@ -87,6 +97,7 @@ public class OpsNexMarketController {
     }
 
     @PatchMapping("/genesis/params/{paramKey}")
+    @PreAuthorize("hasAnyAuthority('finprod_g4_write','finprod_g4_price_write','finprod_g4_dividend_rate_write','finprod_g4_royalty_write')")
     public ApiResult<Map<String, Object>> updateGenesisParam(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
@@ -95,6 +106,7 @@ public class OpsNexMarketController {
     }
 
     @PatchMapping("/genesis/market-status")
+    @PreAuthorize("hasAuthority('finprod_g4_market_toggle')")
     public ApiResult<Map<String, Object>> updateGenesisMarketStatus(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NexMarketValueUpdateRequest request) {
@@ -102,6 +114,7 @@ public class OpsNexMarketController {
     }
 
     @PostMapping("/genesis/dividend-batches/{batchNo}/rerun")
+    @PreAuthorize("hasAuthority('finprod_g4_write')")
     public ApiResult<Map<String, Object>> rerunGenesisDividendBatch(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String batchNo,

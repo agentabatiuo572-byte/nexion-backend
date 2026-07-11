@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.dto.NotificationCampaignDraftRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,11 +28,14 @@ public class OpsNotificationCampaignController {
     private final OpsNotificationCampaignService campaignService;
 
     @GetMapping("/overview")
+    @PreAuthorize("hasAuthority('content_i3_read')")
     public ApiResult<NotificationCampaignOverview> overview() {
         return campaignService.overview();
     }
 
     @PostMapping
+    // 新建 campaign：常规写
+    @PreAuthorize("hasAuthority('content_i3_write')")
     public ApiResult<NotificationCampaignRow> createCampaign(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NotificationCampaignCreateRequest request) {
@@ -39,6 +43,7 @@ public class OpsNotificationCampaignController {
     }
 
     @PatchMapping("/{campaignNo}/draft")
+    @PreAuthorize("hasAuthority('content_i3_write')")
     public ApiResult<NotificationCampaignRow> updateDraft(
             @PathVariable String campaignNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -47,6 +52,7 @@ public class OpsNotificationCampaignController {
     }
 
     @PostMapping("/{campaignNo}/schedule")
+    @PreAuthorize("hasAuthority('content_i3_write')")
     public ApiResult<NotificationCampaignRow> scheduleCampaign(
             @PathVariable String campaignNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -55,6 +61,7 @@ public class OpsNotificationCampaignController {
     }
 
     @PostMapping("/{campaignNo}/send-now")
+    @PreAuthorize("hasAuthority('content_i3_write')")
     public ApiResult<NotificationCampaignRow> sendNow(
             @PathVariable String campaignNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -63,6 +70,7 @@ public class OpsNotificationCampaignController {
     }
 
     @PostMapping("/{campaignNo}/cancel")
+    @PreAuthorize("hasAuthority('content_i3_write')")
     public ApiResult<NotificationCampaignRow> cancelScheduled(
             @PathVariable String campaignNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -71,6 +79,8 @@ public class OpsNotificationCampaignController {
     }
 
     @PatchMapping("/caps/{tier}")
+    // HIGH：CAP 容量闸调整，影响合规通知可见性
+    @PreAuthorize("hasAuthority('content_i3_cap_adjust')")
     public ApiResult<NotificationCapRuleView> updateCapRule(
             @PathVariable String tier,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

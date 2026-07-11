@@ -6,13 +6,13 @@ import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AdminLoginResponse;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
-import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
 import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import java.util.LinkedHashSet;
@@ -37,41 +37,14 @@ public class OpsAdminAuthService {
             PASSWORD_CHANGE_REQUIRED,
             "MAIL_DISPATCHED",
             "HANDOFF_PENDING");
-    private static final List<String> SUPER_ADMIN_MONOLITH_AUTHORITIES = List.of(
-            "PERM_SYSTEM_READ",
-            "PERM_SYSTEM_WRITE",
-            "PERM_AUDIT_READ",
-            "PERM_AUDIT_EXPORT",
-            "PERM_TREASURY_READ",
-            "PERM_TREASURY_WRITE",
-            "PERM_USER_READ",
-            "PERM_USER_WRITE",
-            "PERM_WITHDRAWAL_READ",
-            "PERM_WITHDRAWAL_REVIEW",
-            "PERM_DEVICE_READ",
-            "PERM_DEVICE_WRITE",
-            "PERM_DEVICE_RESTORE",
-            "PERM_TEAM_READ",
-            "PERM_TEAM_WRITE",
-            "PERM_MARKET_READ",
-            "PERM_MARKET_WRITE",
-            "PERM_GROWTH_READ",
-            "PERM_GROWTH_WRITE",
-            "PERM_CONTENT_READ",
-            "PERM_CONTENT_WRITE",
-            "PERM_EMERGENCY_READ",
-            "PERM_EMERGENCY_WRITE",
-            "PERM_RISK_READ",
-            "PERM_RISK_WRITE",
-            "PERM_BI_READ",
-            "PERM_BI_EXPORT");
+    // SUPER_ADMIN 旧 PERM_* 桥接白名单已移至 AdminPermissionCache（#11 对齐新码后整段删除）
 
     private final AdminMapper adminMapper;
-    private final AdminRolePermissionMapper permissionMapper;
     private final AdminRoleRelationMapper roleRelationMapper;
     private final AdminAccountStateMapper accountStateMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider tokenProvider;
+    private final AdminPermissionCache permissionCache;
     private final AdminSessionRegistry adminSessionRegistry;
 
     public ApiResult<AdminLoginResponse> login(AdminLoginRequest request) {
@@ -99,7 +72,7 @@ public class OpsAdminAuthService {
         } catch (RuntimeException ex) {
             return ApiResult.fail(503, "ADMIN_SESSION_STORE_UNAVAILABLE");
         }
-        String token = tokenProvider.createToken(admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), authorities, sessionId);
+        String token = tokenProvider.createToken(admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), List.of(), sessionId);
         return ApiResult.ok(new AdminLoginResponse(
                 token,
                 "Bearer",
@@ -179,7 +152,7 @@ public class OpsAdminAuthService {
             adminSessionRegistry.revokeSessions(adminId);
             throw ex;
         }
-        String token = tokenProvider.createToken(admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), authorities, sessionId);
+        String token = tokenProvider.createToken(admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), List.of(), sessionId);
         return ApiResult.ok(new AdminLoginResponse(token, "Bearer", session(admin, authorities, false)));
     }
 
@@ -196,12 +169,8 @@ public class OpsAdminAuthService {
     }
 
     private List<String> effectiveAuthorities(AdminEntity admin) {
-        Set<String> authorities = new LinkedHashSet<>();
-        authorities.addAll(permissionMapper.selectActivePermissionCodes(admin.getId()));
-        if (superAdmin(admin)) {
-            authorities.addAll(SUPER_ADMIN_MONOLITH_AUTHORITIES);
-        }
-        return List.copyOf(authorities);
+        // 权限来源委托 AdminPermissionCache（Redis 缓存 MySQL + super 桥接旧码，#11 后桥接删除）
+        return List.copyOf(permissionCache.getPermissionCodes(admin.getId()));
     }
 
     private AdminLoginResponse.AdminSession session(AdminEntity admin, List<String> authorities) {
@@ -212,12 +181,16 @@ public class OpsAdminAuthService {
             AdminEntity admin,
             List<String> authorities,
             boolean passwordChangeRequired) {
+        String roleCode = effectiveRoleCode(admin);
+        List<String> effectiveMenus = roleRelationMapper.selectActiveMenuCodes(admin.getId());
         return new AdminLoginResponse.AdminSession(
                 admin.getId(),
                 admin.getUsername(),
                 StringUtils.hasText(admin.getNickname()) ? admin.getNickname() : admin.getUsername(),
-                frontendRole(admin),
+                frontendRole(roleCode),
+                roleCode,
                 List.copyOf(authorities),
+                effectiveMenus == null ? List.of() : List.copyOf(effectiveMenus),
                 passwordChangeRequired);
     }
 
@@ -226,15 +199,22 @@ public class OpsAdminAuthService {
         return state != null && PASSWORD_CHANGE_REQUIRED_STATUSES.contains(state.getCredentialDeliveryStatus());
     }
 
-    private String frontendRole(AdminEntity admin) {
+    private String effectiveRoleCode(AdminEntity admin) {
         if (superAdmin(admin)) {
-            return "superadmin";
+            return "SUPER_ADMIN";
         }
         String roleCode = roleRelationMapper.activeRoleCode(admin.getId());
         if (!StringUtils.hasText(roleCode)) {
-            return "auditor";
+            return "AUDITOR";
         }
+        return roleCode.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String frontendRole(String roleCode) {
         String normalized = roleCode.trim().toUpperCase(Locale.ROOT);
+        if ("SUPER_ADMIN".equals(normalized)) {
+            return "superadmin";
+        }
         if ("FINANCE".equals(normalized)) {
             return "finance";
         }
@@ -256,7 +236,7 @@ public class OpsAdminAuthService {
         if ("CONFIG_ADMIN".equals(normalized)) {
             return "config";
         }
-        return "auditor";
+        return normalized.toLowerCase(Locale.ROOT);
     }
 
     private boolean activeRecord(AdminEntity admin) {

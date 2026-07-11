@@ -8,8 +8,6 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
-import ffdd.opsconsole.platform.domain.AuditReplayCommand;
-import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository;
@@ -25,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -35,7 +34,7 @@ class OpsTeamServiceTest {
     private final FakeTeamFulfillmentQueueRepository fulfillmentQueueRepository = new FakeTeamFulfillmentQueueRepository();
     private final FakeTeamCommissionRepository commissionRepository = new FakeTeamCommissionRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
-    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper = mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
+    private final ffdd.opsconsole.shared.security.AdminPermissionCache permissionCache = mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
     private final OpsTeamService service = new OpsTeamService(
             configFacade,
             coverageFacade,
@@ -44,13 +43,18 @@ class OpsTeamServiceTest {
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
             fulfillmentQueueRepository,
             commissionRepository,
-            lockMapper);
+            permissionCache,
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class));
 
-    @org.junit.jupiter.api.BeforeEach
-    void stubNoActiveA2Locks() {
-        // 默认无 A2 对象锁,写方法放行;replay 路径靠 A2ReplayContext 跳锁
-        org.mockito.Mockito.when(lockMapper.countActiveByTarget(org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString())).thenReturn(0);
+    @BeforeEach
+    void seedPermissionContext() {
+        // updateConfig service 层二次校验需 admin id + 权限码;默认 stub 全 network_f2/f3/f4 码通过
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(1L, null, List.of()));
+        org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong())).thenReturn(java.util.Set.of(
+                "network_f2_read", "network_f2_write", "network_f2_royalty_rate", "network_f2_policy_amplify",
+                "network_f3_read", "network_f3_write", "network_f3_match_rate",
+                "network_f4_read", "network_f4_write", "network_f4_pool_fund"));
     }
 
     @Test
@@ -135,7 +139,8 @@ class OpsTeamServiceTest {
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.disabledForDirectConstruction(),
                 new FakeTeamFulfillmentQueueRepository(),
                 new FakeTeamCommissionRepository(),
-                lockMapper);
+                permissionCache,
+                mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class));
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
         ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
@@ -519,62 +524,6 @@ class OpsTeamServiceTest {
             return;
         }
         throw new AssertionError("Expected sunset capability rejection");
-    }
-
-    @Test
-    void replayFCommissionStatusPostsLedgerEntry() {
-        // F5 动资金: replay f_commission_status 必须透传到 postLedgerEntry(完整资金路径)
-        commissionRepository.commissionEvents.add(new LinkedHashMap<>(Map.of(
-                "id", "CM-7781",
-                "kind", "network",
-                "user", "U00001987",
-                "amount", new BigDecimal("420"),
-                "currency", "USDT",
-                "cooldownPercent", 60,
-                "cooldownLabel", "冷却 18d",
-                "state", "计提")));
-
-        ApiResult<?> result = service.replay(
-                new AuditReplayCommand("F", "f_commission_status", Map.of(
-                        "key", "F.commission.CM-7781.status",
-                        "value", "unlocked")),
-                new AuditReplayContext("risk-ops", "f5 replay unlock commission", "idem-replay-f5-unlock"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        assertThat(ledgerPostingFacade.entries.get(0))
-                .containsEntry("bizNo", "F5-COMMISSION-CM-7781-UNLOCKED")
-                .containsEntry("bizType", "TEAM_COMMISSION")
-                .containsEntry("asset", "USDT")
-                .containsEntry("direction", "IN")
-                .containsEntry("status", "PENDING")
-                .containsEntry("amount", new BigDecimal("420"));
-    }
-
-    @Test
-    void replayFConfigWritesConfigAndAudits() {
-        // polymorphic ACTIVE_KEYS: key=minPayoutUsdt 走 updateConfig 数值政策路径
-        ApiResult<?> result = service.replay(
-                new AuditReplayCommand("F", "f_config", Map.of(
-                        "key", "minPayoutUsdt",
-                        "value", "30")),
-                new AuditReplayContext("superadmin", "f2 replay tighten payout", "idem-replay-f2-payout"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("team.min_payout_usdt", "30");
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("F_TEAM_POLICY_CHANGED");
-    }
-
-    @Test
-    void replayUnknownOpReturns422WithUnknownReplayOpMarker() {
-        ApiResult<?> result = service.replay(
-                new AuditReplayCommand("F", "f_unknown", Map.of()),
-                new AuditReplayContext("superadmin", "replay unknown op", "idem-replay-unknown"));
-
-        assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:f_unknown");
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {

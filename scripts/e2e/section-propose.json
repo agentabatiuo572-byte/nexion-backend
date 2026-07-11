@@ -1,0 +1,12 @@
+{
+  "action": "I4 trust section publish (asset_safety)",
+  "obj": "trust_section.asset_safety",
+  "operator": "e2e_tester",
+  "operatorRole": "super",
+  "type": "param",
+  "amplifies": false,
+  "reason": "e2e verify i4_trust_section_manage publish replay",
+  "sourceDomain": "I",
+  "command": {"domain": "I", "op": "i4_trust_section_manage", "params": {"sectionKey": "asset_safety", "action": "publish", "version": "v1.1"}},
+  "target": {"domain": "I", "type": "trust_section", "id": "asset_safety"}
+}

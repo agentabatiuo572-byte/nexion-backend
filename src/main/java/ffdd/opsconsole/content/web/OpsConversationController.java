@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -48,16 +49,22 @@ public class OpsConversationController {
      */
     private final ApplicationEventPublisher eventPublisher;
 
+    // 会话总览 — M3 即时会话台 读
+    @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping("/overview")
     public ApiResult<Map<String, Object>> overview() {
         return conversationService.overview();
     }
 
+    // 收件箱/会话列表 — M3 即时会话台 读
+    @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping
     public ApiResult<PageResult<ContentConversationView>> conversations(ConversationQueryRequest request) {
         return conversationService.conversations(request);
     }
 
+    // 主动发起会话 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping
     public ApiResult<ContentConversationView> initiate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -67,16 +74,22 @@ public class OpsConversationController {
         return result;
     }
 
+    // 转交目标列表 — M3 即时会话台 读
+    @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping("/transfer-targets")
     public ApiResult<List<Map<String, Object>>> transferTargets() {
         return conversationService.transferTargets();
     }
 
+    // 会话详情/客户档案 — M3 即时会话台 读
+    @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping("/{conversationNo}")
     public ApiResult<ContentConversationDetail> detail(@PathVariable String conversationNo) {
         return conversationService.detail(conversationNo);
     }
 
+    // 转交会话 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/transfer")
     public ApiResult<ContentConversationView> transfer(
             @PathVariable String conversationNo,
@@ -87,6 +100,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 会话回复 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/replies")
     public ApiResult<ContentConversationView> reply(
             @PathVariable String conversationNo,
@@ -97,6 +112,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 会话状态变更 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PatchMapping("/{conversationNo}/status")
     public ApiResult<ContentConversationView> updateStatus(
             @PathVariable String conversationNo,
@@ -107,6 +124,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 会话归档 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PatchMapping("/{conversationNo}/archive")
     public ApiResult<ContentConversationView> archive(
             @PathVariable String conversationNo,
@@ -117,6 +136,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 退回/兜底转交 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/transfer/fallback")
     public ApiResult<ContentConversationView> fallbackTransfer(
             @PathVariable String conversationNo,
@@ -127,6 +148,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 会话转工单 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/ticket")
     public ApiResult<ConversationTicketResult> convertToTicket(
             @PathVariable String conversationNo,
@@ -146,6 +169,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 接收转交 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/transfer/accept")
     public ApiResult<ContentConversationView> acceptTransfer(
             @PathVariable String conversationNo,
@@ -156,6 +181,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 退回转交 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/transfer/return")
     public ApiResult<ContentConversationView> returnTransfer(
             @PathVariable String conversationNo,
@@ -166,6 +193,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 转交等待 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/transfer/wait")
     public ApiResult<ContentConversationView> waitTransfer(
             @PathVariable String conversationNo,
@@ -176,6 +205,8 @@ public class OpsConversationController {
         return result;
     }
 
+    // 添加客户标签 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/customer-tags")
     public ApiResult<List<String>> addCustomTag(
             @PathVariable String conversationNo,
@@ -184,6 +215,8 @@ public class OpsConversationController {
         return conversationService.addCustomTag(conversationNo, idempotencyKey, request);
     }
 
+    // 移除客户标签 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @DeleteMapping("/{conversationNo}/customer-tags")
     public ApiResult<List<String>> removeCustomTag(
             @PathVariable String conversationNo,
@@ -192,6 +225,8 @@ public class OpsConversationController {
         return conversationService.removeCustomTag(conversationNo, idempotencyKey, request);
     }
 
+    // 添加客户备注 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PostMapping("/{conversationNo}/customer-notes")
     public ApiResult<ConversationCustomerProfile.CustomerNote> addNote(
             @PathVariable String conversationNo,
@@ -200,6 +235,8 @@ public class OpsConversationController {
         return conversationService.addNote(conversationNo, idempotencyKey, request);
     }
 
+    // 移除客户备注 — M3 即时会话台 写
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @DeleteMapping("/{conversationNo}/customer-notes/{noteId}")
     public ApiResult<Void> removeNote(
             @PathVariable String conversationNo,

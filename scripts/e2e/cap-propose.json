@@ -1,0 +1,12 @@
+{
+  "action": "I3 notification cap adjust (high tier)",
+  "obj": "notification_cap.high",
+  "operator": "e2e_tester",
+  "operatorRole": "super",
+  "type": "param",
+  "amplifies": false,
+  "reason": "e2e verify i3_cap_adjust replay chain",
+  "sourceDomain": "I",
+  "command": {"domain": "I", "op": "i3_cap_adjust", "params": {"tier": "high", "cap": "6 msg/day"}},
+  "target": {"domain": "I", "type": "notification_cap", "id": "high"}
+}

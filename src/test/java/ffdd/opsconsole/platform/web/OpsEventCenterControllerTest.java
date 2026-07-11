@@ -55,11 +55,11 @@ class OpsEventCenterControllerTest {
     @Test
     void mutationEndpointsRequireSystemWriteAuthority() throws Exception {
         assertThat(preAuthorize("updateParam", String.class, String.class, EventCenterMutationRequest.class))
-                .isEqualTo("hasAuthority('PERM_SYSTEM_WRITE')");
+                .isEqualTo("hasAuthority('platform_a4_write')");
         assertThat(preAuthorize("registerSchema", String.class, EventCenterMutationRequest.class))
-                .isEqualTo("hasAuthority('PERM_SYSTEM_WRITE')");
+                .isEqualTo("hasAuthority('platform_a4_write')");
         assertThat(preAuthorize("registerDomainExtension", String.class, EventCenterMutationRequest.class))
-                .isEqualTo("hasAuthority('PERM_SYSTEM_WRITE')");
+                .isEqualTo("hasAuthority('platform_a4_write')");
     }
 
     private String preAuthorize(String methodName, Class<?>... parameterTypes) throws Exception {

@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/events")
-@PreAuthorize("hasAuthority('PERM_AUDIT_READ')")
+@PreAuthorize("hasAuthority('platform_a4_read')")
 @RequiredArgsConstructor
 public class OpsEventCenterController {
     private final OpsEventCenterService eventCenterService;
@@ -29,7 +29,7 @@ public class OpsEventCenterController {
     }
 
     @PatchMapping("/params/{paramKey}")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a4_write')")
     public ApiResult<EventCenterOverview.EventDimensionParam> updateParam(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
@@ -38,7 +38,7 @@ public class OpsEventCenterController {
     }
 
     @PostMapping("/schema-registrations")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a4_write')")
     public ApiResult<EventCenterOverview> registerSchema(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) EventCenterMutationRequest request) {
@@ -46,7 +46,7 @@ public class OpsEventCenterController {
     }
 
     @PostMapping("/domain-extension-batches")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a4_write')")
     public ApiResult<EventCenterOverview.EventDomainExtensionBatch> registerDomainExtension(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) EventCenterMutationRequest request) {

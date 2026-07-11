@@ -15,6 +15,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -61,6 +62,8 @@ public class OpsConversationStreamController {
      * SSE 订阅端点。建立连接后立即返回 SseEmitter，后续事件由 @EventListener 异步推入。
      * 单条连接失败（IOException / IllegalStateException）→ 静默从 registry 摘除，等客户端重连。
      */
+    // SSE 会话流订阅 — M3 即时会话台 读（坐席被动接收推送/收件箱）
+    @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping("/stream")
     public SseEmitter stream() {
         String adminId = resolveAdminId();

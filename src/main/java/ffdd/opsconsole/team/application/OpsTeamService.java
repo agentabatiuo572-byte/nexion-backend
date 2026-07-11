@@ -5,13 +5,14 @@ import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
-import ffdd.opsconsole.common.api.OpsErrorCode;
-import ffdd.opsconsole.common.boundary.ApplicationService;
-import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
+import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -37,6 +38,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -50,6 +53,27 @@ public class OpsTeamService implements AuditReplayable {
             "minPayoutUsdt",
             "rankWindowDays",
             "hardwareQuotaPerRank");
+    /** updateConfig key→权限码(service 层二次校验);未列 UI keys(VRANK rewards/commission event/unilevel)留 controller 兜底。 */
+    private static final Map<String, String> CONFIG_KEY_PERMISSION = Map.ofEntries(
+            Map.entry("directRoyaltyPct", "network_f2_royalty_rate"),
+            Map.entry("networkRoyaltyPct", "network_f2_royalty_rate"),
+            Map.entry("binaryPairRatePct", "network_f2_royalty_rate"),
+            Map.entry("maxCombinedOutflowPct", "network_f2_royalty_rate"),
+            Map.entry("minPayoutUsdt", "network_f2_royalty_rate"),
+            Map.entry("rankWindowDays", "network_f2_write"),
+            Map.entry("hardwareQuotaPerRank", "network_f2_write"),
+            Map.entry("promo", "network_f2_policy_amplify"),
+            Map.entry("peer", "network_f2_policy_amplify"),
+            Map.entry("clampMin", "network_f2_policy_amplify"),
+            Map.entry("clampMax", "network_f2_policy_amplify"),
+            Map.entry("cool", "network_f2_write"),
+            Map.entry("min", "network_f2_write"),
+            Map.entry("depth", "network_f2_write"),
+            Map.entry("nexcap", "network_f2_write"),
+            Map.entry("backfill", "network_f2_write"),
+            Map.entry("binary-rate", "network_f3_match_rate"),
+            Map.entry("pool-ratio", "network_f4_pool_fund"),
+            Map.entry("binary-threshold", "network_f3_write"));
     private static final List<String> VRANK_LEVELS = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12");
     private static final List<VRankSeed> VRANK_SEEDS = List.of(
@@ -90,6 +114,7 @@ public class OpsTeamService implements AuditReplayable {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final TeamFulfillmentQueueRepository fulfillmentQueueRepository;
     private final TeamCommissionRepository commissionRepository;
+    private final AdminPermissionCache permissionCache;
     private final AuditObjectLockMapper lockMapper;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -368,6 +393,17 @@ public class OpsTeamService implements AuditReplayable {
             return guard;
         }
         String key = requireText(request.key(), "TEAM_CONFIG_KEY_REQUIRED");
+        // service 层二次校验(path variable 多态):按 key 精确权限码;UI keys 未列者留 controller 兜底
+        String requiredCode = CONFIG_KEY_PERMISSION.get(key);
+        if (requiredCode != null && !A2ReplayContext.isReplaying()) {
+            Long adminId = parseAdminIdFromContext();
+            if (adminId == null) {
+                return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+            }
+            if (!permissionCache.getPermissionCodes(adminId).contains(requiredCode)) {
+                return ApiResult.fail(403, "PERMISSION_DENIED");
+            }
+        }
         rejectSunsetKey(key);
         if (!ACTIVE_KEYS.contains(key)) {
             return updateUiConfig(idempotencyKey, request, key);
@@ -392,6 +428,18 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> response = overview().getData();
         response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", newValue));
         return ApiResult.ok(response);
+    }
+
+    private Long parseAdminIdFromContext() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || authentication.getPrincipal() == null) {
+            return null;
+        }
+        try {
+            return Long.valueOf(String.valueOf(authentication.getPrincipal()));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private ApiResult<Map<String, Object>> updateUiConfig(

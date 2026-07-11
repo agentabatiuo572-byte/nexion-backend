@@ -1,0 +1,1 @@
+{"cap": "999/day", "operator": "e2e_tester", "reason": "direct cap call must be blocked by lock"}

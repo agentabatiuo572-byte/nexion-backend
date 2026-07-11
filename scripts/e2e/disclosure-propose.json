@@ -1,0 +1,12 @@
+{
+  "action": "I4 disclosure jurisdiction publish (US)",
+  "obj": "disclosure_jurisdiction.US",
+  "operator": "e2e_tester",
+  "operatorRole": "super",
+  "type": "param",
+  "amplifies": false,
+  "reason": "e2e verify i4_disclosure_publish replay chain",
+  "sourceDomain": "I",
+  "command": {"domain": "I", "op": "i4_disclosure_publish", "params": {"version": "v2024.4", "jurisdiction": "US", "languageScope": "en+zh", "effectiveDate": "2026-07-10", "requiresReack": false, "zh": "US ack body zh {date}", "en": "US ack body en {date}"}},
+  "target": {"domain": "I", "type": "disclosure_jurisdiction", "id": "US"}
+}

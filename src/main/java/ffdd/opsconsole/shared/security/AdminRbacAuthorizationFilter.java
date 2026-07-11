@@ -39,61 +39,41 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             "/api/admin/auth/me",
             "/api/admin/auth/password/change",
             "/api/admin/options/*/*");
-    private static final Set<String> ADMIN_WRITE_AUTHORITIES = Set.of(
-            "PERM_SYSTEM_WRITE",
-            "PERM_AUDIT_EXPORT",
-            "PERM_TREASURY_WRITE",
-            "PERM_USER_WRITE",
-            "PERM_WITHDRAWAL_REVIEW",
-            "PERM_DEVICE_WRITE",
-            "PERM_DEVICE_RESTORE",
-            "PERM_TEAM_WRITE",
-            "PERM_MARKET_WRITE",
-            "PERM_GROWTH_WRITE",
-            "PERM_CONTENT_WRITE",
-            "PERM_SUPPORT_WRITE",
-            "PERM_EMERGENCY_WRITE",
-            "PERM_RISK_WRITE",
-            "PERM_BI_EXPORT");
-    private static final List<String> SUPPORT_OR_CONTENT_READ = List.of("PERM_SUPPORT_READ", "PERM_CONTENT_READ");
-    private static final List<String> SUPPORT_OR_CONTENT_WRITE = List.of("PERM_SUPPORT_WRITE", "PERM_CONTENT_WRITE");
+    // 经典 RBAC 域级前缀兜底：GET 需 <域>_*_read，非 GET 需 <域>_*（非 _read 结尾，含 write/high）。
+    // null 前缀 = 仅验认证。路径域→权限码前缀映射（treasury→finance / teams→network / market→finprod / support→service 为跨域）。
     private static final List<Rule> RULES = List.of(
-            rule("/api/admin/platform/audit/exports/**", "PERM_AUDIT_EXPORT", "PERM_AUDIT_EXPORT"),
-            rule("/api/admin/platform/audit/operations/**", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT"),
-            rule("/api/admin/platform/audit/mechanism-params/**", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT"),
-            rule("/api/admin/platform/audit/**", "PERM_AUDIT_READ", "PERM_AUDIT_EXPORT"),
-            rule("/api/admin/platform/events/**", "PERM_AUDIT_READ", "PERM_SYSTEM_WRITE"),
-            rule("/api/admin/platform/**", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE"),
-            rule("/api/admin/ops-dashboard/**", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE"),
-            rule("/api/admin/commands/**", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE"),
-            rule("/api/admin/media/**", null, "ANY_ADMIN_WRITE"),
-            rule("/api/admin/users/**", "PERM_USER_READ", "PERM_USER_WRITE"),
-            rule("/api/admin/finance/**", "PERM_WITHDRAWAL_READ", "PERM_WITHDRAWAL_REVIEW"),
-            rule("/api/admin/treasury/**", "PERM_TREASURY_READ", "PERM_TREASURY_WRITE"),
-            rule("/api/admin/devices/*/restore", "PERM_DEVICE_READ", "PERM_DEVICE_RESTORE"),
-            rule("/api/admin/devices/**", "PERM_DEVICE_READ", "PERM_DEVICE_WRITE"),
-            rule("/api/admin/teams/**", "PERM_TEAM_READ", "PERM_TEAM_WRITE"),
-            rule("/api/admin/market/**", "PERM_MARKET_READ", "PERM_MARKET_WRITE"),
-            rule("/api/admin/growth/**", "PERM_GROWTH_READ", "PERM_GROWTH_WRITE"),
-            ruleAny("/api/admin/content/tickets", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/tickets/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/conversations", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/conversations/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/knowledge", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/knowledge/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/session-templates", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/session-templates/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/support-agents", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/support-agents/**", SUPPORT_OR_CONTENT_READ, SUPPORT_OR_CONTENT_WRITE),
-            ruleAny("/api/admin/content/support-workbench", SUPPORT_OR_CONTENT_READ, List.of("PERM_CONTENT_WRITE")),
-            ruleAny("/api/admin/content/support-workbench/**", SUPPORT_OR_CONTENT_READ, List.of("PERM_CONTENT_WRITE")),
-            rule("/api/admin/content/**", "PERM_CONTENT_READ", "PERM_CONTENT_WRITE"),
-            rule("/api/admin/emergency-control/**", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE"),
-            rule("/api/admin/emergency/**", "PERM_EMERGENCY_READ", "PERM_EMERGENCY_WRITE"),
-            rule("/api/admin/risk/**", "PERM_RISK_READ", "PERM_RISK_WRITE"),
-            rule("/api/admin/bi/exports/**", "PERM_BI_EXPORT", "PERM_BI_EXPORT"),
-            rule("/api/admin/bi/reports/*/*", "PERM_BI_READ", "PERM_BI_EXPORT"),
-            rule("/api/admin/bi/**", "PERM_BI_READ", "PERM_BI_EXPORT"));
+            rule("/api/admin/platform/audit/**", "platform_"),
+            rule("/api/admin/platform/events/**", "platform_a4_"),
+            rule("/api/admin/platform/**", "platform_"),
+            rule("/api/admin/ops-dashboard/**", "overview_"),
+            rule("/api/admin/commands/**", "platform_"),
+            rule("/api/admin/media/**", null),
+            rule("/api/admin/users/**", "user_"),
+            rule("/api/admin/finance/**", "finance_"),
+            rule("/api/admin/treasury/b-domain", "overview_"),
+            rule("/api/admin/treasury/b-domain/**", "overview_"),
+            rule("/api/admin/treasury/**", "finance_"),
+            rule("/api/admin/devices/**", "device_"),
+            rule("/api/admin/teams/**", "network_"),
+            rule("/api/admin/market/**", "finprod_"),
+            rule("/api/admin/growth/**", "growth_"),
+            rule("/api/admin/content/tickets", "service_"),
+            rule("/api/admin/content/tickets/**", "service_"),
+            rule("/api/admin/content/conversations", "service_"),
+            rule("/api/admin/content/conversations/**", "service_"),
+            rule("/api/admin/content/knowledge", "service_"),
+            rule("/api/admin/content/knowledge/**", "service_"),
+            rule("/api/admin/content/session-templates", "service_"),
+            rule("/api/admin/content/session-templates/**", "service_"),
+            rule("/api/admin/content/support-agents", "service_"),
+            rule("/api/admin/content/support-agents/**", "service_"),
+            rule("/api/admin/content/support-workbench", "service_"),
+            rule("/api/admin/content/support-workbench/**", "service_"),
+            rule("/api/admin/content/**", "content_"),
+            rule("/api/admin/emergency-control/**", "emergency_"),
+            rule("/api/admin/emergency/**", "emergency_"),
+            rule("/api/admin/risk/**", "risk_"),
+            rule("/api/admin/bi/**", "bi_"));
 
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
     private final AuditLogService auditLogService;
@@ -179,12 +159,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         return RULES.stream()
                 .filter(rule -> pathMatcher.match(rule.pattern(), path))
                 .findFirst()
-                .map(rule -> {
-                    List<String> authorities = read ? rule.readAuthorities() : rule.writeAuthorities();
-                    return !authorities.isEmpty()
-                            ? RequiredAuthority.anyOf(authorities)
-                            : RequiredAuthority.authenticated();
-                })
+                .map(rule -> rule.domainPrefix() == null
+                        ? RequiredAuthority.authenticated()
+                        : (read ? RequiredAuthority.domainRead(rule.domainPrefix())
+                                : RequiredAuthority.domainWrite(rule.domainPrefix())))
                 .orElse(null);
     }
 
@@ -217,43 +195,36 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 .build());
     }
 
-    private static Rule rule(String pattern, String readAuthority, String writeAuthority) {
-        return ruleAny(
-                pattern,
-                StringUtils.hasText(readAuthority) ? List.of(readAuthority) : List.of(),
-                StringUtils.hasText(writeAuthority) ? List.of(writeAuthority) : List.of());
+    private static Rule rule(String pattern, String domainPrefix) {
+        return new Rule(pattern, domainPrefix);
     }
 
-    private static Rule ruleAny(String pattern, List<String> readAuthorities, List<String> writeAuthorities) {
-        return new Rule(pattern, List.copyOf(readAuthorities), List.copyOf(writeAuthorities));
+    private record Rule(String pattern, String domainPrefix) {
     }
 
-    private record Rule(String pattern, List<String> readAuthorities, List<String> writeAuthorities) {
-    }
+    private record RequiredAuthority(String domainPrefix, boolean read, boolean authenticatedOnly) {
+        static RequiredAuthority domainRead(String prefix) {
+            return new RequiredAuthority(prefix, true, false);
+        }
 
-    private record RequiredAuthority(List<String> authorities, boolean authenticatedOnly) {
-        static RequiredAuthority anyOf(List<String> authorities) {
-            return new RequiredAuthority(List.copyOf(authorities), false);
+        static RequiredAuthority domainWrite(String prefix) {
+            return new RequiredAuthority(prefix, false, false);
         }
 
         static RequiredAuthority authenticated() {
-            return new RequiredAuthority(List.of(), true);
+            return new RequiredAuthority(null, false, true);
         }
 
         String describe() {
-            return String.join("|", authorities);
+            return authenticatedOnly ? "AUTHENTICATED" : domainPrefix + (read ? "*_read" : "*_(write/high)");
         }
 
         boolean matches(Collection<String> actualAuthorities) {
-            if (authenticatedOnly) {
+            if (authenticatedOnly || domainPrefix == null) {
                 return true;
             }
-            return authorities.stream().anyMatch(authority -> {
-                if ("ANY_ADMIN_WRITE".equals(authority)) {
-                    return actualAuthorities.stream().anyMatch(ADMIN_WRITE_AUTHORITIES::contains);
-                }
-                return StringUtils.hasText(authority) && actualAuthorities.contains(authority);
-            });
+            return actualAuthorities.stream().anyMatch(authority -> authority.startsWith(domainPrefix)
+                    && (read ? authority.endsWith("_read") : !authority.endsWith("_read")));
         }
     }
 }

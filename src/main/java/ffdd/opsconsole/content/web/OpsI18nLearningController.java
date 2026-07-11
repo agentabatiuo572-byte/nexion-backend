@@ -14,6 +14,7 @@ import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,11 +31,15 @@ public class OpsI18nLearningController {
     private final OpsI18nLearningService i18nLearningService;
 
     @GetMapping("/overview")
+    // 双域合并总览（i18n 文案 + 教程中心），任一读权限即可
+    @PreAuthorize("hasAnyAuthority('content_i6_read','content_i7_read')")
     public ApiResult<I18nLearningOverview> overview() {
         return i18nLearningService.overview();
     }
 
     @PostMapping("/rescan")
+    // i18n 文案重扫
+    @PreAuthorize("hasAuthority('content_i6_write')")
     public ApiResult<I18nLearningOverview> rescan(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
@@ -42,6 +47,8 @@ public class OpsI18nLearningController {
     }
 
     @PatchMapping("/messages/{messageKey}/draft")
+    // i18n 词条多语种草稿
+    @PreAuthorize("hasAuthority('content_i6_write')")
     public ApiResult<I18nMessagePairView> saveLocalizedDraft(
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -50,6 +57,8 @@ public class OpsI18nLearningController {
     }
 
     @PostMapping("/messages/{messageKey}/publish")
+    // i18n 词条多语种发布
+    @PreAuthorize("hasAuthority('content_i6_write')")
     public ApiResult<I18nMessagePairView> publishLocalizedMessage(
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -58,6 +67,8 @@ public class OpsI18nLearningController {
     }
 
     @PostMapping("/messages/{messageKey}/marketing-experiment")
+    // i18n marketing 文案多版实验
+    @PreAuthorize("hasAuthority('content_i6_write')")
     public ApiResult<I18nMessagePairView> startMarketingExperiment(
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -66,6 +77,8 @@ public class OpsI18nLearningController {
     }
 
     @PostMapping("/integrity/{issueCode}/fix")
+    // i18n 完整性修复
+    @PreAuthorize("hasAuthority('content_i6_write')")
     public ApiResult<I18nIntegrityIssueView> fixIntegrity(
             @PathVariable String issueCode,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -74,6 +87,8 @@ public class OpsI18nLearningController {
     }
 
     @PostMapping("/courses/{courseId}")
+    // 教程中心：新建课程
+    @PreAuthorize("hasAuthority('content_i7_write')")
     public ApiResult<LearningCourseView> createCourse(
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -82,6 +97,8 @@ public class OpsI18nLearningController {
     }
 
     @PostMapping("/courses/{courseId}/publish")
+    // 教程中心：课程发布
+    @PreAuthorize("hasAuthority('content_i7_write')")
     public ApiResult<LearningCourseView> publishCourse(
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -90,6 +107,8 @@ public class OpsI18nLearningController {
     }
 
     @PostMapping("/courses/{courseId}/archive")
+    // 教程中心：课程下架
+    @PreAuthorize("hasAuthority('content_i7_write')")
     public ApiResult<LearningCourseView> archiveCourse(
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -98,6 +117,8 @@ public class OpsI18nLearningController {
     }
 
     @PatchMapping("/courses/{courseId}/reward")
+    // HIGH：课程奖励调整（amplifies，关联 B1 兑付覆盖率红线）
+    @PreAuthorize("hasAuthority('content_i7_course_reward_adjust')")
     public ApiResult<LearningCourseView> updateCourseReward(
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -106,6 +127,8 @@ public class OpsI18nLearningController {
     }
 
     @PatchMapping("/courses/featured")
+    // 教程中心：推荐课配置
+    @PreAuthorize("hasAuthority('content_i7_write')")
     public ApiResult<LearningCourseView> updateFeaturedCourse(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody LearningFeaturedUpdateRequest request) {

@@ -44,7 +44,7 @@ class OpsDomainRuntimeServiceTest {
         assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
             assertThat(api.resource()).isEqualTo("A4EventCenter");
             assertThat(api.path()).isEqualTo("/api/admin/platform/events");
-            assertThat(api.writePermission()).isEqualTo("PERM_SYSTEM_WRITE");
+            assertThat(api.writePermission()).isEqualTo("platform_a4_write");
         });
     }
 
@@ -56,7 +56,7 @@ class OpsDomainRuntimeServiceTest {
         assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
             assertThat(api.resource()).isEqualTo("SupportKnowledge");
             assertThat(api.path()).isEqualTo("/api/admin/content/knowledge/overview");
-            assertThat(api.writePermission()).isEqualTo("PERM_CONTENT_WRITE");
+            assertThat(api.writePermission()).isEqualTo("service_m4_write");
         });
         assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
             assertThat(api.resource()).isEqualTo("SupportSlaRule");

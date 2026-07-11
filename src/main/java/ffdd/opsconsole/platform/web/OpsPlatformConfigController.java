@@ -23,13 +23,13 @@ public class OpsPlatformConfigController {
     private final OpsPlatformConfigService configService;
 
     @GetMapping("/overview")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
+    @PreAuthorize("hasAuthority('platform_a3_read')")
     public ApiResult<PlatformConfigOverview> overview() {
         return configService.overview();
     }
 
     @PutMapping
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_WRITE')")
+    @PreAuthorize("hasAuthority('platform_a3_write')")
     public ApiResult<PlatformConfigResponse> update(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) PlatformConfigUpdateRequest request) {

@@ -9,6 +9,7 @@ import ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest;
 import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
 import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
 import java.util.Map;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,11 +27,13 @@ public class OpsKillSwitchController {
     private final OpsKillSwitchService killSwitchService;
 
     @GetMapping
+    @PreAuthorize("hasAuthority('emergency_j1_read')")
     public ApiResult<Map<String, Object>> matrix() {
         return killSwitchService.matrix();
     }
 
     @PutMapping("/{key}")
+    @PreAuthorize("hasAnyAuthority('emergency_j1_gate_kill','emergency_j1_gate_resume')")
     public ApiResult<Map<String, Object>> toggle(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -39,6 +42,7 @@ public class OpsKillSwitchController {
     }
 
     @PostMapping("/emergency-disable")
+    @PreAuthorize("hasAuthority('emergency_j1_batch_kill')")
     public ApiResult<Map<String, Object>> emergencyDisable(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody EmergencyDisableRequest request) {
@@ -46,6 +50,7 @@ public class OpsKillSwitchController {
     }
 
     @PatchMapping("/emergency-sla/{paramKey}")
+    @PreAuthorize("hasAuthority('emergency_j1_write')")
     public ApiResult<Map<String, Object>> updateEmergencySla(
             @PathVariable String paramKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -54,6 +59,7 @@ public class OpsKillSwitchController {
     }
 
     @PatchMapping("/auto-rules/{ruleId}")
+    @PreAuthorize("hasAuthority('emergency_j1_write')")
     public ApiResult<Map<String, Object>> updateAutoRule(
             @PathVariable String ruleId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

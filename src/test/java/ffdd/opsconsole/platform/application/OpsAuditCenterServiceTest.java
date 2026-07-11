@@ -6,6 +6,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -39,8 +40,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsAuditCenterServiceTest {
     private final InMemoryPlatformConfigRepository repository = new InMemoryPlatformConfigRepository();
@@ -49,6 +53,8 @@ class OpsAuditCenterServiceTest {
     private final AuditOperationHistoryMapper historyMapper = mock(AuditOperationHistoryMapper.class);
     private final AuditConfirmCategoryMapper confirmCategoryMapper = mock(AuditConfirmCategoryMapper.class);
     private final AuditReplayDispatcher replayDispatcher = mock(AuditReplayDispatcher.class);
+    private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
     private final OpsAuditCenterService service =
             new OpsAuditCenterService(
@@ -58,7 +64,7 @@ class OpsAuditCenterServiceTest {
                     ticketMapper,
                     historyMapper,
                     confirmCategoryMapper,
-                    mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
+                    lockMapper,
                     replayDispatcher,
                     objectMapper);
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
@@ -68,6 +74,7 @@ class OpsAuditCenterServiceTest {
 
     @BeforeEach
     void setUp() {
+        SecurityContextHolder.clearContext();
         repository.items.clear();
         ticketRows.clear();
         historyRows.clear();
@@ -142,6 +149,11 @@ class OpsAuditCenterServiceTest {
         doReturn(ApiResult.ok()).when(replayDispatcher).dispatch(any(), any());
     }
 
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
+
     @Test
     void overviewDoesNotCreateA2BusinessRowsWhenDatabaseIsEmpty() {
         ApiResult<AuditCenterOverview> result = service.overview();
@@ -177,7 +189,7 @@ class OpsAuditCenterServiceTest {
     @Test
     void approvePersistsTerminalStatusAndWritesA2Audit() {
         putTicket("WO-8852", "提现放行(大额操作确认)", "pending", "fund", true, false);
-        AuditOperationDecisionRequest request = new AuditOperationDecisionRequest("verified by treasury", "superadmin");
+        AuditOperationDecisionRequest request = new AuditOperationDecisionRequest("verified by treasury", "treasury.approver");
 
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve("idem-a2-1", "WO-8852", request);
 
@@ -193,6 +205,83 @@ class OpsAuditCenterServiceTest {
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("operationId", "WO-8852")
                 .containsEntry("idempotencyKey", "idem-a2-1");
+    }
+
+    @Test
+    void authenticatedProposalCreatorOverridesSpoofedBodyOperator() {
+        authenticate("41", "alice.admin");
+        AuditOperationProposalRequest request = proposal("mallory");
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.createProposal("idem-auth-proposal", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(ticketRows.get(result.getData().id()).getOperatorName()).isEqualTo("alice.admin");
+    }
+
+    @Test
+    void authenticatedAdminWithoutUsernameUsesStableAdminIdActor() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("41", null, List.of());
+        authentication.setDetails(Map.of("subjectType", "ADMIN"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result =
+                service.createProposal("idem-admin-id", proposal("mallory"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(ticketRows.get(result.getData().id()).getOperatorName()).isEqualTo("admin:41");
+    }
+
+    @Test
+    void twoPersonProposerCannotApproveOwnTicketEvenWithSpoofedOperator() {
+        putTicket("WO-SELF", "A6 role grants", "pending", "HIGH", true, false);
+        ticketRows.get("WO-SELF").setOperatorName("alice.admin");
+        ticketRows.get("WO-SELF").setRoleGate("TWO_PERSON");
+        authenticate("41", "alice.admin");
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve(
+                "idem-self", "WO-SELF", new AuditOperationDecisionRequest("looks good", "bob.admin"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("A2_TWO_PERSON_SELF_APPROVAL_FORBIDDEN");
+        assertThat(ticketRows.get("WO-SELF").getStatus()).isEqualTo("pending");
+        verify(replayDispatcher, never()).dispatch(any(), any());
+        verify(lockMapper, never()).selectActiveByTicketId("WO-SELF");
+        verify(ticketMapper, never()).updateById(ticketRows.get("WO-SELF"));
+    }
+
+    @Test
+    void proposerMayRejectButAuditUsesAuthenticatedActor() {
+        putTicket("WO-REJECT", "A6 role grants", "pending", "HIGH", true, false);
+        ticketRows.get("WO-REJECT").setOperatorName("alice.admin");
+        ticketRows.get("WO-REJECT").setRoleGate("TWO_PERSON");
+        authenticate("41", "alice.admin");
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.reject(
+                "idem-reject", "WO-REJECT", new AuditOperationDecisionRequest("withdraw unsafe change", "mallory"));
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(audit.capture());
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("alice.admin");
+        verify(replayDispatcher, never()).dispatch(any(), any());
+    }
+
+    @Test
+    void differentAuthenticatedAdminMayApproveAndIsTheOnlyReplayActor() {
+        putTicket("WO-OTHER", "A6 role grants", "pending", "HIGH", true, false);
+        ticketRows.get("WO-OTHER").setOperatorName("alice.admin");
+        ticketRows.get("WO-OTHER").setRoleGate("TWO_PERSON");
+        authenticate("52", "bob.admin");
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve(
+                "idem-other", "WO-OTHER", new AuditOperationDecisionRequest("independent review", "alice.admin"));
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<ffdd.opsconsole.platform.domain.AuditReplayContext> context =
+                ArgumentCaptor.forClass(ffdd.opsconsole.platform.domain.AuditReplayContext.class);
+        verify(replayDispatcher).dispatch(any(), context.capture());
+        assertThat(context.getValue().operator()).isEqualTo("bob.admin");
     }
 
     @Test
@@ -340,6 +429,20 @@ class OpsAuditCenterServiceTest {
             throw new RuntimeException(ex);
         }
         ticketRows.put(operationId, ticket);
+    }
+
+    private AuditOperationProposalRequest proposal(String operator) {
+        return new AuditOperationProposalRequest(
+                "A6 role grants", "role:9", "read", "write", operator, "ADMIN", "param",
+                true, false, "TWO_PERSON", "grant review", "A",
+                new AuditReplayCommand("A", "a6_role_grants_update", Map.of()), null, null);
+    }
+
+    private void authenticate(String adminId, String username) {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken(adminId, null, List.of());
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "username", username));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 
     private static final Set<String> TERMINAL_STATUSES = Set.of("approved", "rejected", "withdrawn", "expired");

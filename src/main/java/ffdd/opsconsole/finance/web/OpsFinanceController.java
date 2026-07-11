@@ -32,13 +32,13 @@ public class OpsFinanceController {
     private final OpsFinanceService financeService;
 
     @GetMapping("/topup/overview")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_READ')")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
     public ApiResult<Map<String, Object>> topupOverview() {
         return financeService.topupOverview();
     }
 
     @GetMapping("/topup/flows")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_READ')")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
     public ApiResult<PageResult<DepositFlowView>> topupFlows(
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long userId,
@@ -49,7 +49,7 @@ public class OpsFinanceController {
     }
 
     @PatchMapping("/topup/channels/{channelCode}/enabled")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_write')")
     public ApiResult<Map<String, Object>> updateTopupChannelEnabled(
             @PathVariable String channelCode,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -58,7 +58,7 @@ public class OpsFinanceController {
     }
 
     @PatchMapping("/topup/channels/{channelCode}/fee")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_write')")
     public ApiResult<Map<String, Object>> updateTopupChannelFee(
             @PathVariable String channelCode,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -67,7 +67,7 @@ public class OpsFinanceController {
     }
 
     @PatchMapping("/topup/channels/{channelCode}/min-amount")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_write')")
     public ApiResult<Map<String, Object>> updateTopupChannelMinAmount(
             @PathVariable String channelCode,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -76,7 +76,7 @@ public class OpsFinanceController {
     }
 
     @PatchMapping("/topup/psp/primary")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_write')")
     public ApiResult<Map<String, Object>> switchTopupPsp(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TopupCommandRequest request) {
@@ -84,7 +84,7 @@ public class OpsFinanceController {
     }
 
     @PatchMapping("/topup/card-risk/{key}")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_write')")
     public ApiResult<Map<String, Object>> updateTopupCardRiskParam(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -93,7 +93,7 @@ public class OpsFinanceController {
     }
 
     @PostMapping("/topup/reconciliation/{channelCode}/writeoff")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_write')")
     public ApiResult<Map<String, Object>> writeoffTopupReconciliation(
             @PathVariable String channelCode,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -102,7 +102,7 @@ public class OpsFinanceController {
     }
 
     @PostMapping("/topup/bin-locks")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_bin_manual_lock')")
     public ApiResult<Map<String, Object>> createTopupBinLock(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TopupCommandRequest request) {
@@ -110,7 +110,7 @@ public class OpsFinanceController {
     }
 
     @PatchMapping("/topup/bin-locks/{segment}")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAnyAuthority('finance_d1_bin_lock','finance_d1_bin_unlock')")
     public ApiResult<Map<String, Object>> setTopupBinLock(
             @PathVariable String segment,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -119,7 +119,7 @@ public class OpsFinanceController {
     }
 
     @PostMapping("/topup/chargebacks/{caseNo}/refund")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAuthority('finance_d1_chargeback_refund')")
     public ApiResult<Map<String, Object>> refundTopupChargeback(
             @PathVariable String caseNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -128,13 +128,13 @@ public class OpsFinanceController {
     }
 
     @GetMapping("/withdrawal-params")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_READ')")
+    @PreAuthorize("hasAuthority('finance_d5_read')")
     public ApiResult<Map<String, Object>> withdrawalParams() {
         return financeService.withdrawalParams();
     }
 
     @PatchMapping("/withdrawal-params")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAnyAuthority('finance_d5_daily_limit_write','finance_d5_balance_max_write','finance_d5_fee_write')")
     public ApiResult<Map<String, Object>> updateWithdrawalParam(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) WithdrawalParamUpdateRequest request) {
@@ -142,7 +142,7 @@ public class OpsFinanceController {
     }
 
     @GetMapping("/withdrawals")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_READ')")
+    @PreAuthorize("hasAuthority('finance_d2_read')")
     public ApiResult<PageResult<WithdrawalOrderView>> withdrawals(
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long userId,
@@ -156,13 +156,13 @@ public class OpsFinanceController {
     }
 
     @GetMapping("/withdrawals/{withdrawalNo}")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_READ')")
+    @PreAuthorize("hasAuthority('finance_d2_read')")
     public ApiResult<WithdrawalOrderView> withdrawalDetail(@PathVariable String withdrawalNo) {
         return financeService.withdrawalDetail(withdrawalNo);
     }
 
     @PostMapping("/withdrawals/{withdrawalNo}/review")
-    @PreAuthorize("hasAuthority('PERM_WITHDRAWAL_REVIEW')")
+    @PreAuthorize("hasAnyAuthority('finance_d2_withdrawal_approve','finance_d2_withdrawal_freeze','finance_d2_withdrawal_unfreeze','finance_d2_withdrawal_reject')")
     public ApiResult<WithdrawalOrderView> reviewWithdrawal(
             @PathVariable String withdrawalNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

@@ -40,10 +40,11 @@ class OpsPlatformConfigServiceTest {
         ApiResult<PlatformConfigOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().featureFlags()).isEmpty();
-        assertThat(result.getData().killSwitches()).isEmpty();
-        assertThat(result.getData().systemHealth()).extracting(row -> row.get("name"))
-                .doesNotContain("事件管道(采集 -> 事件库)", "后台接口可用性(24h)", "NTP 同步");
+        // overview 用固定 SEEDS 视图(前端 A3 展示 5 flag / 6 gate / 5 health),不受 config 表数据影响
+        assertThat(result.getData().featureFlags()).hasSize(5);
+        assertThat(result.getData().killSwitches()).hasSize(6);
+        assertThat(result.getData().systemHealth()).hasSize(5);
+        // read-only: overview 不写 seed keys 到 config 表
         assertThat(repository.items)
                 .doesNotContainKeys(
                         "feature.ab.newWithdrawFlow",
@@ -63,12 +64,14 @@ class OpsPlatformConfigServiceTest {
         ApiResult<PlatformConfigOverview> result = realOnlyService.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().featureFlags()).isEmpty();
-        assertThat(result.getData().killSwitches()).isEmpty();
-        assertThat(result.getData().systemHealth()).extracting(row -> row.get("name")).containsExactly("JVM 堆内存");
+        // overview 用固定 SEEDS 视图,OpsReadTimeSeedPolicy 不影响 overview(disabled 仍返 SEEDS 视图,前端 A3 展示需要)
+        assertThat(result.getData().featureFlags()).hasSize(5);
+        assertThat(result.getData().killSwitches()).hasSize(6);
+        assertThat(result.getData().systemHealth()).hasSize(5);
         assertThat(result.getData().stats())
-                .containsEntry("flagCount", 0)
-                .containsEntry("killGates", 0);
+                .containsEntry("flagCount", 5)
+                .containsEntry("killGates", 6);
+        // read-only: overview 不写 seed keys 到 config 表
         assertThat(repository.items).doesNotContainKeys(
                 "feature.ab.newWithdrawFlow",
                 "killswitch.withdraw",

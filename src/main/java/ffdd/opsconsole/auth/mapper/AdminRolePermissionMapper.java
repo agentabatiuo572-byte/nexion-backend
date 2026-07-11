@@ -1,6 +1,7 @@
 package ffdd.opsconsole.auth.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.auth.dto.PermissionOptionRow;
 import ffdd.opsconsole.auth.infrastructure.AdminRolePermissionEntity;
 import java.util.Collection;
 import java.util.List;
@@ -10,6 +11,28 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissionEntity> {
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_permission
+             WHERE status = 1
+               AND is_deleted = 0
+               AND resource_type = 'API'
+               AND permission_code NOT LIKE 'PERM\\_%'
+            """)
+    long countActiveClassicPermissions();
+
+    @Select("""
+            SELECT COUNT(DISTINCT p.id)
+              FROM nx_admin_role r
+              JOIN nx_admin_role_permission rp ON rp.role_id = r.id AND rp.is_deleted = 0
+              JOIN nx_admin_permission p ON p.id = rp.permission_id
+               AND p.status = 1 AND p.is_deleted = 0 AND p.resource_type = 'API'
+             WHERE r.role_code = 'SUPER_ADMIN'
+               AND r.status = 1 AND r.is_deleted = 0
+               AND p.permission_code NOT LIKE 'PERM\\_%'
+            """)
+    long countActiveSuperAdminClassicPermissions();
 
     @Select("""
             SELECT DISTINCT p.permission_code
@@ -30,6 +53,14 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
               AND rr.is_deleted = 0
             """)
     List<String> selectActivePermissionCodes(Long adminId);
+
+    @Select("""
+            SELECT permission_code AS permissionCode, permission_name AS permissionName
+            FROM nx_admin_permission
+            WHERE status = 1 AND is_deleted = 0 AND resource_type = 'API'
+            ORDER BY permission_code
+            """)
+    List<PermissionOptionRow> selectAllPermissionOptions();
 
     @Insert("""
             INSERT INTO nx_admin_role (
@@ -236,4 +267,73 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             """)
     int disableRolePermissionsExcept(@Param("roleCode") String roleCode,
                                      @Param("allowedPermissionCodes") Collection<String> allowedPermissionCodes);
+
+    @Select("""
+            SELECT DISTINCT p.permission_code
+              FROM nx_admin_role_permission rp
+              JOIN nx_admin_permission p
+                ON p.id = rp.permission_id
+               AND p.status = 1
+               AND p.is_deleted = 0
+               AND p.resource_type = 'API'
+             WHERE rp.role_id = #{roleId}
+               AND rp.is_deleted = 0
+            """)
+    List<String> selectActivePermissionCodesByRole(@Param("roleId") Long roleId);
+
+    @Update("""
+            <script>
+            UPDATE nx_admin_role_permission rp
+              JOIN nx_admin_role r ON r.id = rp.role_id AND r.role_code = #{roleCode}
+              JOIN nx_admin_permission p ON p.id = rp.permission_id
+               SET rp.is_deleted = 0, rp.updated_at = NOW()
+             WHERE rp.is_deleted = 1
+               AND p.permission_code IN
+               <foreach collection="permissionCodes" item="code" open="(" separator="," close=")">
+                 #{code}
+               </foreach>
+            </script>
+            """)
+    int restoreRolePermissions(@Param("roleCode") String roleCode,
+                               @Param("permissionCodes") Collection<String> permissionCodes);
+
+    /** 批量补插缺失的角色-权限绑定（A6 保存权限避免循环单条）。调用方须保证 permissionCodes 非空。 */
+    @Insert("""
+            <script>
+            INSERT INTO nx_admin_role_permission (role_id, permission_id)
+            SELECT r.id, p.id
+              FROM nx_admin_role r
+              JOIN nx_admin_permission p
+                ON p.is_deleted = 0
+               AND p.status = 1
+               AND p.resource_type = 'API'
+               AND p.permission_code IN
+               <foreach collection="permissionCodes" item="code" open="(" separator="," close=")">
+                 #{code}
+               </foreach>
+             WHERE r.role_code = #{roleCode}
+               AND r.status = 1
+               AND r.is_deleted = 0
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM nx_admin_role_permission rp
+                    WHERE rp.role_id = r.id
+                      AND rp.permission_id = p.id
+               )
+            </script>
+            """)
+    int insertMissingRolePermissions(@Param("roleCode") String roleCode,
+                                     @Param("permissionCodes") Collection<String> permissionCodes);
+
+    /** 删除角色时级联软删该角色的所有权限绑定。 */
+    @Update("""
+            UPDATE nx_admin_role_permission rp
+              JOIN nx_admin_role r
+                ON r.id = rp.role_id
+               AND r.role_code = #{roleCode}
+               SET rp.is_deleted = 1,
+                   rp.updated_at = NOW()
+             WHERE rp.is_deleted = 0
+            """)
+    int disableAllRolePermissions(@Param("roleCode") String roleCode);
 }

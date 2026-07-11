@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.application.OpsAuditCenterService;
@@ -39,7 +40,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/audit")
-@PreAuthorize("hasAuthority('PERM_AUDIT_READ')")
+@PreAuthorize("hasAuthority('platform_a2_read')")
 @RequiredArgsConstructor
 public class OpsAuditController {
     private final AuditLogService auditLogService;
@@ -64,7 +65,7 @@ public class OpsAuditController {
     }
 
     @PostMapping("/exports")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('platform_a2_write')")
     public ResponseEntity<?> export(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditExportRequest request) {
@@ -175,33 +176,51 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations/{operationId}/approve")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('platform_a2_operation_approve')")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> approveOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,
             @RequestBody(required = false) AuditOperationDecisionRequest request) {
-        return auditCenterService.approve(idempotencyKey, operationId, request);
+        return auditCenterService.approve(idempotencyKey, operationId, authenticated(request));
     }
 
     @PostMapping("/operations")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('platform_a2_write')")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> createOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditOperationProposalRequest request) {
-        return auditCenterService.createProposal(idempotencyKey, request);
+        return auditCenterService.createProposal(idempotencyKey, authenticated(request));
     }
 
     @PostMapping("/operations/{operationId}/reject")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('platform_a2_operation_approve')")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> rejectOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,
             @RequestBody(required = false) AuditOperationDecisionRequest request) {
-        return auditCenterService.reject(idempotencyKey, operationId, request);
+        return auditCenterService.reject(idempotencyKey, operationId, authenticated(request));
+    }
+
+    private AuditOperationDecisionRequest authenticated(AuditOperationDecisionRequest request) {
+        if (request == null) {
+            return null;
+        }
+        return new AuditOperationDecisionRequest(request.reason(), AdminActorResolver.resolve(request.operator()));
+    }
+
+    private AuditOperationProposalRequest authenticated(AuditOperationProposalRequest request) {
+        if (request == null) {
+            return null;
+        }
+        return new AuditOperationProposalRequest(
+                request.action(), request.obj(), request.beforeValue(), request.afterValue(),
+                AdminActorResolver.resolve(request.operator()), request.operatorRole(), request.type(),
+                request.amplifies(), request.sos(), request.roleGate(), request.reason(), request.sourceDomain(),
+                request.command(), request.target(), request.targets());
     }
 
     @PostMapping("/mechanism-params/{paramKey}")
-    @PreAuthorize("hasAuthority('PERM_AUDIT_EXPORT')")
+    @PreAuthorize("hasAuthority('platform_a2_write')")
     public ApiResult<AuditCenterOverview.AuditMechanismParam> updateMechanismParam(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,

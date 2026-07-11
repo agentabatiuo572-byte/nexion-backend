@@ -63,7 +63,7 @@ class AdminRbacAuthorizationFilterTest {
     @Test
     void permitsDomainReadWhenReadAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("PERM_USER_READ");
+        authenticate("user_c1_read");
 
         filter.doFilter(request("GET", "/api/admin/users/profiles"), new MockHttpServletResponse(), mark(invoked));
 
@@ -71,10 +71,37 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void permitsOverviewRoleOnDashboardAndBDomainTreasuryRoutes() throws Exception {
+        AtomicBoolean dashboardInvoked = new AtomicBoolean(false);
+        AtomicBoolean treasuryInvoked = new AtomicBoolean(false);
+        authenticate("overview_b1_read");
+
+        filter.doFilter(request("GET", "/api/admin/ops-dashboard/summary"),
+                new MockHttpServletResponse(), mark(dashboardInvoked));
+        filter.doFilter(request("GET", "/api/admin/treasury/b-domain"),
+                new MockHttpServletResponse(), mark(treasuryInvoked));
+
+        assertThat(dashboardInvoked).isTrue();
+        assertThat(treasuryInvoked).isTrue();
+    }
+
+    @Test
+    void overviewPermissionDoesNotOpenFinanceTreasuryRoutes() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        authenticate("overview_b1_read");
+
+        filter.doFilter(request("GET", "/api/admin/treasury/dual-ledger"), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
     void rejectsDomainWriteWhenOnlyReadAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authenticate("PERM_USER_READ");
+        authenticate("user_c1_read");
 
         filter.doFilter(request("POST", "/api/admin/users/profiles"), response, mark(invoked));
 
@@ -92,7 +119,7 @@ class AdminRbacAuthorizationFilterTest {
     void rejectsPlatformEventMutationWhenOnlyAuditExportAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authenticate("PERM_AUDIT_READ", "PERM_AUDIT_EXPORT");
+        authenticate("platform_a2_read", "platform_a2_operation_approve");
 
         filter.doFilter(request("POST", "/api/admin/platform/events/domain-extension-batches"), response, mark(invoked));
 
@@ -104,7 +131,7 @@ class AdminRbacAuthorizationFilterTest {
     @Test
     void permitsPlatformEventMutationWhenSystemWriteAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("PERM_AUDIT_READ", "PERM_SYSTEM_WRITE");
+        authenticate("platform_a4_write");
 
         filter.doFilter(
                 request("POST", "/api/admin/platform/events/domain-extension-batches"),
@@ -118,7 +145,7 @@ class AdminRbacAuthorizationFilterTest {
     void rejectsA1RoleMutationWithLegacySeatPermissionOnly() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authenticate("PERM_SYSTEM_READ", "PERM_SUPPORT_SEAT_WRITE");
+        authenticate("platform_a1_read", "PERM_SUPPORT_SEAT_WRITE");
 
         filter.doFilter(
                 request("PATCH", "/api/admin/platform/accounts/6/role"),
@@ -132,7 +159,7 @@ class AdminRbacAuthorizationFilterTest {
     @Test
     void permitsA1RoleMutationWithSystemWriteAuthority() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE");
+        authenticate("platform_a1_read", "platform_a1_account_role_change");
 
         filter.doFilter(
                 request("PATCH", "/api/admin/platform/accounts/6/role"),
@@ -146,7 +173,7 @@ class AdminRbacAuthorizationFilterTest {
     void rejectsBusinessApisWhenAdminMustChangePassword() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authenticateAs("4", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE");
+        authenticateAs("4", "platform_a1_read", "platform_a1_write");
         AdminAccountStateEntity state = new AdminAccountStateEntity();
         state.setAdminId(4L);
         state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
@@ -166,7 +193,7 @@ class AdminRbacAuthorizationFilterTest {
     void rejectsBusinessApisForLegacyCredentialDeliveryStates() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authenticateAs("4", "PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE");
+        authenticateAs("4", "platform_a1_read", "platform_a1_write");
         AdminAccountStateEntity state = new AdminAccountStateEntity();
         state.setAdminId(4L);
         state.setCredentialDeliveryStatus("MAIL_DISPATCHED");
@@ -183,7 +210,7 @@ class AdminRbacAuthorizationFilterTest {
     void permitsPasswordChangeEndpointsWhenAdminMustChangePassword() throws Exception {
         AtomicBoolean meInvoked = new AtomicBoolean(false);
         AtomicBoolean changeInvoked = new AtomicBoolean(false);
-        authenticateAs("4", "PERM_SYSTEM_READ");
+        authenticateAs("4", "platform_a1_read");
         AdminAccountStateEntity state = new AdminAccountStateEntity();
         state.setAdminId(4L);
         state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
@@ -200,7 +227,7 @@ class AdminRbacAuthorizationFilterTest {
     void rejectsSupportSeatRoleMutationWithSystemReadOnly() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authenticate("PERM_SYSTEM_READ");
+        authenticate("platform_a1_read");
 
         filter.doFilter(request("PATCH", "/api/admin/platform/accounts/6/role"), response, mark(invoked));
 
@@ -212,7 +239,7 @@ class AdminRbacAuthorizationFilterTest {
     @Test
     void permitsEmergencyControlReadWhenEmergencyReadAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("PERM_EMERGENCY_READ");
+        authenticate("emergency_j2_read");
 
         filter.doFilter(
                 request("GET", "/api/admin/emergency-control/geo-block"),
@@ -225,7 +252,7 @@ class AdminRbacAuthorizationFilterTest {
     @Test
     void permitsEmergencyControlWriteWhenEmergencyWriteAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("PERM_EMERGENCY_WRITE");
+        authenticate("emergency_j2_write");
 
         filter.doFilter(
                 request("POST", "/api/admin/emergency-control/geo-block/emergency-blocks"),
@@ -251,7 +278,7 @@ class AdminRbacAuthorizationFilterTest {
     @Test
     void permitsMediaWriteWhenAnyAdminWriteAuthorityIsPresent() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("PERM_CONTENT_WRITE");
+        authenticate("content_i1_write");
 
         filter.doFilter(request("POST", "/api/admin/media/uploads"), new MockHttpServletResponse(), mark(invoked));
 
@@ -262,7 +289,7 @@ class AdminRbacAuthorizationFilterTest {
     void permitsSupportReadForSupportCenterApis() throws Exception {
         AtomicBoolean ticketsInvoked = new AtomicBoolean(false);
         AtomicBoolean agentsInvoked = new AtomicBoolean(false);
-        authenticate("PERM_SUPPORT_READ");
+        authenticate("service_m2_read", "service_m1_read");
 
         filter.doFilter(request("GET", "/api/admin/content/tickets"), new MockHttpServletResponse(), mark(ticketsInvoked));
         filter.doFilter(request("GET", "/api/admin/content/support-agents/page"), new MockHttpServletResponse(), mark(agentsInvoked));
@@ -274,7 +301,7 @@ class AdminRbacAuthorizationFilterTest {
     @Test
     void permitsSupportWriteForSupportCenterApis() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("PERM_SUPPORT_WRITE");
+        authenticate("service_m1_write");
 
         filter.doFilter(
                 request("PATCH", "/api/admin/content/support-agents/6/seat-assignment"),
@@ -290,7 +317,7 @@ class AdminRbacAuthorizationFilterTest {
         AtomicBoolean copyAbInvoked = new AtomicBoolean(false);
         MockHttpServletResponse novaResponse = new MockHttpServletResponse();
         MockHttpServletResponse copyAbResponse = new MockHttpServletResponse();
-        authenticate("PERM_SUPPORT_READ");
+        authenticate("service_m1_read");
 
         filter.doFilter(request("GET", "/api/admin/content/nova/overview"), novaResponse, mark(novaInvoked));
         filter.doFilter(request("GET", "/api/admin/content/copy-ab/overview"), copyAbResponse, mark(copyAbInvoked));
@@ -307,7 +334,7 @@ class AdminRbacAuthorizationFilterTest {
     void permitsSupportReadForWorkbenchLookupApis() throws Exception {
         AtomicBoolean usersInvoked = new AtomicBoolean(false);
         AtomicBoolean skusInvoked = new AtomicBoolean(false);
-        authenticate("PERM_SUPPORT_READ");
+        authenticate("service_m1_read");
 
         filter.doFilter(request("GET", "/api/admin/content/support-workbench/users"), new MockHttpServletResponse(), mark(usersInvoked));
         filter.doFilter(
@@ -335,7 +362,7 @@ class AdminRbacAuthorizationFilterTest {
         MockHttpServletResponse reviewReadResponse = new MockHttpServletResponse();
         MockHttpServletResponse platformResponse = new MockHttpServletResponse();
         MockHttpServletResponse treasuryResponse = new MockHttpServletResponse();
-        authenticate("PERM_SUPPORT_READ");
+        authenticate("service_m1_read");
 
         filter.doFilter(request("GET", "/api/admin/users/profiles"), userProfilesResponse, mark(userProfilesInvoked));
         filter.doFilter(request("GET", "/api/admin/users/profiles/6/360"), user360Response, mark(user360Invoked));
@@ -365,7 +392,7 @@ class AdminRbacAuthorizationFilterTest {
     void rejectsAdminPathWithoutRbacRule() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authenticate("PERM_SYSTEM_READ");
+        authenticate("platform_a1_read");
 
         filter.doFilter(request("GET", "/api/admin/unmapped/resource"), response, mark(invoked));
 

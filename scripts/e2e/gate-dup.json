@@ -1,0 +1,9 @@
+{
+  "action": "dup proposal",
+  "obj": "x",
+  "operator": "e2e_tester",
+  "type": "param",
+  "reason": "dup test duplicate enqueue same target",
+  "command": {"domain": "I", "op": "i4_gate_adjust", "params": {"scope": "withdraw"}},
+  "target": {"domain": "I", "type": "disclosure_gate", "id": "restricted-actions"}
+}

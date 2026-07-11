@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -75,6 +76,7 @@ class OpsAdminAccountServiceTest {
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
+    private final OpsPlatformRoleService platformRoleService = mock(OpsPlatformRoleService.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final List<AdminEntity> admins = new ArrayList<>();
@@ -86,7 +88,7 @@ class OpsAdminAccountServiceTest {
     private final OpsAdminAccountService service =
             new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
-                    adminSessionRegistry, permissionCache, auditCenterService, lockMapper);
+                    adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService);
 
     @BeforeEach
     void setUp() {
@@ -616,7 +618,7 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void updateRbacRejectsAuditWriteAndProtectsOperatorGovernanceSuperGrant() {
+    void legacyA1RbacGrantMatrixIsRejectedBecauseA6IsAuthoritative() {
         AdminRbacGrantUpdateRequest auditWriteRequest = new AdminRbacGrantUpdateRequest(
                 List.of("C", "C", "-", "-", "-", "-", "M", "M"),
                 "bad audit grant",
@@ -625,8 +627,8 @@ class OpsAdminAccountServiceTest {
         ApiResult<AdminAccountOverview.RbacAction> auditResult =
                 service.updateRbacGrants("idem-rbac-1", "balance_adjust", auditWriteRequest);
 
-        assertThat(auditResult.getCode()).isEqualTo(422);
-        assertThat(auditResult.getMessage()).isEqualTo("AUDIT_ROLE_WRITE_FORBIDDEN");
+        assertThat(auditResult.getCode()).isEqualTo(409);
+        assertThat(auditResult.getMessage()).isEqualTo("RBAC_AUTHORITY_MOVED_TO_A6");
 
         AdminRbacGrantUpdateRequest superRemovedRequest = new AdminRbacGrantUpdateRequest(
                 List.of("-", "-", "-", "-", "-", "-", "-", "R"),
@@ -636,12 +638,12 @@ class OpsAdminAccountServiceTest {
         ApiResult<AdminAccountOverview.RbacAction> superResult =
                 service.updateRbacGrants("idem-rbac-2", "operator_governance", superRemovedRequest);
 
-        assertThat(superResult.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
-        assertThat(superResult.getMessage()).isEqualTo("OPERATOR_GOVERNANCE_SUPER_GRANT_REQUIRED");
+        assertThat(superResult.getCode()).isEqualTo(409);
+        assertThat(superResult.getMessage()).isEqualTo("RBAC_AUTHORITY_MOVED_TO_A6");
     }
 
     @Test
-    void updateRbacGrantsWritesBusinessGrantTableNotNxConfigItem() {
+    void legacyA1RbacGrantEndpointDoesNotWriteAnyGrantTable() {
         AdminRbacGrantUpdateRequest request = new AdminRbacGrantUpdateRequest(
                 List.of("C", "R", "-", "M", "-", "-", "R", "R"),
                 "tighten risk grants",
@@ -650,9 +652,8 @@ class OpsAdminAccountServiceTest {
         ApiResult<AdminAccountOverview.RbacAction> result =
                 service.updateRbacGrants("idem-rbac-write", "balance_adjust", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(rbacGrantRows.get("balance_adjust").get("risk").getGrantValue()).isEqualTo("M");
-        assertThat(rbacGrantRows.get("balance_adjust").get("config").getGrantValue()).isEqualTo("R");
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("RBAC_AUTHORITY_MOVED_TO_A6");
         assertThat(repository.items).doesNotContainKey("a1.rbac.risk.balance_adjust");
         assertThat(repository.items).doesNotContainKey("a1.rbac.config.balance_adjust");
     }
@@ -768,19 +769,15 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void registerRbacActionDefaultsToNoWriteAndAuditReadOnly() {
+    void legacyA1ActionRegistrationIsRejectedBecauseA8DictionaryIsAuthoritative() {
         AdminRbacActionCreateRequest request =
                 new AdminRbacActionCreateRequest("批量补发收益(E3)", "增长/内容", "new sensitive action", "superadmin");
 
         ApiResult<AdminAccountOverview.RbacAction> result = service.registerRbacAction("idem-rbac-create", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().id()).isEqualTo("e3");
-        assertThat(result.getData().grants()).containsExactly("-", "-", "-", "-", "-", "-", "-", "R");
-        assertThat(rbacActionRows).containsKey("e3");
-        assertThat(rbacGrantRows.get("e3")).hasSize(8);
-        assertThat(repository.items).doesNotContainKey("a1.rbac.action.e3");
-        verify(auditLogService).record(any(AuditLogWriteRequest.class));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("RBAC_AUTHORITY_MOVED_TO_A6");
+        assertThat(rbacActionRows).doesNotContainKey("e3");
     }
 
     @Test
@@ -798,6 +795,22 @@ class OpsAdminAccountServiceTest {
                 .findFirst()
                 .orElseThrow();
         assertThat(target.getStatus()).isZero();
+    }
+
+    @Test
+    void replayA6RoleGrantProposalDelegatesToAuthoritativeRoleService() {
+        AuditReplayCommand cmd = new AuditReplayCommand("A", "a6_role_grants_update", Map.of(
+                "roleId", 9L,
+                "permissionCodes", List.of("user_c1_read"),
+                "menuIds", List.of(3L)));
+        AuditReplayContext ctx = new AuditReplayContext("approver", "approved role grant", "idem-a6-replay");
+        when(platformRoleService.updateRoleGrants(eq(9L), eq("idem-a6-replay"), any()))
+                .thenReturn(ApiResult.ok(null));
+
+        ApiResult<?> result = service.replay(cmd, ctx);
+
+        assertThat(result.getCode()).isZero();
+        verify(platformRoleService).updateRoleGrants(eq(9L), eq("idem-a6-replay"), any());
     }
 
     @Test

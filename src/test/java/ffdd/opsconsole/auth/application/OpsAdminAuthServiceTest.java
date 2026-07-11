@@ -12,16 +12,17 @@ import ffdd.opsconsole.auth.dto.AdminLoginResponse;
 import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
-import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
 import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import ffdd.opsconsole.shared.security.JwtProperties;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import io.jsonwebtoken.Claims;
+import java.util.LinkedHashSet;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -32,20 +33,20 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 class OpsAdminAuthServiceTest {
 
     private final AdminMapper adminMapper = mock(AdminMapper.class);
-    private final AdminRolePermissionMapper permissionMapper = mock(AdminRolePermissionMapper.class);
     private final AdminRoleRelationMapper roleRelationMapper = mock(AdminRoleRelationMapper.class);
     private final AdminAccountStateMapper accountStateMapper = mock(AdminAccountStateMapper.class);
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     private final JwtTokenProvider tokenProvider = new JwtTokenProvider(jwtProperties());
+    private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final OpsAdminAuthService service =
             new OpsAdminAuthService(
                     adminMapper,
-                    permissionMapper,
                     roleRelationMapper,
                     accountStateMapper,
                     passwordEncoder,
                     tokenProvider,
+                    permissionCache,
                     adminSessionRegistry);
 
     private JwtProperties jwtProperties() {
@@ -59,8 +60,8 @@ class OpsAdminAuthServiceTest {
     void loginIssuesAdminTokenFromStoredHashAndEffectiveAuthorities() {
         AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("Admin@123456"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
-        when(permissionMapper.selectActivePermissionCodes(1L))
-                .thenReturn(List.of("PERM_SYSTEM_READ", "PERM_USER_READ"));
+        when(permissionCache.getPermissionCodes(1L))
+                .thenReturn(new LinkedHashSet<>(List.of("PERM_SYSTEM_READ", "PERM_USER_READ")));
         when(adminSessionRegistry.createSession(1L, "superadmin")).thenReturn("admin-session-1");
 
         ApiResult<AdminLoginResponse> result =
@@ -74,9 +75,10 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().operator()).isEqualTo("Super Admin");
         assertThat(result.getData().session().role()).isEqualTo("superadmin");
         assertThat(result.getData().session().passwordChangeRequired()).isFalse();
+        // super 桥接已删除：authorities 完全来自 permissionCache（DB/Redis），不再追加旧 PERM_SYSTEM_WRITE
         assertThat(result.getData().session().authorities())
-                .contains("PERM_SYSTEM_READ", "PERM_SYSTEM_WRITE", "PERM_USER_READ")
-                .doesNotContain("PERM_SUPPORT_SEAT_WRITE");
+                .contains("PERM_SYSTEM_READ", "PERM_USER_READ")
+                .doesNotContain("PERM_SYSTEM_WRITE", "PERM_SUPPORT_SEAT_WRITE");
         Claims claims = tokenProvider.parse(result.getData().accessToken());
         assertThat(claims.get("subjectType")).isEqualTo("ADMIN");
         assertThat(claims.get("sessionId")).isEqualTo("admin-session-1");
@@ -87,8 +89,9 @@ class OpsAdminAuthServiceTest {
         AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
-        when(permissionMapper.selectActivePermissionCodes(4L))
-                .thenReturn(List.of("PERM_RISK_READ", "PERM_RISK_WRITE"));
+        when(permissionCache.getPermissionCodes(4L))
+                .thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ", "PERM_RISK_WRITE")));
+        when(roleRelationMapper.selectActiveMenuCodes(4L)).thenReturn(List.of("risk", "risk_cases"));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
 
         ApiResult<AdminLoginResponse> result =
@@ -96,8 +99,30 @@ class OpsAdminAuthServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().role()).isEqualTo("risk");
+        assertThat(result.getData().session().roleCode()).isEqualTo("RISK");
+        assertThat(result.getData().session().effectiveMenus()).containsExactly("risk", "risk_cases");
         assertThat(result.getData().session().authorities())
                 .containsExactly("PERM_RISK_READ", "PERM_RISK_WRITE");
+    }
+
+    @Test
+    void loginPreservesCustomRoleCodeInsteadOfDegradingToAuditor() {
+        AdminEntity admin = activeAdmin(9L, "custom.ops", "Custom Ops", passwordEncoder.encode("CustomOps@123"));
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(roleRelationMapper.activeRoleCode(9L)).thenReturn("CUSTOM_SETTLEMENT");
+        when(roleRelationMapper.selectActiveMenuCodes(9L)).thenReturn(List.of("treasury", "settlement"));
+        when(permissionCache.getPermissionCodes(9L))
+                .thenReturn(new LinkedHashSet<>(List.of("finance_d4_read")));
+        when(adminSessionRegistry.createSession(9L, "custom.ops")).thenReturn("admin-session-9");
+
+        ApiResult<AdminLoginResponse> result =
+                service.login(new AdminLoginRequest("custom.ops", "CustomOps@123"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().session().role()).isEqualTo("custom_settlement");
+        assertThat(result.getData().session().roleCode()).isEqualTo("CUSTOM_SETTLEMENT");
+        assertThat(result.getData().session().authorities()).containsExactly("finance_d4_read");
+        assertThat(result.getData().session().effectiveMenus()).containsExactly("treasury", "settlement");
     }
 
     @Test
@@ -109,7 +134,7 @@ class OpsAdminAuthServiceTest {
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(state);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
-        when(permissionMapper.selectActivePermissionCodes(4L)).thenReturn(List.of("PERM_RISK_READ"));
+        when(permissionCache.getPermissionCodes(4L)).thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ")));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
 
         ApiResult<AdminLoginResponse> result =
@@ -131,7 +156,7 @@ class OpsAdminAuthServiceTest {
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(state);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
-        when(permissionMapper.selectActivePermissionCodes(4L)).thenReturn(List.of("PERM_RISK_READ"));
+        when(permissionCache.getPermissionCodes(4L)).thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ")));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
 
         ApiResult<AdminLoginResponse> result =
@@ -147,7 +172,7 @@ class OpsAdminAuthServiceTest {
         AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
         when(adminMapper.selectById(4L)).thenReturn(admin);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
-        when(permissionMapper.selectActivePermissionCodes(4L)).thenReturn(List.of("PERM_RISK_READ"));
+        when(permissionCache.getPermissionCodes(4L)).thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ")));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-new");
         when(adminMapper.updateById(any(AdminEntity.class))).thenAnswer(invocation -> {
             AdminEntity patch = invocation.getArgument(0);

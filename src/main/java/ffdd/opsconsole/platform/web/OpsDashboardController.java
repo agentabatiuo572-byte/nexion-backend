@@ -17,7 +17,7 @@ public class OpsDashboardController {
     private final OpsDashboardService dashboardService;
 
     @GetMapping("/summary")
-    @PreAuthorize("hasAuthority('PERM_SYSTEM_READ')")
+    @PreAuthorize("hasAuthority('overview_b1_read')")
     public ApiResult<Map<String, Object>> summary() {
         return dashboardService.summary();
     }

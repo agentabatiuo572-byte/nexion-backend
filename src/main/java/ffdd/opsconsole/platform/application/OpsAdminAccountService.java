@@ -19,6 +19,8 @@ import ffdd.opsconsole.platform.dto.AdminAccountSecurityBaselineUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
+import ffdd.opsconsole.platform.dto.PlatformRoleGrantsUpdateRequest;
+import ffdd.opsconsole.platform.dto.PlatformRoleUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
@@ -104,6 +106,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private final AdminPermissionCache permissionCache;
     private final OpsAuditCenterService auditCenterService;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
+    private final OpsPlatformRoleService platformRoleService;
 
     public ApiResult<AdminAccountOverview> overview() {
         ensureA1BusinessTables();
@@ -592,6 +595,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (mutation != null) {
             return failLike(mutation);
         }
+        return ApiResult.fail(409, "RBAC_AUTHORITY_MOVED_TO_A6");
+        /* legacy A1 matrix intentionally unreachable; A6 role grants are the sole authority.
         ApiResult<Void> authorization = requireSuperAuthorization(operators(), "RBAC_GRANT_FORBIDDEN");
         if (authorization != null) {
             return failLike(authorization);
@@ -635,6 +640,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 String.join("/", grants), request.operator(), currentOperatorRole(), "param", false, false,
                 "超管", request.reason());
         return ApiResult.ok(rbacAction(action.id()).orElseThrow());
+        */
     }
 
     @Transactional
@@ -647,6 +653,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (mutation != null) {
             return failLike(mutation);
         }
+        return ApiResult.fail(409, "RBAC_AUTHORITY_MOVED_TO_A6");
+        /* legacy action registration intentionally unreachable; permissions come from the A8 dictionary.
         ApiResult<Void> authorization = requireSuperAuthorization(operators(), "RBAC_ACTION_FORBIDDEN");
         if (authorization != null) {
             return failLike(authorization);
@@ -665,6 +673,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         linkA2Proposal(idempotencyKey, "RBAC 动作登记(A1)", created.action(), "—", domainGroup,
                 request.operator(), currentOperatorRole(), "param", false, false, "超管", request.reason());
         return ApiResult.ok(created);
+        */
     }
 
     private int pendingA1OperationTickets() {
@@ -1365,6 +1374,25 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                         str(p, "value"), reason, operator);
                 return updateSecurityBaseline(idem, str(p, "baselineKey"), req);
             }
+            case "a6_role_grants_update" -> {
+                PlatformRoleGrantsUpdateRequest req = new PlatformRoleGrantsUpdateRequest(
+                        strings(p.get("permissionCodes")), longs(p.get("menuIds")), reason, operator);
+                return platformRoleService.updateRoleGrants(Long.valueOf(str(p, "roleId")), idem, req);
+            }
+            case "a6_role_disable" -> {
+                PlatformRoleUpdateRequest req = new PlatformRoleUpdateRequest(
+                        null, null, 0, reason, operator);
+                return platformRoleService.updateRole(Long.valueOf(str(p, "roleId")), idem, req);
+            }
+            case "a6_role_status_update" -> {
+                PlatformRoleUpdateRequest req = new PlatformRoleUpdateRequest(
+                        null, null, Integer.valueOf(str(p, "status")), reason, operator);
+                return platformRoleService.updateRole(Long.valueOf(str(p, "roleId")), idem, req);
+            }
+            case "a6_role_delete" -> {
+                return platformRoleService.deleteRole(Long.valueOf(str(p, "roleId")), idem,
+                        new AdminAccountActionRequest(reason, operator));
+            }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
             }
@@ -1375,6 +1403,20 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private static String str(Map<String, Object> params, String key) {
         Object v = params.get(key);
         return v == null ? null : String.valueOf(v).trim();
+    }
+
+    private static List<String> strings(Object value) {
+        if (!(value instanceof List<?> values)) {
+            return List.of();
+        }
+        return values.stream().map(String::valueOf).toList();
+    }
+
+    private static List<Long> longs(Object value) {
+        if (!(value instanceof List<?> values)) {
+            return List.of();
+        }
+        return values.stream().map(item -> Long.valueOf(String.valueOf(item))).toList();
     }
 
 }
