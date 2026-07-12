@@ -1,12 +1,15 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -49,8 +52,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsTrustDisclosureServiceTest {
     private final FakeTrustDisclosureRepository repository = new FakeTrustDisclosureRepository();
@@ -74,14 +81,28 @@ class OpsTrustDisclosureServiceTest {
     void stubLockGuard() {
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,常规写方法直通,replay 路径也无阻塞
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+        authenticate("content_i4_read", "content_i4_write", "content_i4_publish_standard", "content_i4_trust_section_manage",
+                "content_i5_read", "content_i5_write", "content_i5_disclosure_publish", "content_i5_gate_adjust");
+    }
+
+    @AfterEach
+    void clearAuthentication() {
+        SecurityContextHolder.clearContext();
     }
 
     @Test
     void overviewReturnsTrustDisclosureDataAndSources() {
+        repository.sections.put("asset_safety", new TrustSectionView(
+                "asset_safety", "旧版资产安全", "旧结构", "v1", "published", "06-18", "内容", false));
+        repository.sectionVersions.put("asset_safety::v1", new TrustSectionVersionView(
+                "asset_safety", "v1", "旧版资产安全", "旧结构", List.of(), "published", 1L, "system", "2026-06-18"));
+
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().trustSections()).hasSize(2);
+        assertThat(result.getData().trustSectionVersions())
+                .noneMatch(version -> "asset_safety".equals(version.sectionKey()));
         assertThat(result.getData().jurisdictions()).hasSize(2);
         assertThat(result.getData().chapters()).hasSize(2);
         assertThat(result.getData().stats().staleAckUsers()).isEqualTo(2632);
@@ -90,12 +111,48 @@ class OpsTrustDisclosureServiceTest {
         assertThat(result.getData().countryOptions()).extracting(option -> option.code())
                 .containsExactly("VN", "HK", "SG", "GB");
         assertThat(repository.seedCalls).isZero();
+        verifyNoInteractions(configFacade);
+    }
+
+    @Test
+    void overviewWithI4ReadCannotSeeI5DisclosureData() {
+        authenticate("content_i4_read");
+
+        var overview = service.overview().getData();
+
+        assertThat(overview.trustSections()).isNotEmpty();
+        assertThat(overview.trustSectionVersions()).isNotEmpty();
+        assertThat(overview.jurisdictions()).isEmpty();
+        assertThat(overview.chapters()).isEmpty();
+        assertThat(overview.gatedActions()).isEmpty();
+        assertThat(overview.draft()).isNull();
+        assertThat(overview.stats().jurisdictions()).isZero();
+        assertThat(overview.sources()).allMatch(source -> source.startsWith("nx_trust_section"));
+    }
+
+    @Test
+    void overviewWithI5ReadCannotSeeI4TrustSectionData() {
+        authenticate("content_i5_read");
+
+        var overview = service.overview().getData();
+
+        assertThat(overview.trustSections()).isEmpty();
+        assertThat(overview.trustSectionVersions()).isEmpty();
+        assertThat(overview.financialFields()).isEmpty();
+        assertThat(overview.sectionFields()).isEmpty();
+        assertThat(overview.roleGates()).isEmpty();
+        assertThat(overview.jurisdictions()).isNotEmpty();
+        assertThat(overview.chapters()).isNotEmpty();
+        assertThat(overview.stats().managedSections()).isZero();
+        assertThat(overview.sources()).noneMatch(source -> source.startsWith("nx_trust_section"));
     }
 
     @Test
     void publishSectionRequiresIdempotencyKey() {
         var result = service.publishSection("financials", null, new TrustSectionPublishRequest(
                 "v6",
+                "数据来自已审计的资金账本",
+                true,
                 "Marina K.",
                 "发布信任版块"));
 
@@ -145,15 +202,155 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void trustSectionLinkFieldsAcceptControlledInternalRoutesAndSafeHttpsLinks() {
+        var internal = service.createSectionDraft("leadership", "idem-link-internal",
+                sectionDraftWithField("v4", "leader1Url",
+                        "/pages/trust/nex?q=AbC_1.~!$&'()*+,;=:@%2F/?-"));
+        var external = service.createSectionDraft("leadership", "idem-link-https",
+                sectionDraftWithField("v5", "leader1Url", "https://example.test/leadership?id=1#profile"));
+        var optionalEmpty = service.createSectionDraft("leadership", "idem-link-empty",
+                sectionDraftWithField("v6", "leader1Url", ""));
+
+        assertThat(internal.getCode()).isZero();
+        assertThat(external.getCode()).isZero();
+        assertThat(optionalEmpty.getCode()).isZero();
+    }
+
+    @Test
+    void trustSectionLinkFieldsRejectUnsafeSchemesAndMalformedRoutes() {
+        List<String> unsafeLinks = List.of(
+                "http://example.test/report",
+                "javascript:alert(1)",
+                "data:text/html,unsafe",
+                "file:///etc/passwd",
+                "//example.test/open-redirect",
+                "/pages/trust\\..\\admin",
+                "/pages/trust//admin",
+                "/pages/trust/%2F%2Fexample.test",
+                "/pages/trust/unknown?tab=mechanism",
+                "/pages/trust/nex#overview",
+                "/pages/trust/nex?tags=[admin]",
+                "/pages/trust/nex?q=中文",
+                "/pages/trust/nex?tags=%5Badmin%5D",
+                "/pages/trust/nex?q=%E4%B8%AD",
+                "/pages/trust/nex?q=%0aadmin",
+                "https://user@example.test/report",
+                "https://example.test/%0d%0aLocation:evil");
+
+        for (int index = 0; index < unsafeLinks.size(); index++) {
+            var result = service.createSectionDraft("leadership", "idem-link-reject-" + index,
+                    sectionDraftWithField("v4", "leader1Url", unsafeLinks.get(index)));
+            assertThat(result.getCode()).as(unsafeLinks.get(index))
+                    .isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+            assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_LINK_INVALID");
+        }
+    }
+
+    @Test
+    void trustSectionNonLinkFieldsCannotSmuggleUrls() {
+        var result = service.createSectionDraft("leadership", "idem-link-in-text",
+                sectionDraftWithField("v4", "leader1Name", "https://example.test/not-a-name"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
+    }
+
+    @Test
     void publishAndRollbackRequireBackendVersionSnapshots() {
         service.createSectionDraft("financials", "idem-i4-create-snapshot", sectionDraft("v6", "新版说明", 0L));
-        var published = service.publishSection("financials", "idem-i4-publish-v6", new TrustSectionPublishRequest("v6", "Marina K.", "发布结构化信任新版"));
+        var published = service.publishSection("financials", "idem-i4-publish-v6", new TrustSectionPublishRequest(
+                "v6", "数据来自已审计的资金账本", true, "Marina K.", "发布结构化信任新版"));
         assertThat(published.getCode()).isZero();
         assertThat(repository.findTrustSectionVersion("financials", "v6").orElseThrow().status()).isEqualTo("published");
 
         var unknown = service.rollbackSection("financials", "idem-i4-unknown", new TrustSectionRollbackRequest("v999", "Marina K.", "回滚不存在版本"));
         assertThat(unknown.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(unknown.getMessage()).isEqualTo("TRUST_SECTION_VERSION_NOT_FOUND");
+    }
+
+    @Test
+    void draftPermissionIsIndependentFromPublishPermissions() {
+        authenticate("content_i4_publish_standard");
+        var denied = service.createSectionDraft("financials", "idem-draft-denied", sectionDraft("v6", "新版说明", 0L));
+        assertThat(denied.getCode()).isEqualTo(403);
+
+        authenticate("content_i4_write");
+        var allowed = service.createSectionDraft("financials", "idem-draft-allowed", sectionDraft("v6", "新版说明", 0L));
+        assertThat(allowed.getCode()).isZero();
+    }
+
+    @Test
+    void publishPermissionIsClassifiedByServerSideSectionCategory() {
+        repository.saveTrustSectionDraft("leadership", sectionDraft("v4", "团队新版", 0L), LocalDateTime.now());
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+
+        authenticate("content_i4_publish_standard");
+        assertThat(service.publishSection("leadership", "idem-leadership", new TrustSectionPublishRequest(
+                "v4", "", true, "Marina K.", "发布团队信任内容版本")).getCode()).isZero();
+        assertThat(service.publishSection("financials", "idem-financial-denied", new TrustSectionPublishRequest(
+                "v6", "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本")).getCode()).isEqualTo(403);
+
+        authenticate("content_i4_trust_section_manage");
+        assertThat(service.publishSection("financials", "idem-financial-allowed", new TrustSectionPublishRequest(
+                "v6", "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本")).getCode()).isZero();
+    }
+
+    @Test
+    void financialPublishRequiresSourceBilingualConfirmationAndStrictReason() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+        authenticate("content_i4_trust_section_manage");
+
+        assertThat(service.publishSection("financials", "idem-no-source", new TrustSectionPublishRequest(
+                "v6", "", true, "Marina K.", "发布财务信任内容版本")).getMessage())
+                .isEqualTo("TRUST_SECTION_DATA_SOURCE_REQUIRED");
+        assertThat(service.publishSection("financials", "idem-no-bi", new TrustSectionPublishRequest(
+                "v6", "来源为资金账本与审计报表", false, "Marina K.", "发布财务信任内容版本")).getMessage())
+                .isEqualTo("TRUST_SECTION_BILINGUAL_CONFIRMATION_REQUIRED");
+        assertThat(service.publishSection("financials", "idem-short", new TrustSectionPublishRequest(
+                "v6", "来源为资金账本与审计报表", true, "Marina K.", "太短")).getCode())
+                .isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+    }
+
+    @Test
+    void trustPublishUsesRequiredAudit() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+
+        var result = service.publishSection("financials", "idem-required-audit", new TrustSectionPublishRequest(
+                "v6", "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本"));
+
+        assertThat(result.getCode()).isZero();
+        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void trustPublishFailsClosedWhenRequiredAuditCannotBePersisted() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+        doThrow(new IllegalStateException("audit unavailable"))
+                .when(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+
+        assertThatThrownBy(() -> service.publishSection("financials", "idem-audit-fail-i4", new TrustSectionPublishRequest(
+                "v6", "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
+    }
+
+    @Test
+    void appPublishedSectionsExcludeDraftAndArchivedRows() {
+        repository.sections.put("draft-only", new TrustSectionView(
+                "draft-only", "草稿", "结构", "v1", "draft", "06-18", "内容", false));
+        repository.sections.put("asset_safety", new TrustSectionView(
+                "asset_safety", "旧版资产安全", "旧结构", "v1", "published", "06-18", "内容", false));
+
+        var result = service.publishedSections();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().sections()).extracting(ffdd.opsconsole.content.domain.AppTrustSectionsView.Section::sectionKey)
+                .containsExactlyInAnyOrder("financials", "leadership");
+    }
+
+    private void authenticate(String... authorities) {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "tester", "n/a", java.util.Arrays.stream(authorities).map(SimpleGrantedAuthority::new).toList()));
     }
 
     @Test
@@ -235,10 +432,23 @@ class OpsTrustDisclosureServiceTest {
         assertThat(repository.drafts.get("SFC::v13").status()).isEqualTo("published");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService, times(2)).record(captor.capture());
-        AuditLogWriteRequest publishedAudit = captor.getAllValues().get(1);
+        verify(auditLogService).record(any(AuditLogWriteRequest.class));
+        verify(auditLogService).recordRequired(captor.capture());
+        AuditLogWriteRequest publishedAudit = captor.getValue();
         assertThat(publishedAudit.getAction()).isEqualTo("I5_DISCLOSURE_PUBLISHED");
         assertThat(publishedAudit.getResourceType()).isEqualTo("DISCLOSURE_JURISDICTION");
+    }
+
+    @Test
+    void disclosurePublishFailsClosedWhenRequiredAuditCannotBePersisted() {
+        var request = disclosureRequest();
+        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-audit-fail-draft", request).getCode()).isZero();
+        doThrow(new IllegalStateException("audit unavailable"))
+                .when(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+
+        assertThatThrownBy(() -> service.publishDisclosure("SFC", "idem-i5-audit-fail-publish", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
     }
 
     @Test
@@ -292,14 +502,48 @@ class OpsTrustDisclosureServiceTest {
                 new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
                         "sectionKey", "financials",
                         "action", "publish",
-                        "version", "v6")),
+                        "version", "v6",
+                        "dataSourceStatement", "来源为资金账本与审计报表",
+                        "bilingualConfirmed", true)),
                 new AuditReplayContext("Marina K.", "replay trust section publish", "idem-replay-i4-publish"));
 
         assertThat(result.getCode()).isZero();
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I4_TRUST_SECTION_PUBLISHED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("TRUST_SECTION");
+    }
+
+    @Test
+    void replayTrustPublishCannotInventSourceOrBilingualConfirmation() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "待发布版本", 0L), LocalDateTime.now());
+
+        ApiResult<?> missingSource = service.replay(
+                new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
+                        "sectionKey", "financials", "action", "publish", "version", "v6",
+                        "bilingualConfirmed", true)),
+                new AuditReplayContext("Marina K.", "replay trust section publish", "idem-replay-missing-source"));
+        ApiResult<?> bilingualNotConfirmed = service.replay(
+                new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
+                        "sectionKey", "financials", "action", "publish", "version", "v6",
+                        "dataSourceStatement", "来源为资金账本与审计报表", "bilingualConfirmed", false)),
+                new AuditReplayContext("Marina K.", "replay trust section publish", "idem-replay-no-bilingual"));
+
+        assertThat(missingSource.getMessage()).isEqualTo("TRUST_SECTION_DATA_SOURCE_REQUIRED");
+        assertThat(bilingualNotConfirmed.getMessage()).isEqualTo("TRUST_SECTION_BILINGUAL_CONFIRMATION_REQUIRED");
+        assertThat(repository.findTrustSectionVersion("financials", "v6").orElseThrow().status()).isEqualTo("draft");
+    }
+
+    @Test
+    void auditsReservePublishDoesNotRequireDataSourceStatement() {
+        repository.sections.put("auditsReserves", new TrustSectionView(
+                "auditsReserves", "审计与储备", "报告", "v1", "published", "today", "合规", true));
+        repository.saveTrustSectionDraft("auditsReserves", sectionDraft("v2", "审计新版", 0L), LocalDateTime.now());
+
+        var result = service.publishSection("auditsReserves", "idem-audits-no-source", new TrustSectionPublishRequest(
+                "v2", "", true, "Marina K.", "发布审计与储备内容版本"));
+
+        assertThat(result.getCode()).isZero();
     }
 
     @Test
@@ -311,6 +555,18 @@ class OpsTrustDisclosureServiceTest {
         assertThat(result.getCode()).isZero();
         verify(configFacade).upsertAdminValue("disclosure.gate.withdraw", "true", "BOOLEAN", "content", "replay gate adjust scope");
         verify(configFacade).upsertAdminValue("disclosure.gate.staking", "true", "BOOLEAN", "content", "replay gate adjust scope");
+    }
+
+    @Test
+    void replayI5GateAdjustUsesNewOperationName() {
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("I", "i5_gate_adjust", Map.of("scope", "提现 + 质押锁仓")),
+                new AuditReplayContext("Marina K.", "replay I5 gate scope", "idem-replay-i5-gate"));
+
+        assertThat(result.getCode()).isZero();
+        verify(configFacade).upsertAdminValue("disclosure.gate.withdraw", "true", "BOOLEAN", "content", "replay I5 gate scope");
+        verify(configFacade).upsertAdminValue("disclosure.gate.staking", "true", "BOOLEAN", "content", "replay I5 gate scope");
+        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
     }
 
     @Test
@@ -349,6 +605,12 @@ class OpsTrustDisclosureServiceTest {
                 new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
                 new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18")),
                 expectedRevision, "Marina K.", "维护信任版块草稿");
+    }
+
+    private static TrustSectionDraftRequest sectionDraftWithField(String version, String key, String value) {
+        return new TrustSectionDraftRequest(version, "结构化链接字段", "人员卡片", List.of(
+                new TrustSectionFieldInput(key, "链接字段", value)),
+                0L, "Marina K.", "维护信任版块链接字段");
     }
 
     private static DisclosureDraftRequest disclosureRequest() {

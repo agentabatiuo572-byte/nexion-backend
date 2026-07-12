@@ -116,7 +116,7 @@ JOIN (SELECT 'H1' code,'Phase 调度器' name,'/growth/phase' path,1 sort UNION 
       SELECT 'H7','代金券','/growth/vouchers',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
--- I 域 (6 页，I4 信任中心 / I6 i18n / I7 教程；I5 风险披露已下线)
+-- I 域 (7 页)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'I' d) x ON p.menu_code='I'
@@ -124,8 +124,9 @@ JOIN (SELECT 'I1' code,'转化文案 A/B' name,'/content/copy-ab' path,1 sort UN
       SELECT 'I2','Nova 推送运营','/content/nova',2 UNION ALL
       SELECT 'I3','通知 Campaign','/content/notifications',3 UNION ALL
       SELECT 'I4','信任中心 CMS','/content/trust',4 UNION ALL
-      SELECT 'I6','i18n 文案管理','/content/i18n',5 UNION ALL
-      SELECT 'I7','教程中心','/content/learn',6) v
+      SELECT 'I5','风险披露版本','/content/disclosures',5 UNION ALL
+      SELECT 'I6','i18n 文案管理','/content/i18n',6 UNION ALL
+      SELECT 'I7','教程中心','/content/learn',7) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- J 域 (4)

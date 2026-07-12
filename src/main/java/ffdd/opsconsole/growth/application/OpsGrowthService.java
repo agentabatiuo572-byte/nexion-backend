@@ -1251,7 +1251,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("domain", "D5_H1");
         response.put("asset", "NEX");
         response.put("enabled", !disclosureGateActive);
-        response.put("blockedBy", disclosureGateActive ? "I4_DISCLOSURE_GATE" : null);
+        response.put("blockedBy", disclosureGateActive ? "I5_DISCLOSURE_GATE" : null);
         response.put("disclosureGate", Map.of("staking", disclosureGateActive));
         response.put("minBalanceNex", configDecimal(WITHDRAW_MIN_BALANCE_KEY, new BigDecimal("100")));
         response.put("holdDays", configDecimal(WITHDRAW_HOLD_DAYS_KEY, new BigDecimal("7")).intValue());

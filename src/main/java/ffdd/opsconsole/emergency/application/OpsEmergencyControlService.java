@@ -643,10 +643,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                                          String action, String execId, SopPlaybookRunRequest request) {
         for (String gate : List.of("withdraw", "exchange", "staking", "genesis")) {
             addDomainWrite(writes, sourceDomain, stepIndex, action, "disclosure.gate." + gate, "true",
-                    "BOOLEAN", "content", "J4 I4 disclosure gate required | execId=" + execId, request);
+                    "BOOLEAN", "content", "J4 I5 disclosure gate required | execId=" + execId, request);
         }
         addDomainWrite(writes, sourceDomain, stepIndex, action, "disclosure.gate.lastExecution", execId,
-                "STRING", "content", "J4 I4 disclosure gate execution link", request);
+                "STRING", "content", "J4 I5 disclosure gate execution link", request);
     }
 
     private void addDomainWrite(List<Map<String, Object>> writes, String domain, int stepIndex, String action,
@@ -1118,7 +1118,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 actionOption("C2", "存量账户转只读", "account-readonly", true, "地域合规收紧时将存量账户切换为只读"),
                 actionOption("K1", "账户簇建档调查", "cluster-investigation", true, "把命中账户簇送入 K1 多账户调查"),
                 actionOption("I3", "发送通知模板", "campaign-notify", false, "使用 I3 Campaign 模板通知用户、法务、财务或超管"),
-                actionOption("I4", "发布风险披露/公告", "compliance-disclosure", true, "发布或切换合规披露、风险提示与公告内容"));
+                actionOption("I5", "发布风险披露/公告", "compliance-disclosure", true, "发布或切换合规披露、风险提示与公告内容"));
     }
 
     private Map<String, Object> actionOption(String domain, String action, String ref, boolean approve, String description) {
@@ -1137,7 +1137,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 rollbackOption("withdraw-rate-limit", "提现限流恢复", "资金异常", "HIGH", "B1 覆盖率恢复绿线 + D2 待处理队列清零后,按批次恢复提现限流"),
                 rollbackOption("geo-block-release", "地域封锁恢复", "监管点名", "HIGH", "合规名单确认解除 + J2 国家状态回到 limited/allowed + 保留审计快照"),
                 rollbackOption("account-freeze-release", "账户冻结恢复", "资金异常", "HIGH", "C2 取证完成 + 风控复核通过后,批量解除冻结或降为只读"),
-                rollbackOption("content-disclosure-correction", "披露公告更正", "数据泄露", "MEDIUM", "I4 发布更正公告 + 保留旧版本引用 + 内容审核通过后切换版本"),
+                rollbackOption("content-disclosure-correction", "披露公告更正", "数据泄露", "MEDIUM", "I5 发布更正公告 + 保留旧版本引用 + 内容审核通过后切换版本"),
                 rollbackOption("maintenance-gray-release", "维护模式灰度恢复", "技术故障", "HIGH", "核心链路健康检查通过 + 灰度流量恢复 + J1 维护模式关闭"),
                 rollbackOption("campaign-correction", "通知误发修正", "舆情挤兑", "MEDIUM", "I3 停止后续触达 + 发布更正通知 + 导出影响用户名单"),
                 rollbackOption("drill-downgrade", "实战降级为演练", "通用", "LOW", "应急轨执行撤销为演练记录,保留 A2 审计并关闭生产动作"));

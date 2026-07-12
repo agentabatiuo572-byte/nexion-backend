@@ -1,4 +1,4 @@
--- 域 I+J · 内容+应急 · 34 权限点
+-- 域 I+J · 内容+应急 · 38 权限点
 -- 源：docs/superpowers/specs/rbac-classic/IJ.md（收敛自 rbac-matrix/IJ.md 92 按钮级）
 -- 幂等：ON DUPLICATE KEY UPDATE。手动执行（schema.sql 不自动跑，见 schema-manual-init 记忆）：
 --   mysql -uroot -p nexion < scripts/rbac-classic-seed/IJ.sql
@@ -25,12 +25,17 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('content_i3_cap_adjust',           'CAP容量闸调整(高敏·影响合规通知可见性·critical锁定)', 'API', '/content/notifications', 'HIGH', 0, 1, 0),
   ('content_i3_critical_send',         '通知Campaign-critical下发(合规/监管高敏)', 'API', '/content/notifications', 'HIGH', 0, 1, 0),
 
-  -- I4 信任中心与披露（5 点）
-  ('content_i4_read',                 '信任中心与披露-读',             'API', '/content/trust',        'READ',  0, 1, 0),
-  ('content_i4_write',                '信任中心与披露-写(披露草拟/配置矩阵·风控编排辅助)', 'API', '/content/trust', 'WRITE', 0, 1, 0),
+  -- I4 信任中心 CMS（4 点）
+  ('content_i4_read',                 '信任中心CMS-读',                'API', '/content/trust',        'READ',  0, 1, 0),
+  ('content_i4_write',                '信任中心CMS-草稿CRUD',          'API', '/content/trust',        'WRITE', 0, 1, 0),
+  ('content_i4_publish_standard',     '信任版块发布/回滚/下架(普通版块)', 'API', '/content/trust',       'HIGH', 0, 1, 0),
   ('content_i4_trust_section_manage', '信任版块发布/回滚/下架(高敏·highSensitivity升合规)', 'API', '/content/trust', 'HIGH', 0, 1, 0),
-  ('content_i4_disclosure_publish',   '披露版本发布(高敏·触发re-ack·条款重签字)', 'API', '/content/trust', 'HIGH', 0, 1, 0),
-  ('content_i4_gate_adjust',          '受限动作范围调整(高敏·放松资金类动作合规拦截)', 'API', '/content/trust', 'HIGH', 1, 1, 0),
+
+  -- I5 风险披露版本（4 点）
+  ('content_i5_read',                 '风险披露版本-读',               'API', '/content/disclosures',  'READ',  0, 1, 0),
+  ('content_i5_write',                '风险披露草稿/矩阵CRUD',         'API', '/content/disclosures',  'WRITE', 0, 1, 0),
+  ('content_i5_disclosure_publish',   '披露版本发布(高敏·触发re-ack·条款重签字)', 'API', '/content/disclosures', 'HIGH', 0, 1, 0),
+  ('content_i5_gate_adjust',          '受限动作范围调整(高敏·放松资金类动作合规拦截)', 'API', '/content/disclosures', 'HIGH', 1, 1, 0),
 
   -- I6 i18n 文案管理（2 点）
   ('content_i6_read',  'i18n文案-读',        'API', '/content/i18n', 'READ',  0, 1, 0),
@@ -76,13 +81,14 @@ ON DUPLICATE KEY UPDATE
   is_deleted      = 0;
 
 -- ===== 统计 =====
--- 34 点 = 10 READ + 11 WRITE + 13 HIGH
--- I 域 19 点（6 页）：6 READ + 7 WRITE + 6 HIGH
+-- 38 点 = 11 READ + 12 WRITE + 15 HIGH
+-- I 域 23 点（7 页）：7 READ + 8 WRITE + 8 HIGH
 -- J 域 15 点（4 页）：4 READ + 4 WRITE + 7 HIGH
 -- amplifies=1 共 8 个：
---   I 域 2：content_i4_gate_adjust / content_i6_course_reward_adjust
+--   I 域 2：content_i5_gate_adjust / content_i6_course_reward_adjust
 --   J 域 6：emergency_j1_gate_kill / _gate_resume / _batch_kill /
 --           emergency_j2_country_manage / _emergency_block /
 --           emergency_j4_playbook_execute
--- amplifies=0 高敏 5 个：content_i1_experiment_manage / content_i3_cap_adjust / content_i4_trust_section_manage /
---                        content_i4_disclosure_publish / emergency_j3_alert_config
+-- amplifies=0 高敏 7 个：content_i1_experiment_manage / content_i3_cap_adjust / content_i3_critical_send /
+--                        content_i4_publish_standard / content_i4_trust_section_manage /
+--                        content_i5_disclosure_publish / emergency_j3_alert_config

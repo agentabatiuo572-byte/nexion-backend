@@ -55,6 +55,7 @@ class OpsAuditCenterServiceTest {
     private final AuditReplayDispatcher replayDispatcher = mock(AuditReplayDispatcher.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
+    private final AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard = mock(AuditReplayBusinessPermissionGuard.class);
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
     private final OpsAuditCenterService service =
             new OpsAuditCenterService(
@@ -65,6 +66,7 @@ class OpsAuditCenterServiceTest {
                     historyMapper,
                     confirmCategoryMapper,
                     lockMapper,
+                    replayBusinessPermissionGuard,
                     replayDispatcher,
                     objectMapper);
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
@@ -148,6 +150,7 @@ class OpsAuditCenterServiceTest {
         doAnswer(invocation -> null).when(confirmCategoryMapper).createConfirmCategoryTable();
         // 批0: approve 回放目标域,dispatch 须返回成功(code=0)否则 NPE/fail
         doReturn(ApiResult.ok()).when(replayDispatcher).dispatch(any(), any());
+        doReturn(ApiResult.ok()).when(replayBusinessPermissionGuard).validateProposal(any());
     }
 
     @AfterEach
@@ -331,6 +334,23 @@ class OpsAuditCenterServiceTest {
                 .containsEntry("operationId", result.getData().id())
                 .containsEntry("sourceDomain", "H1")
                 .containsEntry("idempotencyKey", "idem-proposal-1");
+    }
+
+    @Test
+    void createProposalRejectsWhenTargetDomainBusinessPermissionIsMissing() {
+        AuditReplayCommand command = new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
+                "sectionKey", "financials", "action", "publish"));
+        doReturn(ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:content_i4_trust_section_manage"))
+                .when(replayBusinessPermissionGuard).validateProposal(command);
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "发布财务信任版块", "financials", "v1", "v2", "proposer", "内容", "param",
+                false, false, "合规 / 超管", "发布财务信任版块版本", "I4", command, null, null);
+
+        var result = service.createProposal("idem-business-denied", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).contains("content_i4_trust_section_manage");
+        verify(ticketMapper, never()).insert(any(AuditOperationTicketEntity.class));
     }
 
     @Test

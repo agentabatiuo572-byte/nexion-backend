@@ -802,7 +802,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
                 .containsEntry("enabled", false)
-                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+                .containsEntry("blockedBy", "I5_DISCLOSURE_GATE");
         assertThat(detailMap(result.getData().get("disclosureGate"))).containsEntry("staking", true);
         assertThat(result.getData().get("sources"))
                 .asList()

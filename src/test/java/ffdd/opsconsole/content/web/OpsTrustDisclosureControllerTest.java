@@ -33,7 +33,8 @@ class OpsTrustDisclosureControllerTest {
 
     @Test
     void trustSectionActionsDelegateWithIdempotencyHeader() {
-        TrustSectionPublishRequest publish = new TrustSectionPublishRequest("v6", "Marina K.", "发布信任版块");
+        TrustSectionPublishRequest publish = new TrustSectionPublishRequest(
+                "v6", "来源为资金账本与审计报表", true, "Marina K.", "发布信任版块版本");
         TrustSectionRollbackRequest rollback = new TrustSectionRollbackRequest("v4", "Marina K.", "回滚信任版块");
         TrustDisclosureActionRequest archive = new TrustDisclosureActionRequest("Marina K.", "下架信任版块");
         when(trustDisclosureService.publishSection("financials", "idem-i4-pub", publish)).thenReturn(ApiResult.ok(null));

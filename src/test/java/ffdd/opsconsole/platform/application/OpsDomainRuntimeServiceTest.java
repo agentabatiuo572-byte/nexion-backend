@@ -79,8 +79,16 @@ class OpsDomainRuntimeServiceTest {
             assertThat(api.path()).isEqualTo("/api/admin/content/campaigns/caps/{tier}");
         });
         assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
-            assertThat(api.resource()).isEqualTo("TrustDisclosureOverview");
+            assertThat(api.resource()).isEqualTo("TrustCenterOverview");
             assertThat(api.path()).isEqualTo("/api/admin/content/trust-disclosure/overview");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("TrustSectionStandardPublish");
+            assertThat(api.writePermission()).isEqualTo("content_i4_publish_standard");
+        });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("DisclosureOverview");
+            assertThat(api.readPermission()).isEqualTo("content_i5_read");
         });
         assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
             assertThat(api.resource()).isEqualTo("DisclosureGateAction");

@@ -199,7 +199,7 @@ class OpsEmergencyControlServiceTest {
         assertThat(result.getData().get("actionOptions").toString())
                 .contains("熔断提现通道")
                 .contains("发送通知模板")
-                .contains("I4");
+                .contains("I5");
         assertThat(result.getData().get("rollbackOptions").toString())
                 .contains("常规根因恢复")
                 .contains("提现限流恢复");

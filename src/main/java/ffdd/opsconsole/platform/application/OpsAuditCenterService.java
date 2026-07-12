@@ -84,6 +84,7 @@ public class OpsAuditCenterService {
     private final AuditOperationHistoryMapper historyMapper;
     private final AuditConfirmCategoryMapper confirmCategoryMapper;
     private final AuditObjectLockMapper lockMapper;
+    private final AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard;
     @Lazy
     private final AuditReplayDispatcher replayDispatcher;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -186,6 +187,10 @@ public class OpsAuditCenterService {
         // 存回放指令(供 approve 时回放执行)
         AuditReplayCommand command = request.command();
         if (command != null) {
+            ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(command);
+            if (businessPermission.getCode() != 0) {
+                return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
+            }
             try {
                 ticket.setCommandJson(objectMapper.writeValueAsString(command));
             } catch (Exception ex) {

@@ -212,7 +212,7 @@ class OpsNexMarketServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(detailMap(result.getData().get("swap")))
                 .containsEntry("enabled", false)
-                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+                .containsEntry("blockedBy", "I5_DISCLOSURE_GATE");
         assertThat(detailMap(result.getData().get("disclosureGate")))
                 .containsEntry("exchange", true);
     }
@@ -763,7 +763,7 @@ class OpsNexMarketServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(detailMap(result.getData().get("market")))
                 .containsEntry("enabled", false)
-                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+                .containsEntry("blockedBy", "I5_DISCLOSURE_GATE");
         assertThat(detailMap(result.getData().get("disclosureGate")))
                 .containsEntry("genesis", true);
     }
@@ -950,7 +950,7 @@ class OpsNexMarketServiceTest {
         assertThat(detailMap(result.getData().get("stats"))).containsEntry("stakingGateOn", false);
         assertThat(detailMap(result.getData().get("gate")))
                 .containsEntry("enabled", false)
-                .containsEntry("blockedBy", "I4_DISCLOSURE_GATE");
+                .containsEntry("blockedBy", "I5_DISCLOSURE_GATE");
         assertThat(detailMap(result.getData().get("disclosureGate")))
                 .containsEntry("staking", true);
     }

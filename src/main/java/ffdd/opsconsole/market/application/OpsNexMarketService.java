@@ -191,7 +191,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "enabled", swapEnabled,
                 "status", swapEnabled ? "enabled" : "disabled",
                 "configKey", EXCHANGE_KILLSWITCH_KEY,
-                "blockedBy", disclosureGate ? "I4_DISCLOSURE_GATE" : null,
+                "blockedBy", disclosureGate ? "I5_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
         response.put("disclosureGate", map("exchange", disclosureGate));
         response.put("geoBlocked", blockedCountryViews());
@@ -456,7 +456,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("gate", map(
                 "enabled", stakingGateOn(),
                 "configKey", STAKING_KILLSWITCH_KEY,
-                "blockedBy", disclosureGateActive("staking") ? "I4_DISCLOSURE_GATE" : null,
+                "blockedBy", disclosureGateActive("staking") ? "I5_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
         response.put("disclosureGate", map("staking", disclosureGateActive("staking")));
         response.put("pools", pools);
@@ -821,7 +821,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("market", map(
                 "enabled", genesisMarketOn(),
                 "configKey", GENESIS_KILLSWITCH_KEY,
-                "blockedBy", disclosureGate ? "I4_DISCLOSURE_GATE" : null,
+                "blockedBy", disclosureGate ? "I5_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
         response.put("disclosureGate", map("genesis", disclosureGate));
         response.put("geoBlocked", blockedCountryViews());

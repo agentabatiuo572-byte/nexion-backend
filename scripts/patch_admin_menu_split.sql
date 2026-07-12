@@ -99,7 +99,7 @@ VALUES
   (1802, 'MENU_CONTENT_I2', 'Nova 推送运营', 'Nova 推送运营', 'I2', 1800, '/content/nova', 'Document', 1802, 'I2 Nova 推送运营,按PC左侧菜单同步。', 1),
   (1803, 'MENU_CONTENT_I3', '通知 Campaign', '通知 Campaign', 'I3', 1800, '/content/notifications', 'Document', 1803, 'I3 通知 Campaign,按PC左侧菜单同步。', 1),
   (1804, 'MENU_CONTENT_I4', '信任中心 CMS', '信任中心 CMS', 'I4', 1800, '/content/trust', 'Document', 1804, 'I4 信任中心 CMS,按PC左侧菜单同步。', 1),
-  (1805, 'MENU_CONTENT_I5', '风险披露版本', '风险披露版本', 'I5', 1800, '/content/disclosure', 'Document', 1805, 'I5 风险披露版本,按PC左侧菜单同步。', 1),
+  (1805, 'MENU_CONTENT_I5', '风险披露版本', '风险披露版本', 'I5', 1800, '/content/disclosures', 'Document', 1805, 'I5 风险披露版本,按PC左侧菜单同步。', 1),
   (1806, 'MENU_CONTENT_I6', 'i18n 文案管理', 'i18n 文案管理', 'I6', 1800, '/content/i18n', 'Document', 1806, 'I6 i18n 文案管理,按PC左侧菜单同步。', 1),
   (1807, 'MENU_CONTENT_I7', '教程中心', '教程中心', 'I7', 1800, '/content/learn', 'Document', 1807, 'I7 教程中心,按PC左侧菜单同步。', 1),
   (1900, 'MENU_EMERGENCY', '紧急与合规控制', '紧急与合规控制', 'emergency', NULL, '/emergency', 'Siren', 1900, '紧急与合规控制目录,按PC左侧菜单同步。', 1),
