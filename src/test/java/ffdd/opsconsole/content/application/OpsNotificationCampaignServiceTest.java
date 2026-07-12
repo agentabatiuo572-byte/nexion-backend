@@ -39,6 +39,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 
 class OpsNotificationCampaignServiceTest {
     private final FakeNotificationCampaignRepository repository = new FakeNotificationCampaignRepository();
@@ -329,7 +330,7 @@ class OpsNotificationCampaignServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().cap()).isEqualTo("180 条");
-        verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(request ->
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
                 "I3_NOTIFICATION_CAP_CHANGED".equals(request.getAction())
                         && "NOTIFICATION_CAP".equals(request.getResourceType())));
     }
@@ -357,6 +358,47 @@ class OpsNotificationCampaignServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().cap()).isEqualTo("150 条");
+    }
+
+    @Test
+    void updateCapRejectsFreeTextInsteadOfSilentlyUsingFallback() {
+        var result = service.updateCapRule("normal", "idem-i3-cap-text", new NotificationCapUpdateRequest(
+                "很多条",
+                "Marina K.",
+                "验证容量必须使用明确数字"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOTIFICATION_CAP_INVALID");
+    }
+
+    @Test
+    void updateCapRejectsValuesOutsideSupportedRange() {
+        var result = service.updateCapRule("normal", "idem-i3-cap-range", new NotificationCapUpdateRequest(
+                "10001",
+                "Marina K.",
+                "验证容量不能超过系统上限"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOTIFICATION_CAP_INVALID");
+    }
+
+    @Test
+    void updateCapRejectsExponentNotation() {
+        var result = service.updateCapRule("normal", "idem-i3-cap-exponent", new NotificationCapUpdateRequest(
+                "1e2",
+                "Marina K.",
+                "验证容量不能使用指数格式"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOTIFICATION_CAP_INVALID");
+    }
+
+    @Test
+    void updateCapAndRetentionRunInOneTransaction() throws NoSuchMethodException {
+        var method = OpsNotificationCampaignService.class.getMethod(
+                "updateCapRule", String.class, String.class, NotificationCapUpdateRequest.class);
+
+        assertThat(method.isAnnotationPresent(Transactional.class)).isTrue();
     }
 
     private static NotificationCampaignCreateRequest createRequest() {

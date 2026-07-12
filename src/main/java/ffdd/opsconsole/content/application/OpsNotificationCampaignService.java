@@ -39,6 +39,7 @@ import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -284,6 +285,7 @@ public class OpsNotificationCampaignService {
         return completed;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<NotificationCapRuleView> updateCapRule(String tier, String idempotencyKey, NotificationCapUpdateRequest request) {
         String normalizedTier = normalizeTier(tier);
         if (!TIERS.contains(normalizedTier)) {
@@ -292,7 +294,8 @@ public class OpsNotificationCampaignService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !StringUtils.hasText(request.cap()) || request.cap().trim().length() > 32) {
+        String normalizedCap = request == null ? null : normalizeCap(request.cap());
+        if (normalizedCap == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAP_INVALID");
         }
         if (!validReason(request.reason())) {
@@ -309,13 +312,13 @@ public class OpsNotificationCampaignService {
         if (current.locked()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOTIFICATION_CAP_LOCKED");
         }
-        if (request.cap().trim().equals(current.cap())) {
+        if (normalizedCap.equals(current.cap())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        campaignRepository.updateCapRule(normalizedTier, request.cap().trim(), request.operator(), now());
+        campaignRepository.updateCapRule(normalizedTier, normalizedCap, request.operator(), now());
         campaignRepository.applyRetention(now());
         NotificationCapRuleView updated = campaignRepository.findCapRule(normalizedTier).orElseThrow();
-        audit("I3_NOTIFICATION_CAP_CHANGED", normalizedTier, request.operator(), idempotencyKey, request.reason(), Map.of(
+        auditRequired("I3_NOTIFICATION_CAP_CHANGED", normalizedTier, request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.cap(),
                 "to", updated.cap()));
         return ApiResult.ok(updated);
@@ -613,6 +616,19 @@ public class OpsNotificationCampaignService {
         return StringUtils.hasText(tier) ? tier.trim().toLowerCase(Locale.ROOT) : "";
     }
 
+    private String normalizeCap(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String trimmed = value.trim();
+        if (!trimmed.matches("^[0-9]+(?:\\s*条)?$")) return null;
+        String digits = trimmed.replaceAll("\\D", "");
+        try {
+            int count = Integer.parseInt(digits);
+            return count >= 1 && count <= 10000 ? count + " 条" : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     private LocalDateTime now() {
         return LocalDateTime.now(clock);
     }
@@ -622,11 +638,19 @@ public class OpsNotificationCampaignService {
     }
 
     private void audit(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
+        auditLogService.record(auditRequest(action, resourceId, operator, idempotencyKey, reason, extra));
+    }
+
+    private void auditRequired(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
+        auditLogService.recordRequired(auditRequest(action, resourceId, operator, idempotencyKey, reason, extra));
+    }
+
+    private AuditLogWriteRequest auditRequest(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("reason", reason.trim());
         detail.putAll(extra);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        return AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(action.contains("CAP") ? "NOTIFICATION_CAP" : "NOTIFICATION_CAMPAIGN")
                 .resourceId(resourceId)
@@ -636,6 +660,6 @@ public class OpsNotificationCampaignService {
                 .result("SUCCESS")
                 .riskLevel("MEDIUM")
                 .detail(detail)
-                .build());
+                .build();
     }
 }
