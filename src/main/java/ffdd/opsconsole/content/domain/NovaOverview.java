@@ -10,5 +10,6 @@ public record NovaOverview(
         List<NovaSocialDistributionItem> socialDistribution,
         List<NovaSocialPoolView> socialPools,
         List<String> templateStatuses,
+        List<NovaOptionView> templateCtaOptions,
         List<String> sources) {
 }

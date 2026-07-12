@@ -15,6 +15,7 @@ public class DisclosureDraftEntity extends BaseEntity {
     private String effectiveDate;
     private Boolean requiresReack;
     private String zhBody;
+    private String viBody;
     private String enBody;
     private String status;
     private String lastOperator;

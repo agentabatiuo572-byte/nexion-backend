@@ -13,13 +13,41 @@ public interface NotificationCampaignRepository {
 
     Optional<NotificationCampaignRow> findCampaign(String campaignNo);
 
-    NotificationCampaignRow createCampaign(String campaignNo, NotificationCampaignCreateRequest request, LocalDateTime now);
+    NotificationCampaignRow createCampaign(String campaignNo, NotificationCampaignCreateRequest request, long estimatedAudience, LocalDateTime now);
 
-    void updateDraft(String campaignNo, NotificationCampaignDraftRequest request, LocalDateTime now);
+    void updateDraft(String campaignNo, NotificationCampaignDraftRequest request, long estimatedAudience, LocalDateTime now);
+
+    long estimateAudience(NotificationAudienceTarget target, String currentPhase, LocalDateTime now);
+
+    boolean deleteDraft(String campaignNo, LocalDateTime now);
 
     void updateStatus(String campaignNo, String status, String schedule, String operator, LocalDateTime now);
 
-    int dispatchCampaignNotification(String campaignNo, String bizNo, String trigger, String operator, LocalDateTime now);
+    int dispatchCampaignNotification(String campaignNo, String bizNo, String currentPhase, String trigger, String operator, LocalDateTime now);
+
+    List<String> listDueScheduledCampaignNos(LocalDateTime now, int limit);
+
+    boolean claimScheduled(String campaignNo, LocalDateTime now);
+
+    boolean claimForImmediateDispatch(String campaignNo, LocalDateTime now);
+
+    boolean cancelScheduled(String campaignNo, String operator, LocalDateTime now);
+
+    void completeDispatch(String campaignNo, String status, int sentCount, String schedule, String operator, LocalDateTime now);
+
+    int recoverStaleSending(LocalDateTime staleBefore, LocalDateTime now);
+
+    void applyRetention(LocalDateTime now);
+
+    void applyRetentionForUser(Long userId);
+
+    AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit);
+
+    boolean markNotificationRead(Long userId, Long notificationId);
+
+    int markAllNotificationsRead(Long userId);
+
+    int clearReadNotifications(Long userId);
 
     List<NotificationCapRuleView> listCapRules();
 

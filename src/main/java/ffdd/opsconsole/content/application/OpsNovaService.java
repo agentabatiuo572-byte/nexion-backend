@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaOverview;
+import ffdd.opsconsole.content.domain.NovaOptionView;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
 import ffdd.opsconsole.content.domain.NovaSocialPoolView;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,13 +34,24 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsNovaService {
     private static final Pattern KEY_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{2,64}$");
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[A-Za-z][A-Za-z0-9_]*}");
+    private static final Pattern DURATION_PATTERN = Pattern.compile("^(\\d+)\\s*(s|min|h|d)$", Pattern.CASE_INSENSITIVE);
     private static final Set<String> TEMPLATE_STATUSES = Set.of("DRAFT", "PUBLISHED", "ARCHIVED");
+    private static final List<NovaOptionView> TEMPLATE_CTA_OPTIONS = List.of(
+            new NovaOptionView("NONE", "无跳转"),
+            new NovaOptionView("/me/weekly", "每周回顾"),
+            new NovaOptionView("/devices", "设备商城"),
+            new NovaOptionView("/staking", "质押产品"),
+            new NovaOptionView("/team", "团队"),
+            new NovaOptionView("/earn", "收益任务"),
+            new NovaOptionView("/support", "客服中心"));
     private static final Map<String, DistributionOption> DISTRIBUTION_OPTIONS = List.of(
                     new DistributionOption("withdrawal", "提现到账", "var(--admin-cat-3)"),
                     new DistributionOption("vrank", "V 等级晋升", "var(--admin-cat-5)"),
@@ -58,6 +71,7 @@ public class OpsNovaService {
     private final AuditLogService auditLogService;
 
     public ApiResult<NovaOverview> overview() {
+        novaRepository.ensureTables();
         List<NovaChannelView> channels = novaRepository.channels();
         Map<String, Object> stats = novaRepository.stats();
         return ApiResult.ok(new NovaOverview(
@@ -68,6 +82,7 @@ public class OpsNovaService {
                 novaRepository.socialDistribution(),
                 novaRepository.socialPools(),
                 List.copyOf(TEMPLATE_STATUSES),
+                TEMPLATE_CTA_OPTIONS,
                 List.of(
                         "nx_nova_channel",
                         "nx_nova_template",
@@ -76,6 +91,7 @@ public class OpsNovaService {
                         "nx_notification")));
     }
 
+    @Transactional
     public ApiResult<NovaChannelView> createChannel(String idempotencyKey, NovaChannelUpsertRequest request) {
         ApiResult<NovaChannelView> guard = requireChannelCommand(idempotencyKey, request);
         if (guard != null) {
@@ -93,7 +109,7 @@ public class OpsNovaService {
                 request.tick().trim(),
                 request.cooldown().trim(),
                 safeCtr(request.ctr()),
-                request.enabled() == null || request.enabled(),
+                false,
                 novaRepository.nextChannelOrder(),
                 request.operator(),
                 request.reason().trim());
@@ -105,6 +121,7 @@ public class OpsNovaService {
         return ApiResult.ok(created);
     }
 
+    @Transactional
     public ApiResult<NovaChannelView> updateChannel(String key, String idempotencyKey, NovaChannelUpsertRequest request) {
         String normalizedKey = normalizeChannelKey(key);
         ApiResult<NovaChannelView> guard = requireChannelCommand(idempotencyKey, request);
@@ -117,6 +134,11 @@ public class OpsNovaService {
             return ApiResult.fail(404, "NOVA_CHANNEL_NOT_FOUND");
         }
         boolean enabled = request.enabled() == null ? current.get().enabled() : request.enabled();
+        if (enabled && !current.get().enabled() && novaRepository.template(normalizedKey)
+                .filter(template -> "PUBLISHED".equals(template.status()))
+                .isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PUBLISHED_TEMPLATE_REQUIRED");
+        }
         novaRepository.updateChannel(
                 normalizedKey,
                 request.name().trim(),
@@ -135,6 +157,7 @@ public class OpsNovaService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional
     public ApiResult<NovaChannelView> updateChannelStatus(String key, String idempotencyKey, NovaChannelStatusRequest request) {
         String normalizedKey = normalizeChannelKey(key);
         ApiResult<NovaChannelView> guard = requireReason(idempotencyKey, request == null ? null : request.reason());
@@ -152,6 +175,11 @@ public class OpsNovaService {
         if (current.get().enabled() == request.enabled()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        if (request.enabled() && novaRepository.template(normalizedKey)
+                .filter(template -> "PUBLISHED".equals(template.status()))
+                .isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PUBLISHED_TEMPLATE_REQUIRED");
+        }
         novaRepository.updateChannelStatus(normalizedKey, request.enabled(), request.operator(), request.reason().trim());
         NovaChannelView updated = novaRepository.channel(normalizedKey).orElseThrow();
         audit(request.enabled() ? "I2_NOVA_CHANNEL_RESTORED" : "I2_NOVA_CHANNEL_KILLED", normalizedKey,
@@ -159,6 +187,7 @@ public class OpsNovaService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional
     public ApiResult<Void> deleteChannel(String key, String idempotencyKey, NovaDeleteRequest request) {
         String normalizedKey = normalizeChannelKey(key);
         ApiResult<Void> guard = requireVoidReason(idempotencyKey, request == null ? null : request.reason());
@@ -169,11 +198,15 @@ public class OpsNovaService {
         if (novaRepository.channel(normalizedKey).isEmpty()) {
             return ApiResult.fail(404, "NOVA_CHANNEL_NOT_FOUND");
         }
+        if (novaRepository.template(normalizedKey).isPresent()) {
+            novaRepository.deleteTemplate(normalizedKey, request.operator(), request.reason().trim());
+        }
         novaRepository.deleteChannel(normalizedKey, request.operator(), request.reason().trim());
         audit("I2_NOVA_CHANNEL_DELETED", normalizedKey, request.operator(), idempotencyKey, request.reason(), Map.of("deleted", true));
         return ApiResult.ok();
     }
 
+    @Transactional
     public ApiResult<NovaTemplateView> createTemplate(String idempotencyKey, NovaTemplateCreateRequest request) {
         ApiResult<NovaTemplateView> guard = requireTemplateCreate(idempotencyKey, request);
         if (guard != null) {
@@ -181,6 +214,9 @@ public class OpsNovaService {
         }
         novaRepository.ensureTables();
         String channel = normalizeChannelKey(request.channel());
+        if (novaRepository.channel(channel).isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_CHANNEL_NOT_FOUND");
+        }
         if (novaRepository.template(channel).isPresent()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_EXISTS");
         }
@@ -189,13 +225,72 @@ public class OpsNovaService {
                 request.name().trim(),
                 request.cta().trim(),
                 request.version().trim(),
+                request.titleZh().trim(),
+                request.bodyZh().trim(),
+                request.titleVi().trim(),
+                request.bodyVi().trim(),
+                trimToEmpty(request.titleEn()),
+                trimToEmpty(request.bodyEn()),
                 request.operator(),
                 request.reason().trim());
+        novaRepository.channel(channel)
+                .filter(NovaChannelView::enabled)
+                .ifPresent(channelView -> novaRepository.updateChannelStatus(
+                        channel, false, request.operator(), request.reason().trim()));
         NovaTemplateView created = novaRepository.template(channel).orElseThrow();
         audit("I2_NOVA_TEMPLATE_CREATED", channel, request.operator(), idempotencyKey, request.reason(), Map.of("status", "DRAFT"));
         return ApiResult.ok(created);
     }
 
+    @Transactional
+    public ApiResult<NovaTemplateView> updateTemplate(String channel, String idempotencyKey, NovaTemplateCreateRequest request) {
+        String normalizedChannel = normalizeChannelKey(channel);
+        ApiResult<NovaTemplateView> guard = requireTemplateCreate(idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        if (!normalizedChannel.equals(normalizeChannelKey(request.channel()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_CHANNEL_IMMUTABLE");
+        }
+        novaRepository.ensureTables();
+        Optional<NovaTemplateView> current = novaRepository.template(normalizedChannel);
+        if (current.isEmpty()) {
+            return ApiResult.fail(404, "NOVA_TEMPLATE_NOT_FOUND");
+        }
+        novaRepository.updateTemplate(normalizedChannel, request.name().trim(), request.cta().trim(), request.version().trim(),
+                request.titleZh().trim(), request.bodyZh().trim(), request.titleVi().trim(), request.bodyVi().trim(),
+                trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()), request.operator(), request.reason().trim());
+        novaRepository.channel(normalizedChannel)
+                .filter(NovaChannelView::enabled)
+                .ifPresent(channelView -> novaRepository.updateChannelStatus(
+                        normalizedChannel, false, request.operator(), request.reason().trim()));
+        NovaTemplateView updated = novaRepository.template(normalizedChannel).orElseThrow();
+        audit("I2_NOVA_TEMPLATE_UPDATED", normalizedChannel, request.operator(), idempotencyKey, request.reason(), Map.of(
+                "fromVersion", current.get().version(), "toVersion", updated.version(), "status", updated.status()));
+        return ApiResult.ok(updated);
+    }
+
+    @Transactional
+    public ApiResult<Void> deleteTemplate(String channel, String idempotencyKey, NovaDeleteRequest request) {
+        String normalizedChannel = normalizeChannelKey(channel);
+        ApiResult<Void> guard = requireVoidReason(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        novaRepository.ensureTables();
+        Optional<NovaTemplateView> current = novaRepository.template(normalizedChannel);
+        if (current.isEmpty()) {
+            return ApiResult.fail(404, "NOVA_TEMPLATE_NOT_FOUND");
+        }
+        if ("PUBLISHED".equals(current.get().status())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PUBLISHED_TEMPLATE_CANNOT_DELETE");
+        }
+        novaRepository.deleteTemplate(normalizedChannel, request.operator(), request.reason().trim());
+        audit("I2_NOVA_TEMPLATE_DELETED", normalizedChannel, request.operator(), idempotencyKey, request.reason(), Map.of("deleted", true));
+        return ApiResult.ok();
+    }
+
+    @Transactional
     public ApiResult<NovaTemplateView> updateTemplateStatus(String channel, String idempotencyKey, NovaTemplateStatusRequest request) {
         String normalizedChannel = normalizeChannelKey(channel);
         ApiResult<NovaTemplateView> guard = requireReason(idempotencyKey, request == null ? null : request.reason());
@@ -214,7 +309,15 @@ public class OpsNovaService {
         if (status.equals(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        if ("PUBLISHED".equals(status) && !hasCompleteLocalizedContent(current.get())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZED_CONTENT_REQUIRED");
+        }
         novaRepository.updateTemplateStatus(normalizedChannel, status, request.operator(), request.reason().trim());
+        novaRepository.channel(normalizedChannel)
+                .filter(NovaChannelView::enabled)
+                .filter(channelView -> !"PUBLISHED".equals(status))
+                .ifPresent(channelView -> novaRepository.updateChannelStatus(
+                        normalizedChannel, false, request.operator(), request.reason().trim()));
         NovaTemplateView updated = novaRepository.template(normalizedChannel).orElseThrow();
         audit("I2_NOVA_TEMPLATE_STATUS_CHANGED", normalizedChannel, request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.get().status(),
@@ -222,6 +325,7 @@ public class OpsNovaService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional
     public ApiResult<List<NovaSocialDistributionItem>> updateDistribution(String idempotencyKey, NovaDistributionUpdateRequest request) {
         ApiResult<List<NovaSocialDistributionItem>> guard = requireDistributionCommand(idempotencyKey, request);
         if (guard != null) {
@@ -250,6 +354,7 @@ public class OpsNovaService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional
     public ApiResult<NovaSocialPoolView> updatePool(String poolKey, String idempotencyKey, NovaPoolUpdateRequest request) {
         String normalizedPoolKey = normalizePoolKey(poolKey);
         ApiResult<NovaSocialPoolView> guard = requireReason(idempotencyKey, request == null ? null : request.reason());
@@ -337,7 +442,41 @@ public class OpsNovaService {
         if (request.ctr() != null && (request.ctr().compareTo(BigDecimal.ZERO) < 0 || request.ctr().compareTo(new BigDecimal("100")) > 0)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_CTR_INVALID");
         }
+        Duration tick = parseDuration(request.tick());
+        Duration cooldown = parseDuration(request.cooldown());
+        if (tick == null || cooldown == null || tick.isZero() || cooldown.isZero()
+                || cooldown.compareTo(tick) < 0 || tick.compareTo(Duration.ofDays(365)) > 0
+                || cooldown.compareTo(Duration.ofDays(365)) > 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_CADENCE_INVALID");
+        }
         return null;
+    }
+
+    private Duration parseDuration(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        var matcher = DURATION_PATTERN.matcher(value.trim());
+        if (!matcher.matches()) {
+            return null;
+        }
+        long amount;
+        try {
+            amount = Long.parseLong(matcher.group(1));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+        try {
+            return switch (matcher.group(2).toLowerCase(Locale.ROOT)) {
+                case "s" -> Duration.ofSeconds(amount);
+                case "min" -> Duration.ofMinutes(amount);
+                case "h" -> Duration.ofHours(amount);
+                case "d" -> Duration.ofDays(amount);
+                default -> null;
+            };
+        } catch (ArithmeticException exception) {
+            return null;
+        }
     }
 
     private ApiResult<NovaTemplateView> requireTemplateCreate(String idempotencyKey, NovaTemplateCreateRequest request) {
@@ -346,10 +485,50 @@ public class OpsNovaService {
             return reasonGuard;
         }
         if (!StringUtils.hasText(request.channel()) || !StringUtils.hasText(request.name())
-                || !StringUtils.hasText(request.cta()) || !StringUtils.hasText(request.version())) {
+                || !StringUtils.hasText(request.cta()) || !StringUtils.hasText(request.version())
+                || !StringUtils.hasText(request.titleZh()) || !StringUtils.hasText(request.bodyZh())
+                || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyVi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_FIELDS_REQUIRED");
         }
+        if (request.name().trim().length() > 128 || request.cta().trim().length() > 255
+                || request.version().trim().length() > 32 || request.titleZh().trim().length() > 255
+                || request.titleVi().trim().length() > 255 || trimToEmpty(request.titleEn()).length() > 255
+                || request.bodyZh().trim().length() > 4000 || request.bodyVi().trim().length() > 4000
+                || trimToEmpty(request.bodyEn()).length() > 4000) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_FIELD_TOO_LONG");
+        }
+        if (TEMPLATE_CTA_OPTIONS.stream().noneMatch(option -> option.value().equals(request.cta().trim()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_CTA_UNSUPPORTED");
+        }
+        if ((StringUtils.hasText(request.titleEn()) != StringUtils.hasText(request.bodyEn()))
+                || !placeholders(request.bodyZh()).equals(placeholders(request.bodyVi()))
+                || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDERS_MISMATCH");
+        }
         return null;
+    }
+
+    private boolean hasCompleteLocalizedContent(NovaTemplateView template) {
+        return StringUtils.hasText(template.titleZh()) && StringUtils.hasText(template.bodyZh())
+                && StringUtils.hasText(template.titleVi()) && StringUtils.hasText(template.bodyVi())
+                && placeholders(template.bodyZh()).equals(placeholders(template.bodyVi()))
+                && (!StringUtils.hasText(template.bodyEn()) || placeholders(template.bodyZh()).equals(placeholders(template.bodyEn())));
+    }
+
+    private Set<String> placeholders(String value) {
+        Set<String> values = new LinkedHashSet<>();
+        if (!StringUtils.hasText(value)) {
+            return values;
+        }
+        var matcher = PLACEHOLDER_PATTERN.matcher(value);
+        while (matcher.find()) {
+            values.add(matcher.group());
+        }
+        return values;
+    }
+
+    private String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private ApiResult<List<NovaSocialDistributionItem>> requireDistributionCommand(String idempotencyKey, NovaDistributionUpdateRequest request) {

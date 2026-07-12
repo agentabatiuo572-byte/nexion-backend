@@ -13,6 +13,24 @@ import org.apache.ibatis.annotations.Update;
 
 public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
     @Select("""
+            SELECT *
+              FROM nx_help_article
+             WHERE article_code LIKE CONCAT('learn.%.', #{courseId})
+               AND is_deleted = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    HelpArticleEntity lockLearningCourse(@Param("courseId") String courseId);
+
+    @Update("""
+            UPDATE nx_help_article
+               SET featured = CASE WHEN article_code = #{articleCode} THEN 1 ELSE 0 END,
+                   updated_at = #{now}
+             WHERE is_deleted = 0 AND article_code LIKE 'learn.%'
+            """)
+    int selectSingleFeaturedLearningCourse(@Param("articleCode") String articleCode, @Param("now") LocalDateTime now);
+
+    @Select("""
             SELECT
               article_code AS id,
               category,

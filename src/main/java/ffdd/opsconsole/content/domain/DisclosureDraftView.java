@@ -7,6 +7,7 @@ public record DisclosureDraftView(
         String effectiveDate,
         boolean requiresReack,
         String zh,
+        String vi,
         String en,
         String status) {
 }

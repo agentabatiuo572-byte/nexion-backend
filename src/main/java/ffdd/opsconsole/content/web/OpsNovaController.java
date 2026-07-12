@@ -83,6 +83,24 @@ public class OpsNovaController {
         return novaService.createTemplate(idempotencyKey, request);
     }
 
+    @PatchMapping("/templates/{channel}")
+    @PreAuthorize("hasAuthority('content_i2_write')")
+    public ApiResult<NovaTemplateView> updateTemplate(
+            @PathVariable String channel,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaTemplateCreateRequest request) {
+        return novaService.updateTemplate(channel, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/templates/{channel}")
+    @PreAuthorize("hasAuthority('content_i2_write')")
+    public ApiResult<Void> deleteTemplate(
+            @PathVariable String channel,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody NovaDeleteRequest request) {
+        return novaService.deleteTemplate(channel, idempotencyKey, request);
+    }
+
     @PatchMapping("/templates/{channel}/status")
     @PreAuthorize("hasAuthority('content_i2_write')")
     public ApiResult<NovaTemplateView> updateTemplateStatus(

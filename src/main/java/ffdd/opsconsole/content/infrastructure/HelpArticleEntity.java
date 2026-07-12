@@ -25,4 +25,11 @@ public class HelpArticleEntity extends BaseEntity {
     private String tint;
     private Integer sortOrder;
     private Integer status;
+    private String quizJson;
+    private Integer quizPassScore;
+    private Integer quizRetryLimit;
+    private String completionCondition;
+    private String rewardEvent;
+    private Integer versionNo;
+    private Long revision;
 }

@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -17,13 +18,18 @@ import ffdd.opsconsole.content.domain.FinancialFieldView;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionFieldView;
 import ffdd.opsconsole.content.domain.TrustSectionView;
+import ffdd.opsconsole.content.domain.TrustSectionVersionView;
 import ffdd.opsconsole.content.domain.NotificationCapRuleView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
+import ffdd.opsconsole.content.dto.DisclosureChapterInput;
+import ffdd.opsconsole.content.dto.DisclosureMatrixRequest;
 import ffdd.opsconsole.content.dto.DisclosureGateUpdateRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
 import ffdd.opsconsole.content.dto.TrustDisclosureActionRequest;
 import ffdd.opsconsole.content.dto.TrustSectionPublishRequest;
 import ffdd.opsconsole.content.dto.TrustSectionRollbackRequest;
+import ffdd.opsconsole.content.dto.TrustSectionDraftRequest;
+import ffdd.opsconsole.content.dto.TrustSectionFieldInput;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -80,7 +86,9 @@ class OpsTrustDisclosureServiceTest {
         assertThat(result.getData().chapters()).hasSize(2);
         assertThat(result.getData().stats().staleAckUsers()).isEqualTo(2632);
         assertThat(result.getData().gateScope()).isEqualTo("提现");
-        assertThat(result.getData().sources()).contains("nx_trust_section", "nx_disclosure_draft");
+        assertThat(result.getData().sources()).contains("nx_trust_section", "nx_disclosure_draft", "nx_disclosure_ack_status");
+        assertThat(result.getData().countryOptions()).extracting(option -> option.code())
+                .containsExactly("VN", "HK", "SG", "GB");
         assertThat(repository.seedCalls).isZero();
     }
 
@@ -105,6 +113,50 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void trustSectionDraftSupportsCreateEditAndDeleteCrud() {
+        var created = service.createSectionDraft("financials", "idem-i4-create-draft", sectionDraft("v6", "新版说明", 0L));
+        assertThat(created.getCode()).isZero();
+        assertThat(created.getData().fields()).extracting(TrustSectionVersionView.Field::key).containsExactly("reserve", "auditDate");
+
+        var updated = service.updateSectionDraft("financials", "v6", "idem-i4-edit-draft", sectionDraft("v6", "修订说明", created.getData().revision()));
+        assertThat(updated.getCode()).isZero();
+        assertThat(updated.getData().description()).isEqualTo("修订说明");
+
+        var deleted = service.deleteSectionDraft("financials", "v6", "idem-i4-delete-draft", actionRequest());
+        assertThat(deleted.getCode()).isZero();
+        assertThat(repository.findTrustSectionVersion("financials", "v6")).isEmpty();
+    }
+
+    @Test
+    void trustSectionDraftRejectsMalformedStructuredFieldKey() {
+        var request = new TrustSectionDraftRequest(
+                "v6",
+                "新版说明",
+                "数字组 + 审计日期",
+                List.of(new TrustSectionFieldInput("中文字段", "备付金覆盖率", "128.4%")),
+                0L,
+                "Marina K.",
+                "维护信任版块草稿");
+
+        var result = service.createSectionDraft("financials", "idem-i4-invalid-field", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
+    }
+
+    @Test
+    void publishAndRollbackRequireBackendVersionSnapshots() {
+        service.createSectionDraft("financials", "idem-i4-create-snapshot", sectionDraft("v6", "新版说明", 0L));
+        var published = service.publishSection("financials", "idem-i4-publish-v6", new TrustSectionPublishRequest("v6", "Marina K.", "发布结构化信任新版"));
+        assertThat(published.getCode()).isZero();
+        assertThat(repository.findTrustSectionVersion("financials", "v6").orElseThrow().status()).isEqualTo("published");
+
+        var unknown = service.rollbackSection("financials", "idem-i4-unknown", new TrustSectionRollbackRequest("v999", "Marina K.", "回滚不存在版本"));
+        assertThat(unknown.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(unknown.getMessage()).isEqualTo("TRUST_SECTION_VERSION_NOT_FOUND");
+    }
+
+    @Test
     void archiveSectionRejectsRepeatedArchive() {
         assertThat(service.archiveSection("leadership", "idem-i4-archive", actionRequest()).getCode()).isZero();
 
@@ -118,10 +170,11 @@ class OpsTrustDisclosureServiceTest {
         var manualUrl = service.saveDisclosureDraft("SFC", "idem-i5-draft", new DisclosureDraftRequest(
                 "v13",
                 "SFC",
-                "en+zh",
+                "zh+vi+en",
                 "2026-06-30",
                 true,
                 "请访问 https://example.com 查看披露",
+                "Truy cập https://example.com để xem công bố",
                 "Visit https://example.com for disclosure",
                 "Marina K.",
                 "保存披露草稿"));
@@ -130,10 +183,11 @@ class OpsTrustDisclosureServiceTest {
         var rawJson = service.saveDisclosureDraft("SFC", "idem-i5-draft-2", new DisclosureDraftRequest(
                 "v13",
                 "SFC",
-                "en+zh",
+                "zh+vi+en",
                 "2026-06-30",
                 true,
                 "{\"zh\":\"raw\"}",
+                "{\"vi\":\"raw\"}",
                 "{\"en\":\"raw\"}",
                 "Marina K.",
                 "保存披露草稿"));
@@ -171,7 +225,9 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void publishDisclosurePersistsReackAndAudits() {
-        var result = service.publishDisclosure("SFC", "idem-i5-publish", disclosureRequest());
+        var request = disclosureRequest();
+        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-save-before-publish", request).getCode()).isZero();
+        var result = service.publishDisclosure("SFC", "idem-i5-publish", request);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v13");
@@ -179,13 +235,59 @@ class OpsTrustDisclosureServiceTest {
         assertThat(repository.drafts.get("SFC::v13").status()).isEqualTo("published");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("I5_DISCLOSURE_PUBLISHED");
-        assertThat(captor.getValue().getResourceType()).isEqualTo("DISCLOSURE_JURISDICTION");
+        verify(auditLogService, times(2)).record(captor.capture());
+        AuditLogWriteRequest publishedAudit = captor.getAllValues().get(1);
+        assertThat(publishedAudit.getAction()).isEqualTo("I5_DISCLOSURE_PUBLISHED");
+        assertThat(publishedAudit.getResourceType()).isEqualTo("DISCLOSURE_JURISDICTION");
+    }
+
+    @Test
+    void matrixUsesBackendCatalogAndOnlyCreatesDraftMappings() {
+        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-catalog-draft", disclosureRequest()).getCode()).isZero();
+
+        var created = service.configureMatrix("SBV", "idem-i5-matrix-create", new DisclosureMatrixRequest(
+                "SBV", "越南国家银行", List.of("VN"), "v13", "DRAFT", "Marina K.", "新增越南披露矩阵"));
+        assertThat(created.getCode()).isZero();
+        assertThat(repository.findJurisdiction("SBV").orElseThrow().countryCodes()).containsExactly("VN");
+
+        var directPublish = service.configureMatrix("NEW", "idem-i5-matrix-publish", new DisclosureMatrixRequest(
+                "NEW", "非法直发", List.of("VN"), "v13", "PUBLISHED", "Marina K.", "禁止绕过发布流程"));
+        assertThat(directPublish.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+
+        var unknownCountry = service.configureMatrix("NEW", "idem-i5-matrix-country", new DisclosureMatrixRequest(
+                "NEW", "未知国家", List.of("XX"), "v13", "DRAFT", "Marina K.", "校验国家目录来源"));
+        assertThat(unknownCountry.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+
+        var unknownVersion = service.configureMatrix("NEW", "idem-i5-matrix-version", new DisclosureMatrixRequest(
+                "NEW", "未知版本", List.of("VN"), "v999", "DRAFT", "Marina K.", "校验版本目录来源"));
+        assertThat(unknownVersion.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    void publishedMatrixCannotBeEditedInPlace() {
+        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-immutable-draft", disclosureRequest()).getCode()).isZero();
+        var result = service.configureMatrix("SFC", "idem-i5-matrix-immutable", new DisclosureMatrixRequest(
+                "SFC", "香港", List.of("HK"), "v13", "DRAFT", "Marina K.", "禁止改写已发布快照"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("PUBLISHED_DISCLOSURE_IMMUTABLE");
+    }
+
+    @Test
+    void replayDisclosurePublishLoadsPersistedDraftInsteadOfCommandBodies() {
+        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-replay-draft", disclosureRequest()).getCode()).isZero();
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("I", "i4_disclosure_publish", Map.of("jurisdiction", "SFC", "version", "v13")),
+                new AuditReplayContext("Marina K.", "replay persisted disclosure", "idem-i5-replay-publish"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(repository.findDisclosureVersion("SFC", "v13").orElseThrow().status()).isEqualTo("published");
     }
 
     @Test
     void replayI4TrustSectionPublishAuditsI4Action() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "待发布版本", 0L), LocalDateTime.now());
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
                         "sectionKey", "financials",
@@ -242,23 +344,47 @@ class OpsTrustDisclosureServiceTest {
         return new TrustDisclosureActionRequest("Marina K.", "内容操作确认");
     }
 
+    private static TrustSectionDraftRequest sectionDraft(String version, String description, long expectedRevision) {
+        return new TrustSectionDraftRequest(version, description, "数字组 + 审计日期", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18")),
+                expectedRevision, "Marina K.", "维护信任版块草稿");
+    }
+
     private static DisclosureDraftRequest disclosureRequest() {
         return new DisclosureDraftRequest(
                 "v13",
                 "SFC",
-                "en+zh",
+                "zh+vi+en",
                 "2026-06-30",
                 true,
                 "收益估算不构成承诺，用户需确认 {version}",
+                "Ước tính thu nhập không phải là cam kết, người dùng phải xác nhận {version}",
                 "Earnings estimates are not guarantees, please acknowledge {version}",
+                disclosureChapters(),
                 "Marina K.",
                 "发布披露新版");
     }
 
+    private static List<DisclosureChapterInput> disclosureChapters() {
+        return java.util.stream.IntStream.rangeClosed(1, 7)
+                .mapToObj(index -> new DisclosureChapterInput(
+                        String.format("%02d", index),
+                        "章节 " + index + " {version}",
+                        "Chương " + index + " {version}",
+                        "Chapter " + index + " {version}",
+                        "中文正文 " + index + " {version}",
+                        "Nội dung tiếng Việt " + index + " {version}",
+                        "English body " + index + " {version}"))
+                .toList();
+    }
+
     private static final class FakeTrustDisclosureRepository implements TrustDisclosureRepository {
         private final Map<String, TrustSectionView> sections = new LinkedHashMap<>();
+        private final Map<String, TrustSectionVersionView> sectionVersions = new LinkedHashMap<>();
         private final Map<String, DisclosureJurisdictionView> jurisdictions = new LinkedHashMap<>();
         private final Map<String, DisclosureDraftView> drafts = new LinkedHashMap<>();
+        private final Map<String, List<DisclosureChapterView>> chapterVersions = new LinkedHashMap<>();
         private final Map<String, DisclosureGateActionView> gates = new LinkedHashMap<>();
         private final Set<String> activeGateKeys = new LinkedHashSet<>();
         private int seedCalls;
@@ -266,8 +392,15 @@ class OpsTrustDisclosureServiceTest {
         private FakeTrustDisclosureRepository() {
             sections.put("financials", new TrustSectionView("financials", "财务透明数字组", "数字组 + 脚注", "v5", "published", "05-12", "合规 / 超管", true));
             sections.put("leadership", new TrustSectionView("leadership", "管理团队", "人员卡 ×5", "v3", "published", "03-08", "内容主管", false));
-            jurisdictions.put("MAS", new DisclosureJurisdictionView("MAS", "新加坡", "v11", "published", "05-02", 41_200, 100, 0));
-            jurisdictions.put("SFC", new DisclosureJurisdictionView("SFC", "香港", "v12", "published", "06-08", 9_400, 72, 312));
+            sectionVersions.put("financials::v5", new TrustSectionVersionView("financials", "v5", "财务透明数字组", "数字组 + 脚注",
+                    List.of(new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "128.4%")), "published", 1L, "system", "2026-05-12"));
+            sectionVersions.put("financials::v4", new TrustSectionVersionView("financials", "v4", "财务透明数字组", "数字组 + 脚注",
+                    List.of(new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "120%")), "superseded", 1L, "system", "2026-04-12"));
+            jurisdictions.put("MAS", new DisclosureJurisdictionView("MAS", "新加坡", List.of("SG"), "v11", "published", "05-02", 41_200, 100, 0));
+            jurisdictions.put("SFC", new DisclosureJurisdictionView("SFC", "香港", List.of("HK"), "v12", "published", "06-08", 9_400, 72, 312));
+            chapterVersions.put("MAS::v11", List.of(
+                    new DisclosureChapterView("MAS", "v11", "01", "收益预估不构成承诺", "Ước tính không phải cam kết", "Earnings estimates are not guarantees", "中文正文", "Nội dung", "English body"),
+                    new DisclosureChapterView("MAS", "v11", "02", "硬件衰减与产量波动", "Suy giảm phần cứng", "Hardware decay and output variance", "中文正文", "Nội dung", "English body")));
             gates.put("withdraw", new DisclosureGateActionView("withdraw", "提现", "提交提现前服务器先验披露确认", "已实装", "ok", true));
             gates.put("staking", new DisclosureGateActionView("staking", "质押锁仓", "确认状态过期时拦截质押入口", "已实装", "warn", false));
             gates.put("nexv2", new DisclosureGateActionView("nexv2", "NEX v2 历史锁仓", "已下线历史兼容项，只读展示，不允许重新启用", "已下线 · 历史兼容", "dim", false));
@@ -287,6 +420,46 @@ class OpsTrustDisclosureServiceTest {
         @Override
         public Optional<TrustSectionView> findTrustSection(String sectionKey) {
             return Optional.ofNullable(sections.get(sectionKey));
+        }
+
+        @Override
+        public List<TrustSectionVersionView> listTrustSectionVersions() {
+            return new ArrayList<>(sectionVersions.values());
+        }
+
+        @Override
+        public Optional<TrustSectionVersionView> findTrustSectionVersion(String sectionKey, String version) {
+            return Optional.ofNullable(sectionVersions.get(sectionKey + "::" + version));
+        }
+
+        @Override
+        public TrustSectionVersionView saveTrustSectionDraft(String sectionKey, TrustSectionDraftRequest request, LocalDateTime now) {
+            TrustSectionVersionView old = findTrustSectionVersion(sectionKey, request.version()).orElse(null);
+            long revision = old == null ? 1L : old.revision() + 1L;
+            TrustSectionVersionView saved = new TrustSectionVersionView(sectionKey, request.version(), request.description(), request.structure(),
+                    request.fields().stream().map(field -> new TrustSectionVersionView.Field(field.key(), field.label(), field.value())).toList(),
+                    "draft", revision, request.operator(), now.toString());
+            sectionVersions.put(sectionKey + "::" + request.version(), saved);
+            return saved;
+        }
+
+        @Override
+        public void deleteTrustSectionDraft(String sectionKey, String version, LocalDateTime now) {
+            sectionVersions.remove(sectionKey + "::" + version);
+        }
+
+        @Override
+        public TrustSectionView publishTrustSectionVersion(String sectionKey, String version, String operator, LocalDateTime now) {
+            TrustSectionVersionView target = findTrustSectionVersion(sectionKey, version).orElseThrow();
+            sectionVersions.replaceAll((key, value) -> value.sectionKey().equals(sectionKey)
+                    ? new TrustSectionVersionView(value.sectionKey(), value.version(), value.description(), value.structure(), value.fields(),
+                            value.version().equals(version) ? "published" : ("published".equals(value.status()) ? "superseded" : value.status()),
+                            value.revision(), operator, now.toString())
+                    : value);
+            TrustSectionView current = sections.get(sectionKey);
+            TrustSectionView updated = new TrustSectionView(sectionKey, target.description(), target.structure(), version, "published", "06-18", current.roleGate(), current.highSensitivity());
+            sections.put(sectionKey, updated);
+            return updated;
         }
 
         @Override
@@ -313,9 +486,12 @@ class OpsTrustDisclosureServiceTest {
 
         @Override
         public List<DisclosureChapterView> listChapters(String jurisdiction, String version) {
-            return List.of(
-                    new DisclosureChapterView(jurisdiction, version, "01", "收益预估不构成承诺", "Earnings estimates are not guarantees", "zh", "en"),
-                    new DisclosureChapterView(jurisdiction, version, "02", "硬件衰减与产量波动", "Hardware decay & output variance", "zh", "en"));
+            return chapterVersions.getOrDefault(jurisdiction + "::" + version, List.of());
+        }
+
+        @Override
+        public List<String> listDisclosureVersions() {
+            return drafts.values().stream().map(DisclosureDraftView::version).distinct().toList();
         }
 
         @Override
@@ -344,6 +520,11 @@ class OpsTrustDisclosureServiceTest {
         }
 
         @Override
+        public Optional<DisclosureDraftView> findDisclosureVersion(String jurisdiction, String version) {
+            return Optional.ofNullable(drafts.get(jurisdiction + "::" + version));
+        }
+
+        @Override
         public void updateTrustSection(String sectionKey, String version, String status, String operator, LocalDateTime now) {
             TrustSectionView current = sections.get(sectionKey);
             sections.put(sectionKey, new TrustSectionView(
@@ -366,8 +547,14 @@ class OpsTrustDisclosureServiceTest {
                     request.effectiveDate(),
                     Boolean.TRUE.equals(request.requiresReack()),
                     request.zh(),
+                    request.vi(),
                     request.en(),
                     status.toLowerCase()));
+            chapterVersions.put(request.jurisdiction() + "::" + request.version(), request.chapters().stream()
+                    .map(chapter -> new DisclosureChapterView(
+                            request.jurisdiction(), request.version(), chapter.no(), chapter.zhTitle(), chapter.viTitle(), chapter.enTitle(),
+                            chapter.zhBody(), chapter.viBody(), chapter.enBody()))
+                    .toList());
         }
 
         @Override
@@ -377,12 +564,28 @@ class OpsTrustDisclosureServiceTest {
             jurisdictions.put(jurisdiction, new DisclosureJurisdictionView(
                     current.code(),
                     current.name(),
+                    current.countryCodes(),
                     request.version(),
                     "published",
                     "06-18",
                     current.affected(),
                     Boolean.TRUE.equals(request.requiresReack()) ? 0 : 100,
                     current.blocked()));
+        }
+
+        @Override
+        public void upsertDisclosureMatrix(DisclosureMatrixRequest request, LocalDateTime now) {
+            DisclosureJurisdictionView current = jurisdictions.get(request.jurisdictionCode());
+            jurisdictions.put(request.jurisdictionCode(), new DisclosureJurisdictionView(
+                    request.jurisdictionCode(), request.jurisdictionName(), request.countryCodes(), request.version(), request.status().toLowerCase(),
+                    now.toLocalDate().toString(), current == null ? 0 : current.affected(), current == null ? 0 : current.ackProgress(), current == null ? 0 : current.blocked()));
+        }
+
+        @Override
+        public void archiveDisclosureMatrix(String jurisdiction, String operator, LocalDateTime now) {
+            DisclosureJurisdictionView current = jurisdictions.get(jurisdiction);
+            if (current != null) jurisdictions.put(jurisdiction, new DisclosureJurisdictionView(
+                    current.code(), current.name(), current.countryCodes(), current.version(), "archived", current.publishedAt(), current.affected(), current.ackProgress(), current.blocked()));
         }
 
         @Override

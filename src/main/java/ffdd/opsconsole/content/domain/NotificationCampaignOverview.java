@@ -10,5 +10,7 @@ public record NotificationCampaignOverview(
         List<String> audiences,
         List<String> statuses,
         List<NotificationSwipeRouteView> swipeRoutes,
+        NotificationAudienceCatalog audienceCatalog,
+        NotificationDeliveryCatalog deliveryCatalog,
         List<String> sources) {
 }

@@ -8,6 +8,7 @@ public record I18nLearningOverview(
         List<I18nIntegrityIssueView> integrityIssues,
         List<I18nHardcodedFindingView> hardcodedFindings,
         I18nMessagePairView focusMessage,
+        List<I18nMessagePairView> messages,
         List<LearningCourseView> courses,
         TutorialRewardRange rewardRange,
         String featuredCourseId,

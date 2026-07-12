@@ -30,9 +30,17 @@ public interface NovaRepository {
 
     Optional<NovaTemplateView> template(String channel);
 
-    void createTemplate(String channel, String name, String cta, String version, String operator, String reason);
+    void createTemplate(String channel, String name, String cta, String version,
+                        String titleZh, String bodyZh, String titleVi, String bodyVi,
+                        String titleEn, String bodyEn, String operator, String reason);
+
+    void updateTemplate(String channel, String name, String cta, String version,
+                        String titleZh, String bodyZh, String titleVi, String bodyVi,
+                        String titleEn, String bodyEn, String operator, String reason);
 
     void updateTemplateStatus(String channel, String status, String operator, String reason);
+
+    void deleteTemplate(String channel, String operator, String reason);
 
     List<NovaSocialDistributionItem> socialDistribution();
 

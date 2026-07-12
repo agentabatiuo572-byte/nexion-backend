@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.facade.ContentNotificationDispatchFacade;
 import ffdd.opsconsole.content.facade.NotificationEmergencyDispatchResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -20,6 +21,7 @@ public class ContentNotificationDispatchFacadeAdapter implements ContentNotifica
     private final NotificationCampaignRepository campaignRepository;
     private final AuditLogService auditLogService;
     private final Clock clock;
+    private final PlatformConfigFacade configFacade;
 
     @Override
     public Optional<NotificationEmergencyDispatchResult> dispatchEmergencyCampaign(
@@ -40,9 +42,11 @@ public class ContentNotificationDispatchFacadeAdapter implements ContentNotifica
         int notificationCount = campaignRepository.dispatchCampaignNotification(
                 current.id(),
                 bizNo,
+                configFacade.activeValue("growth.phase.current").orElse(""),
                 trigger,
                 operator,
                 LocalDateTime.now(clock));
+        campaignRepository.completeDispatch(current.id(), "SENT", notificationCount, "应急下发", operator, LocalDateTime.now(clock));
         NotificationCampaignRow updated = campaignRepository.findCampaign(current.id()).orElse(current);
         auditLogService.record(AuditLogWriteRequest.builder()
                 .action("I3_NOTIFICATION_CAMPAIGN_DISPATCHED_BY_J4")

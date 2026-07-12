@@ -12,6 +12,7 @@ import lombok.EqualsAndHashCode;
 public class DisclosureJurisdictionEntity extends BaseEntity {
     private String jurisdictionCode;
     private String jurisdictionName;
+    private String countryCodes;
     private String versionLabel;
     private String status;
     private String publishedAtLabel;

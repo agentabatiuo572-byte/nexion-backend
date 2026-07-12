@@ -59,6 +59,12 @@ public interface NovaMapper extends BaseMapper<Object> {
               template_name VARCHAR(128) NOT NULL,
               cta VARCHAR(255) NOT NULL,
               version VARCHAR(32) NOT NULL,
+              title_zh VARCHAR(255) NOT NULL DEFAULT '',
+              body_zh TEXT NOT NULL,
+              title_vi VARCHAR(255) NOT NULL DEFAULT '',
+              body_vi TEXT NOT NULL,
+              title_en VARCHAR(255) NOT NULL DEFAULT '',
+              body_en TEXT NOT NULL,
               status VARCHAR(32) NOT NULL,
               operator VARCHAR(128) NULL,
               reason VARCHAR(512) NULL,
@@ -70,6 +76,41 @@ public interface NovaMapper extends BaseMapper<Object> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTemplateTable();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_nova_template'
+               AND COLUMN_NAME = 'title_zh'
+            """)
+    int templateContentColumnCount();
+
+    @Update("""
+            ALTER TABLE nx_nova_template
+              ADD COLUMN title_zh VARCHAR(255) NOT NULL DEFAULT '' AFTER version,
+              ADD COLUMN body_zh TEXT NOT NULL AFTER title_zh,
+              ADD COLUMN title_vi VARCHAR(255) NOT NULL DEFAULT '' AFTER body_zh,
+              ADD COLUMN body_vi TEXT NOT NULL AFTER title_vi,
+              ADD COLUMN title_en VARCHAR(255) NOT NULL DEFAULT '' AFTER body_vi,
+              ADD COLUMN body_en TEXT NOT NULL AFTER title_en
+            """)
+    void addTemplateContentColumns();
+
+    @Update("""
+            UPDATE nx_nova_template t
+            LEFT JOIN nx_nova_channel c
+              ON c.channel_key = t.channel_key AND c.is_deleted = 0
+               SET t.status = 'DRAFT',
+                   c.enabled = 0,
+                   t.updated_at = NOW(),
+                   c.updated_at = NOW()
+             WHERE t.is_deleted = 0
+               AND (TRIM(t.title_zh) = '' OR TRIM(t.body_zh) = ''
+                    OR TRIM(t.title_vi) = '' OR TRIM(t.body_vi) = '')
+               AND (UPPER(t.status) <> 'DRAFT' OR COALESCE(c.enabled, 0) <> 0)
+            """)
+    int quarantineIncompleteTemplates();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_nova_social_distribution (
@@ -250,6 +291,12 @@ public interface NovaMapper extends BaseMapper<Object> {
                    template_name AS name,
                    cta,
                    version,
+                   title_zh AS titleZh,
+                   body_zh AS bodyZh,
+                   title_vi AS titleVi,
+                   body_vi AS bodyVi,
+                   title_en AS titleEn,
+                   body_en AS bodyEn,
                    status
               FROM nx_nova_template
              WHERE is_deleted = 0
@@ -262,6 +309,12 @@ public interface NovaMapper extends BaseMapper<Object> {
                    template_name AS name,
                    cta,
                    version,
+                   title_zh AS titleZh,
+                   body_zh AS bodyZh,
+                   title_vi AS titleVi,
+                   body_vi AS bodyVi,
+                   title_en AS titleEn,
+                   body_en AS bodyEn,
                    status
               FROM nx_nova_template
              WHERE is_deleted = 0
@@ -272,16 +325,26 @@ public interface NovaMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT INTO nx_nova_template (
-                channel_key, template_name, cta, version, status, operator, reason,
+                channel_key, template_name, cta, version,
+                title_zh, body_zh, title_vi, body_vi, title_en, body_en,
+                status, operator, reason,
                 created_at, updated_at, is_deleted
             ) VALUES (
-                #{channel}, #{name}, #{cta}, #{version}, #{status}, #{operator}, #{reason},
+                #{channel}, #{name}, #{cta}, #{version},
+                #{titleZh}, #{bodyZh}, #{titleVi}, #{bodyVi}, #{titleEn}, #{bodyEn},
+                #{status}, #{operator}, #{reason},
                 NOW(), NOW(), 0
             )
             ON DUPLICATE KEY UPDATE
                 template_name = VALUES(template_name),
                 cta = VALUES(cta),
                 version = VALUES(version),
+                title_zh = VALUES(title_zh),
+                body_zh = VALUES(body_zh),
+                title_vi = VALUES(title_vi),
+                body_vi = VALUES(body_vi),
+                title_en = VALUES(title_en),
+                body_en = VALUES(body_en),
                 status = VALUES(status),
                 operator = VALUES(operator),
                 reason = VALUES(reason),
@@ -292,6 +355,12 @@ public interface NovaMapper extends BaseMapper<Object> {
                        @Param("name") String name,
                        @Param("cta") String cta,
                        @Param("version") String version,
+                       @Param("titleZh") String titleZh,
+                       @Param("bodyZh") String bodyZh,
+                       @Param("titleVi") String titleVi,
+                       @Param("bodyVi") String bodyVi,
+                       @Param("titleEn") String titleEn,
+                       @Param("bodyEn") String bodyEn,
                        @Param("status") String status,
                        @Param("operator") String operator,
                        @Param("reason") String reason);
@@ -309,6 +378,19 @@ public interface NovaMapper extends BaseMapper<Object> {
                              @Param("status") String status,
                              @Param("operator") String operator,
                              @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_template
+               SET is_deleted = 1,
+                   operator = #{operator},
+                   reason = #{reason},
+                   updated_at = NOW()
+             WHERE channel_key = #{channel}
+               AND is_deleted = 0
+            """)
+    int deleteTemplate(@Param("channel") String channel,
+                       @Param("operator") String operator,
+                       @Param("reason") String reason);
 
     @Select("""
             SELECT dist_key AS `key`,

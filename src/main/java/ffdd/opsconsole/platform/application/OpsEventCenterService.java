@@ -270,7 +270,7 @@ public class OpsEventCenterService {
                                     row("content.trust_section_viewed", "信任版块曝光(I4)占位中"),
                                     row("notification.delivered / read / swipe_action_taken", "通知三件套(I3)占位中"),
                                     row("disclosure.viewed / acked / reack_triggered / gated_action_blocked", "披露操作链(I5)占位中"),
-                                    row("learn.course_started / quiz_passed / course_completed", "课程链(I7)占位中"))),
+                                    row("learn.course_started / quiz_passed / course_completed", "课程链(I7)已落地:进度、答题结果、完课与奖励账本均由后端事务写入"))),
                     new EventDomainExtensionBatch(
                             "j-schema",
                             "J 域 schema 批",

@@ -1,6 +1,8 @@
 package ffdd.opsconsole.content.infrastructure;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.DisclosureChapterView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureGateActionView;
@@ -9,20 +11,29 @@ import ffdd.opsconsole.content.domain.FinancialFieldView;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionFieldView;
 import ffdd.opsconsole.content.domain.TrustSectionView;
+import ffdd.opsconsole.content.domain.TrustSectionVersionView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
+import ffdd.opsconsole.content.dto.DisclosureChapterInput;
+import ffdd.opsconsole.content.dto.DisclosureMatrixRequest;
+import ffdd.opsconsole.content.dto.TrustSectionDraftRequest;
+import ffdd.opsconsole.content.dto.TrustSectionFieldInput;
 import ffdd.opsconsole.content.mapper.DisclosureChapterMapper;
+import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
 import ffdd.opsconsole.content.mapper.DisclosureDraftMapper;
 import ffdd.opsconsole.content.mapper.DisclosureGateActionMapper;
 import ffdd.opsconsole.content.mapper.DisclosureJurisdictionMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionFieldMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionMapper;
+import ffdd.opsconsole.content.mapper.TrustSectionVersionMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
@@ -33,13 +44,16 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     private static final DateTimeFormatter DAY_LABEL = DateTimeFormatter.ofPattern("MM-dd");
     private static final String FINANCIALS = "financials";
     private static final String NEX_V2 = "nexv2";
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final TrustSectionMapper trustSectionMapper;
     private final TrustSectionFieldMapper trustSectionFieldMapper;
+    private final TrustSectionVersionMapper trustSectionVersionMapper;
     private final DisclosureJurisdictionMapper disclosureJurisdictionMapper;
     private final DisclosureChapterMapper disclosureChapterMapper;
     private final DisclosureGateActionMapper disclosureGateActionMapper;
     private final DisclosureDraftMapper disclosureDraftMapper;
+    private final DisclosureAckStatusMapper disclosureAckStatusMapper;
 
     private static final List<TrustSectionSeed> TRUST_SECTION_SEEDS = List.of();
     private static final List<FieldSeed> FIELD_SEEDS = List.of();
@@ -66,6 +80,79 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     @Override
     public Optional<TrustSectionView> findTrustSection(String sectionKey) {
         return Optional.ofNullable(findTrustSectionEntity(sectionKey)).map(this::toTrustSection);
+    }
+
+    @Override
+    public List<TrustSectionVersionView> listTrustSectionVersions() {
+        return trustSectionVersionMapper.selectList(new LambdaQueryWrapper<TrustSectionVersionEntity>()
+                        .eq(TrustSectionVersionEntity::getIsDeleted, 0)
+                        .orderByAsc(TrustSectionVersionEntity::getSectionKey)
+                        .orderByDesc(TrustSectionVersionEntity::getId))
+                .stream().map(this::toTrustSectionVersion).toList();
+    }
+
+    @Override
+    public Optional<TrustSectionVersionView> findTrustSectionVersion(String sectionKey, String version) {
+        return Optional.ofNullable(findTrustSectionVersionEntity(sectionKey, version)).map(this::toTrustSectionVersion);
+    }
+
+    @Override
+    public TrustSectionVersionView saveTrustSectionDraft(String sectionKey, TrustSectionDraftRequest request, LocalDateTime now) {
+        TrustSectionVersionEntity entity = findTrustSectionVersionEntity(sectionKey, request.version());
+        if (entity == null) {
+            entity = new TrustSectionVersionEntity();
+            entity.setSectionKey(normalize(sectionKey));
+            entity.setVersionLabel(normalize(request.version()));
+            entity.setStatus("DRAFT");
+            entity.setRevision(0L);
+            entity.setCreatedAt(now);
+            entity.setIsDeleted(0);
+        }
+        entity.setDescription(normalize(request.description()));
+        entity.setStructText(normalize(request.structure()));
+        try {
+            entity.setFieldsJson(JSON.writeValueAsString(request.fields()));
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("TRUST_SECTION_FIELDS_SERIALIZATION_FAILED", ex);
+        }
+        entity.setRevision((entity.getRevision() == null ? 0L : entity.getRevision()) + 1L);
+        entity.setLastOperator(operator(request.operator()));
+        entity.setUpdatedAt(now);
+        if (entity.getId() == null) trustSectionVersionMapper.insert(entity); else trustSectionVersionMapper.updateById(entity);
+        return toTrustSectionVersion(entity);
+    }
+
+    @Override
+    public void deleteTrustSectionDraft(String sectionKey, String version, LocalDateTime now) {
+        TrustSectionVersionEntity entity = findTrustSectionVersionEntity(sectionKey, version);
+        if (entity == null) return;
+        entity.setIsDeleted(1);
+        entity.setUpdatedAt(now);
+        trustSectionVersionMapper.updateById(entity);
+    }
+
+    @Override
+    public TrustSectionView publishTrustSectionVersion(String sectionKey, String version, String operator, LocalDateTime now) {
+        TrustSectionVersionEntity target = findTrustSectionVersionEntity(sectionKey, version);
+        if (target == null) throw new IllegalArgumentException("TRUST_SECTION_VERSION_NOT_FOUND");
+        for (TrustSectionVersionEntity row : trustSectionVersionMapper.selectList(new LambdaQueryWrapper<TrustSectionVersionEntity>()
+                .eq(TrustSectionVersionEntity::getSectionKey, normalize(sectionKey)).eq(TrustSectionVersionEntity::getIsDeleted, 0))) {
+            row.setStatus(row.getId().equals(target.getId()) ? "PUBLISHED" : ("PUBLISHED".equalsIgnoreCase(row.getStatus()) ? "SUPERSEDED" : row.getStatus()));
+            row.setUpdatedAt(now);
+            trustSectionVersionMapper.updateById(row);
+        }
+        TrustSectionEntity section = findTrustSectionEntity(sectionKey);
+        if (section == null) throw new IllegalArgumentException("TRUST_SECTION_NOT_FOUND");
+        section.setDescription(target.getDescription());
+        section.setStructText(target.getStructText());
+        section.setVersionLabel(target.getVersionLabel());
+        section.setStatus("PUBLISHED");
+        section.setLastChange(DAY_LABEL.format(now));
+        section.setLastOperator(operator(operator));
+        section.setUpdatedAt(now);
+        trustSectionMapper.updateById(section);
+        replaceSectionFields(sectionKey, readFields(target.getFieldsJson()), operator, now);
+        return toTrustSection(section);
     }
 
     @Override
@@ -128,6 +215,18 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     }
 
     @Override
+    public List<String> listDisclosureVersions() {
+        Set<String> versions = new TreeSet<>();
+        disclosureJurisdictionMapper.selectList(new LambdaQueryWrapper<DisclosureJurisdictionEntity>().eq(DisclosureJurisdictionEntity::getIsDeleted, 0))
+                .forEach(entity -> addVersion(versions, entity.getVersionLabel()));
+        disclosureDraftMapper.selectList(new LambdaQueryWrapper<DisclosureDraftEntity>().eq(DisclosureDraftEntity::getIsDeleted, 0))
+                .forEach(entity -> addVersion(versions, entity.getVersionLabel()));
+        disclosureChapterMapper.selectList(new LambdaQueryWrapper<DisclosureChapterEntity>().eq(DisclosureChapterEntity::getIsDeleted, 0))
+                .forEach(entity -> addVersion(versions, entity.getVersionLabel()));
+        return List.copyOf(versions);
+    }
+
+    @Override
     public List<DisclosureGateActionView> listGateActions() {
         return disclosureGateActionMapper.selectList(new LambdaQueryWrapper<DisclosureGateActionEntity>()
                         .eq(DisclosureGateActionEntity::getIsDeleted, 0)
@@ -142,6 +241,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     public Optional<DisclosureDraftView> findLatestDraft() {
         return Optional.ofNullable(disclosureDraftMapper.selectOne(new LambdaQueryWrapper<DisclosureDraftEntity>()
                         .eq(DisclosureDraftEntity::getIsDeleted, 0)
+                        .eq(DisclosureDraftEntity::getStatus, "DRAFT")
                         .orderByDesc(DisclosureDraftEntity::getId)
                         .last("LIMIT 1")))
                 .map(this::toDraft);
@@ -152,9 +252,15 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         return Optional.ofNullable(disclosureDraftMapper.selectOne(new LambdaQueryWrapper<DisclosureDraftEntity>()
                         .eq(DisclosureDraftEntity::getIsDeleted, 0)
                         .eq(DisclosureDraftEntity::getJurisdictionCode, normalizeUpper(jurisdiction))
+                        .eq(DisclosureDraftEntity::getStatus, "DRAFT")
                         .orderByDesc(DisclosureDraftEntity::getId)
                         .last("LIMIT 1")))
                 .map(this::toDraft);
+    }
+
+    @Override
+    public Optional<DisclosureDraftView> findDisclosureVersion(String jurisdiction, String version) {
+        return Optional.ofNullable(findDraftEntity(jurisdiction, version)).map(this::toDraft);
     }
 
     @Override
@@ -185,6 +291,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         draft.setEffectiveDate(normalize(request.effectiveDate()));
         draft.setRequiresReack(Boolean.TRUE.equals(request.requiresReack()));
         draft.setZhBody(normalize(request.zh()));
+        draft.setViBody(normalize(request.vi()));
         draft.setEnBody(normalize(request.en()));
         draft.setStatus(normalizeUpper(status));
         draft.setLastOperator(operator(request.operator()));
@@ -194,13 +301,22 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         } else {
             disclosureDraftMapper.updateById(draft);
         }
+        replaceDisclosureChapters(normalizeUpper(request.jurisdiction()), normalize(request.version()), request, now);
         ensureJurisdictionForDraft(request, status, now);
     }
 
     @Override
     public void publishDisclosure(String jurisdiction, DisclosureDraftRequest request, LocalDateTime now) {
         DisclosureJurisdictionEntity current = findJurisdictionEntity(jurisdiction);
-        String previousVersion = current == null ? null : current.getVersionLabel();
+        disclosureDraftMapper.selectList(new LambdaQueryWrapper<DisclosureDraftEntity>()
+                        .eq(DisclosureDraftEntity::getJurisdictionCode, normalizeUpper(jurisdiction))
+                        .eq(DisclosureDraftEntity::getStatus, "PUBLISHED")
+                        .eq(DisclosureDraftEntity::getIsDeleted, 0))
+                .forEach(row -> {
+                    row.setStatus("SUPERSEDED");
+                    row.setUpdatedAt(now);
+                    disclosureDraftMapper.updateById(row);
+                });
         saveDisclosureDraft(request, "PUBLISHED", now);
         current = findJurisdictionEntity(jurisdiction);
         if (current != null) {
@@ -212,7 +328,42 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
             current.setUpdatedAt(now);
             disclosureJurisdictionMapper.updateById(current);
         }
-        ensureChapters(normalizeUpper(jurisdiction), previousVersion, request, now);
+        if (Boolean.TRUE.equals(request.requiresReack()) && current != null) {
+            List<String> countryCodes = countryCodes(current.getCountryCodes());
+            if (!countryCodes.isEmpty()) {
+                disclosureAckStatusMapper.markJurisdictionUsersStale(
+                        normalizeUpper(jurisdiction), countryCodes, normalize(request.version()), now);
+            }
+        } else if (current != null) {
+            disclosureAckStatusMapper.carryForwardAcknowledgedVersion(
+                    normalizeUpper(jurisdiction), normalize(request.version()), now);
+        }
+    }
+
+    @Override
+    public void upsertDisclosureMatrix(DisclosureMatrixRequest request, LocalDateTime now) {
+        DisclosureJurisdictionEntity entity = findJurisdictionEntity(request.jurisdictionCode());
+        if (entity == null) {
+            entity = new DisclosureJurisdictionEntity();
+            entity.setJurisdictionCode(normalizeUpper(request.jurisdictionCode()));
+            entity.setAffectedCount(0L); entity.setAckProgressPct(BigDecimal.ZERO); entity.setBlockedCount(0L);
+            entity.setPublishedAtLabel(""); entity.setCreatedAt(now); entity.setIsDeleted(0);
+        }
+        entity.setJurisdictionName(normalize(request.jurisdictionName()));
+        entity.setCountryCodes(String.join(",", request.countryCodes().stream()
+                .filter(StringUtils::hasText).map(this::normalizeUpper).distinct().sorted().toList()));
+        entity.setVersionLabel(normalize(request.version()));
+        entity.setStatus(normalizeUpper(request.status()));
+        entity.setLastOperator(operator(request.operator())); entity.setUpdatedAt(now);
+        if (entity.getId() == null) disclosureJurisdictionMapper.insert(entity); else disclosureJurisdictionMapper.updateById(entity);
+    }
+
+    @Override
+    public void archiveDisclosureMatrix(String jurisdiction, String operator, LocalDateTime now) {
+        DisclosureJurisdictionEntity entity = findJurisdictionEntity(jurisdiction);
+        if (entity == null) return;
+        entity.setStatus("ARCHIVED"); entity.setLastOperator(operator(operator)); entity.setUpdatedAt(now);
+        disclosureJurisdictionMapper.updateById(entity);
     }
 
     private void ensureJurisdictionForDraft(DisclosureDraftRequest request, String status, LocalDateTime now) {
@@ -223,6 +374,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         DisclosureJurisdictionEntity entity = new DisclosureJurisdictionEntity();
         entity.setJurisdictionCode(normalizeUpper(request.jurisdiction()));
         entity.setJurisdictionName(normalizeUpper(request.jurisdiction()));
+        entity.setCountryCodes(normalizeUpper(request.jurisdiction()));
         entity.setVersionLabel(normalize(request.version()));
         entity.setStatus(normalizeUpper(status));
         entity.setPublishedAtLabel("PUBLISHED".equalsIgnoreCase(status) ? DAY_LABEL.format(now) : "");
@@ -249,27 +401,24 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 });
     }
 
-    private void ensureChapters(String jurisdiction, String previousVersion, DisclosureDraftRequest request, LocalDateTime now) {
-        String version = normalize(request.version());
-        if (!listChapters(jurisdiction, version).isEmpty()) {
-            return;
-        }
-        List<DisclosureChapterEntity> source = disclosureChapterMapper.selectList(new LambdaQueryWrapper<DisclosureChapterEntity>()
-                .eq(DisclosureChapterEntity::getIsDeleted, 0)
+    private void replaceDisclosureChapters(String jurisdiction, String version, DisclosureDraftRequest request, LocalDateTime now) {
+        disclosureChapterMapper.delete(new LambdaQueryWrapper<DisclosureChapterEntity>()
                 .eq(DisclosureChapterEntity::getJurisdictionCode, jurisdiction)
-                .eq(StringUtils.hasText(previousVersion), DisclosureChapterEntity::getVersionLabel, previousVersion)
-                .orderByAsc(DisclosureChapterEntity::getSortOrder)
-                .orderByAsc(DisclosureChapterEntity::getId));
-        for (DisclosureChapterEntity current : source) {
+                .eq(DisclosureChapterEntity::getVersionLabel, version));
+        List<DisclosureChapterInput> source = request.chapters();
+        for (int index = 0; index < source.size(); index += 1) {
+            DisclosureChapterInput current = source.get(index);
             DisclosureChapterEntity chapter = new DisclosureChapterEntity();
             chapter.setJurisdictionCode(jurisdiction);
             chapter.setVersionLabel(version);
-            chapter.setChapterNo(current.getChapterNo());
-            chapter.setZhTitle(current.getZhTitle());
-            chapter.setEnTitle(current.getEnTitle());
-            chapter.setZhBody(request.zh().trim());
-            chapter.setEnBody(request.en().trim());
-            chapter.setSortOrder(current.getSortOrder());
+            chapter.setChapterNo(normalize(current.no()));
+            chapter.setZhTitle(normalize(current.zhTitle()));
+            chapter.setViTitle(normalize(current.viTitle()));
+            chapter.setEnTitle(normalize(current.enTitle()));
+            chapter.setZhBody(normalize(current.zhBody()));
+            chapter.setViBody(normalize(current.viBody()));
+            chapter.setEnBody(normalize(current.enBody()));
+            chapter.setSortOrder((index + 1) * 10);
             chapter.setLastOperator(operator(request.operator()));
             chapter.setCreatedAt(now);
             chapter.setUpdatedAt(now);
@@ -283,6 +432,56 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 .eq(TrustSectionEntity::getSectionKey, normalize(sectionKey))
                 .eq(TrustSectionEntity::getIsDeleted, 0)
                 .last("LIMIT 1"));
+    }
+
+    private TrustSectionVersionEntity findTrustSectionVersionEntity(String sectionKey, String version) {
+        return trustSectionVersionMapper.selectOne(new LambdaQueryWrapper<TrustSectionVersionEntity>()
+                .eq(TrustSectionVersionEntity::getSectionKey, normalize(sectionKey))
+                .eq(TrustSectionVersionEntity::getVersionLabel, normalize(version))
+                .eq(TrustSectionVersionEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+    }
+
+    private void replaceSectionFields(String sectionKey, List<TrustSectionFieldInput> fields, String operator, LocalDateTime now) {
+        List<TrustSectionFieldEntity> existing = trustSectionFieldMapper.selectList(new LambdaQueryWrapper<TrustSectionFieldEntity>()
+                .eq(TrustSectionFieldEntity::getSectionKey, normalize(sectionKey))
+                .eq(TrustSectionFieldEntity::getIsDeleted, 0));
+        for (TrustSectionFieldEntity row : existing) {
+            row.setIsDeleted(1);
+            row.setUpdatedAt(now);
+            trustSectionFieldMapper.updateById(row);
+        }
+        for (int index = 0; index < fields.size(); index += 1) {
+            TrustSectionFieldInput field = fields.get(index);
+            TrustSectionFieldEntity row = new TrustSectionFieldEntity();
+            row.setSectionKey(normalize(sectionKey));
+            row.setFieldKey(normalize(field.key()));
+            row.setFieldValue(normalize(field.value()));
+            row.setFieldDelta(normalize(field.label()));
+            row.setSortOrder((index + 1) * 10);
+            row.setLastOperator(operator(operator));
+            row.setCreatedAt(now);
+            row.setUpdatedAt(now);
+            row.setIsDeleted(0);
+            trustSectionFieldMapper.insert(row);
+        }
+    }
+
+    private List<TrustSectionFieldInput> readFields(String json) {
+        if (!StringUtils.hasText(json)) return List.of();
+        try {
+            return JSON.readValue(json, new TypeReference<>() {});
+        } catch (Exception ex) {
+            return List.of();
+        }
+    }
+
+    private TrustSectionVersionView toTrustSectionVersion(TrustSectionVersionEntity entity) {
+        return new TrustSectionVersionView(
+                entity.getSectionKey(), entity.getVersionLabel(), entity.getDescription(), entity.getStructText(),
+                readFields(entity.getFieldsJson()).stream().map(field -> new TrustSectionVersionView.Field(field.key(), field.label(), field.value())).toList(),
+                normalize(entity.getStatus()), entity.getRevision() == null ? 0L : entity.getRevision(),
+                operator(entity.getLastOperator()), entity.getUpdatedAt() == null ? "" : entity.getUpdatedAt().toString());
     }
 
     private DisclosureJurisdictionEntity findJurisdictionEntity(String jurisdiction) {
@@ -378,8 +577,10 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         entity.setVersionLabel(version);
         entity.setChapterNo(seed.no());
         entity.setZhTitle(seed.zhTitle());
+        entity.setViTitle(seed.zhTitle());
         entity.setEnTitle(seed.enTitle());
         entity.setZhBody(seed.zhTitle() + "。请在继续使用相关功能前完成确认。");
+        entity.setViBody(seed.zhTitle() + ". Vui lòng xác nhận trước khi tiếp tục.");
         entity.setEnBody(seed.enTitle() + ". Please acknowledge before continuing related actions.");
         entity.setSortOrder(seed.sortOrder());
         entity.setLastOperator("seed");
@@ -425,14 +626,18 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     }
 
     private DisclosureJurisdictionView toJurisdiction(DisclosureJurisdictionEntity entity) {
+        long affected = disclosureAckStatusMapper.countAffected(entity.getJurisdictionCode());
+        long acknowledged = affected == 0 ? 0 : disclosureAckStatusMapper.countAcknowledged(entity.getJurisdictionCode());
+        double ackProgress = affected == 0 ? 0D : Math.round(acknowledged * 10000D / affected) / 100D;
         return new DisclosureJurisdictionView(
                 entity.getJurisdictionCode(),
                 entity.getJurisdictionName(),
+                countryCodes(entity.getCountryCodes()),
                 entity.getVersionLabel(),
                 toViewStatus(entity.getStatus()),
                 entity.getPublishedAtLabel(),
-                entity.getAffectedCount() == null ? 0 : entity.getAffectedCount(),
-                entity.getAckProgressPct() == null ? 0 : entity.getAckProgressPct().doubleValue(),
+                affected,
+                ackProgress,
                 entity.getBlockedCount() == null ? 0 : entity.getBlockedCount());
     }
 
@@ -442,8 +647,10 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 entity.getVersionLabel(),
                 entity.getChapterNo(),
                 entity.getZhTitle(),
+                entity.getViTitle(),
                 entity.getEnTitle(),
                 entity.getZhBody(),
+                entity.getViBody(),
                 entity.getEnBody());
     }
 
@@ -466,6 +673,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 entity.getEffectiveDate(),
                 Boolean.TRUE.equals(entity.getRequiresReack()),
                 entity.getZhBody(),
+                entity.getViBody(),
                 entity.getEnBody(),
                 toViewStatus(entity.getStatus()));
     }
@@ -480,6 +688,20 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
 
     private String normalizeUpper(String value) {
         return normalize(value).toUpperCase(Locale.ROOT);
+    }
+
+    private void addVersion(Set<String> versions, String value) {
+        if (StringUtils.hasText(value)) versions.add(value.trim());
+    }
+
+    private List<String> countryCodes(String value) {
+        if (!StringUtils.hasText(value)) return List.of();
+        return Arrays.stream(value.split(","))
+                .map(this::normalizeUpper)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .sorted()
+                .toList();
     }
 
     private String operator(String operator) {

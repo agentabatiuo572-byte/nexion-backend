@@ -22,28 +22,25 @@ class OpsI18nLearningControllerTest {
 
     @Test
     void overviewAndI18nActionsDelegate() {
-        I18nLocalizedCopyRequest copy = new I18nLocalizedCopyRequest("中文 {amount}", "English {amount}", "Marina K.", "同步词条");
+        I18nLocalizedCopyRequest copy = new I18nLocalizedCopyRequest("中文 {amount}", "English {amount}", "Tiếng Việt {amount}", "Marina K.", "同步词条");
         I18nActionRequest action = new I18nActionRequest("Marina K.", "启动扫描");
-        I18nIntegrityFixRequest fix = new I18nIntegrityFixRequest("中文 {amount}", "English {amount}", "Marina K.", "修复问题");
+        I18nIntegrityFixRequest fix = new I18nIntegrityFixRequest("milestones.earnCross", "中文 {amount}", "English {amount}", "Tiếng Việt {amount}", "Marina K.", "修复问题");
         when(service.overview()).thenReturn(ApiResult.ok(null));
         when(service.rescan("idem-i6-scan", action)).thenReturn(ApiResult.ok(null));
         when(service.saveLocalizedDraft("milestones.earnCross", "idem-i6-draft", copy)).thenReturn(ApiResult.ok(null));
         when(service.publishLocalizedMessage("milestones.earnCross", "idem-i6-pub", copy)).thenReturn(ApiResult.ok(null));
-        when(service.startMarketingExperiment("milestones.earnCross", "idem-i6-ab", action)).thenReturn(ApiResult.ok(null));
         when(service.fixIntegrity("missing-zh", "idem-i6-fix", fix)).thenReturn(ApiResult.ok(null));
 
         assertThat(controller.overview().getCode()).isZero();
         assertThat(controller.rescan("idem-i6-scan", action).getCode()).isZero();
         assertThat(controller.saveLocalizedDraft("milestones.earnCross", "idem-i6-draft", copy).getCode()).isZero();
         assertThat(controller.publishLocalizedMessage("milestones.earnCross", "idem-i6-pub", copy).getCode()).isZero();
-        assertThat(controller.startMarketingExperiment("milestones.earnCross", "idem-i6-ab", action).getCode()).isZero();
         assertThat(controller.fixIntegrity("missing-zh", "idem-i6-fix", fix).getCode()).isZero();
 
         verify(service).overview();
         verify(service).rescan("idem-i6-scan", action);
         verify(service).saveLocalizedDraft("milestones.earnCross", "idem-i6-draft", copy);
         verify(service).publishLocalizedMessage("milestones.earnCross", "idem-i6-pub", copy);
-        verify(service).startMarketingExperiment("milestones.earnCross", "idem-i6-ab", action);
         verify(service).fixIntegrity("missing-zh", "idem-i6-fix", fix);
     }
 

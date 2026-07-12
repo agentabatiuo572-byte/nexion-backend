@@ -100,7 +100,7 @@ class OpsNovaServiceTest {
         assertThat(result.getData().key()).isEqualTo("weeklyRecap");
         assertThat(novaRepository.channel("weeklyRecap")).get()
                 .extracting(NovaChannelView::name, NovaChannelView::trigger, NovaChannelView::enabled)
-                .containsExactly("Weekly recap", "每周任务完成后触发", true);
+                .containsExactly("Weekly recap", "每周任务完成后触发", false);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
@@ -113,7 +113,7 @@ class OpsNovaServiceTest {
         service.createChannel("idem-i2-channel-before-same-state", channelRequest("welcome"));
 
         var result = service.updateChannelStatus("welcome", "idem-i2-toggle", new NovaChannelStatusRequest(
-                true,
+                false,
                 "Marina K.",
                 "重复开启通道"));
 
@@ -123,6 +123,10 @@ class OpsNovaServiceTest {
     @Test
     void updateChannelStatusPersistsKillState() {
         service.createChannel("idem-i2-channel-before-kill", channelRequest("welcome"));
+        NovaChannelView created = novaRepository.channels.get("welcome");
+        novaRepository.channels.put("welcome", new NovaChannelView(
+                created.key(), created.name(), created.trigger(), created.tick(), created.cooldown(),
+                created.phaseKeyed(), created.ctr(), true));
 
         var result = service.updateChannelStatus("welcome", "idem-i2-toggle", new NovaChannelStatusRequest(
                 false,
@@ -150,11 +154,15 @@ class OpsNovaServiceTest {
 
     @Test
     void createTemplateAddsDraftTemplate() {
+        service.createChannel("idem-i2-weekly-channel", channelRequest("weeklyRecap"));
         var result = service.createTemplate("idem-i2-template", new NovaTemplateCreateRequest(
                 "weeklyRecap",
                 "每周回顾",
-                "→ /me/weekly",
+                "/me/weekly",
                 "v1",
+                "每周回顾", "你本周获得 {amount} NEX",
+                "Tổng kết tuần", "Bạn đã nhận {amount} NEX tuần này",
+                "", "",
                 "Marina K.",
                 "新增每周回顾模板"));
 
@@ -166,12 +174,60 @@ class OpsNovaServiceTest {
     }
 
     @Test
+    void createChannelRejectsFreeTextOrReversedCadence() {
+        NovaChannelUpsertRequest request = new NovaChannelUpsertRequest(
+                "badCadence", "错误节奏", "周期扫描", "每 25 个任务", "10 min",
+                BigDecimal.ZERO, false, "Marina K.", "验证结构化节奏字段");
+
+        var result = service.createChannel("idem-i2-bad-cadence", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOVA_CHANNEL_CADENCE_INVALID");
+    }
+
+    @Test
+    void createChannelStartsDisabledUntilPublishedTemplateExists() {
+        var result = service.createChannel("idem-i2-safe-channel", channelRequest("safeChannel"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().enabled()).isFalse();
+    }
+
+    @Test
+    void enablingChannelRequiresPublishedLocalizedTemplate() {
+        service.createChannel("idem-i2-gated-channel", channelRequest("gatedChannel"));
+
+        var result = service.updateChannelStatus("gatedChannel", "idem-i2-enable-without-template",
+                new NovaChannelStatusRequest(true, "Marina K.", "尝试启用未配置模板通道"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOVA_PUBLISHED_TEMPLATE_REQUIRED");
+    }
+
+    @Test
+    void templateRejectsMismatchedLocalizedPlaceholders() {
+        service.createChannel("idem-i2-placeholder-channel", channelRequest("placeholderChannel"));
+
+        var result = service.createTemplate("idem-i2-placeholder-template", new NovaTemplateCreateRequest(
+                "placeholderChannel", "占位符模板", "/earn", "v1",
+                "到账提醒", "到账 {amount} NEX", "Thông báo", "Đã nhận {value} NEX", "", "",
+                "Marina K.", "校验中越占位符一致性"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOVA_TEMPLATE_PLACEHOLDERS_MISMATCH");
+    }
+
+    @Test
     void updateTemplateStatusPersistsTransition() {
+        service.createChannel("idem-i2-market-channel", channelRequest("market"));
         service.createTemplate("idem-i2-template-before-archive", new NovaTemplateCreateRequest(
                 "market",
                 "行情模板",
-                "-> /market",
+                "/earn",
                 "v1",
+                "市场动态", "市场价格为 {amount}",
+                "Thị trường", "Giá thị trường là {amount}",
+                "", "",
                 "Marina K.",
                 "新增行情模板"));
 
@@ -249,7 +305,7 @@ class OpsNovaServiceTest {
                 key,
                 "Weekly recap",
                 "每周任务完成后触发",
-                "每周一 09:00",
+                "15 min",
                 "7d",
                 new BigDecimal("12.5"),
                 true,
@@ -324,14 +380,31 @@ class OpsNovaServiceTest {
         }
 
         @Override
-        public void createTemplate(String channel, String name, String cta, String version, String operator, String reason) {
-            templates.put(channel, new NovaTemplateView(channel, name, cta, version, "DRAFT"));
+        public void createTemplate(String channel, String name, String cta, String version,
+                                   String titleZh, String bodyZh, String titleVi, String bodyVi,
+                                   String titleEn, String bodyEn, String operator, String reason) {
+            templates.put(channel, new NovaTemplateView(channel, name, cta, version,
+                    titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn, "DRAFT"));
+        }
+
+        @Override
+        public void updateTemplate(String channel, String name, String cta, String version,
+                                   String titleZh, String bodyZh, String titleVi, String bodyVi,
+                                   String titleEn, String bodyEn, String operator, String reason) {
+            templates.put(channel, new NovaTemplateView(channel, name, cta, version,
+                    titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn, "DRAFT"));
         }
 
         @Override
         public void updateTemplateStatus(String channel, String status, String operator, String reason) {
             NovaTemplateView current = templates.get(channel);
-            templates.put(channel, new NovaTemplateView(current.channel(), current.name(), current.cta(), current.version(), status));
+            templates.put(channel, new NovaTemplateView(current.channel(), current.name(), current.cta(), current.version(),
+                    current.titleZh(), current.bodyZh(), current.titleVi(), current.bodyVi(), current.titleEn(), current.bodyEn(), status));
+        }
+
+        @Override
+        public void deleteTemplate(String channel, String operator, String reason) {
+            templates.remove(channel);
         }
 
         @Override

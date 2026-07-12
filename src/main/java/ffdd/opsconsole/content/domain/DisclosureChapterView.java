@@ -5,7 +5,9 @@ public record DisclosureChapterView(
         String version,
         String no,
         String zh,
+        String vi,
         String en,
         String zhBody,
+        String viBody,
         String enBody) {
 }

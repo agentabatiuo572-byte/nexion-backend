@@ -626,6 +626,70 @@ CREATE TABLE IF NOT EXISTS nx_wallet_ledger (
   CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_learning_progress (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  course_id VARCHAR(96) NOT NULL,
+  course_version VARCHAR(32) NOT NULL,
+  progress_pct INT NOT NULL DEFAULT 0,
+  attempts INT NOT NULL DEFAULT 0,
+  last_score INT NOT NULL DEFAULT 0,
+  started_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_learning_progress_user_course_version (user_id, course_id, course_version),
+  KEY idx_learning_progress_user (user_id, updated_at),
+  CONSTRAINT chk_learning_progress_pct CHECK (progress_pct BETWEEN 0 AND 100),
+  CONSTRAINT chk_learning_progress_score CHECK (last_score BETWEEN 0 AND 100)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_learning_course_version (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  course_id VARCHAR(96) NOT NULL,
+  version_label VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  payload_json JSON NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_learning_course_version (course_id, version_label),
+  KEY idx_learning_course_version_status (course_id, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_learning_event (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  course_id VARCHAR(96) NOT NULL,
+  course_version VARCHAR(32) NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  event_payload JSON NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_learning_event_once (user_id, course_id, course_version, event_type),
+  KEY idx_learning_event_type_time (event_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_learning_reward_ledger (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  reward_no VARCHAR(160) NOT NULL,
+  user_id BIGINT NOT NULL,
+  course_id VARCHAR(96) NOT NULL,
+  course_version VARCHAR(32) NOT NULL,
+  amount_nex DECIMAL(18,6) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_learning_reward_user_course_version (user_id, course_id, course_version),
+  UNIQUE KEY uk_learning_reward_no (reward_no),
+  KEY idx_learning_reward_user (user_id, created_at),
+  CONSTRAINT chk_learning_reward_positive CHECK (amount_nex > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_wallet_asset_adjustment (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   adjustment_no VARCHAR(64) NOT NULL,
@@ -2898,9 +2962,13 @@ CREATE TABLE IF NOT EXISTS nx_notification (
   biz_no VARCHAR(128) NULL,
   user_id BIGINT NOT NULL,
   type VARCHAR(32) NOT NULL,
+  priority VARCHAR(16) NOT NULL DEFAULT 'normal',
   title VARCHAR(128) NOT NULL,
   body VARCHAR(512) NOT NULL,
+  cta_label VARCHAR(64) NULL,
+  cta_href VARCHAR(255) NULL,
   read_flag TINYINT NOT NULL DEFAULT 0,
+  read_at DATETIME NULL,
   push_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   push_attempts INT NOT NULL DEFAULT 0,
   next_push_at DATETIME NULL,
@@ -2909,7 +2977,7 @@ CREATE TABLE IF NOT EXISTS nx_notification (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_notification_biz (biz_no),
+  UNIQUE KEY uk_notification_biz_user (biz_no, user_id),
   KEY idx_notification_user_time (user_id, created_at),
   KEY idx_notification_push (push_status, created_at),
   KEY idx_notification_push_due (push_status, next_push_at, created_at)
@@ -2922,6 +2990,26 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'biz_no') = 0,
   'ALTER TABLE nx_notification ADD COLUMN biz_no VARCHAR(128) NULL AFTER id',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'priority') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN priority VARCHAR(16) NOT NULL DEFAULT ''normal'' AFTER type',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'cta_label') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN cta_label VARCHAR(64) NULL AFTER body',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'cta_href') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN cta_href VARCHAR(255) NULL AFTER cta_label',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND COLUMN_NAME = 'read_at') = 0,
+  'ALTER TABLE nx_notification ADD COLUMN read_at DATETIME NULL AFTER read_flag',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -2950,8 +3038,13 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND INDEX_NAME = 'uk_notification_biz') = 0,
-  'ALTER TABLE nx_notification ADD UNIQUE KEY uk_notification_biz (biz_no)',
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND INDEX_NAME = 'uk_notification_biz') > 0,
+  'ALTER TABLE nx_notification DROP INDEX uk_notification_biz',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification' AND INDEX_NAME = 'uk_notification_biz_user') = 0,
+  'ALTER TABLE nx_notification ADD UNIQUE KEY uk_notification_biz_user (biz_no, user_id)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -3493,7 +3586,10 @@ CREATE TABLE IF NOT EXISTS nx_notification_campaign (
   read_label VARCHAR(32) NOT NULL DEFAULT '-',
   body_en TEXT NOT NULL,
   body_zh TEXT NOT NULL,
+  body_vi TEXT NOT NULL,
   swipe_to VARCHAR(128) NOT NULL DEFAULT '-',
+  cta_label VARCHAR(64) NULL,
+  cta_href VARCHAR(255) NULL,
   budget_usd DECIMAL(18,2) NULL,
   created_by VARCHAR(64) NULL,
   last_operator VARCHAR(64) NULL,
@@ -3536,6 +3632,13 @@ CREATE TABLE IF NOT EXISTS nx_help_article (
   featured TINYINT NOT NULL DEFAULT 0,
   emoji VARCHAR(16) NOT NULL DEFAULT '📘',
   tint VARCHAR(32) NOT NULL DEFAULT '#c6ff3a',
+  quiz_json MEDIUMTEXT NULL,
+  quiz_pass_score INT NULL,
+  quiz_retry_limit INT NULL,
+  completion_condition VARCHAR(255) NULL,
+  reward_event VARCHAR(32) NULL,
+  version_no INT NOT NULL DEFAULT 1,
+  revision BIGINT NOT NULL DEFAULT 0,
   sort_order INT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -3550,6 +3653,28 @@ CREATE TABLE IF NOT EXISTS nx_help_article (
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'category') = 0,
   'ALTER TABLE nx_help_article ADD COLUMN category VARCHAR(32) NOT NULL DEFAULT ''help'' AFTER content',
   'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'quiz_json') = 0,
+  'ALTER TABLE nx_help_article ADD COLUMN quiz_json MEDIUMTEXT NULL AFTER tint', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'quiz_pass_score') = 0,
+  'ALTER TABLE nx_help_article ADD COLUMN quiz_pass_score INT NULL AFTER quiz_json', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'quiz_retry_limit') = 0,
+  'ALTER TABLE nx_help_article ADD COLUMN quiz_retry_limit INT NULL AFTER quiz_pass_score', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'completion_condition') = 0,
+  'ALTER TABLE nx_help_article ADD COLUMN completion_condition VARCHAR(255) NULL AFTER quiz_retry_limit', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'reward_event') = 0,
+  'ALTER TABLE nx_help_article ADD COLUMN reward_event VARCHAR(32) NULL AFTER completion_condition', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'version_no') = 0,
+  'ALTER TABLE nx_help_article ADD COLUMN version_no INT NOT NULL DEFAULT 1 AFTER reward_event', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'revision') = 0,
+  'ALTER TABLE nx_help_article ADD COLUMN revision BIGINT NOT NULL DEFAULT 0 AFTER version_no', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_help_article' AND COLUMN_NAME = 'level') = 0,
@@ -3777,6 +3902,12 @@ CREATE TABLE IF NOT EXISTS nx_nova_template (
   template_name VARCHAR(128) NOT NULL,
   cta VARCHAR(255) NOT NULL,
   version VARCHAR(32) NOT NULL,
+  title_zh VARCHAR(255) NOT NULL DEFAULT '',
+  body_zh TEXT NOT NULL,
+  title_vi VARCHAR(255) NOT NULL DEFAULT '',
+  body_vi TEXT NOT NULL,
+  title_en VARCHAR(255) NOT NULL DEFAULT '',
+  body_en TEXT NOT NULL,
   status VARCHAR(32) NOT NULL,
   operator VARCHAR(128) NULL,
   reason VARCHAR(512) NULL,
@@ -4205,6 +4336,58 @@ CREATE TABLE IF NOT EXISTS nx_content_copy_version (
   KEY idx_content_copy_version_position (copy_position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_i18n_message_version (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  message_key VARCHAR(128) NOT NULL,
+  version_no INT NOT NULL,
+  zh_value VARCHAR(1024) NOT NULL,
+  en_value VARCHAR(1024) NOT NULL,
+  vi_value VARCHAR(1024) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_i18n_message_version (message_key, version_no),
+  KEY idx_i18n_message_version_status (message_key, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification_campaign' AND COLUMN_NAME = 'body_vi') = 0,
+  'ALTER TABLE nx_notification_campaign ADD COLUMN body_vi TEXT NULL AFTER body_zh',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+UPDATE nx_notification_campaign SET body_vi = body_zh WHERE body_vi IS NULL;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification_campaign' AND COLUMN_NAME = 'body_vi' AND IS_NULLABLE = 'YES') > 0,
+  'ALTER TABLE nx_notification_campaign MODIFY COLUMN body_vi TEXT NOT NULL',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification_campaign' AND COLUMN_NAME = 'cta_label') = 0,
+  'ALTER TABLE nx_notification_campaign ADD COLUMN cta_label VARCHAR(64) NULL AFTER swipe_to',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_notification_campaign' AND COLUMN_NAME = 'cta_href') = 0,
+  'ALTER TABLE nx_notification_campaign ADD COLUMN cta_href VARCHAR(255) NULL AFTER cta_label',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+UPDATE nx_notification_campaign
+   SET status = 'FAILED', schedule_text = '旧排期格式无效，请重新创建', updated_at = NOW()
+ WHERE status = 'SCHEDULED'
+   AND schedule_text NOT REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$';
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_nova_template' AND COLUMN_NAME = 'title_zh') = 0,
+  'ALTER TABLE nx_nova_template ADD COLUMN title_zh VARCHAR(255) NOT NULL DEFAULT '''' AFTER version, ADD COLUMN body_zh TEXT NOT NULL AFTER title_zh, ADD COLUMN title_vi VARCHAR(255) NOT NULL DEFAULT '''' AFTER body_zh, ADD COLUMN body_vi TEXT NOT NULL AFTER title_vi, ADD COLUMN title_en VARCHAR(255) NOT NULL DEFAULT '''' AFTER body_vi, ADD COLUMN body_en TEXT NOT NULL AFTER title_en',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+UPDATE nx_nova_template t
+LEFT JOIN nx_nova_channel c ON c.channel_key = t.channel_key AND c.is_deleted = 0
+SET t.status = 'DRAFT', c.enabled = 0, t.updated_at = NOW(), c.updated_at = NOW()
+WHERE t.is_deleted = 0
+  AND (TRIM(t.title_zh) = '' OR TRIM(t.body_zh) = '' OR TRIM(t.title_vi) = '' OR TRIM(t.body_vi) = '')
+  AND (UPPER(t.status) <> 'DRAFT' OR COALESCE(c.enabled, 0) <> 0);
+
 CREATE TABLE IF NOT EXISTS nx_content_copy_version_option (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   version_key VARCHAR(32) NOT NULL,
@@ -4396,6 +4579,23 @@ CREATE TABLE IF NOT EXISTS nx_trust_section (
   KEY idx_trust_section_status_order (status, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_trust_section_version (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  section_key VARCHAR(64) NOT NULL,
+  version_label VARCHAR(32) NOT NULL,
+  description VARCHAR(255) NOT NULL,
+  struct_text VARCHAR(255) NOT NULL,
+  fields_json MEDIUMTEXT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+  revision BIGINT NOT NULL DEFAULT 0,
+  last_operator VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_trust_section_version (section_key, version_label, is_deleted),
+  KEY idx_trust_section_version_status (section_key, status, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_trust_section_field (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   section_key VARCHAR(64) NOT NULL,
@@ -4415,6 +4615,7 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_jurisdiction (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   jurisdiction_code VARCHAR(32) NOT NULL,
   jurisdiction_name VARCHAR(64) NOT NULL,
+  country_codes VARCHAR(255) NOT NULL DEFAULT '',
   version_label VARCHAR(32) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'PUBLISHED',
   published_at_label VARCHAR(32) NULL,
@@ -4435,8 +4636,10 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_chapter (
   version_label VARCHAR(32) NOT NULL,
   chapter_no VARCHAR(16) NOT NULL,
   zh_title VARCHAR(255) NOT NULL,
+  vi_title VARCHAR(255) NOT NULL,
   en_title VARCHAR(255) NOT NULL,
   zh_body TEXT NOT NULL,
+  vi_body TEXT NOT NULL,
   en_body TEXT NOT NULL,
   sort_order INT NOT NULL DEFAULT 0,
   last_operator VARCHAR(64) NULL,
@@ -4472,6 +4675,7 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_draft (
   effective_date VARCHAR(32) NOT NULL,
   requires_reack TINYINT NOT NULL DEFAULT 1,
   zh_body TEXT NOT NULL,
+  vi_body TEXT NOT NULL,
   en_body TEXT NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
   last_operator VARCHAR(64) NULL,
@@ -4480,6 +4684,21 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_draft (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_disclosure_draft (jurisdiction_code, version_label),
   KEY idx_disclosure_draft_status (jurisdiction_code, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_disclosure_ack_status (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  jurisdiction_code VARCHAR(32) NOT NULL,
+  required_version VARCHAR(32) NOT NULL,
+  acknowledged_version VARCHAR(32) NULL,
+  ack_status VARCHAR(16) NOT NULL DEFAULT 'STALE',
+  acknowledged_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_disclosure_ack_user_jurisdiction (user_id, jurisdiction_code),
+  KEY idx_disclosure_ack_gate (jurisdiction_code, required_version, ack_status, is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ===== 客户档案:自定义标签 + 内部备注(content 域,按 user_id 聚合,跨会话共享)=====

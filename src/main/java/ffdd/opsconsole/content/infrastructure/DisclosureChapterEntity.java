@@ -13,8 +13,10 @@ public class DisclosureChapterEntity extends BaseEntity {
     private String versionLabel;
     private String chapterNo;
     private String zhTitle;
+    private String viTitle;
     private String enTitle;
     private String zhBody;
+    private String viBody;
     private String enBody;
     private Integer sortOrder;
     private String lastOperator;

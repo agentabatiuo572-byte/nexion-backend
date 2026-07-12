@@ -22,7 +22,10 @@ public class NotificationCampaignEntity extends BaseEntity {
     private String readLabel;
     private String bodyEn;
     private String bodyZh;
+    private String bodyVi;
     private String swipeTo;
+    private String ctaLabel;
+    private String ctaHref;
     private BigDecimal budgetUsd;
     private String createdBy;
     private String lastOperator;

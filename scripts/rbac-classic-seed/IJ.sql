@@ -19,10 +19,11 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('content_i2_read',                 'Nova推送-读',                   'API', '/content/nova',         'READ',  0, 1, 0),
   ('content_i2_write',                'Nova推送-写(通道CRUD/模板CRUD/概率调整/池编辑)', 'API', '/content/nova', 'WRITE', 0, 1, 0),
 
-  -- I3 通知 Campaign（3 点）
+  -- I3 通知 Campaign（4 点）
   ('content_i3_read',                 '通知Campaign-读',               'API', '/content/notifications','READ',  0, 1, 0),
   ('content_i3_write',                '通知Campaign-写(新建/编辑/调度下发/立即下发/取消)', 'API', '/content/notifications', 'WRITE', 0, 1, 0),
   ('content_i3_cap_adjust',           'CAP容量闸调整(高敏·影响合规通知可见性·critical锁定)', 'API', '/content/notifications', 'HIGH', 0, 1, 0),
+  ('content_i3_critical_send',         '通知Campaign-critical下发(合规/监管高敏)', 'API', '/content/notifications', 'HIGH', 0, 1, 0),
 
   -- I4 信任中心与披露（5 点）
   ('content_i4_read',                 '信任中心与披露-读',             'API', '/content/trust',        'READ',  0, 1, 0),

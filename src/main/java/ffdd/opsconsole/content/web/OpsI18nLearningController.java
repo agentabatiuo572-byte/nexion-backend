@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.domain.I18nIntegrityIssueView;
 import ffdd.opsconsole.content.domain.I18nLearningOverview;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
 import ffdd.opsconsole.content.domain.LearningCourseView;
+import ffdd.opsconsole.content.domain.LearningCourseVersionView;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
 import ffdd.opsconsole.content.dto.I18nIntegrityFixRequest;
 import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
@@ -16,6 +17,8 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -66,14 +69,13 @@ public class OpsI18nLearningController {
         return i18nLearningService.publishLocalizedMessage(messageKey, idempotencyKey, request);
     }
 
-    @PostMapping("/messages/{messageKey}/marketing-experiment")
-    // i18n marketing 文案多版实验
+    @DeleteMapping("/messages/{messageKey}")
     @PreAuthorize("hasAuthority('content_i6_write')")
-    public ApiResult<I18nMessagePairView> startMarketingExperiment(
+    public ApiResult<I18nMessagePairView> archiveLocalizedMessage(
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.startMarketingExperiment(messageKey, idempotencyKey, request);
+        return i18nLearningService.archiveLocalizedMessage(messageKey, idempotencyKey, request);
     }
 
     @PostMapping("/integrity/{issueCode}/fix")
@@ -96,9 +98,78 @@ public class OpsI18nLearningController {
         return i18nLearningService.createCourse(courseId, idempotencyKey, request);
     }
 
+    @GetMapping("/courses/{courseId}/versions")
+    @PreAuthorize("hasAuthority('content_i7_read')")
+    public ApiResult<java.util.List<LearningCourseVersionView>> courseVersions(@PathVariable String courseId) {
+        return i18nLearningService.courseVersions(courseId);
+    }
+
+    @PostMapping("/courses/{courseId}/versions")
+    @PreAuthorize("hasAuthority('content_i7_write')")
+    public ApiResult<LearningCourseVersionView> createCourseVersion(
+            @PathVariable String courseId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody LearningCourseUpsertRequest request) {
+        return i18nLearningService.createCourseVersion(courseId, idempotencyKey, request);
+    }
+
+    @PatchMapping("/courses/{courseId}/versions/{version}")
+    @PreAuthorize("hasAuthority('content_i7_write')")
+    public ApiResult<LearningCourseVersionView> updateCourseVersion(
+            @PathVariable String courseId, @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody LearningCourseUpsertRequest request) {
+        return i18nLearningService.updateCourseVersion(courseId, version, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/courses/{courseId}/versions/{version}")
+    @PreAuthorize("hasAuthority('content_i7_write')")
+    public ApiResult<Void> deleteCourseVersion(
+            @PathVariable String courseId, @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody I18nActionRequest request) {
+        return i18nLearningService.deleteCourseVersion(courseId, version, idempotencyKey, request);
+    }
+
+    @PostMapping("/courses/{courseId}/versions/{version}/publish")
+    @PreAuthorize("hasAuthority('content_i7_write') and hasAuthority('content_i7_course_reward_adjust')")
+    public ApiResult<LearningCourseView> publishCourseVersion(
+            @PathVariable String courseId, @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody I18nActionRequest request) {
+        return i18nLearningService.publishCourseVersion(courseId, version, idempotencyKey, request);
+    }
+
+    @PostMapping("/courses/{courseId}/versions/{version}/rollback")
+    @PreAuthorize("hasAuthority('content_i7_write') and hasAuthority('content_i7_course_reward_adjust')")
+    public ApiResult<LearningCourseView> rollbackCourseVersion(
+            @PathVariable String courseId, @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody I18nActionRequest request) {
+        return i18nLearningService.rollbackCourseVersion(courseId, version, idempotencyKey, request);
+    }
+
+    @PatchMapping("/courses/{courseId}/draft")
+    @PreAuthorize("hasAuthority('content_i7_write')")
+    public ApiResult<LearningCourseView> updateCourseDraft(
+            @PathVariable String courseId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody LearningCourseUpsertRequest request) {
+        return i18nLearningService.updateCourseDraft(courseId, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/courses/{courseId}")
+    @PreAuthorize("hasAuthority('content_i7_write')")
+    public ApiResult<Void> deleteCourseDraft(
+            @PathVariable String courseId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody I18nActionRequest request) {
+        return i18nLearningService.deleteCourseDraft(courseId, idempotencyKey, request);
+    }
+
     @PostMapping("/courses/{courseId}/publish")
     // 教程中心：课程发布
-    @PreAuthorize("hasAuthority('content_i7_write')")
+    @PreAuthorize("hasAuthority('content_i7_write') and hasAuthority('content_i7_course_reward_adjust')")
     public ApiResult<LearningCourseView> publishCourse(
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

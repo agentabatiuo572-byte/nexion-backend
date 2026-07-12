@@ -73,12 +73,38 @@ class OpsNovaControllerTest {
 
     @Test
     void createTemplateDelegatesWithIdempotencyHeader() {
-        NovaTemplateCreateRequest request = new NovaTemplateCreateRequest("weekly", "周报", "→ /weekly", "v1", "Marina K.", "新增模板");
+        NovaTemplateCreateRequest request = new NovaTemplateCreateRequest(
+                "weekly", "周报", "/me/weekly", "v1",
+                "周报", "本周获得 {amount}", "Tuần", "Tuần này nhận {amount}", "", "",
+                "Marina K.", "新增模板");
         when(novaService.createTemplate("idem-i2-template", request)).thenReturn(ApiResult.ok(null));
 
         assertThat(controller.createTemplate("idem-i2-template", request).getCode()).isZero();
 
         verify(novaService).createTemplate("idem-i2-template", request);
+    }
+
+    @Test
+    void updateTemplateDelegatesWithChannelAndIdempotencyHeader() {
+        NovaTemplateCreateRequest request = new NovaTemplateCreateRequest(
+                "weekly", "周报新版", "/earn", "v2",
+                "周报", "本周获得 {amount}", "Tuần", "Tuần này nhận {amount}", "", "",
+                "Marina K.", "编辑模板实际推送文案");
+        when(novaService.updateTemplate("weekly", "idem-i2-template-update", request)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.updateTemplate("weekly", "idem-i2-template-update", request).getCode()).isZero();
+
+        verify(novaService).updateTemplate("weekly", "idem-i2-template-update", request);
+    }
+
+    @Test
+    void deleteTemplateDelegatesWithAuditReason() {
+        NovaDeleteRequest request = new NovaDeleteRequest("Marina K.", "删除废弃草稿模板");
+        when(novaService.deleteTemplate("weekly", "idem-i2-template-delete", request)).thenReturn(ApiResult.ok());
+
+        assertThat(controller.deleteTemplate("weekly", "idem-i2-template-delete", request).getCode()).isZero();
+
+        verify(novaService).deleteTemplate("weekly", "idem-i2-template-delete", request);
     }
 
     @Test

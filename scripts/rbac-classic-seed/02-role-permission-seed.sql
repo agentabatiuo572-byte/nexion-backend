@@ -45,6 +45,10 @@ WHERE r.role_code='GROWTH' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'content_%'
 WHERE r.role_code='CONTENT' AND p.status=1 AND p.is_deleted=0;
+-- I3 critical 合规/监管通知同时授予风控执行权；CAP 调整权限不再代替发送权限。
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code='content_i3_critical_send'
+WHERE r.role_code='RISK' AND p.status=1 AND p.is_deleted=0;
 -- J 域(emergency_)：风控（止血）
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'emergency_%'

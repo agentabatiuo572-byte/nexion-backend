@@ -25,6 +25,10 @@ public class MybatisNovaRepository implements NovaRepository {
             mapper.addTargetCtrColumn();
         }
         mapper.createTemplateTable();
+        if (mapper.templateContentColumnCount() == 0) {
+            mapper.addTemplateContentColumns();
+        }
+        mapper.quarantineIncompleteTemplates();
         mapper.createSocialDistributionTable();
         mapper.createSocialPoolTable();
     }
@@ -86,15 +90,33 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
-    public void createTemplate(String channel, String name, String cta, String version, String operator, String reason) {
+    public void createTemplate(String channel, String name, String cta, String version,
+                               String titleZh, String bodyZh, String titleVi, String bodyVi,
+                               String titleEn, String bodyEn, String operator, String reason) {
         ensureTables();
-        mapper.upsertTemplate(channel, name, cta, version, "DRAFT", operator, reason);
+        mapper.upsertTemplate(channel, name, cta, version, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, "DRAFT", operator, reason);
+    }
+
+    @Override
+    public void updateTemplate(String channel, String name, String cta, String version,
+                               String titleZh, String bodyZh, String titleVi, String bodyVi,
+                               String titleEn, String bodyEn, String operator, String reason) {
+        ensureTables();
+        mapper.upsertTemplate(channel, name, cta, version, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, "DRAFT", operator, reason);
     }
 
     @Override
     public void updateTemplateStatus(String channel, String status, String operator, String reason) {
         ensureTables();
         mapper.updateTemplateStatus(channel, status, operator, reason);
+    }
+
+    @Override
+    public void deleteTemplate(String channel, String operator, String reason) {
+        ensureTables();
+        mapper.deleteTemplate(channel, operator, reason);
     }
 
     @Override
