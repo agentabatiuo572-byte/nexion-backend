@@ -236,6 +236,73 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void trustSectionDraftRejectsRenamedOrExtraFieldIdentifiers() {
+        var request = new TrustSectionDraftRequest(
+                "v6", "新版说明", "数字组 + 审计日期", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18"),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                new TrustSectionFieldInput("operatorNote", "运营备注", "不得进入固定披露结构")),
+                0L, "Marina K.", "维护信任版块草稿");
+
+        var result = service.createSectionDraft("financials", "idem-schema-extra", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
+    }
+
+    @Test
+    void trustSectionDraftRejectsMissingFixedFieldIdentifier() {
+        var request = new TrustSectionDraftRequest(
+                "v6", "新版说明", "数字组 + 审计日期", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18"),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足")),
+                0L, "Marina K.", "维护信任版块草稿");
+
+        var result = service.createSectionDraft("financials", "idem-schema-missing", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
+    }
+
+    @Test
+    void trustSectionDraftRejectsFieldIdentifierCaseChanges() {
+        var request = new TrustSectionDraftRequest(
+                "v6", "新版说明", "数字组 + 审计日期", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18"),
+                new TrustSectionFieldInput("SUMMARY.ZH", "中文摘要", "储备充足"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ")),
+                0L, "Marina K.", "维护信任版块草稿");
+
+        var result = service.createSectionDraft("financials", "idem-schema-case", request);
+
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
+    }
+
+    @Test
+    void publishRejectsLegacyDraftWhoseFieldSchemaNoLongerMatchesCurrentVersion() {
+        var legacyDraft = new TrustSectionDraftRequest(
+                "v6", "旧草稿", "数字组 + 审计日期", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18"),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                new TrustSectionFieldInput("legacyNote", "旧字段", "不应发布")),
+                0L, "Marina K.", "保存旧版字段草稿");
+        TrustSectionVersionView saved = repository.saveTrustSectionDraft("financials", legacyDraft, LocalDateTime.now());
+
+        var result = service.publishSection("financials", "idem-schema-publish", new TrustSectionPublishRequest(
+                "v6", "数据来自已审计的资金账本", true, "Marina K.", "发布结构化信任新版"));
+
+        assertThat(saved.status()).isEqualTo("draft");
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
+        assertThat(repository.findTrustSectionVersion("financials", "v6").orElseThrow().status()).isEqualTo("draft");
+    }
+
+    @Test
     void trustSectionLinkFieldsAcceptControlledInternalRoutesAndSafeHttpsLinks() {
         var internal = service.createSectionDraft("leadership", "idem-link-internal",
                 sectionDraftWithField("v4", "leader1Url",
@@ -315,7 +382,7 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void publishPermissionIsClassifiedByServerSideSectionCategory() {
-        repository.saveTrustSectionDraft("leadership", sectionDraft("v4", "团队新版", 0L), LocalDateTime.now());
+        repository.saveTrustSectionDraft("leadership", leadershipDraft("v4", "团队新版", 0L), LocalDateTime.now());
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
 
         authenticate("content_i4_publish_standard");
@@ -347,6 +414,10 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void publishRejectsCheckboxOnlyWhenDraftHasNoChineseVietnameseFieldPair() {
+        repository.sectionVersions.put("financials::v5", new TrustSectionVersionView(
+                "financials", "v5", "财务透明数字组", "数字组 + 脚注",
+                List.of(new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "128.4%")),
+                "published", 1L, "system", "2026-05-12"));
         repository.saveTrustSectionDraft("financials", sectionDraftWithoutLocalizedPair("v7"), LocalDateTime.now());
         authenticate("content_i4_trust_section_manage");
 
@@ -597,6 +668,11 @@ class OpsTrustDisclosureServiceTest {
     void auditsReservePublishDoesNotRequireDataSourceStatement() {
         repository.sections.put("auditsReserves", new TrustSectionView(
                 "auditsReserves", "审计与储备", "报告", "v1", "published", "today", "合规", true));
+        TrustSectionDraftRequest current = sectionDraft("v1", "审计与储备", 0L);
+        repository.sectionVersions.put("auditsReserves::v1", new TrustSectionVersionView(
+                "auditsReserves", "v1", current.description(), current.structure(),
+                current.fields().stream().map(field -> new TrustSectionVersionView.Field(field.key(), field.label(), field.value())).toList(),
+                "published", 1L, "system", "2026-06-18"));
         repository.saveTrustSectionDraft("auditsReserves", sectionDraft("v2", "审计新版", 0L), LocalDateTime.now());
 
         var result = service.publishSection("auditsReserves", "idem-audits-no-source", new TrustSectionPublishRequest(
@@ -670,8 +746,18 @@ class OpsTrustDisclosureServiceTest {
 
     private static TrustSectionDraftRequest sectionDraftWithField(String version, String key, String value) {
         return new TrustSectionDraftRequest(version, "结构化链接字段", "人员卡片", List.of(
-                new TrustSectionFieldInput(key, "链接字段", value)),
+                new TrustSectionFieldInput(key, "链接字段", value),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "管理团队信息"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý")),
                 0L, "Marina K.", "维护信任版块链接字段");
+    }
+
+    private static TrustSectionDraftRequest leadershipDraft(String version, String description, long expectedRevision) {
+        return new TrustSectionDraftRequest(version, description, "人员卡片", List.of(
+                new TrustSectionFieldInput("leader1Url", "链接字段", "/pages/trust/nex"),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "管理团队信息"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý")),
+                expectedRevision, "Marina K.", "维护信任版块链接字段");
     }
 
     private static TrustSectionDraftRequest sectionDraftWithoutLocalizedPair(String version) {
@@ -722,9 +808,20 @@ class OpsTrustDisclosureServiceTest {
             sections.put("financials", new TrustSectionView("financials", "财务透明数字组", "数字组 + 脚注", "v5", "published", "05-12", "合规 / 超管", true));
             sections.put("leadership", new TrustSectionView("leadership", "管理团队", "人员卡 ×5", "v3", "published", "03-08", "内容主管", false));
             sectionVersions.put("financials::v5", new TrustSectionVersionView("financials", "v5", "财务透明数字组", "数字组 + 脚注",
-                    List.of(new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "128.4%")), "published", 1L, "system", "2026-05-12"));
+                    List.of(
+                            new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "128.4%"),
+                            new TrustSectionVersionView.Field("auditDate", "最近审计日期", "2026-05-12"),
+                            new TrustSectionVersionView.Field("summary.zh", "中文摘要", "储备充足"),
+                            new TrustSectionVersionView.Field("summary.vi", "越南语摘要", "Dự trữ đầy đủ")),
+                    "published", 1L, "system", "2026-05-12"));
             sectionVersions.put("financials::v4", new TrustSectionVersionView("financials", "v4", "财务透明数字组", "数字组 + 脚注",
                     List.of(new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "120%")), "superseded", 1L, "system", "2026-04-12"));
+            sectionVersions.put("leadership::v3", new TrustSectionVersionView("leadership", "v3", "管理团队", "人员卡 ×5",
+                    List.of(
+                            new TrustSectionVersionView.Field("leader1Url", "成员详情链接", "/pages/trust/nex"),
+                            new TrustSectionVersionView.Field("summary.zh", "中文摘要", "管理团队信息"),
+                            new TrustSectionVersionView.Field("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý")),
+                    "published", 1L, "system", "2026-03-08"));
             jurisdictions.put("MAS", new DisclosureJurisdictionView("MAS", "新加坡", List.of("SG"), "v11", "published", "05-02", 41_200, 100, 0));
             jurisdictions.put("SFC", new DisclosureJurisdictionView("SFC", "香港", List.of("HK"), "v12", "published", "06-08", 9_400, 72, 312));
             chapterVersions.put("MAS::v11", List.of(

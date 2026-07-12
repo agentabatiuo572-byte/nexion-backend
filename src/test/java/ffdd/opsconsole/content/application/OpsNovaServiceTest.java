@@ -291,7 +291,7 @@ class OpsNovaServiceTest {
 
     @Test
     void createSocialEventMasksSensitiveDisplayFieldsAndAudits() {
-        LocalDateTime occurredAt = LocalDateTime.of(2026, 7, 12, 10, 0);
+        LocalDateTime occurredAt = LocalDateTime.now().minusHours(1);
         var result = service.ingestTrustedSocialEvent("idem-social-create", new TrustedNovaSocialEvent(
                         "withdrawal", "withdrawal-90001", "NEXION_CORE", "nx_withdrawal_order",
                         "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("18420"), "NEX",
@@ -326,7 +326,7 @@ class OpsNovaServiceTest {
 
     @Test
     void newUserEventUsesPrivacyThresholdBandRatherThanMoneyBand() {
-        LocalDateTime occurredAt = LocalDateTime.of(2026, 7, 12, 10, 0);
+        LocalDateTime occurredAt = LocalDateTime.now().minusHours(1);
         TrustedNovaSocialEvent event = new TrustedNovaSocialEvent(
                 "newUsers", "newUsers:2026071210", "NEXION_CORE", "nx_user",
                 "", "全网", new BigDecimal("42"), "人", "完整小时注册用户聚合", occurredAt);

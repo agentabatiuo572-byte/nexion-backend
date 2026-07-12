@@ -155,6 +155,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (request.expectedRevision() == null || request.expectedRevision() != version.revision()) {
             return ApiResult.fail(409, "TRUST_SECTION_REVISION_CONFLICT");
         }
+        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(current, version.fields() == null ? null
+                : version.fields().stream().map(TrustSectionVersionView.Field::key).toList());
+        if (schemaGuard != null) return fail(schemaGuard);
         if (!hasCompleteChineseVietnameseFields(version.fields())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_BILINGUAL_FIELDS_REQUIRED");
         }
@@ -205,7 +208,11 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         ApiResult<Void> guard = requireSectionDraft(sectionKey, idempotencyKey, request);
         if (guard != null) return fail(guard);
         if (isTrustSectionLocked(sectionKey)) return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        if (findSection(sectionKey) == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        TrustSectionView section = findSection(sectionKey);
+        if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
+                request.fields().stream().map(TrustSectionFieldInput::key).toList());
+        if (schemaGuard != null) return fail(schemaGuard);
         if (findSectionVersion(sectionKey, request.version()) != null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "TRUST_SECTION_VERSION_ALREADY_EXISTS");
         }
@@ -232,6 +239,11 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (request.expectedRevision() == null || request.expectedRevision() != current.revision()) {
             return ApiResult.fail(409, "TRUST_SECTION_REVISION_CONFLICT");
         }
+        TrustSectionView section = findSection(sectionKey);
+        if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
+                request.fields().stream().map(TrustSectionFieldInput::key).toList());
+        if (schemaGuard != null) return fail(schemaGuard);
         TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(sectionKey.trim(), request, now());
         audit("I4_TRUST_SECTION_DRAFT_UPDATED", "TRUST_SECTION_VERSION", sectionKey + ":" + version, request.operator(), idempotencyKey, request.reason(), Map.of(
                 "fromRevision", current.revision(), "toRevision", saved.revision()));
@@ -702,6 +714,25 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         if (containsUnsafeText(request.version(), request.description(), request.structure())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_DRAFT_FIELDS_INVALID");
+        }
+        return null;
+    }
+
+    private ApiResult<Void> requireFixedSectionFieldSchema(TrustSectionView section, List<String> fieldKeys) {
+        TrustSectionVersionView published = findSectionVersion(section.key(), section.version());
+        if (published == null || published.fields() == null || published.fields().isEmpty()
+                || published.fields().stream().anyMatch(field -> field == null || !StringUtils.hasText(field.key()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_FIELD_SCHEMA_UNAVAILABLE");
+        }
+        Set<String> expectedKeys = new TreeSet<>();
+        published.fields().forEach(field -> expectedKeys.add(field.key().trim()));
+        if (fieldKeys == null || fieldKeys.stream().anyMatch(key -> !StringUtils.hasText(key))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
+        }
+        Set<String> actualKeys = new TreeSet<>();
+        fieldKeys.forEach(key -> actualKeys.add(key.trim()));
+        if (!expectedKeys.equals(actualKeys)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_FIELD_SCHEMA_MISMATCH");
         }
         return null;
     }
