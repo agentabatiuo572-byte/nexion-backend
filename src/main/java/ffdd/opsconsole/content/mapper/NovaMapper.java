@@ -3,9 +3,12 @@ package ffdd.opsconsole.content.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
+import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaSocialPoolView;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.domain.TrustedNovaSocialEvent;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -130,6 +133,19 @@ public interface NovaMapper extends BaseMapper<Object> {
             """)
     void createSocialDistributionTable();
 
+    @Insert("""
+            INSERT INTO nx_nova_social_distribution
+                (dist_key, dist_name, pct, color, operator, reason, created_at, updated_at, is_deleted)
+            VALUES
+                ('withdrawal', '提现到账', 30, 'var(--admin-cat-3)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
+                ('vrank', 'V 等级晋升', 25, 'var(--admin-cat-5)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
+                ('genesis', 'Genesis 成交', 25, 'var(--admin-cat-7)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0),
+                ('aiClient', 'AI 客户消费', 0, 'var(--admin-cat-2)', 'system', '真实数据源未接入，默认不参与抽样', NOW(), NOW(), 0),
+                ('newUsers', '每小时新增用户', 20, 'var(--admin-cat-4)', 'system', 'I2 默认真实事件权重', NOW(), NOW(), 0)
+            ON DUPLICATE KEY UPDATE dist_key = VALUES(dist_key)
+            """)
+    int seedSocialDistributionDefaults();
+
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_nova_social_pool (
               id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -147,6 +163,39 @@ public interface NovaMapper extends BaseMapper<Object> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createSocialPoolTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_nova_social_event (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              event_type VARCHAR(32) NOT NULL,
+              source_event_id VARCHAR(160) NOT NULL,
+              source_system VARCHAR(64) NOT NULL,
+              source_table VARCHAR(64) NOT NULL,
+              actor_display VARCHAR(64) NOT NULL DEFAULT '',
+              city_display VARCHAR(64) NOT NULL DEFAULT '',
+              amount_display VARCHAR(64) NOT NULL DEFAULT '',
+              source_note VARCHAR(512) NOT NULL DEFAULT '',
+              status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+              occurred_at DATETIME NOT NULL,
+              expires_at DATETIME NOT NULL,
+              verified_at DATETIME NOT NULL,
+              last_dispatched_at DATETIME NULL,
+              dispatch_count BIGINT NOT NULL DEFAULT 0,
+              operator VARCHAR(128) NULL,
+              reason VARCHAR(512) NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              is_deleted TINYINT NOT NULL DEFAULT 0,
+              UNIQUE KEY uk_nova_social_source_event (event_type, source_system, source_event_id),
+              KEY idx_nova_social_event_runtime (is_deleted, status, expires_at, event_type),
+              KEY idx_nova_social_event_type_runtime (is_deleted, status, event_type, expires_at, occurred_at, id),
+              KEY idx_nova_social_event_occurred (occurred_at),
+              CONSTRAINT chk_nova_social_event_status CHECK (status IN ('ACTIVE', 'DISABLED', 'EXPIRED')),
+              CONSTRAINT chk_nova_social_event_type CHECK (event_type IN ('withdrawal', 'vrank', 'genesis', 'aiClient', 'newUsers')),
+              CONSTRAINT chk_nova_social_event_expiry CHECK (expires_at > occurred_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createSocialEventTable();
 
     @Select("""
             SELECT channel_key AS `key`,
@@ -176,9 +225,10 @@ public interface NovaMapper extends BaseMapper<Object> {
                    COALESCE(SUM(CASE WHEN c.is_deleted = 0 AND c.enabled = 1 THEN 1 ELSE 0 END), 0) AS onlineChannels,
                    COALESCE(SUM(CASE WHEN c.is_deleted = 0 THEN 1 ELSE 0 END), 0) AS totalChannels,
                    COALESCE((
-                       SELECT SUM(p.item_count)
-                         FROM nx_nova_social_pool p
-                        WHERE p.is_deleted = 0
+                       SELECT SUM(e.dispatch_count)
+                         FROM nx_nova_social_event e
+                        WHERE e.is_deleted = 0
+                          AND e.last_dispatched_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                    ), 0) AS weeklySocial
               FROM nx_nova_channel c
             """)
@@ -473,4 +523,285 @@ public interface NovaMapper extends BaseMapper<Object> {
                    @Param("count") int count,
                    @Param("operator") String operator,
                    @Param("reason") String reason);
+
+    @Select("""
+            SELECT id,
+                   event_type AS eventType,
+                   source_event_id AS sourceEventId,
+                   actor_display AS actorDisplay,
+                   city_display AS cityDisplay,
+                   amount_display AS amountDisplay,
+                   source_note AS sourceNote,
+                   source_system AS sourceSystem,
+                   source_table AS sourceTable,
+                   status,
+                   occurred_at AS occurredAt,
+                   expires_at AS expiresAt,
+                   verified_at AS verifiedAt,
+                   last_dispatched_at AS lastDispatchedAt,
+                   dispatch_count AS dispatchCount,
+                   created_at AS createdAt,
+                   updated_at AS updatedAt
+              FROM nx_nova_social_event
+             WHERE is_deleted = 0
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT 500
+            """)
+    List<NovaSocialEventView> socialEvents();
+
+    @Select("""
+            <script>
+            SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
+                   actor_display AS actorDisplay, city_display AS cityDisplay,
+                   amount_display AS amountDisplay, source_note AS sourceNote,
+                   source_system AS sourceSystem, source_table AS sourceTable, status,
+                   occurred_at AS occurredAt, expires_at AS expiresAt, verified_at AS verifiedAt,
+                   last_dispatched_at AS lastDispatchedAt, dispatch_count AS dispatchCount,
+                   created_at AS createdAt, updated_at AS updatedAt
+              FROM nx_nova_social_event
+             WHERE is_deleted = 0
+               <if test="eventType != null and eventType != ''">AND event_type = #{eventType}</if>
+               <if test="status != null and status != ''">AND status = #{status}</if>
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<NovaSocialEventView> socialEventsFiltered(@Param("eventType") String eventType,
+                                                    @Param("status") String status,
+                                                    @Param("limit") int limit,
+                                                    @Param("offset") int offset);
+
+    @Select("""
+            <script>
+            SELECT COUNT(1)
+              FROM nx_nova_social_event
+             WHERE is_deleted = 0
+               <if test="eventType != null and eventType != ''">AND event_type = #{eventType}</if>
+               <if test="status != null and status != ''">AND status = #{status}</if>
+            </script>
+            """)
+    long countSocialEventsFiltered(@Param("eventType") String eventType,
+                                   @Param("status") String status);
+
+    @Select("""
+            SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
+                   actor_display AS actorDisplay, city_display AS cityDisplay,
+                   amount_display AS amountDisplay, source_note AS sourceNote,
+                   source_system AS sourceSystem, source_table AS sourceTable, status,
+                   occurred_at AS occurredAt, expires_at AS expiresAt, verified_at AS verifiedAt,
+                   last_dispatched_at AS lastDispatchedAt, dispatch_count AS dispatchCount,
+                   created_at AS createdAt, updated_at AS updatedAt
+              FROM nx_nova_social_event
+             WHERE id = #{id} AND is_deleted = 0
+             LIMIT 1
+            """)
+    NovaSocialEventView socialEvent(@Param("id") long id);
+
+    @Select("""
+            SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
+                   actor_display AS actorDisplay, city_display AS cityDisplay,
+                   amount_display AS amountDisplay, source_note AS sourceNote,
+                   source_system AS sourceSystem, source_table AS sourceTable, status,
+                   occurred_at AS occurredAt, expires_at AS expiresAt, verified_at AS verifiedAt,
+                   last_dispatched_at AS lastDispatchedAt, dispatch_count AS dispatchCount,
+                   created_at AS createdAt, updated_at AS updatedAt
+              FROM nx_nova_social_event
+             WHERE event_type = #{eventType}
+               AND source_system = #{sourceSystem}
+               AND source_event_id = #{sourceEventId}
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    NovaSocialEventView socialEventBySource(@Param("eventType") String eventType,
+                                            @Param("sourceSystem") String sourceSystem,
+                                            @Param("sourceEventId") String sourceEventId);
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_nova_social_event
+             WHERE event_type = #{eventType}
+               AND source_system = #{sourceSystem}
+               AND source_event_id = #{sourceEventId}
+            """)
+    int socialEventSourceCount(@Param("eventType") String eventType,
+                               @Param("sourceSystem") String sourceSystem,
+                               @Param("sourceEventId") String sourceEventId);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_nova_social_event (
+                event_type, source_event_id, source_system, source_table,
+                actor_display, city_display, amount_display, source_note,
+                status, occurred_at, expires_at, verified_at, operator, reason,
+                created_at, updated_at, is_deleted
+            ) VALUES (
+                #{source.eventType}, #{source.sourceEventId}, #{source.sourceSystem}, #{source.sourceTable},
+                #{actorDisplay}, #{cityDisplay}, #{amountDisplay}, #{source.sourceNote},
+                'ACTIVE', #{source.occurredAt}, #{expiresAt}, NOW(), #{operator}, #{reason},
+                NOW(), NOW(), 0
+            )
+            """)
+    int insertSocialEvent(@Param("source") TrustedNovaSocialEvent source,
+                          @Param("actorDisplay") String actorDisplay,
+                          @Param("cityDisplay") String cityDisplay,
+                          @Param("amountDisplay") String amountDisplay,
+                          @Param("expiresAt") LocalDateTime expiresAt,
+                          @Param("operator") String operator,
+                          @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_social_event
+               SET status = #{status}, operator = #{operator}, reason = #{reason}, updated_at = NOW()
+             WHERE id = #{id} AND is_deleted = 0
+            """)
+    int updateSocialEventStatus(@Param("id") long id, @Param("status") String status,
+                                @Param("operator") String operator, @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_social_event
+               SET is_deleted = 1, operator = #{operator}, reason = #{reason}, updated_at = NOW()
+             WHERE id = #{id} AND is_deleted = 0
+            """)
+    int deleteSocialEvent(@Param("id") long id, @Param("operator") String operator, @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_social_event
+               SET status = 'EXPIRED', operator = 'system', reason = '事件超过有效期自动过期', updated_at = NOW()
+             WHERE is_deleted = 0 AND status = 'ACTIVE' AND expires_at <= #{now}
+            """)
+    int expireSocialEvents(@Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
+                   actor_display AS actorDisplay, city_display AS cityDisplay,
+                   amount_display AS amountDisplay, source_note AS sourceNote,
+                   source_system AS sourceSystem, source_table AS sourceTable, status,
+                   occurred_at AS occurredAt, expires_at AS expiresAt, verified_at AS verifiedAt,
+                   last_dispatched_at AS lastDispatchedAt, dispatch_count AS dispatchCount,
+                   created_at AS createdAt, updated_at AS updatedAt
+              FROM nx_nova_social_event
+             WHERE is_deleted = 0 AND status = 'ACTIVE' AND expires_at > #{now}
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT 1000
+            """)
+    List<NovaSocialEventView> activeSocialEvents(@Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
+                   actor_display AS actorDisplay, city_display AS cityDisplay,
+                   amount_display AS amountDisplay, source_note AS sourceNote,
+                   source_system AS sourceSystem, source_table AS sourceTable, status,
+                   occurred_at AS occurredAt, expires_at AS expiresAt, verified_at AS verifiedAt,
+                   last_dispatched_at AS lastDispatchedAt, dispatch_count AS dispatchCount,
+                   created_at AS createdAt, updated_at AS updatedAt
+              FROM nx_nova_social_event
+             WHERE is_deleted = 0 AND status = 'ACTIVE' AND expires_at > #{now}
+               AND event_type = #{eventType}
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT #{limit}
+            """)
+    List<NovaSocialEventView> activeSocialEventsByType(@Param("eventType") String eventType,
+                                                       @Param("now") LocalDateTime now,
+                                                       @Param("limit") int limit);
+
+    @Select("""
+            SELECT 'withdrawal' AS eventType,
+                   CONCAT('withdrawal:', w.withdrawal_no) AS sourceEventId,
+                   'NEXION_CORE' AS sourceSystem,
+                   'nx_withdrawal_order' AS sourceTable,
+                   COALESCE(u.nickname, '') AS actorName,
+                   COALESCE(u.region, '') AS city,
+                   w.amount AS amount,
+                   w.asset AS amountUnit,
+                   CASE WHEN w.status = 'COMPLETED' THEN 'LEGACY_COMPLETED' ELSE 'SUCCESS' END AS sourceNote,
+                   w.completed_at AS occurredAt
+              FROM nx_withdrawal_order w
+              LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
+             WHERE w.is_deleted = 0
+               AND w.status IN ('SUCCESS', 'COMPLETED')
+               AND w.completed_at IS NOT NULL
+               AND w.completed_at >= #{since} AND w.completed_at < #{until}
+             ORDER BY w.completed_at ASC
+            """)
+    List<TrustedNovaSocialEvent> withdrawalSourceEvents(@Param("since") LocalDateTime since,
+                                                         @Param("until") LocalDateTime until);
+
+    @Select("""
+            SELECT 'vrank' AS eventType,
+                   CONCAT('vrank:', l.id) AS sourceEventId,
+                   'NEXION_CORE' AS sourceSystem,
+                   'nx_user_level_log' AS sourceTable,
+                   COALESCE(u.nickname, '') AS actorName,
+                   COALESCE(u.region, '') AS city,
+                   NULL AS amount,
+                   '' AS amountUnit,
+                   CONCAT(COALESCE(l.from_code, 'V0'), '→', l.to_code) AS sourceNote,
+                   l.created_at AS occurredAt
+              FROM nx_user_level_log l
+              LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0
+             WHERE l.is_deleted = 0 AND l.level_type = 'V_RANK'
+               AND CAST(SUBSTRING(UPPER(l.to_code), 2) AS UNSIGNED)
+                   > CAST(SUBSTRING(UPPER(COALESCE(l.from_code, 'V0')), 2) AS UNSIGNED)
+               AND l.created_at >= #{since} AND l.created_at < #{until}
+             ORDER BY l.created_at ASC
+            """)
+    List<TrustedNovaSocialEvent> vrankSourceEvents(@Param("since") LocalDateTime since,
+                                                   @Param("until") LocalDateTime until);
+
+    @Select("""
+            SELECT eventType, sourceEventId, sourceSystem, sourceTable, actorName, city,
+                   amount, amountUnit, sourceNote, occurredAt
+              FROM (
+                    SELECT 'genesis' AS eventType,
+                           CONCAT('genesis:', o.order_no) AS sourceEventId,
+                           'NEXION_CORE' AS sourceSystem, 'nx_genesis_order' AS sourceTable,
+                           COALESCE(u.nickname, '') AS actorName, COALESCE(u.region, '') AS city,
+                           o.amount_usdt AS amount, 'USDT' AS amountUnit,
+                           o.series_code AS sourceNote, o.completed_at AS occurredAt
+                      FROM nx_genesis_order o
+                      LEFT JOIN nx_user u ON u.id = o.user_id AND u.is_deleted = 0
+                     WHERE o.is_deleted = 0 AND o.status IN ('COMPLETED', 'PAID', 'SUCCESS')
+                       AND o.completed_at >= #{since} AND o.completed_at < #{until}
+                    UNION ALL
+                    SELECT 'genesis', CONCAT('genesis:', o.order_no),
+                           'NEXION_CORE', 'nx_genesis_order',
+                           COALESCE(u.nickname, ''), COALESCE(u.region, ''),
+                           o.amount_usdt, 'USDT', o.series_code, o.paid_at
+                      FROM nx_genesis_order o
+                      LEFT JOIN nx_user u ON u.id = o.user_id AND u.is_deleted = 0
+                     WHERE o.is_deleted = 0 AND o.status IN ('COMPLETED', 'PAID', 'SUCCESS')
+                       AND o.completed_at IS NULL
+                       AND o.paid_at >= #{since} AND o.paid_at < #{until}
+                   ) source_events
+             ORDER BY occurredAt ASC
+            """)
+    List<TrustedNovaSocialEvent> genesisSourceEvents(@Param("since") LocalDateTime since,
+                                                     @Param("until") LocalDateTime until);
+
+    @Select("""
+            SELECT 'newUsers' AS eventType,
+                   CONCAT('newUsers:', DATE_FORMAT(MIN(u.created_at), '%Y%m%d%H')) AS sourceEventId,
+                   'NEXION_CORE' AS sourceSystem,
+                   'nx_user' AS sourceTable,
+                   '' AS actorName,
+                   '全网' AS city,
+                   COUNT(1) AS amount,
+                   '人' AS amountUnit,
+                   '完整小时注册用户聚合' AS sourceNote,
+                   STR_TO_DATE(DATE_FORMAT(MIN(u.created_at), '%Y-%m-%d %H:00:00'), '%Y-%m-%d %H:%i:%s') AS occurredAt
+              FROM nx_user u
+             WHERE u.is_deleted = 0 AND u.created_at >= #{since} AND u.created_at < #{until}
+             GROUP BY DATE_FORMAT(u.created_at, '%Y-%m-%d %H:00:00')
+            HAVING COUNT(1) >= 10
+             ORDER BY occurredAt ASC
+            """)
+    List<TrustedNovaSocialEvent> newUserSourceEvents(@Param("since") LocalDateTime since,
+                                                     @Param("until") LocalDateTime until);
+
+    @Update("""
+            UPDATE nx_nova_social_event
+               SET dispatch_count = dispatch_count + 1,
+                   last_dispatched_at = #{dispatchedAt}, updated_at = NOW()
+             WHERE id = #{id} AND is_deleted = 0 AND status = 'ACTIVE' AND expires_at > #{dispatchedAt}
+            """)
+    int markSocialEventDispatched(@Param("id") long id, @Param("dispatchedAt") LocalDateTime dispatchedAt);
 }

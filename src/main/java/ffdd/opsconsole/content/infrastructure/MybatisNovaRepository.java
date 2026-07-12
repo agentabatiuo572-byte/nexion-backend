@@ -3,10 +3,13 @@ package ffdd.opsconsole.content.infrastructure;
 import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
+import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaSocialPoolView;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.domain.TrustedNovaSocialEvent;
 import ffdd.opsconsole.content.mapper.NovaMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -30,7 +33,9 @@ public class MybatisNovaRepository implements NovaRepository {
         }
         mapper.quarantineIncompleteTemplates();
         mapper.createSocialDistributionTable();
+        mapper.seedSocialDistributionDefaults();
         mapper.createSocialPoolTable();
+        mapper.createSocialEventTable();
     }
 
     @Override
@@ -144,5 +149,96 @@ public class MybatisNovaRepository implements NovaRepository {
     public void upsertPool(String key, String name, String description, int count, String operator, String reason) {
         ensureTables();
         mapper.upsertPool(key, name, description, count, operator, reason);
+    }
+
+    @Override
+    public List<NovaSocialEventView> socialEvents() {
+        return mapper.socialEvents();
+    }
+
+    @Override
+    public List<NovaSocialEventView> socialEvents(String eventType, String status, int limit) {
+        return socialEvents(eventType, status, limit, 0);
+    }
+
+    @Override
+    public List<NovaSocialEventView> socialEvents(String eventType, String status, int limit, int offset) {
+        return mapper.socialEventsFiltered(eventType, status, Math.min(Math.max(1, limit), 100), Math.max(0, offset));
+    }
+
+    @Override
+    public long countSocialEvents(String eventType, String status) {
+        return mapper.countSocialEventsFiltered(eventType, status);
+    }
+
+    @Override
+    public Optional<NovaSocialEventView> socialEvent(long id) {
+        return Optional.ofNullable(mapper.socialEvent(id));
+    }
+
+    @Override
+    public Optional<NovaSocialEventView> socialEventBySource(String eventType, String sourceSystem, String sourceEventId) {
+        return Optional.ofNullable(mapper.socialEventBySource(eventType, sourceSystem, sourceEventId));
+    }
+
+    @Override
+    public boolean socialEventSourceExists(String eventType, String sourceSystem, String sourceEventId) {
+        return mapper.socialEventSourceCount(eventType, sourceSystem, sourceEventId) > 0;
+    }
+
+    @Override
+    public void createSocialEvent(TrustedNovaSocialEvent source, String actorDisplay, String cityDisplay,
+                                  String amountDisplay, LocalDateTime expiresAt, String operator, String reason) {
+        ensureTables();
+        mapper.insertSocialEvent(source, actorDisplay, cityDisplay, amountDisplay, expiresAt, operator, reason);
+    }
+
+    @Override
+    public boolean tryCreateSocialEvent(TrustedNovaSocialEvent source, String actorDisplay, String cityDisplay,
+                                        String amountDisplay, LocalDateTime expiresAt, String operator, String reason) {
+        ensureTables();
+        return mapper.insertSocialEvent(source, actorDisplay, cityDisplay, amountDisplay, expiresAt, operator, reason) == 1;
+    }
+
+    @Override
+    public void updateSocialEventStatus(long id, String status, String operator, String reason) {
+        mapper.updateSocialEventStatus(id, status, operator, reason);
+    }
+
+    @Override
+    public void deleteSocialEvent(long id, String operator, String reason) {
+        mapper.deleteSocialEvent(id, operator, reason);
+    }
+
+    @Override
+    public int expireSocialEvents(LocalDateTime now) {
+        return mapper.expireSocialEvents(now);
+    }
+
+    @Override
+    public List<NovaSocialEventView> activeSocialEvents(LocalDateTime now) {
+        return mapper.activeSocialEvents(now);
+    }
+
+    @Override
+    public List<NovaSocialEventView> activeSocialEventsByType(String eventType, LocalDateTime now, int limit) {
+        return mapper.activeSocialEventsByType(eventType, now, Math.min(Math.max(1, limit), 100));
+    }
+
+    @Override
+    public List<TrustedNovaSocialEvent> trustedSourceEvents(String sourceType, LocalDateTime since, LocalDateTime until) {
+        return switch (sourceType) {
+            case "withdrawal" -> mapper.withdrawalSourceEvents(since, until);
+            case "vrank" -> mapper.vrankSourceEvents(since, until);
+            case "genesis" -> mapper.genesisSourceEvents(since, until);
+            case "newUsers" -> mapper.newUserSourceEvents(since, until);
+            case "aiClient" -> List.of();
+            default -> throw new IllegalArgumentException("NOVA_SOCIAL_EVENT_TYPE_UNSUPPORTED");
+        };
+    }
+
+    @Override
+    public void markSocialEventDispatched(long id, LocalDateTime dispatchedAt) {
+        mapper.markSocialEventDispatched(id, dispatchedAt);
     }
 }

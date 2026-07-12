@@ -6,16 +6,19 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsNovaService;
+import ffdd.opsconsole.content.domain.NovaSocialEventPage;
 import ffdd.opsconsole.content.dto.NovaChannelStatusRequest;
 import ffdd.opsconsole.content.dto.NovaChannelUpsertRequest;
 import ffdd.opsconsole.content.dto.NovaDeleteRequest;
 import ffdd.opsconsole.content.dto.NovaDistributionUpdateRequest;
-import ffdd.opsconsole.content.dto.NovaPoolUpdateRequest;
+import ffdd.opsconsole.content.dto.NovaSocialEventStatusRequest;
+import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 
 class OpsNovaControllerTest {
@@ -131,13 +134,32 @@ class OpsNovaControllerTest {
     }
 
     @Test
-    void updatePoolDelegatesWithIdempotencyHeader() {
-        NovaPoolUpdateRequest request = new NovaPoolUpdateRequest(40, "Marina K.", "更新池");
-        when(novaService.updatePool("CITIES", "idem-i2-pool", request)).thenReturn(ApiResult.ok(null));
+    void socialEventEndpointsDelegateToService() {
+        NovaSocialEventSyncRequest sync = new NovaSocialEventSyncRequest(
+                List.of("withdrawal"), 24, 12, "Marina K.", "同步真实提现事件");
+        when(novaService.syncSocialEvents("idem-event", sync)).thenReturn(ApiResult.ok(null));
+        when(novaService.socialEventPage("withdrawal", "ACTIVE", 2, 20))
+                .thenReturn(ApiResult.ok(new NovaSocialEventPage(List.of(), 2, 20, 0)));
+        NovaSocialEventStatusRequest status = new NovaSocialEventStatusRequest("DISABLED", "Marina K.", "停用异常来源事件");
+        when(novaService.updateSocialEventStatus(9L, "idem-status", status)).thenReturn(ApiResult.ok(null));
+        NovaDeleteRequest delete = new NovaDeleteRequest("Marina K.", "删除异常来源事件");
+        when(novaService.deleteSocialEvent(9L, "idem-delete", delete)).thenReturn(ApiResult.ok());
 
-        assertThat(controller.updatePool("CITIES", "idem-i2-pool", request).getCode()).isZero();
+        assertThat(controller.syncSocialEvents("idem-event", sync).getCode()).isZero();
+        assertThat(controller.socialEvents("withdrawal", "ACTIVE", 2, 20).getCode()).isZero();
+        assertThat(controller.updateSocialEventStatus(9L, "idem-status", status).getCode()).isZero();
+        assertThat(controller.deleteSocialEvent(9L, "idem-delete", delete).getCode()).isZero();
 
-        verify(novaService).updatePool("CITIES", "idem-i2-pool", request);
+        verify(novaService).syncSocialEvents("idem-event", sync);
+        verify(novaService).socialEventPage("withdrawal", "ACTIVE", 2, 20);
+        verify(novaService).updateSocialEventStatus(9L, "idem-status", status);
+        verify(novaService).deleteSocialEvent(9L, "idem-delete", delete);
+    }
+
+    @Test
+    void adminControllerDoesNotExposeArbitrarySocialEventCreation() {
+        assertThat(Arrays.stream(OpsNovaController.class.getDeclaredMethods()).map(method -> method.getName()))
+                .doesNotContain("createSocialEvent", "updateSocialEventContent");
     }
 
     private static NovaChannelUpsertRequest channelRequest() {

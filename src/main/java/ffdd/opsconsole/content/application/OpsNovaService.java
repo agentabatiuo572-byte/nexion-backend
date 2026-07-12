@@ -7,14 +7,19 @@ import ffdd.opsconsole.content.domain.NovaOverview;
 import ffdd.opsconsole.content.domain.NovaOptionView;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
-import ffdd.opsconsole.content.domain.NovaSocialPoolView;
+import ffdd.opsconsole.content.domain.NovaSocialEventPage;
+import ffdd.opsconsole.content.domain.NovaSocialEventView;
+import ffdd.opsconsole.content.domain.NovaSocialRenderedEventView;
+import ffdd.opsconsole.content.domain.NovaSocialSyncResult;
 import ffdd.opsconsole.content.domain.NovaStats;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.domain.TrustedNovaSocialEvent;
 import ffdd.opsconsole.content.dto.NovaChannelStatusRequest;
 import ffdd.opsconsole.content.dto.NovaChannelUpsertRequest;
 import ffdd.opsconsole.content.dto.NovaDeleteRequest;
 import ffdd.opsconsole.content.dto.NovaDistributionUpdateRequest;
-import ffdd.opsconsole.content.dto.NovaPoolUpdateRequest;
+import ffdd.opsconsole.content.dto.NovaSocialEventStatusRequest;
+import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -23,6 +28,9 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -30,6 +38,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -44,6 +53,17 @@ public class OpsNovaService {
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[A-Za-z][A-Za-z0-9_]*}");
     private static final Pattern DURATION_PATTERN = Pattern.compile("^(\\d+)\\s*(s|min|h|d)$", Pattern.CASE_INSENSITIVE);
     private static final Set<String> TEMPLATE_STATUSES = Set.of("DRAFT", "PUBLISHED", "ARCHIVED");
+    private static final Set<String> SOCIAL_EVENT_STATUSES = Set.of("ACTIVE", "DISABLED", "EXPIRED");
+    private static final List<NovaOptionView> SOCIAL_EVENT_TYPE_OPTIONS = List.of(
+            new NovaOptionView("withdrawal", "提现到账"),
+            new NovaOptionView("vrank", "V 等级晋升"),
+            new NovaOptionView("genesis", "Genesis 成交"),
+            new NovaOptionView("aiClient", "AI 客户消费（数据源未接入）"),
+            new NovaOptionView("newUsers", "每小时新增用户"));
+    private static final List<NovaOptionView> SOCIAL_EVENT_STATUS_OPTIONS = List.of(
+            new NovaOptionView("ACTIVE", "有效"),
+            new NovaOptionView("DISABLED", "已停用"),
+            new NovaOptionView("EXPIRED", "已过期"));
     private static final List<NovaOptionView> TEMPLATE_CTA_OPTIONS = List.of(
             new NovaOptionView("NONE", "无跳转"),
             new NovaOptionView("/me/weekly", "每周回顾"),
@@ -60,13 +80,6 @@ public class OpsNovaService {
                     new DistributionOption("newUsers", "每小时新增用户", "var(--admin-cat-4)"))
             .stream()
             .collect(Collectors.toMap(DistributionOption::key, Function.identity(), (left, right) -> left, LinkedHashMap::new));
-    private static final Map<String, PoolOption> POOL_OPTIONS = List.of(
-                    new PoolOption("SOCIAL_NAMES", "人名池", "事件里出现的化名,按市场轮换"),
-                    new PoolOption("CITIES", "城市池", "事件发生地,按市场轮换"),
-                    new PoolOption("AI_CLIENTS", "AI 客户池", "AI 客户消费事件的客户名单"))
-            .stream()
-            .collect(Collectors.toMap(PoolOption::key, Function.identity(), (left, right) -> left, LinkedHashMap::new));
-
     private final NovaRepository novaRepository;
     private final AuditLogService auditLogService;
 
@@ -80,15 +93,276 @@ public class OpsNovaService {
                 List.of(),
                 novaRepository.templates(),
                 novaRepository.socialDistribution(),
-                novaRepository.socialPools(),
+                publicEvents(novaRepository.socialEvents("", "", 20, 0)),
+                SOCIAL_EVENT_TYPE_OPTIONS,
+                SOCIAL_EVENT_STATUS_OPTIONS,
                 List.copyOf(TEMPLATE_STATUSES),
                 TEMPLATE_CTA_OPTIONS,
                 List.of(
                         "nx_nova_channel",
                         "nx_nova_template",
                         "nx_nova_social_distribution",
-                        "nx_nova_social_pool",
+                        "nx_nova_social_event",
                         "nx_notification")));
+    }
+
+    public ApiResult<List<NovaSocialEventView>> socialEvents(String eventType, String status) {
+        ApiResult<NovaSocialEventPage> page = socialEventPage(eventType, status, 1, 100);
+        if (page.getCode() != 0) {
+            return ApiResult.fail(page.getCode(), page.getMessage());
+        }
+        return ApiResult.ok(page.getData().items());
+    }
+
+    public ApiResult<NovaSocialEventPage> socialEventPage(String eventType, String status, int page, int pageSize) {
+        novaRepository.ensureTables();
+        expireDueEvents();
+        String normalizedType = trimToEmpty(eventType);
+        String normalizedStatus = normalizeStatus(status);
+        if (StringUtils.hasText(normalizedType) && !DISTRIBUTION_OPTIONS.containsKey(normalizedType)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_TYPE_UNSUPPORTED");
+        }
+        if (StringUtils.hasText(status) && !SOCIAL_EVENT_STATUSES.contains(normalizedStatus)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_STATUS_UNSUPPORTED");
+        }
+        if (page < 1 || page > 1_000_000 || pageSize < 1 || pageSize > 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_PAGE_INVALID");
+        }
+        String effectiveStatus = StringUtils.hasText(status) ? normalizedStatus : "";
+        List<NovaSocialEventView> rows = novaRepository
+                .socialEvents(normalizedType, effectiveStatus, pageSize, (page - 1) * pageSize).stream()
+                .map(this::publicEvent)
+                .toList();
+        long total = novaRepository.countSocialEvents(normalizedType, effectiveStatus);
+        return ApiResult.ok(new NovaSocialEventPage(rows, page, pageSize, total));
+    }
+
+    @Transactional
+    public ApiResult<NovaSocialSyncResult> syncSocialEvents(String idempotencyKey, NovaSocialEventSyncRequest request) {
+        ApiResult<NovaSocialSyncResult> guard = requireReason(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        int lookbackHours = request.lookbackHours() == null ? 24 : request.lookbackHours();
+        int ttlHours = request.ttlHours() == null ? 12 : request.ttlHours();
+        if (lookbackHours < 1 || lookbackHours > 168 || ttlHours < 1 || ttlHours > 168) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_SYNC_WINDOW_INVALID");
+        }
+        List<String> sourceTypes = request.sourceTypes() == null || request.sourceTypes().isEmpty()
+                ? SOCIAL_EVENT_TYPE_OPTIONS.stream().map(NovaOptionView::value).toList()
+                : request.sourceTypes().stream().map(this::normalizeEventType).distinct().toList();
+        if (sourceTypes.stream().anyMatch(type -> !DISTRIBUTION_OPTIONS.containsKey(type))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_TYPE_UNSUPPORTED");
+        }
+
+        novaRepository.ensureTables();
+        LocalDateTime now = LocalDateTime.now();
+        List<NovaSocialSyncResult.SourceResult> results = new ArrayList<>();
+        int discoveredTotal = 0;
+        int insertedTotal = 0;
+        int duplicateTotal = 0;
+        for (String sourceType : sourceTypes) {
+            String sourceTable = sourceTable(sourceType);
+            if ("aiClient".equals(sourceType)) {
+                results.add(new NovaSocialSyncResult.SourceResult(sourceType, "", "UNAVAILABLE", 0, 0, 0,
+                        "尚无真实 AI 计费事件表，系统不会生成替代数据"));
+                continue;
+            }
+            LocalDateTime until = "newUsers".equals(sourceType) ? now.truncatedTo(ChronoUnit.HOURS) : now;
+            LocalDateTime since = until.minusHours(lookbackHours);
+            List<TrustedNovaSocialEvent> discovered = novaRepository.trustedSourceEvents(sourceType, since, until);
+            int inserted = 0;
+            int duplicates = 0;
+            int sourceOrdinal = 0;
+            for (TrustedNovaSocialEvent source : discovered) {
+                int currentOrdinal = sourceOrdinal++;
+                if (!trustedSourceMatches(sourceType, sourceTable, source, since, until)) {
+                    continue;
+                }
+                LocalDateTime expiresAt = source.occurredAt().plusHours(ttlHours);
+                if (!expiresAt.isAfter(now)) {
+                    continue;
+                }
+                if (novaRepository.socialEventSourceExists(source.eventType(), source.sourceSystem(), source.sourceEventId())) {
+                    duplicates++;
+                    continue;
+                }
+                ApiResult<NovaSocialEventView> ingested = ingestTrustedSocialEvent(
+                        idempotencyKey + ":" + sourceType + ":" + currentOrdinal, source, expiresAt,
+                        request.operator(), request.reason());
+                if (ingested.getCode() == 0) {
+                    inserted++;
+                }
+            }
+            discoveredTotal += discovered.size();
+            insertedTotal += inserted;
+            duplicateTotal += duplicates;
+            results.add(new NovaSocialSyncResult.SourceResult(sourceType, sourceTable, "AVAILABLE",
+                    discovered.size(), inserted, duplicates, "只同步已验证终态且仍在有效期内的真实事件"));
+        }
+        NovaSocialSyncResult result = new NovaSocialSyncResult(discoveredTotal, insertedTotal, duplicateTotal, List.copyOf(results));
+        audit("I2_NOVA_SOCIAL_EVENTS_SYNCED", "social-events", request.operator(), idempotencyKey, request.reason(), Map.of(
+                "discovered", discoveredTotal, "inserted", insertedTotal, "duplicates", duplicateTotal,
+                "sources", sourceTypes));
+        return ApiResult.ok(result);
+    }
+
+    /** Trusted application adapters may call this; it is deliberately not exposed by the admin controller. */
+    @Transactional
+    public ApiResult<NovaSocialEventView> ingestTrustedSocialEvent(
+            String idempotencyKey,
+            TrustedNovaSocialEvent source,
+            LocalDateTime expiresAt,
+            String operator,
+            String reason) {
+        ApiResult<NovaSocialEventView> guard = requireReason(idempotencyKey, reason);
+        if (guard != null) {
+            return guard;
+        }
+        if (!validTrustedSource(source, expiresAt)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_INVALID");
+        }
+        if (!DISTRIBUTION_OPTIONS.containsKey(source.eventType())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_TYPE_UNSUPPORTED");
+        }
+        String expectedTable = sourceTable(source.eventType());
+        if (!"NEXION_CORE".equals(source.sourceSystem()) || !expectedTable.equals(source.sourceTable())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_NOT_TRUSTED");
+        }
+        novaRepository.ensureTables();
+        Optional<NovaSocialEventView> existing = novaRepository.socialEventBySource(
+                source.eventType(), source.sourceSystem(), source.sourceEventId());
+        if (existing.isPresent()) {
+            return ApiResult.ok(publicEvent(existing.get()));
+        }
+        if (novaRepository.socialEventSourceExists(source.eventType(), source.sourceSystem(), source.sourceEventId())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_ALREADY_INGESTED");
+        }
+        boolean inserted = novaRepository.tryCreateSocialEvent(
+                source, mask(source.actorName(), "匿名用户"), mask(source.city(), "未知地区"),
+                "newUsers".equals(source.eventType()) ? peopleBand(source.amount()) : amountBand(source.amount(), source.amountUnit()),
+                expiresAt, operator, reason.trim());
+        Optional<NovaSocialEventView> created = novaRepository.socialEventBySource(
+                source.eventType(), source.sourceSystem(), source.sourceEventId());
+        if (!inserted || created.isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_ALREADY_INGESTED");
+        }
+        audit("I2_NOVA_SOCIAL_EVENT_CREATED", publicReference(created.get()), operator, idempotencyKey, reason, Map.of(
+                "eventType", source.eventType(), "sourceSystem", source.sourceSystem(), "sourceTable", source.sourceTable()));
+        return ApiResult.ok(publicEvent(created.get()));
+    }
+
+    @Transactional
+    public ApiResult<NovaSocialEventView> updateSocialEventStatus(
+            long id, String idempotencyKey, NovaSocialEventStatusRequest request) {
+        ApiResult<NovaSocialEventView> guard = requireReason(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String status = normalizeStatus(request.status());
+        if (!Set.of("ACTIVE", "DISABLED", "EXPIRED").contains(status)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_STATUS_UNSUPPORTED");
+        }
+        novaRepository.ensureTables();
+        Optional<NovaSocialEventView> current = novaRepository.socialEvent(id);
+        if (current.isEmpty()) {
+            return ApiResult.fail(404, "NOVA_SOCIAL_EVENT_NOT_FOUND");
+        }
+        if (status.equals(current.get().status())) {
+            return ApiResult.ok(publicEvent(current.get()));
+        }
+        if ("EXPIRED".equals(current.get().status())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_EXPIRED_IS_TERMINAL");
+        }
+        if ("ACTIVE".equals(status) && !current.get().expiresAt().isAfter(LocalDateTime.now())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_ALREADY_EXPIRED");
+        }
+        novaRepository.updateSocialEventStatus(id, status, request.operator(), request.reason().trim());
+        NovaSocialEventView updated = novaRepository.socialEvent(id).orElseThrow();
+        audit("I2_NOVA_SOCIAL_EVENT_STATUS_CHANGED", String.valueOf(id), request.operator(), idempotencyKey, request.reason(),
+                Map.of("from", current.get().status(), "to", status));
+        return ApiResult.ok(publicEvent(updated));
+    }
+
+    @Transactional
+    public ApiResult<Void> deleteSocialEvent(long id, String idempotencyKey, NovaDeleteRequest request) {
+        ApiResult<Void> guard = requireVoidReason(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        novaRepository.ensureTables();
+        Optional<NovaSocialEventView> current = novaRepository.socialEvent(id);
+        if (current.isEmpty()) {
+            return ApiResult.ok();
+        }
+        novaRepository.deleteSocialEvent(id, request.operator(), request.reason().trim());
+        audit("I2_NOVA_SOCIAL_EVENT_DELETED", String.valueOf(id), request.operator(), idempotencyKey, request.reason(),
+                Map.of("eventType", current.get().eventType()));
+        return ApiResult.ok();
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Integer>> expireSocialEvents(String idempotencyKey, NovaDeleteRequest request) {
+        ApiResult<Void> guard = requireVoidReason(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return ApiResult.fail(guard.getCode(), guard.getMessage());
+        }
+        novaRepository.ensureTables();
+        int expired = novaRepository.expireSocialEvents(LocalDateTime.now());
+        audit("I2_NOVA_SOCIAL_EVENTS_EXPIRED", "social-events", request.operator(), idempotencyKey, request.reason(),
+                Map.of("expired", expired));
+        return ApiResult.ok(Map.of("expired", expired));
+    }
+
+    public ApiResult<NovaSocialRenderedEventView> sampleSocialEvent(String language) {
+        String normalizedLanguage = StringUtils.hasText(language) ? language.trim().toUpperCase(Locale.ROOT) : "ZH";
+        if (!Set.of("ZH", "VI", "EN").contains(normalizedLanguage)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_LANGUAGE_UNSUPPORTED");
+        }
+        novaRepository.ensureTables();
+        expireDueEvents();
+        NovaChannelView channel = novaRepository.channel("social").orElse(null);
+        if (channel == null || !channel.enabled()) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_CHANNEL_DISABLED");
+        }
+        NovaTemplateView template = novaRepository.template("social").orElse(null);
+        if (template == null || !"PUBLISHED".equalsIgnoreCase(template.status())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_TEMPLATE_NOT_PUBLISHED");
+        }
+        Map<String, Integer> weights = novaRepository.socialDistribution().stream()
+                .collect(Collectors.toMap(NovaSocialDistributionItem::key, NovaSocialDistributionItem::pct,
+                        (left, right) -> right, LinkedHashMap::new));
+        LocalDateTime now = LocalDateTime.now();
+        Map<String, List<NovaSocialEventView>> candidates = new LinkedHashMap<>();
+        weights.forEach((type, weight) -> {
+            if (weight > 0) {
+                List<NovaSocialEventView> rows = novaRepository.activeSocialEventsByType(type, now, 100);
+                if (!rows.isEmpty()) {
+                    candidates.put(type, rows);
+                }
+            }
+        });
+        int totalWeight = candidates.keySet().stream().mapToInt(type -> weights.getOrDefault(type, 0)).sum();
+        if (totalWeight <= 0) {
+            return ApiResult.ok(null);
+        }
+        int roll = ThreadLocalRandom.current().nextInt(totalWeight);
+        String selectedType = null;
+        for (String type : candidates.keySet()) {
+            roll -= weights.getOrDefault(type, 0);
+            if (roll < 0) {
+                selectedType = type;
+                break;
+            }
+        }
+        List<NovaSocialEventView> selectedCandidates = candidates.get(selectedType);
+        NovaSocialEventView selected = selectedCandidates.get(ThreadLocalRandom.current().nextInt(selectedCandidates.size()));
+        NovaSocialEventView publicEvent = publicEvent(selected);
+        NovaSocialMessageRenderer.RenderedMessage message =
+                NovaSocialMessageRenderer.render(template, publicEvent, normalizedLanguage);
+        return ApiResult.ok(new NovaSocialRenderedEventView(
+                publicEvent.id(), publicEvent.eventType(), publicEvent.sourceEventId(), normalizedLanguage,
+                message.title(), message.body(), publicEvent.expiresAt()));
     }
 
     @Transactional
@@ -354,22 +628,112 @@ public class OpsNovaService {
         return ApiResult.ok(updated);
     }
 
-    @Transactional
-    public ApiResult<NovaSocialPoolView> updatePool(String poolKey, String idempotencyKey, NovaPoolUpdateRequest request) {
-        String normalizedPoolKey = normalizePoolKey(poolKey);
-        ApiResult<NovaSocialPoolView> guard = requireReason(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
+    private void expireDueEvents() {
+        int expired = novaRepository.expireSocialEvents(LocalDateTime.now());
+        if (expired > 0) {
+            audit("I2_NOVA_SOCIAL_EVENTS_AUTO_EXPIRED", "social-events", "system", "system-auto-expire",
+                    "事件超过有效期自动过期", Map.of("expired", expired));
         }
-        if (request.count() == null || request.count() < 0 || request.count() > 10000) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_POOL_COUNT_INVALID");
+    }
+
+    private boolean trustedSourceMatches(String eventType, String table, TrustedNovaSocialEvent source,
+                                         LocalDateTime since, LocalDateTime until) {
+        return source != null
+                && eventType.equals(source.eventType())
+                && "NEXION_CORE".equals(source.sourceSystem())
+                && table.equals(source.sourceTable())
+                && source.occurredAt() != null
+                && !source.occurredAt().isBefore(since)
+                && source.occurredAt().isBefore(until.plusNanos(1));
+    }
+
+    private boolean validTrustedSource(TrustedNovaSocialEvent source, LocalDateTime expiresAt) {
+        return source != null
+                && StringUtils.hasText(source.eventType())
+                && StringUtils.hasText(source.sourceEventId())
+                && source.sourceEventId().length() <= 160
+                && StringUtils.hasText(source.sourceSystem())
+                && StringUtils.hasText(source.sourceTable())
+                && source.occurredAt() != null
+                && expiresAt != null
+                && expiresAt.isAfter(source.occurredAt())
+                && expiresAt.isAfter(LocalDateTime.now())
+                && trimToEmpty(source.actorName()).length() <= 255
+                && trimToEmpty(source.city()).length() <= 255
+                && trimToEmpty(source.amountUnit()).length() <= 16
+                && trimToEmpty(source.sourceNote()).length() <= 512
+                && (source.amount() == null || source.amount().compareTo(BigDecimal.ZERO) >= 0);
+    }
+
+    private String normalizeEventType(String value) {
+        return trimToEmpty(value);
+    }
+
+    private String sourceTable(String eventType) {
+        return switch (eventType) {
+            case "withdrawal" -> "nx_withdrawal_order";
+            case "vrank" -> "nx_user_level_log";
+            case "genesis" -> "nx_genesis_order";
+            case "newUsers" -> "nx_user";
+            case "aiClient" -> "";
+            default -> "";
+        };
+    }
+
+    private String mask(String value, String fallback) {
+        if (!StringUtils.hasText(value)) {
+            return fallback;
         }
-        novaRepository.ensureTables();
-        PoolOption option = POOL_OPTIONS.get(normalizedPoolKey);
-        novaRepository.upsertPool(option.key(), option.name(), option.description(), request.count(), request.operator(), request.reason().trim());
-        NovaSocialPoolView updated = novaRepository.socialPool(option.key()).orElseThrow();
-        audit("I2_NOVA_SOCIAL_POOL_CHANGED", normalizedPoolKey, request.operator(), idempotencyKey, request.reason(), Map.of("count", request.count()));
-        return ApiResult.ok(updated);
+        String normalized = value.trim();
+        int firstCodePoint = normalized.codePointAt(0);
+        return new String(Character.toChars(firstCodePoint)) + "***";
+    }
+
+    private String amountBand(BigDecimal amount, String unit) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return "";
+        }
+        String band;
+        if (amount.compareTo(new BigDecimal("1000")) < 0) {
+            band = "<1K";
+        } else if (amount.compareTo(new BigDecimal("5000")) < 0) {
+            band = "1K–5K";
+        } else if (amount.compareTo(new BigDecimal("10000")) < 0) {
+            band = "5K–10K";
+        } else if (amount.compareTo(new BigDecimal("50000")) < 0) {
+            band = "10K–50K";
+        } else {
+            band = "50K+";
+        }
+        return band + (StringUtils.hasText(unit) ? " " + unit.trim().toUpperCase(Locale.ROOT) : "");
+    }
+
+    private String peopleBand(BigDecimal amount) {
+        if (amount == null || amount.compareTo(BigDecimal.TEN) < 0) {
+            return "";
+        }
+        int count = amount.intValue();
+        if (count < 50) return "10–49 人";
+        if (count < 100) return "50–99 人";
+        if (count < 500) return "100–499 人";
+        if (count < 1000) return "500–999 人";
+        return "1000+ 人";
+    }
+
+    private List<NovaSocialEventView> publicEvents(List<NovaSocialEventView> events) {
+        return events == null ? List.of() : events.stream().map(this::publicEvent).toList();
+    }
+
+    private NovaSocialEventView publicEvent(NovaSocialEventView event) {
+        return new NovaSocialEventView(
+                event.id(), event.eventType(), publicReference(event), event.actorDisplay(), event.cityDisplay(),
+                event.amountDisplay(), event.sourceNote(), event.sourceSystem(), event.sourceTable(), event.status(),
+                event.occurredAt(), event.expiresAt(), event.verifiedAt(), event.lastDispatchedAt(), event.dispatchCount(),
+                event.createdAt(), event.updatedAt());
+    }
+
+    private String publicReference(NovaSocialEventView event) {
+        return "evt_" + Long.toUnsignedString(event.id(), 36);
     }
 
     private NovaStats novaStats(Map<String, Object> stats) {
@@ -505,6 +869,13 @@ public class OpsNovaService {
                 || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDERS_MISMATCH");
         }
+        Set<String> usedPlaceholders = new LinkedHashSet<>();
+        List.of(request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(),
+                        trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()))
+                .forEach(value -> usedPlaceholders.addAll(placeholders(value)));
+        if (!NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(usedPlaceholders)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
         return null;
     }
 
@@ -512,7 +883,13 @@ public class OpsNovaService {
         return StringUtils.hasText(template.titleZh()) && StringUtils.hasText(template.bodyZh())
                 && StringUtils.hasText(template.titleVi()) && StringUtils.hasText(template.bodyVi())
                 && placeholders(template.bodyZh()).equals(placeholders(template.bodyVi()))
-                && (!StringUtils.hasText(template.bodyEn()) || placeholders(template.bodyZh()).equals(placeholders(template.bodyEn())));
+                && (!StringUtils.hasText(template.bodyEn()) || placeholders(template.bodyZh()).equals(placeholders(template.bodyEn())))
+                && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.titleZh()))
+                && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.bodyZh()))
+                && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.titleVi()))
+                && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.bodyVi()))
+                && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.titleEn()))
+                && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.bodyEn()));
     }
 
     private Set<String> placeholders(String value) {
@@ -591,14 +968,6 @@ public class OpsNovaService {
                 && DISTRIBUTION_OPTIONS.containsKey(key.trim());
     }
 
-    private String normalizePoolKey(String key) {
-        String normalized = normalizeChannelKey(key).toUpperCase(Locale.ROOT);
-        if (!POOL_OPTIONS.containsKey(normalized)) {
-            throw new IllegalArgumentException("NOVA_SOCIAL_POOL_UNSUPPORTED");
-        }
-        return normalized;
-    }
-
     private String normalizeStatus(String status) {
         return StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : "DRAFT";
     }
@@ -625,6 +994,4 @@ public class OpsNovaService {
     private record DistributionOption(String key, String name, String color) {
     }
 
-    private record PoolOption(String key, String name, String description) {
-    }
 }

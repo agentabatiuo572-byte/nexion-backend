@@ -8,7 +8,9 @@ public record NovaOverview(
         List<NovaEventDrivenView> eventDriven,
         List<NovaTemplateView> templates,
         List<NovaSocialDistributionItem> socialDistribution,
-        List<NovaSocialPoolView> socialPools,
+        List<NovaSocialEventView> socialEvents,
+        List<NovaOptionView> socialEventTypes,
+        List<NovaOptionView> socialEventStatuses,
         List<String> templateStatuses,
         List<NovaOptionView> templateCtaOptions,
         List<String> sources) {

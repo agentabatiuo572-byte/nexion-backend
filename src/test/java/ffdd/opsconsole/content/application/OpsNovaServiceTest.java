@@ -8,18 +8,22 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
+import ffdd.opsconsole.content.domain.NovaSocialEventView;
+import ffdd.opsconsole.content.domain.TrustedNovaSocialEvent;
 import ffdd.opsconsole.content.domain.NovaSocialPoolView;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
 import ffdd.opsconsole.content.dto.NovaChannelStatusRequest;
 import ffdd.opsconsole.content.dto.NovaChannelUpsertRequest;
 import ffdd.opsconsole.content.dto.NovaDeleteRequest;
 import ffdd.opsconsole.content.dto.NovaDistributionUpdateRequest;
-import ffdd.opsconsole.content.dto.NovaPoolUpdateRequest;
+import ffdd.opsconsole.content.dto.NovaSocialEventStatusRequest;
+import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,7 +52,7 @@ class OpsNovaServiceTest {
                         "nx_nova_channel",
                         "nx_nova_template",
                         "nx_nova_social_distribution",
-                        "nx_nova_social_pool",
+                        "nx_nova_social_event",
                         "nx_notification");
     }
 
@@ -60,7 +64,6 @@ class OpsNovaServiceTest {
         assertThat(result.getData().channels()).isEmpty();
         assertThat(result.getData().templates()).isEmpty();
         assertThat(result.getData().socialDistribution()).isEmpty();
-        assertThat(result.getData().socialPools()).isEmpty();
         assertThat(result.getData().eventDriven()).isEmpty();
         assertThat(result.getData().stats().totalChannels()).isZero();
     }
@@ -287,17 +290,175 @@ class OpsNovaServiceTest {
     }
 
     @Test
-    void updatePoolPersistsCount() {
-        var result = service.updatePool("CITIES", "idem-i2-pool", new NovaPoolUpdateRequest(
-                40,
-                "Marina K.",
-                "新增城市池条目"));
+    void createSocialEventMasksSensitiveDisplayFieldsAndAudits() {
+        LocalDateTime occurredAt = LocalDateTime.of(2026, 7, 12, 10, 0);
+        var result = service.ingestTrustedSocialEvent("idem-social-create", new TrustedNovaSocialEvent(
+                        "withdrawal", "withdrawal-90001", "NEXION_CORE", "nx_withdrawal_order",
+                        "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("18420"), "NEX",
+                        "Withdrawal settled", occurredAt), occurredAt.plusHours(12),
+                "Marina K.", "接入真实提现到账事件");
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().count()).isEqualTo(40);
-        assertThat(novaRepository.socialPool("CITIES")).get()
-                .extracting(NovaSocialPoolView::count)
-                .isEqualTo(40);
+        assertThat(result.getData().actorDisplay()).isEqualTo("N***");
+        assertThat(result.getData().cityDisplay()).isEqualTo("H***");
+        assertThat(result.getData().amountDisplay()).isEqualTo("10K–50K NEX");
+        assertThat(result.getData().sourceEventId()).startsWith("evt_").doesNotContain("90001");
+        assertThat(result.getData().sourceTable()).isEqualTo("nx_withdrawal_order");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("I2_NOVA_SOCIAL_EVENT_CREATED");
+    }
+
+    @Test
+    void createSocialEventIsIdempotentBySourceEventId() {
+        TrustedNovaSocialEvent request = socialEventRequest("withdrawal", "source-1");
+
+        var first = service.ingestTrustedSocialEvent("idem-create-first", request, LocalDateTime.now().plusHours(6),
+                "Marina K.", "同步真实业务事件来源");
+        var replay = service.ingestTrustedSocialEvent("idem-create-replay", request, LocalDateTime.now().plusHours(6),
+                "Marina K.", "同步真实业务事件来源");
+
+        assertThat(first.getCode()).isZero();
+        assertThat(replay.getCode()).isZero();
+        assertThat(replay.getData().id()).isEqualTo(first.getData().id());
+        assertThat(novaRepository.socialEvents).hasSize(1);
+    }
+
+    @Test
+    void newUserEventUsesPrivacyThresholdBandRatherThanMoneyBand() {
+        LocalDateTime occurredAt = LocalDateTime.of(2026, 7, 12, 10, 0);
+        TrustedNovaSocialEvent event = new TrustedNovaSocialEvent(
+                "newUsers", "newUsers:2026071210", "NEXION_CORE", "nx_user",
+                "", "全网", new BigDecimal("42"), "人", "完整小时注册用户聚合", occurredAt);
+
+        var result = service.ingestTrustedSocialEvent("idem-new-users-band", event, occurredAt.plusHours(12),
+                "system", "同步完整小时聚合用户事件");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().amountDisplay()).isEqualTo("10–49 人");
+    }
+
+    @Test
+    void sourceDeduplicationUsesTypeSystemAndSourceIdComposite() {
+        TrustedNovaSocialEvent withdrawal = socialEventRequest("withdrawal", "shared-1");
+        TrustedNovaSocialEvent genesis = new TrustedNovaSocialEvent(
+                "genesis", "shared-1", "NEXION_CORE", "nx_genesis_order", "An", "HCMC",
+                new BigDecimal("4200"), "USDT", "SERIES-A", LocalDateTime.now().minusMinutes(1));
+
+        assertThat(service.ingestTrustedSocialEvent("idem-composite-w", withdrawal, LocalDateTime.now().plusHours(2),
+                "Marina K.", "同步真实提现业务事件").getCode()).isZero();
+        assertThat(service.ingestTrustedSocialEvent("idem-composite-g", genesis, LocalDateTime.now().plusHours(2),
+                "Marina K.", "同步真实成交业务事件").getCode()).isZero();
+
+        assertThat(novaRepository.socialEvents).hasSize(2);
+    }
+
+    @Test
+    void createSocialEventRejectsUnknownSourceType() {
+        var result = service.ingestTrustedSocialEvent("idem-bad-source", socialEventRequest("fabricated", "source-bad"),
+                LocalDateTime.now().plusHours(6), "Marina K.", "同步真实业务事件来源");
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOVA_SOCIAL_EVENT_TYPE_UNSUPPORTED");
+    }
+
+    @Test
+    void listSocialEventsMarksExpiredRowsAndCanFilter() {
+        NovaSocialEventView active = novaRepository.addEvent("withdrawal", "active-1", "A***", "H***", "1K–5K NEX",
+                "ACTIVE", LocalDateTime.now().minusMinutes(5), LocalDateTime.now().plusHours(1));
+        novaRepository.addEvent("vrank", "expired-1", "B***", "D***", "",
+                "ACTIVE", LocalDateTime.now().minusDays(2), LocalDateTime.now().minusHours(1));
+
+        var result = service.socialEvents("withdrawal", "ACTIVE");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).singleElement().satisfies(event -> {
+            assertThat(event.id()).isEqualTo(active.id());
+            assertThat(event.sourceEventId()).startsWith("evt_");
+        });
+        assertThat(novaRepository.socialEvents).anyMatch(event -> "EXPIRED".equals(event.status()));
+    }
+
+    @Test
+    void statusAndDeleteCommandsAreReplaySafe() {
+        NovaSocialEventView created = novaRepository.addEvent("genesis", "genesis-1", "N***", "H***", "",
+                "ACTIVE", LocalDateTime.now(), LocalDateTime.now().plusDays(1));
+        NovaSocialEventStatusRequest disable = new NovaSocialEventStatusRequest("DISABLED", "Marina K.", "停止异常成交事件");
+
+        assertThat(service.updateSocialEventStatus(created.id(), "idem-disable-1", disable).getCode()).isZero();
+        assertThat(service.updateSocialEventStatus(created.id(), "idem-disable-2", disable).getCode()).isZero();
+        NovaDeleteRequest delete = new NovaDeleteRequest("Marina K.", "删除错误来源事件");
+        assertThat(service.deleteSocialEvent(created.id(), "idem-delete-1", delete).getCode()).isZero();
+        assertThat(service.deleteSocialEvent(created.id(), "idem-delete-2", delete).getCode()).isZero();
+
+        NovaSocialEventView expiring = novaRepository.addEvent("withdrawal", "withdrawal-expire-now", "A***", "H***", "1K–5K NEX",
+                "ACTIVE", LocalDateTime.now(), LocalDateTime.now().plusDays(1));
+        NovaSocialEventStatusRequest expire = new NovaSocialEventStatusRequest("EXPIRED", "Marina K.", "运营确认立即过期");
+        assertThat(service.updateSocialEventStatus(expiring.id(), "idem-expire-now", expire).getCode()).isZero();
+        assertThat(novaRepository.socialEvent(expiring.id())).get().extracting(NovaSocialEventView::status).isEqualTo("EXPIRED");
+        NovaSocialEventStatusRequest restoreExpired = new NovaSocialEventStatusRequest("ACTIVE", "Marina K.", "尝试恢复已经过期事件");
+        assertThat(service.updateSocialEventStatus(expiring.id(), "idem-restore-expired", restoreExpired).getMessage())
+                .isEqualTo("NOVA_SOCIAL_EVENT_EXPIRED_IS_TERMINAL");
+    }
+
+    @Test
+    void sampleUsesConfiguredProbabilityAndNeverFabricatesFallback() {
+        novaRepository.channels.put("social", new NovaChannelView(
+                "social", "全网真实动态", "真实事件触发", "20 min", "30 min", "", BigDecimal.ZERO, true));
+        novaRepository.templates.put("social", new NovaTemplateView(
+                "social", "真实动态模板", "NONE", "v1",
+                "Nexion 真实动态", "{actor} 在 {city} 完成 {amount}",
+                "Hoạt động thực", "{actor} tại {city} hoàn tất {amount}",
+                "Verified activity", "{actor} in {city} completed {amount}", "PUBLISHED"));
+        novaRepository.distribution.add(new NovaSocialDistributionItem("withdrawal", "提现到账", 100, "red"));
+
+        var empty = service.sampleSocialEvent("ZH");
+        assertThat(empty.getCode()).isZero();
+        assertThat(empty.getData()).isNull();
+
+        novaRepository.addEvent("withdrawal", "withdrawal-sample", "N***", "H***", "10K–50K NEX",
+                "ACTIVE", LocalDateTime.now().minusMinutes(1), LocalDateTime.now().plusHours(1));
+        var sample = service.sampleSocialEvent("VI");
+
+        assertThat(sample.getCode()).isZero();
+        assertThat(sample.getData().sourceEventId()).startsWith("evt_").doesNotContain("withdrawal-sample");
+        assertThat(sample.getData().language()).isEqualTo("VI");
+        assertThat(sample.getData().body()).contains("N***", "10K–50K NEX");
+    }
+
+    @Test
+    void templateRejectsUnsupportedPlaceholderEvenWhenLanguagesMatch() {
+        service.createChannel("idem-social-channel", channelRequest("social"));
+
+        var result = service.createTemplate("idem-unsupported-placeholder", new NovaTemplateCreateRequest(
+                "social", "真实动态模板", "NONE", "v1",
+                "动态", "{foo} 已完成", "Hoạt động", "{foo} đã hoàn tất",
+                "Activity", "{foo} completed", "Marina K.", "创建真实动态模板"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+    }
+
+    @Test
+    void syncReadsOnlyTrustedSourcesAndMarksMissingAiBillingUnavailable() {
+        novaRepository.trustedEvents.put("withdrawal", List.of(socialEventRequest("withdrawal", "wd-sync-1")));
+
+        var result = service.syncSocialEvents("idem-sync", new NovaSocialEventSyncRequest(
+                List.of("withdrawal", "aiClient"), 24, 12, "Marina K.", "同步已验证真实业务来源"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().inserted()).isEqualTo(1);
+        assertThat(result.getData().sources()).anySatisfy(source -> {
+            assertThat(source.sourceType()).isEqualTo("aiClient");
+            assertThat(source.status()).isEqualTo("UNAVAILABLE");
+            assertThat(source.inserted()).isZero();
+        });
+    }
+
+    private static TrustedNovaSocialEvent socialEventRequest(String type, String sourceEventId) {
+        LocalDateTime occurredAt = LocalDateTime.now().minusMinutes(1);
+        return new TrustedNovaSocialEvent(type, sourceEventId, "NEXION_CORE", "nx_withdrawal_order",
+                "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("4200"), "NEX", "Verified source", occurredAt);
     }
 
     private static NovaChannelUpsertRequest channelRequest(String key) {
@@ -319,6 +480,9 @@ class OpsNovaServiceTest {
         private final List<NovaSocialDistributionItem> distribution = new ArrayList<>();
         private final Map<String, NovaSocialPoolView> pools = new LinkedHashMap<>();
         private final Map<String, Object> stats = new LinkedHashMap<>();
+        private final List<NovaSocialEventView> socialEvents = new ArrayList<>();
+        private long nextSocialEventId = 1;
+        private final Map<String, List<TrustedNovaSocialEvent>> trustedEvents = new LinkedHashMap<>();
 
         @Override
         public void ensureTables() {
@@ -431,6 +595,94 @@ class OpsNovaServiceTest {
         @Override
         public void upsertPool(String key, String name, String description, int count, String operator, String reason) {
             pools.put(key, new NovaSocialPoolView(key, name, description, count));
+        }
+
+        @Override
+        public List<NovaSocialEventView> socialEvents() {
+            return List.copyOf(socialEvents);
+        }
+
+        @Override
+        public Optional<NovaSocialEventView> socialEvent(long id) {
+            return socialEvents.stream().filter(event -> event.id() == id).findFirst();
+        }
+
+        @Override
+        public Optional<NovaSocialEventView> socialEventBySource(String eventType, String sourceSystem, String sourceEventId) {
+            return socialEvents.stream().filter(event -> event.eventType().equals(eventType)
+                    && event.sourceSystem().equals(sourceSystem) && event.sourceEventId().equals(sourceEventId)).findFirst();
+        }
+
+        @Override
+        public void createSocialEvent(TrustedNovaSocialEvent source, String actorDisplay, String cityDisplay,
+                                      String amountDisplay, LocalDateTime expiresAt, String operator, String reason) {
+            if (socialEventBySource(source.eventType(), source.sourceSystem(), source.sourceEventId()).isEmpty()) {
+                LocalDateTime now = LocalDateTime.now();
+                socialEvents.add(new NovaSocialEventView(nextSocialEventId++, source.eventType(), source.sourceEventId(),
+                        actorDisplay, cityDisplay, amountDisplay, source.sourceNote(), source.sourceSystem(), source.sourceTable(),
+                        "ACTIVE", source.occurredAt(), expiresAt, now, null, 0L, now, now));
+            }
+        }
+
+        @Override
+        public void updateSocialEventStatus(long id, String status, String operator, String reason) {
+            socialEvent(id).ifPresent(current -> replaceEvent(current, status, current.lastDispatchedAt(), current.dispatchCount()));
+        }
+
+        @Override
+        public void deleteSocialEvent(long id, String operator, String reason) {
+            socialEvents.removeIf(event -> event.id() == id);
+        }
+
+        @Override
+        public int expireSocialEvents(LocalDateTime now) {
+            List<NovaSocialEventView> due = socialEvents.stream()
+                    .filter(event -> "ACTIVE".equals(event.status()) && !event.expiresAt().isAfter(now)).toList();
+            due.forEach(event -> replaceEvent(event, "EXPIRED", event.lastDispatchedAt(), event.dispatchCount()));
+            return due.size();
+        }
+
+        @Override
+        public List<NovaSocialEventView> activeSocialEvents(LocalDateTime now) {
+            return socialEvents.stream()
+                    .filter(event -> "ACTIVE".equals(event.status()) && event.expiresAt().isAfter(now)).toList();
+        }
+
+        @Override
+        public List<TrustedNovaSocialEvent> trustedSourceEvents(String sourceType, LocalDateTime since, LocalDateTime until) {
+            return trustedEvents.getOrDefault(sourceType, List.of());
+        }
+
+        @Override
+        public void markSocialEventDispatched(long id, LocalDateTime dispatchedAt) {
+            socialEvent(id).ifPresent(current -> replaceEvent(current, current.status(), dispatchedAt, current.dispatchCount() + 1));
+        }
+
+        private void replaceEvent(NovaSocialEventView current, String status, LocalDateTime lastDispatchedAt, long dispatchCount) {
+            int index = socialEvents.indexOf(current);
+            socialEvents.set(index, new NovaSocialEventView(current.id(), current.eventType(), current.sourceEventId(),
+                    current.actorDisplay(), current.cityDisplay(), current.amountDisplay(), current.sourceNote(),
+                    current.sourceSystem(), current.sourceTable(), status, current.occurredAt(), current.expiresAt(),
+                    current.verifiedAt(), lastDispatchedAt, dispatchCount, current.createdAt(), LocalDateTime.now()));
+        }
+
+        NovaSocialEventView addEvent(String type, String sourceEventId, String actor, String city, String amount,
+                                     String status, LocalDateTime occurredAt, LocalDateTime expiresAt) {
+            NovaSocialEventView event = new NovaSocialEventView(nextSocialEventId++, type, sourceEventId, actor, city,
+                    amount, "Verified", "NEXION_CORE", sourceTable(type), status, occurredAt, expiresAt,
+                    occurredAt, null, 0L, occurredAt, occurredAt);
+            socialEvents.add(event);
+            return event;
+        }
+
+        private String sourceTable(String type) {
+            return switch (type) {
+                case "withdrawal" -> "nx_withdrawal_order";
+                case "vrank" -> "nx_user_level_log";
+                case "genesis" -> "nx_genesis_order";
+                case "newUsers" -> "nx_user";
+                default -> "";
+            };
         }
     }
 }
