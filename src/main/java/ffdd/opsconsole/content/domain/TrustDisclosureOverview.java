@@ -6,6 +6,7 @@ public record TrustDisclosureOverview(
         TrustDisclosureStats stats,
         List<TrustSectionView> trustSections,
         List<TrustSectionVersionView> trustSectionVersions,
+        List<String> pendingTrustSectionKeys,
         List<FinancialFieldView> financialFields,
         List<TrustSectionFieldView> sectionFields,
         List<DisclosureJurisdictionView> jurisdictions,

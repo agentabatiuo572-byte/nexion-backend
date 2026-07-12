@@ -80,6 +80,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|nex\\s*v?2|nexv2|points|积分", Pattern.CASE_INSENSITIVE);
     private static final Pattern TRUST_VERSION_PATTERN = Pattern.compile("^v[1-9][0-9]{0,8}$", Pattern.CASE_INSENSITIVE);
     private static final Pattern TRUST_FIELD_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{0,63}$");
+    private static final Pattern LOCALIZED_TRUST_FIELD_PATTERN = Pattern.compile("^(.+?)[._-](zh|vi)$", Pattern.CASE_INSENSITIVE);
     private static final Pattern LINK_LIKE_PATTERN = Pattern.compile(
             "^\\s*(?:[A-Za-z][A-Za-z0-9+.-]*:|/)|href\\s*=", Pattern.CASE_INSENSITIVE);
     private static final Pattern ENCODED_UNSAFE_LINK_PATTERN = Pattern.compile(
@@ -151,6 +152,12 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (version == null || !"draft".equalsIgnoreCase(version.status())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_DRAFT_VERSION_NOT_FOUND");
         }
+        if (request.expectedRevision() == null || request.expectedRevision() != version.revision()) {
+            return ApiResult.fail(409, "TRUST_SECTION_REVISION_CONFLICT");
+        }
+        if (!hasCompleteChineseVietnameseFields(version.fields())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_BILINGUAL_FIELDS_REQUIRED");
+        }
         TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), version.version(), operator(request.operator()), now());
         requiredAudit("I4_TRUST_SECTION_PUBLISHED", "TRUST_SECTION", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
@@ -197,6 +204,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (!hasAuthority("content_i4_write")) return forbiddenDraft();
         ApiResult<Void> guard = requireSectionDraft(sectionKey, idempotencyKey, request);
         if (guard != null) return fail(guard);
+        if (isTrustSectionLocked(sectionKey)) return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         if (findSection(sectionKey) == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
         if (findSectionVersion(sectionKey, request.version()) != null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "TRUST_SECTION_VERSION_ALREADY_EXISTS");
@@ -212,6 +220,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (!hasAuthority("content_i4_write")) return forbiddenDraft();
         ApiResult<Void> guard = requireSectionDraft(sectionKey, idempotencyKey, request);
         if (guard != null) return fail(guard);
+        if (isTrustSectionLocked(sectionKey)) return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         if (!request.version().trim().equals(version == null ? "" : version.trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_VERSION_IMMUTABLE");
         }
@@ -236,6 +245,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         ApiResult<Void> guard = requireAction(idempotencyKey, request);
         if (guard != null) return guard;
+        if (isTrustSectionLocked(sectionKey)) return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         TrustSectionVersionView current = findSectionVersion(sectionKey, version);
         if (current == null) return ApiResult.fail(404, "TRUST_SECTION_VERSION_NOT_FOUND");
         if (!"draft".equalsIgnoreCase(current.status())) {
@@ -390,6 +400,11 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         List<TrustSectionFieldView> sectionFields = trustDisclosureRepository.listSectionFields().stream()
                 .filter(field -> APP_TRUST_SECTION_KEYS.contains(normalizeSectionKey(field.sectionKey())))
                 .toList();
+        List<String> pendingTrustSectionKeys = lockMapper.selectActiveTargetIds("I", "trust_section");
+        if (pendingTrustSectionKeys == null) pendingTrustSectionKeys = List.of();
+        pendingTrustSectionKeys = pendingTrustSectionKeys.stream()
+                .filter(key -> APP_TRUST_SECTION_KEYS.contains(normalizeSectionKey(key)))
+                .toList();
         List<DisclosureJurisdictionView> jurisdictions = trustDisclosureRepository.listJurisdictions();
         List<DisclosureChapterView> chapters = new ArrayList<>(jurisdictions.stream()
                 .flatMap(jurisdiction -> trustDisclosureRepository.listChapters(jurisdiction.code(), jurisdiction.version()).stream())
@@ -404,6 +419,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 stats(sections, jurisdictions),
                 sections,
                 sectionVersions,
+                pendingTrustSectionKeys,
                 trustDisclosureRepository.listFinancialFields(),
                 sectionFields,
                 jurisdictions,
@@ -436,6 +452,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 scopedStats,
                 canReadI4 ? full.trustSections() : List.of(),
                 canReadI4 ? full.trustSectionVersions() : List.of(),
+                canReadI4 ? full.pendingTrustSectionKeys() : List.of(),
                 canReadI4 ? full.financialFields() : List.of(),
                 canReadI4 ? full.sectionFields() : List.of(),
                 canReadI5 ? full.jurisdictions() : List.of(),
@@ -604,6 +621,29 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return DATA_SOURCE_REQUIRED_SECTIONS.contains(normalizeSectionKey(section.key()));
     }
 
+    private boolean isTrustSectionLocked(String sectionKey) {
+        return !A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("I", "trust_section", trimToEmpty(sectionKey)) > 0;
+    }
+
+    private boolean hasCompleteChineseVietnameseFields(List<TrustSectionVersionView.Field> fields) {
+        Map<String, Set<String>> languagesByFamily = new LinkedHashMap<>();
+        for (TrustSectionVersionView.Field field : fields) {
+            if (field == null || !StringUtils.hasText(field.key())) continue;
+            Matcher matcher = LOCALIZED_TRUST_FIELD_PATTERN.matcher(field.key().trim());
+            if (!matcher.matches()) continue;
+            String family = matcher.group(1).toLowerCase(Locale.ROOT);
+            if (StringUtils.hasText(field.value())) {
+                languagesByFamily.computeIfAbsent(family, ignored -> new TreeSet<>())
+                        .add(matcher.group(2).toLowerCase(Locale.ROOT));
+            } else {
+                languagesByFamily.computeIfAbsent(family, ignored -> new TreeSet<>());
+            }
+        }
+        return !languagesByFamily.isEmpty()
+                && languagesByFamily.values().stream().allMatch(languages -> languages.containsAll(Set.of("zh", "vi")));
+    }
+
     private boolean isSensitivePublishSection(TrustSectionView section) {
         return section.highSensitivity() || SENSITIVE_TRUST_SECTIONS.contains(normalizeSectionKey(section.key()));
     }
@@ -642,7 +682,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 || request.fields().size() > MAX_TRUST_SECTION_FIELDS) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_DRAFT_FIELDS_REQUIRED");
         }
-        Set<String> keys = new TreeSet<>();
+        Set<String> keys = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         for (TrustSectionFieldInput field : request.fields()) {
             boolean linkField = field != null && isLinkField(field.key());
             if (field == null || !StringUtils.hasText(field.key())
@@ -936,7 +976,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 switch (action == null ? "" : action.toLowerCase(Locale.ROOT)) {
                     case "publish" -> {
                         TrustSectionPublishRequest req = new TrustSectionPublishRequest(
-                                str(p, "version"), str(p, "dataSourceStatement"),
+                                str(p, "version"), longVal(p, "expectedRevision"), str(p, "dataSourceStatement"),
                                 boolVal(p, "bilingualConfirmed"), operator, reason);
                         return publishSection(sectionKey, idem, req);
                     }
@@ -1007,6 +1047,17 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             return booleanValue;
         }
         return value == null ? Boolean.FALSE : Boolean.valueOf(String.valueOf(value));
+    }
+
+    private static Long longVal(Map<String, Object> params, String key) {
+        Object value = params == null ? null : params.get(key);
+        if (value instanceof Number number) return number.longValue();
+        if (value == null) return null;
+        try {
+            return Long.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     /** 从 replay params 取 BigDecimal,null 安全(I7 rewardNex 用)。 */

@@ -30,7 +30,9 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
@@ -126,6 +128,8 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     public void deleteTrustSectionDraft(String sectionKey, String version, LocalDateTime now) {
         TrustSectionVersionEntity entity = findTrustSectionVersionEntity(sectionKey, version);
         if (entity == null) return;
+        // v999999999(10) + "~d~"(3) + signed BIGINT max(19) fits version_label VARCHAR(32).
+        entity.setVersionLabel(normalize(version) + "~d~" + entity.getId());
         entity.setIsDeleted(1);
         entity.setUpdatedAt(now);
         trustSectionVersionMapper.updateById(entity);
@@ -442,28 +446,41 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 .last("LIMIT 1"));
     }
 
-    private void replaceSectionFields(String sectionKey, List<TrustSectionFieldInput> fields, String operator, LocalDateTime now) {
+    void replaceSectionFields(String sectionKey, List<TrustSectionFieldInput> fields, String operator, LocalDateTime now) {
         List<TrustSectionFieldEntity> existing = trustSectionFieldMapper.selectList(new LambdaQueryWrapper<TrustSectionFieldEntity>()
-                .eq(TrustSectionFieldEntity::getSectionKey, normalize(sectionKey))
-                .eq(TrustSectionFieldEntity::getIsDeleted, 0));
+                .eq(TrustSectionFieldEntity::getSectionKey, normalize(sectionKey)));
+        Map<String, TrustSectionFieldEntity> existingByKey = new LinkedHashMap<>();
+        existing.forEach(row -> existingByKey.put(normalize(row.getFieldKey()).toLowerCase(Locale.ROOT), row));
+        Set<String> incomingKeys = fields.stream()
+                .map(field -> normalize(field.key()).toLowerCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toSet());
         for (TrustSectionFieldEntity row : existing) {
-            row.setIsDeleted(1);
-            row.setUpdatedAt(now);
-            trustSectionFieldMapper.updateById(row);
+            if (!incomingKeys.contains(normalize(row.getFieldKey()).toLowerCase(Locale.ROOT))
+                    && !Integer.valueOf(1).equals(row.getIsDeleted())) {
+                row.setIsDeleted(1);
+                row.setLastOperator(operator(operator));
+                row.setUpdatedAt(now);
+                trustSectionFieldMapper.updateById(row);
+            }
         }
         for (int index = 0; index < fields.size(); index += 1) {
             TrustSectionFieldInput field = fields.get(index);
-            TrustSectionFieldEntity row = new TrustSectionFieldEntity();
-            row.setSectionKey(normalize(sectionKey));
-            row.setFieldKey(normalize(field.key()));
+            String fieldKey = normalize(field.key());
+            TrustSectionFieldEntity row = existingByKey.get(fieldKey.toLowerCase(Locale.ROOT));
+            boolean inserting = row == null;
+            if (inserting) {
+                row = new TrustSectionFieldEntity();
+                row.setSectionKey(normalize(sectionKey));
+                row.setFieldKey(fieldKey);
+                row.setCreatedAt(now);
+            }
             row.setFieldValue(normalize(field.value()));
             row.setFieldDelta(normalize(field.label()));
             row.setSortOrder((index + 1) * 10);
             row.setLastOperator(operator(operator));
-            row.setCreatedAt(now);
             row.setUpdatedAt(now);
             row.setIsDeleted(0);
-            trustSectionFieldMapper.insert(row);
+            if (inserting) trustSectionFieldMapper.insert(row); else trustSectionFieldMapper.updateById(row);
         }
     }
 

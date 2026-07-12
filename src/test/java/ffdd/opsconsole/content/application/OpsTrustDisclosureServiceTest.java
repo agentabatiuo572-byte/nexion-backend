@@ -117,6 +117,8 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void overviewWithI4ReadCannotSeeI5DisclosureData() {
         authenticate("content_i4_read");
+        when(lockMapper.selectActiveTargetIds("I", "trust_section"))
+                .thenReturn(List.of("financials", "asset_safety"));
 
         var overview = service.overview().getData();
 
@@ -127,6 +129,7 @@ class OpsTrustDisclosureServiceTest {
         assertThat(overview.gatedActions()).isEmpty();
         assertThat(overview.draft()).isNull();
         assertThat(overview.stats().jurisdictions()).isZero();
+        assertThat(overview.pendingTrustSectionKeys()).containsExactly("financials");
         assertThat(overview.sources()).allMatch(source -> source.startsWith("nx_trust_section"));
     }
 
@@ -138,6 +141,7 @@ class OpsTrustDisclosureServiceTest {
 
         assertThat(overview.trustSections()).isEmpty();
         assertThat(overview.trustSectionVersions()).isEmpty();
+        assertThat(overview.pendingTrustSectionKeys()).isEmpty();
         assertThat(overview.financialFields()).isEmpty();
         assertThat(overview.sectionFields()).isEmpty();
         assertThat(overview.roleGates()).isEmpty();
@@ -173,7 +177,8 @@ class OpsTrustDisclosureServiceTest {
     void trustSectionDraftSupportsCreateEditAndDeleteCrud() {
         var created = service.createSectionDraft("financials", "idem-i4-create-draft", sectionDraft("v6", "新版说明", 0L));
         assertThat(created.getCode()).isZero();
-        assertThat(created.getData().fields()).extracting(TrustSectionVersionView.Field::key).containsExactly("reserve", "auditDate");
+        assertThat(created.getData().fields()).extracting(TrustSectionVersionView.Field::key)
+                .containsExactly("reserve", "auditDate", "summary.zh", "summary.vi");
 
         var updated = service.updateSectionDraft("financials", "v6", "idem-i4-edit-draft", sectionDraft("v6", "修订说明", created.getData().revision()));
         assertThat(updated.getCode()).isZero();
@@ -182,6 +187,35 @@ class OpsTrustDisclosureServiceTest {
         var deleted = service.deleteSectionDraft("financials", "v6", "idem-i4-delete-draft", actionRequest());
         assertThat(deleted.getCode()).isZero();
         assertThat(repository.findTrustSectionVersion("financials", "v6")).isEmpty();
+    }
+
+    @Test
+    void trustSectionDraftMutationsAreBlockedWhileA2ProposalIsPending() {
+        var created = service.createSectionDraft("financials", "idem-lock-create", sectionDraft("v6", "新版说明", 0L));
+        when(lockMapper.countActiveByTarget("I", "trust_section", "financials")).thenReturn(1);
+
+        var update = service.updateSectionDraft("financials", "v6", "idem-lock-update",
+                sectionDraft("v6", "被阻止的修改", created.getData().revision()));
+        var delete = service.deleteSectionDraft("financials", "v6", "idem-lock-delete", actionRequest());
+        var create = service.createSectionDraft("financials", "idem-lock-create-second", sectionDraft("v7", "另一个草稿", 0L));
+
+        assertThat(update.getMessage()).isEqualTo("OBJECT_LOCKED_BY_A2");
+        assertThat(delete.getMessage()).isEqualTo("OBJECT_LOCKED_BY_A2");
+        assertThat(create.getMessage()).isEqualTo("OBJECT_LOCKED_BY_A2");
+    }
+
+    @Test
+    void trustSectionDraftRejectsCaseInsensitiveDuplicateFieldKeys() {
+        var request = new TrustSectionDraftRequest(
+                "v6", "新版说明", "双语摘要", List.of(
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "中文"),
+                new TrustSectionFieldInput("SUMMARY.ZH", "重复中文摘要", "重复内容"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Tiếng Việt")),
+                0L, "Marina K.", "维护信任版块草稿");
+
+        var result = service.createSectionDraft("financials", "idem-case-duplicate", request);
+
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_STRUCTURED_FIELDS_INVALID");
     }
 
     @Test
@@ -309,6 +343,30 @@ class OpsTrustDisclosureServiceTest {
         assertThat(service.publishSection("financials", "idem-short", new TrustSectionPublishRequest(
                 "v6", "来源为资金账本与审计报表", true, "Marina K.", "太短")).getCode())
                 .isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+    }
+
+    @Test
+    void publishRejectsCheckboxOnlyWhenDraftHasNoChineseVietnameseFieldPair() {
+        repository.saveTrustSectionDraft("financials", sectionDraftWithoutLocalizedPair("v7"), LocalDateTime.now());
+        authenticate("content_i4_trust_section_manage");
+
+        var result = service.publishSection("financials", "idem-bilingual-fields", new TrustSectionPublishRequest(
+                "v7", "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_BILINGUAL_FIELDS_REQUIRED");
+    }
+
+    @Test
+    void publishRejectsA2CommandWhenDraftRevisionChanged() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "初始草稿", 0L), LocalDateTime.now());
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "审批前被修改", 1L), LocalDateTime.now());
+        authenticate("content_i4_trust_section_manage");
+
+        var result = service.publishSection("financials", "idem-stale-revision", new TrustSectionPublishRequest(
+                "v6", 1L, "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本"));
+
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_REVISION_CONFLICT");
     }
 
     @Test
@@ -503,6 +561,7 @@ class OpsTrustDisclosureServiceTest {
                         "sectionKey", "financials",
                         "action", "publish",
                         "version", "v6",
+                        "expectedRevision", 1L,
                         "dataSourceStatement", "来源为资金账本与审计报表",
                         "bilingualConfirmed", true)),
                 new AuditReplayContext("Marina K.", "replay trust section publish", "idem-replay-i4-publish"));
@@ -603,7 +662,9 @@ class OpsTrustDisclosureServiceTest {
     private static TrustSectionDraftRequest sectionDraft(String version, String description, long expectedRevision) {
         return new TrustSectionDraftRequest(version, description, "数字组 + 审计日期", List.of(
                 new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
-                new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18")),
+                new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18"),
+                new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足"),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ")),
                 expectedRevision, "Marina K.", "维护信任版块草稿");
     }
 
@@ -611,6 +672,12 @@ class OpsTrustDisclosureServiceTest {
         return new TrustSectionDraftRequest(version, "结构化链接字段", "人员卡片", List.of(
                 new TrustSectionFieldInput(key, "链接字段", value)),
                 0L, "Marina K.", "维护信任版块链接字段");
+    }
+
+    private static TrustSectionDraftRequest sectionDraftWithoutLocalizedPair(String version) {
+        return new TrustSectionDraftRequest(version, "无双语字段", "数字组", List.of(
+                new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%")),
+                0L, "Marina K.", "维护信任版块草稿");
     }
 
     private static DisclosureDraftRequest disclosureRequest() {
