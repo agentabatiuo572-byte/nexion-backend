@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.finance.domain.DepositAggregateView;
 import ffdd.opsconsole.finance.domain.DepositBinRiskView;
@@ -55,6 +56,7 @@ class OpsFinanceServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
+    private final RiskDisclosureGateFacade disclosureGateFacade = mock(RiskDisclosureGateFacade.class);
     private final OpsFinanceService service =
             new OpsFinanceService(
                     configFacade,
@@ -66,12 +68,15 @@ class OpsFinanceServiceTest {
                     riskOpsRepository,
                     auditLogService,
                     ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-                    lockMapper);
+                    lockMapper,
+                    disclosureGateFacade);
 
     @BeforeEach
     void setUpRiskDefaults() {
         when(riskOpsRepository.withdrawRules()).thenReturn(List.of());
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+        when(disclosureGateFacade.checkUserGate(org.mockito.ArgumentMatchers.anyLong(), anyString(), anyString()))
+                .thenReturn(ApiResult.ok(null));
         emergencyRepository.settings.put("killswitch.withdraw", "enabled");
     }
 
@@ -86,7 +91,8 @@ class OpsFinanceServiceTest {
                 riskOpsRepository,
                 auditLogService,
                 seedPolicy,
-                lockMapper);
+                lockMapper,
+                disclosureGateFacade);
     }
 
     @Test
@@ -211,6 +217,21 @@ class OpsFinanceServiceTest {
                 .containsEntry("fromStatus", "REVIEWING")
                 .containsEntry("toStatus", "PENDING_CHAIN")
                 .containsEntry("idempotencyKey", "idem-review");
+    }
+
+    @Test
+    void reviewWithdrawalCannotApproveWhenUserDisclosureAckIsStale() {
+        withdrawalRepository.order = withdrawal("WD-I5-1", "REVIEWING");
+        when(disclosureGateFacade.checkUserGate(1001L, "withdraw", "WD-I5-1"))
+                .thenReturn(ApiResult.fail(409, "RISK_DISCLOSURE_ACK_REQUIRED"));
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
+                "WD-I5-1", "idem-i5-gate", new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("RISK_DISCLOSURE_ACK_REQUIRED");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        verify(disclosureGateFacade).checkUserGate(1001L, "withdraw", "WD-I5-1");
     }
 
     @Test

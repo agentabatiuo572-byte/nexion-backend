@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.finance.domain.DepositAggregateView;
 import ffdd.opsconsole.finance.domain.DepositBinRiskView;
@@ -93,6 +94,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
+    private final RiskDisclosureGateFacade disclosureGateFacade;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -422,6 +424,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         int dailyLimitCount = withdrawalDailyLimitCount();
         if ("APPROVE".equals(action)) {
+            ApiResult<Void> disclosureGate = disclosureGateFacade.checkUserGate(
+                    order.userId(), "withdraw", order.withdrawalNo());
+            if (disclosureGate.getCode() != 0) {
+                return ApiResult.fail(disclosureGate.getCode(), disclosureGate.getMessage());
+            }
             if (recordBlockingWithdrawRuleHit(order)) {
                 String blockedReason = "WITHDRAWAL_RISK_HIT_BLOCKED";
                 auditWithdrawalReviewBlocked(order, action, blockedReason, dailyLimitCount, idempotencyKey, request);

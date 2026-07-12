@@ -37,6 +37,8 @@ public interface TrustDisclosureRepository {
 
     List<String> listDisclosureVersions();
 
+    List<String> listDisclosureVersionsIncludingDeleted(String jurisdiction);
+
     List<DisclosureGateActionView> listGateActions();
 
     Optional<DisclosureDraftView> findLatestDraft();
@@ -45,13 +47,22 @@ public interface TrustDisclosureRepository {
 
     Optional<DisclosureDraftView> findDisclosureVersion(String jurisdiction, String version);
 
+    List<DisclosureDraftView> listDisclosureVersionItems();
+
     void updateTrustSection(String sectionKey, String version, String status, String operator, LocalDateTime now);
 
-    void saveDisclosureDraft(DisclosureDraftRequest request, String status, LocalDateTime now);
+    DisclosureDraftView saveDisclosureDraft(DisclosureDraftRequest request, String status, String contentHash, LocalDateTime now);
+
+    void deleteDisclosureDraft(String jurisdiction, String version, long expectedRevision,
+                               String expectedContentHash, LocalDateTime now);
+
+    void lockDisclosureJurisdiction(String jurisdiction);
 
     void publishDisclosure(String jurisdiction, DisclosureDraftRequest request, LocalDateTime now);
 
     void upsertDisclosureMatrix(DisclosureMatrixRequest request, LocalDateTime now);
+
+    void markDisclosureMatrixUsersStale(String jurisdiction, List<String> countryCodes, String version, LocalDateTime now);
 
     void archiveDisclosureMatrix(String jurisdiction, String operator, LocalDateTime now);
 

@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.OpsTrustDisclosureService;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
+import ffdd.opsconsole.content.domain.DisclosureVersionItem;
 import ffdd.opsconsole.content.domain.TrustDisclosureOverview;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.TrustSectionVersionView;
@@ -108,6 +109,40 @@ public class OpsTrustDisclosureController {
         return trustDisclosureService.saveDisclosureDraft(jurisdiction, idempotencyKey, request);
     }
 
+    @PostMapping("/disclosures/{jurisdiction}/versions")
+    @PreAuthorize("hasAuthority('content_i5_write')")
+    public ApiResult<DisclosureDraftView> createDisclosureVersion(
+            @PathVariable String jurisdiction,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DisclosureDraftRequest request) {
+        return trustDisclosureService.saveDisclosureDraft(jurisdiction, idempotencyKey, request);
+    }
+
+    @GetMapping("/disclosures/{jurisdiction}/versions/{version}")
+    @PreAuthorize("hasAuthority('content_i5_read')")
+    public ApiResult<DisclosureVersionItem> disclosureVersion(
+            @PathVariable String jurisdiction, @PathVariable String version) {
+        return trustDisclosureService.disclosureVersion(jurisdiction, version);
+    }
+
+    @PatchMapping("/disclosures/{jurisdiction}/versions/{version}")
+    @PreAuthorize("hasAuthority('content_i5_write')")
+    public ApiResult<DisclosureDraftView> updateDisclosureVersion(
+            @PathVariable String jurisdiction, @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DisclosureDraftRequest request) {
+        return trustDisclosureService.updateDisclosureDraft(jurisdiction, version, idempotencyKey, request);
+    }
+
+    @DeleteMapping("/disclosures/{jurisdiction}/versions/{version}")
+    @PreAuthorize("hasAuthority('content_i5_write')")
+    public ApiResult<Void> deleteDisclosureVersion(
+            @PathVariable String jurisdiction, @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody TrustDisclosureActionRequest request) {
+        return trustDisclosureService.deleteDisclosureDraft(jurisdiction, version, idempotencyKey, request);
+    }
+
     @PostMapping("/disclosures/{jurisdiction}/publish")
     // HIGH：披露版本发布，触发用户 re-ack 重签字
     @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
@@ -119,7 +154,7 @@ public class OpsTrustDisclosureController {
     }
 
     @PutMapping("/disclosures/matrix/{jurisdiction}")
-    @PreAuthorize("hasAuthority('content_i5_write')")
+    @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
     public ApiResult<TrustDisclosureOverview> configureMatrix(
             @PathVariable String jurisdiction,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -128,7 +163,7 @@ public class OpsTrustDisclosureController {
     }
 
     @DeleteMapping("/disclosures/matrix/{jurisdiction}")
-    @PreAuthorize("hasAuthority('content_i5_write')")
+    @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
     public ApiResult<TrustDisclosureOverview> archiveMatrix(
             @PathVariable String jurisdiction,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

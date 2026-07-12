@@ -35,11 +35,13 @@ import ffdd.opsconsole.content.dto.TrustSectionDraftRequest;
 import ffdd.opsconsole.content.dto.TrustSectionFieldInput;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -67,6 +69,8 @@ class OpsTrustDisclosureServiceTest {
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final OpsNotificationCampaignService notificationCampaignService = mock(OpsNotificationCampaignService.class);
     private final OpsI18nLearningService i18nLearningService = mock(OpsI18nLearningService.class);
+    private final DisclosureReackNotificationService disclosureReackNotificationService = mock(DisclosureReackNotificationService.class);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final OpsTrustDisclosureService service = new OpsTrustDisclosureService(
             repository,
             configFacade,
@@ -75,12 +79,16 @@ class OpsTrustDisclosureServiceTest {
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
             lockMapper,
             notificationCampaignService,
-            i18nLearningService);
+            i18nLearningService,
+            disclosureReackNotificationService,
+            idempotencyService);
 
     @BeforeEach
     void stubLockGuard() {
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,常规写方法直通,replay 路径也无阻塞
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), any(), any()))
+                .thenAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get());
         authenticate("content_i4_read", "content_i4_write", "content_i4_publish_standard", "content_i4_trust_section_manage",
                 "content_i5_read", "content_i5_write", "content_i5_disclosure_publish", "content_i5_gate_adjust");
     }
@@ -88,6 +96,7 @@ class OpsTrustDisclosureServiceTest {
     @AfterEach
     void clearAuthentication() {
         SecurityContextHolder.clearContext();
+        A2ReplayContext.exitReplay();
     }
 
     @Test
@@ -109,7 +118,9 @@ class OpsTrustDisclosureServiceTest {
         assertThat(result.getData().gateScope()).isEqualTo("提现");
         assertThat(result.getData().sources()).contains("nx_trust_section", "nx_disclosure_draft", "nx_disclosure_ack_status");
         assertThat(result.getData().countryOptions()).extracting(option -> option.code())
-                .containsExactly("VN", "HK", "SG", "GB");
+                .contains("VN", "HK", "SG", "GB", "CN", "US", "EU");
+        assertThat(result.getData().jurisdictionCatalog()).hasSize(2);
+        assertThat(result.getData().nextVersionByJurisdiction()).containsKeys("MAS", "SFC");
         assertThat(repository.seedCalls).isZero();
         verifyNoInteractions(configFacade);
     }
@@ -552,8 +563,10 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void publishDisclosurePersistsReackAndAudits() {
         var request = disclosureRequest();
-        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-save-before-publish", request).getCode()).isZero();
-        var result = service.publishDisclosure("SFC", "idem-i5-publish", request);
+        var saved = service.saveDisclosureDraft("SFC", "idem-i5-save-before-publish", request);
+        assertThat(saved.getCode()).isZero();
+        A2ReplayContext.enterReplay();
+        var result = service.publishDisclosure("SFC", "idem-i5-publish", withSnapshot(request, saved.getData()));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v13");
@@ -569,13 +582,107 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void publishDisclosureRejectsClientAttemptToSkipReack() {
+        DisclosureDraftRequest request = disclosureRequest("v13", false, "spoofed-operator");
+        repository.saveDisclosureDraft(request, "DRAFT", DisclosureContentHash.from(request), LocalDateTime.now(clock));
+
+        A2ReplayContext.enterReplay();
+        var result = service.publishDisclosure("SFC", "idem-i5-reack-required", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("DISCLOSURE_REACK_REQUIRED");
+        assertThat(repository.findDisclosureVersion("SFC", "v13").orElseThrow().status()).isEqualTo("draft");
+    }
+
+    @Test
+    void publishDisclosureRequiresA2ReplayContextEvenWithoutPendingLock() {
+        DisclosureDraftRequest request = disclosureRequest();
+        repository.saveDisclosureDraft(request, "DRAFT", DisclosureContentHash.from(request), LocalDateTime.now(clock));
+
+        var result = service.publishDisclosure("SFC", "idem-i5-direct-publish", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+    }
+
+    @Test
+    void matrixMutationsRequireA2ReplayContext() {
+        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-direct-matrix-draft", disclosureRequest()).getCode()).isZero();
+        DisclosureMatrixRequest request = new DisclosureMatrixRequest(
+                "SFC", "香港", List.of("HK"), "v13", "DRAFT", "spoofed", "调整法域映射");
+
+        var configure = service.configureMatrix("SFC", "idem-i5-direct-matrix", request);
+        repository.jurisdictions.put("SFC", new DisclosureJurisdictionView(
+                "SFC", "香港", List.of("HK"), "v12", "draft", "", 0, 0, 0));
+        var archive = service.archiveMatrix("SFC", "idem-i5-direct-archive", actionRequest());
+
+        assertThat(configure.getCode()).isEqualTo(409);
+        assertThat(configure.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(archive.getCode()).isEqualTo(409);
+        assertThat(archive.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+    }
+
+    @Test
+    void saveDisclosureDraftGeneratesAndValidatesNextMonotonicVersion() {
+        DisclosureDraftRequest generated = disclosureRequest("", true, "spoofed-operator");
+
+        var created = service.saveDisclosureDraft("SFC", "idem-i5-server-version", generated);
+        var skipped = service.saveDisclosureDraft("SFC", "idem-i5-skipped-version",
+                disclosureRequest("v15", true, "spoofed-operator"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(created.getData().version()).isEqualTo("v13");
+        assertThat(skipped.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(skipped.getMessage()).isEqualTo("DISCLOSURE_VERSION_SEQUENCE_INVALID");
+    }
+
+    @Test
+    void saveDisclosureDraftIncrementsLegacyDottedVersionWithoutMigrationLoss() {
+        repository.jurisdictions.put("SFC", new DisclosureJurisdictionView(
+                "SFC", "香港", List.of("HK"), "v2024.4", "published", "06-08", 9_400, 72, 312));
+
+        var result = service.saveDisclosureDraft("SFC", "idem-i5-dotted-version",
+                disclosureRequest("", true, "spoofed-operator"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v2024.5");
+    }
+
+    @Test
+    void archiveMatrixRejectsPublishedJurisdictionForOrdinaryEditor() {
+        A2ReplayContext.enterReplay();
+        var result = service.archiveMatrix("SFC", "idem-i5-archive-published", actionRequest());
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("PUBLISHED_DISCLOSURE_ARCHIVE_FORBIDDEN");
+        assertThat(repository.findJurisdiction("SFC").orElseThrow().status()).isEqualTo("published");
+    }
+
+    @Test
+    void publishDisclosureAuditUsesAuthenticatedIdentityInsteadOfRequestOperator() {
+        DisclosureDraftRequest request = disclosureRequest("v13", true, "spoofed-operator");
+        DisclosureDraftView saved = repository.saveDisclosureDraft(
+                request, "DRAFT", DisclosureContentHash.from(request), LocalDateTime.now(clock));
+
+        A2ReplayContext.enterReplay();
+        assertThat(service.publishDisclosure("SFC", "idem-i5-authenticated-audit", withSnapshot(request, saved)).getCode()).isZero();
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("tester");
+    }
+
+    @Test
     void disclosurePublishFailsClosedWhenRequiredAuditCannotBePersisted() {
         var request = disclosureRequest();
-        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-audit-fail-draft", request).getCode()).isZero();
+        var saved = service.saveDisclosureDraft("SFC", "idem-i5-audit-fail-draft", request);
+        assertThat(saved.getCode()).isZero();
         doThrow(new IllegalStateException("audit unavailable"))
                 .when(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
 
-        assertThatThrownBy(() -> service.publishDisclosure("SFC", "idem-i5-audit-fail-publish", request))
+        A2ReplayContext.enterReplay();
+        assertThatThrownBy(() -> service.publishDisclosure(
+                "SFC", "idem-i5-audit-fail-publish", withSnapshot(request, saved.getData())))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("audit unavailable");
     }
@@ -583,6 +690,7 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void matrixUsesBackendCatalogAndOnlyCreatesDraftMappings() {
         assertThat(service.saveDisclosureDraft("SFC", "idem-i5-catalog-draft", disclosureRequest()).getCode()).isZero();
+        A2ReplayContext.enterReplay();
 
         var created = service.configureMatrix("SBV", "idem-i5-matrix-create", new DisclosureMatrixRequest(
                 "SBV", "越南国家银行", List.of("VN"), "v13", "DRAFT", "Marina K.", "新增越南披露矩阵"));
@@ -603,21 +711,43 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void matrixRejectsLegacyCallingCodeThatOverlapsCanonicalCountryInAnotherJurisdiction() {
+        repository.jurisdictions.put("SBV", new DisclosureJurisdictionView(
+                "SBV", "越南国家银行", List.of("VN"), "v12", "published", "06-08", 1_000, 0, 0));
+        assertThat(service.saveDisclosureDraft(
+                "SFC", "idem-i5-country-conflict-draft", disclosureRequest()).getCode()).isZero();
+        A2ReplayContext.enterReplay();
+
+        var result = service.configureMatrix("NEW", "idem-i5-country-conflict", new DisclosureMatrixRequest(
+                "NEW", "重叠越南法域", List.of("84"), "v13", "DRAFT", "Marina K.", "阻止跨法域重复国家"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DISCLOSURE_COUNTRY_MAPPING_CONFLICT");
+        assertThat(repository.findJurisdiction("NEW")).isEmpty();
+    }
+
+    @Test
     void publishedMatrixCannotBeEditedInPlace() {
         assertThat(service.saveDisclosureDraft("SFC", "idem-i5-immutable-draft", disclosureRequest()).getCode()).isZero();
+        A2ReplayContext.enterReplay();
         var result = service.configureMatrix("SFC", "idem-i5-matrix-immutable", new DisclosureMatrixRequest(
                 "SFC", "香港", List.of("HK"), "v13", "DRAFT", "Marina K.", "禁止改写已发布快照"));
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("PUBLISHED_DISCLOSURE_IMMUTABLE");
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DISCLOSURE_MATRIX_VERSION_READONLY");
     }
 
     @Test
     void replayDisclosurePublishLoadsPersistedDraftInsteadOfCommandBodies() {
-        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-replay-draft", disclosureRequest()).getCode()).isZero();
+        var saved = service.saveDisclosureDraft("SFC", "idem-i5-replay-draft", disclosureRequest());
+        assertThat(saved.getCode()).isZero();
 
+        A2ReplayContext.enterReplay();
         ApiResult<?> result = service.replay(
-                new AuditReplayCommand("I", "i4_disclosure_publish", Map.of("jurisdiction", "SFC", "version", "v13")),
+                new AuditReplayCommand("I", "i5_disclosure_publish", Map.of(
+                        "jurisdiction", "SFC", "version", "v13",
+                        "expectedRevision", saved.getData().revision(),
+                        "expectedContentHash", saved.getData().contentHash())),
                 new AuditReplayContext("Marina K.", "replay persisted disclosure", "idem-i5-replay-publish"));
 
         assertThat(result.getCode()).isZero();
@@ -767,18 +897,29 @@ class OpsTrustDisclosureServiceTest {
     }
 
     private static DisclosureDraftRequest disclosureRequest() {
+        return disclosureRequest("v13", true, "Marina K.");
+    }
+
+    private static DisclosureDraftRequest disclosureRequest(String version, boolean requiresReack, String operator) {
         return new DisclosureDraftRequest(
-                "v13",
+                version,
                 "SFC",
                 "zh+vi+en",
                 "2026-06-30",
-                true,
+                requiresReack,
                 "收益估算不构成承诺，用户需确认 {version}",
                 "Ước tính thu nhập không phải là cam kết, người dùng phải xác nhận {version}",
                 "Earnings estimates are not guarantees, please acknowledge {version}",
                 disclosureChapters(),
-                "Marina K.",
+                operator,
                 "发布披露新版");
+    }
+
+    private static DisclosureDraftRequest withSnapshot(DisclosureDraftRequest request, DisclosureDraftView saved) {
+        return new DisclosureDraftRequest(
+                request.version(), request.jurisdiction(), request.languageScope(), request.effectiveDate(),
+                request.requiresReack(), request.zh(), request.vi(), request.en(), request.chapters(),
+                saved.revision(), saved.contentHash(), request.operator(), request.reason());
     }
 
     private static List<DisclosureChapterInput> disclosureChapters() {
@@ -799,6 +940,7 @@ class OpsTrustDisclosureServiceTest {
         private final Map<String, TrustSectionVersionView> sectionVersions = new LinkedHashMap<>();
         private final Map<String, DisclosureJurisdictionView> jurisdictions = new LinkedHashMap<>();
         private final Map<String, DisclosureDraftView> drafts = new LinkedHashMap<>();
+        private final Set<String> deletedDraftKeys = new LinkedHashSet<>();
         private final Map<String, List<DisclosureChapterView>> chapterVersions = new LinkedHashMap<>();
         private final Map<String, DisclosureGateActionView> gates = new LinkedHashMap<>();
         private final Set<String> activeGateKeys = new LinkedHashSet<>();
@@ -921,6 +1063,22 @@ class OpsTrustDisclosureServiceTest {
         }
 
         @Override
+        public List<String> listDisclosureVersionsIncludingDeleted(String jurisdiction) {
+            List<String> versions = new ArrayList<>();
+            drafts.values().stream()
+                    .filter(draft -> draft.jurisdiction().equals(jurisdiction))
+                    .map(DisclosureDraftView::version)
+                    .forEach(versions::add);
+            deletedDraftKeys.stream()
+                    .filter(key -> key.startsWith(jurisdiction + "::"))
+                    .map(key -> key.substring(key.indexOf("::") + 2))
+                    .forEach(versions::add);
+            DisclosureJurisdictionView matrix = jurisdictions.get(jurisdiction);
+            if (matrix != null && matrix.version() != null) versions.add(matrix.version());
+            return versions.stream().distinct().toList();
+        }
+
+        @Override
         public List<DisclosureGateActionView> listGateActions() {
             return gates.values().stream()
                     .map(action -> new DisclosureGateActionView(
@@ -951,6 +1109,11 @@ class OpsTrustDisclosureServiceTest {
         }
 
         @Override
+        public List<DisclosureDraftView> listDisclosureVersionItems() {
+            return new ArrayList<>(drafts.values());
+        }
+
+        @Override
         public void updateTrustSection(String sectionKey, String version, String status, String operator, LocalDateTime now) {
             TrustSectionView current = sections.get(sectionKey);
             sections.put(sectionKey, new TrustSectionView(
@@ -965,8 +1128,21 @@ class OpsTrustDisclosureServiceTest {
         }
 
         @Override
-        public void saveDisclosureDraft(DisclosureDraftRequest request, String status, LocalDateTime now) {
-            drafts.put(request.jurisdiction() + "::" + request.version(), new DisclosureDraftView(
+        public DisclosureDraftView saveDisclosureDraft(
+                DisclosureDraftRequest request, String status, String contentHash, LocalDateTime now) {
+            String key = request.jurisdiction() + "::" + request.version();
+            DisclosureDraftView old = drafts.get(key);
+            long revision = 1L;
+            if (old != null) {
+                if (request.expectedRevision() == null
+                        || request.expectedRevision() != old.revision()
+                        || request.expectedContentHash() == null
+                        || !request.expectedContentHash().equals(old.contentHash())) {
+                    throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_DRAFT_REVISION_CONFLICT");
+                }
+                revision = old.revision() + 1L;
+            }
+            DisclosureDraftView saved = new DisclosureDraftView(
                     request.version(),
                     request.jurisdiction(),
                     request.languageScope(),
@@ -975,17 +1151,47 @@ class OpsTrustDisclosureServiceTest {
                     request.zh(),
                     request.vi(),
                     request.en(),
-                    status.toLowerCase()));
+                    status.toLowerCase(),
+                    revision,
+                    contentHash);
+            drafts.put(key, saved);
             chapterVersions.put(request.jurisdiction() + "::" + request.version(), request.chapters().stream()
                     .map(chapter -> new DisclosureChapterView(
                             request.jurisdiction(), request.version(), chapter.no(), chapter.zhTitle(), chapter.viTitle(), chapter.enTitle(),
                             chapter.zhBody(), chapter.viBody(), chapter.enBody()))
                     .toList());
+            return saved;
+        }
+
+        @Override
+        public void deleteDisclosureDraft(
+                String jurisdiction, String version, long expectedRevision, String expectedContentHash, LocalDateTime now) {
+            String key = jurisdiction + "::" + version;
+            DisclosureDraftView old = drafts.get(key);
+            if (old == null || !"draft".equals(old.status()) || old.revision() != expectedRevision
+                    || !old.contentHash().equals(expectedContentHash)) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_DRAFT_REVISION_CONFLICT");
+            }
+            drafts.remove(key);
+            chapterVersions.remove(key);
+            deletedDraftKeys.add(key);
+        }
+
+        @Override
+        public void lockDisclosureJurisdiction(String jurisdiction) {
+            // In-memory fake is single-threaded; the production repository takes SELECT ... FOR UPDATE.
         }
 
         @Override
         public void publishDisclosure(String jurisdiction, DisclosureDraftRequest request, LocalDateTime now) {
-            saveDisclosureDraft(request, "PUBLISHED", now);
+            String key = jurisdiction + "::" + request.version();
+            DisclosureDraftView old = drafts.get(key);
+            drafts.replaceAll((draftKey, draft) -> draft.jurisdiction().equals(jurisdiction) && "published".equals(draft.status())
+                    ? new DisclosureDraftView(draft.version(), draft.jurisdiction(), draft.languageScope(), draft.effectiveDate(),
+                            draft.requiresReack(), draft.zh(), draft.vi(), draft.en(), "superseded", draft.revision(), draft.contentHash())
+                    : draft);
+            drafts.put(key, new DisclosureDraftView(old.version(), old.jurisdiction(), old.languageScope(), old.effectiveDate(),
+                    true, old.zh(), old.vi(), old.en(), "published", old.revision(), old.contentHash()));
             DisclosureJurisdictionView current = jurisdictions.get(jurisdiction);
             jurisdictions.put(jurisdiction, new DisclosureJurisdictionView(
                     current.code(),
@@ -1005,6 +1211,15 @@ class OpsTrustDisclosureServiceTest {
             jurisdictions.put(request.jurisdictionCode(), new DisclosureJurisdictionView(
                     request.jurisdictionCode(), request.jurisdictionName(), request.countryCodes(), request.version(), request.status().toLowerCase(),
                     now.toLocalDate().toString(), current == null ? 0 : current.affected(), current == null ? 0 : current.ackProgress(), current == null ? 0 : current.blocked()));
+        }
+
+        @Override
+        public void markDisclosureMatrixUsersStale(
+                String jurisdiction, List<String> countryCodes, String version, LocalDateTime now) {
+            DisclosureJurisdictionView current = jurisdictions.get(jurisdiction);
+            if (current != null) jurisdictions.put(jurisdiction, new DisclosureJurisdictionView(
+                    current.code(), current.name(), current.countryCodes(), current.version(), current.status(),
+                    current.publishedAt(), current.affected(), 0, current.blocked()));
         }
 
         @Override

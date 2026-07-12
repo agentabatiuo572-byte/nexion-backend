@@ -18,5 +18,7 @@ public class DisclosureDraftEntity extends BaseEntity {
     private String viBody;
     private String enBody;
     private String status;
+    private Long revision;
+    private String contentHash;
     private String lastOperator;
 }

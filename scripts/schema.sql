@@ -4750,11 +4750,17 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_draft (
   vi_body TEXT NOT NULL,
   en_body TEXT NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+  revision BIGINT NOT NULL DEFAULT 1,
+  content_hash CHAR(64) NOT NULL DEFAULT '',
+  published_slot TINYINT GENERATED ALWAYS AS (
+    CASE WHEN status = 'PUBLISHED' AND is_deleted = 0 THEN 1 ELSE NULL END
+  ) STORED,
   last_operator VARCHAR(64) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_disclosure_draft (jurisdiction_code, version_label),
+  UNIQUE KEY uk_disclosure_single_published (jurisdiction_code, published_slot),
   KEY idx_disclosure_draft_status (jurisdiction_code, status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -4771,6 +4777,31 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_ack_status (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_disclosure_ack_user_jurisdiction (user_id, jurisdiction_code),
   KEY idx_disclosure_ack_gate (jurisdiction_code, required_version, ack_status, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_disclosure_read_token (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  token_hash CHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  jurisdiction_code VARCHAR(32) NOT NULL,
+  version_label VARCHAR(32) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  consumed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_disclosure_read_token_hash (token_hash),
+  UNIQUE KEY uk_disclosure_read_token_binding (user_id, jurisdiction_code, version_label),
+  KEY idx_disclosure_read_token_expiry (expires_at, consumed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_disclosure_gate_block_event (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  jurisdiction_code VARCHAR(32) NOT NULL,
+  action_key VARCHAR(64) NOT NULL,
+  business_flow_id VARCHAR(128) NOT NULL,
+  blocked_at DATETIME NOT NULL,
+  UNIQUE KEY uk_disclosure_gate_block_flow (user_id, action_key, business_flow_id),
+  KEY idx_disclosure_gate_block_jurisdiction (jurisdiction_code, blocked_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ===== 客户档案:自定义标签 + 内部备注(content 域,按 user_id 聚合,跨会话共享)=====

@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import ffdd.opsconsole.content.application.AppRiskDisclosureService;
 import ffdd.opsconsole.content.domain.AppRiskDisclosureView;
 import ffdd.opsconsole.content.dto.AppRiskDisclosureAckRequest;
+import ffdd.opsconsole.content.dto.AppRiskDisclosureGateCheckRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -32,8 +33,12 @@ public class AppRiskDisclosureController {
     }
 
     @PostMapping("/gates/{actionKey}/check")
-    public ApiResult<Void> checkGate(@PathVariable String actionKey, Authentication authentication) {
-        return service.checkGate(authenticatedUserId(authentication), actionKey);
+    public ApiResult<Void> checkGate(
+            @PathVariable String actionKey,
+            @RequestBody(required = false) AppRiskDisclosureGateCheckRequest request,
+            Authentication authentication) {
+        return service.checkGate(authenticatedUserId(authentication), actionKey,
+                request == null ? null : request.operationId());
     }
 
     private Long authenticatedUserId(Authentication authentication) {

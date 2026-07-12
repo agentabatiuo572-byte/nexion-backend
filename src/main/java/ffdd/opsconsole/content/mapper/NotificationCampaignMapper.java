@@ -12,6 +12,47 @@ import java.util.List;
 
 public interface NotificationCampaignMapper extends BaseMapper<NotificationCampaignEntity> {
     @Insert("""
+            <script>
+            INSERT INTO nx_notification (
+                biz_no, user_id, type, priority, title, body, cta_label, cta_href,
+                read_flag, push_status, push_attempts, next_push_at, created_at, updated_at, is_deleted)
+            SELECT #{bizNo}, u.id, 'SYSTEM', 'critical',
+                   LEFT(CASE
+                       WHEN LOWER(u.language) LIKE 'zh%' THEN '风险披露已更新，请重新确认'
+                       WHEN LOWER(u.language) LIKE 'vi%' THEN 'Công bố rủi ro đã được cập nhật'
+                       ELSE 'Risk disclosure updated'
+                   END, 128),
+                   LEFT(CASE
+                       WHEN LOWER(u.language) LIKE 'zh%' THEN CONCAT(#{jurisdiction}, ' 风险披露已更新至 ', #{version}, '，请在继续受限操作前重新阅读并确认。')
+                       WHEN LOWER(u.language) LIKE 'vi%' THEN CONCAT('Công bố rủi ro ', #{jurisdiction}, ' đã cập nhật lên ', #{version}, '. Vui lòng đọc và xác nhận lại.')
+                       ELSE CONCAT(#{jurisdiction}, ' risk disclosure is now ', #{version}, '. Please read and acknowledge it again.')
+                   END, 512),
+                   CASE WHEN LOWER(u.language) LIKE 'zh%' THEN '立即确认'
+                        WHEN LOWER(u.language) LIKE 'vi%' THEN 'Xác nhận ngay'
+                        ELSE 'Review now' END,
+                   '/pages/me/risk-disclosure',
+                   0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
+              FROM nx_user u
+              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
+             WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND UPPER(TRIM(CASE
+                     WHEN UPPER(COALESCE(k.status, '')) IN ('APPROVED', 'VERIFIED', 'PASSED')
+                          AND COALESCE(k.country, '') &lt;&gt; '' THEN k.country
+                     ELSE u.country_code END)) IN
+               <foreach item="country" collection="countryAliases" open="(" separator="," close=")">
+                 UPPER(#{country})
+               </foreach>
+            ON DUPLICATE KEY UPDATE biz_no = VALUES(biz_no)
+            </script>
+            """)
+    int insertDisclosureReackNotifications(
+            @Param("bizNo") String bizNo,
+            @Param("jurisdiction") String jurisdiction,
+            @Param("version") String version,
+            @Param("countryAliases") List<String> countryAliases,
+            @Param("now") LocalDateTime now);
+
+    @Insert("""
             INSERT INTO nx_notification (
                 biz_no, user_id, type, priority, title, body, cta_label, cta_href,
                 read_flag, push_status, push_attempts, next_push_at, created_at, updated_at, is_deleted)

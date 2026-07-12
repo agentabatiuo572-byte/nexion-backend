@@ -4,6 +4,8 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionView;
+import ffdd.opsconsole.content.domain.DisclosureDraftView;
+import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Locale;
@@ -28,14 +30,35 @@ public class AuditReplayBusinessPermissionGuard {
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
         String requiredAuthority = switch (operation) {
             case "i4_trust_section_manage" -> sectionAuthority(command.params());
-            case "i4_disclosure_publish", "i5_disclosure_publish" -> "content_i5_disclosure_publish";
+            case "i4_disclosure_publish", "i5_disclosure_publish",
+                    "i5_matrix_configure", "i5_matrix_archive" -> "content_i5_disclosure_publish";
             case "i4_gate_adjust", "i5_gate_adjust" -> "content_i5_gate_adjust";
             default -> null;
         };
-        if (requiredAuthority == null || hasAuthority(requiredAuthority)) {
-            return ApiResult.ok();
+        if (requiredAuthority != null && !hasAuthority(requiredAuthority)) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
-        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
+        if (Set.of("i4_disclosure_publish", "i5_disclosure_publish").contains(operation)) {
+            return validateDisclosureSnapshot(command.params());
+        }
+        return ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateDisclosureSnapshot(Map<String, Object> params) {
+        String jurisdiction = value(params, "jurisdiction");
+        String version = value(params, "version");
+        String expectedHash = value(params, "expectedContentHash");
+        Long expectedRevision = longValue(params, "expectedRevision");
+        DisclosureDraftView draft = trustDisclosureRepository
+                .findDisclosureVersion(jurisdiction, version).orElse(null);
+        if (draft == null || !"draft".equalsIgnoreCase(draft.status())
+                || expectedRevision == null || expectedRevision != draft.revision()
+                || expectedHash.isBlank() || !expectedHash.equals(draft.contentHash())
+                || !expectedHash.equals(DisclosureContentHash.from(
+                        draft, trustDisclosureRepository.listChapters(jurisdiction, version)))) {
+            return ApiResult.fail(409, "A2_DISCLOSURE_SNAPSHOT_CHANGED");
+        }
+        return ApiResult.ok();
     }
 
     private String sectionAuthority(Map<String, Object> params) {
@@ -66,5 +89,15 @@ public class AuditReplayBusinessPermissionGuard {
     private String value(Map<String, Object> params, String key) {
         Object value = params == null ? null : params.get(key);
         return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    private Long longValue(Map<String, Object> params, String key) {
+        Object value = params == null ? null : params.get(key);
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return value == null ? null : Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 }

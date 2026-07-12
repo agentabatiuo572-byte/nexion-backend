@@ -6,9 +6,12 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionView;
+import ffdd.opsconsole.content.domain.DisclosureDraftView;
+import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -61,10 +64,39 @@ class AuditReplayBusinessPermissionGuardTest {
     void matchingBusinessPermissionAllowsProposal() {
         when(repository.listTrustSections()).thenReturn(List.of());
         authenticate("content_i4_trust_section_manage", "content_i5_disclosure_publish", "content_i5_gate_adjust");
+        DisclosureDraftView unhashed = new DisclosureDraftView(
+                "v13", "SFC", "zh+vi+en", "2026-07-13", true,
+                "中文", "Tiếng Việt", "English", "draft", 2L, "");
+        String hash = DisclosureContentHash.from(unhashed, List.of());
+        DisclosureDraftView draft = new DisclosureDraftView(
+                unhashed.version(), unhashed.jurisdiction(), unhashed.languageScope(), unhashed.effectiveDate(),
+                unhashed.requiresReack(), unhashed.zh(), unhashed.vi(), unhashed.en(), "draft", 2L, hash);
+        when(repository.findDisclosureVersion("SFC", "v13")).thenReturn(Optional.of(draft));
+        when(repository.listChapters("SFC", "v13")).thenReturn(List.of());
 
         assertThat(guard.validateProposal(sectionCommand("nexNarrative", "publish")).getCode()).isZero();
-        assertThat(guard.validateProposal(new AuditReplayCommand("I", "i5_disclosure_publish", Map.of())).getCode()).isZero();
+        assertThat(guard.validateProposal(new AuditReplayCommand("I", "i5_disclosure_publish", Map.of(
+                "jurisdiction", "SFC", "version", "v13",
+                "expectedRevision", 2L, "expectedContentHash", hash))).getCode()).isZero();
+        assertThat(guard.validateProposal(new AuditReplayCommand("I", "i5_matrix_configure", Map.of())).getCode()).isZero();
         assertThat(guard.validateProposal(new AuditReplayCommand("I", "i5_gate_adjust", Map.of())).getCode()).isZero();
+    }
+
+    @Test
+    void disclosureProposalRejectsChangedImmutableSnapshot() {
+        authenticate("content_i5_disclosure_publish");
+        DisclosureDraftView draft = new DisclosureDraftView(
+                "v13", "SFC", "zh+vi+en", "2026-07-13", true,
+                "中文", "Tiếng Việt", "English", "draft", 3L, "server-hash");
+        when(repository.findDisclosureVersion("SFC", "v13")).thenReturn(Optional.of(draft));
+        when(repository.listChapters("SFC", "v13")).thenReturn(List.of());
+
+        var result = guard.validateProposal(new AuditReplayCommand("I", "i5_disclosure_publish", Map.of(
+                "jurisdiction", "SFC", "version", "v13",
+                "expectedRevision", 2L, "expectedContentHash", "client-hash")));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_DISCLOSURE_SNAPSHOT_CHANGED");
     }
 
     private AuditReplayCommand sectionCommand(String sectionKey, String action) {

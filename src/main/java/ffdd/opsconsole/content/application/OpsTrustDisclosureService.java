@@ -8,6 +8,7 @@ import ffdd.opsconsole.content.domain.DisclosureCountryOption;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureGateActionView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
+import ffdd.opsconsole.content.domain.DisclosureVersionItem;
 import ffdd.opsconsole.content.domain.TrustDisclosureOverview;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustDisclosureStats;
@@ -35,6 +36,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -65,7 +67,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             new DisclosureCountryOption("VN", "越南"),
             new DisclosureCountryOption("HK", "中国香港"),
             new DisclosureCountryOption("SG", "新加坡"),
-            new DisclosureCountryOption("GB", "英国"));
+            new DisclosureCountryOption("GB", "英国"),
+            new DisclosureCountryOption("CN", "中国大陆"),
+            new DisclosureCountryOption("US", "美国"),
+            new DisclosureCountryOption("EU", "欧盟"));
     private static final List<String> SOURCES = List.of(
             "nx_trust_section",
             "nx_trust_section_field",
@@ -79,6 +84,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
     private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|nex\\s*v?2|nexv2|points|积分", Pattern.CASE_INSENSITIVE);
     private static final Pattern TRUST_VERSION_PATTERN = Pattern.compile("^v[1-9][0-9]{0,8}$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DISCLOSURE_VERSION_PATTERN = Pattern.compile(
+            "^v[1-9][0-9]{0,8}(?:\\.[0-9]{1,8})*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern TRUST_FIELD_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{0,63}$");
     private static final Pattern LOCALIZED_TRUST_FIELD_PATTERN = Pattern.compile("^(.+?)[._-](zh|vi)$", Pattern.CASE_INSENSITIVE);
     private static final Pattern LINK_LIKE_PATTERN = Pattern.compile(
@@ -110,6 +117,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private final AuditObjectLockMapper lockMapper;
     private final OpsNotificationCampaignService notificationCampaignService;
     private final OpsI18nLearningService i18nLearningService;
+    private final DisclosureReackNotificationService disclosureReackNotificationService;
+    private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<TrustDisclosureOverview> overview() {
         return ApiResult.ok(authorizedOverview(currentOverview()));
@@ -302,17 +311,101 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
-        DisclosureDraftRequest normalized = normalizeDisclosureRequest(jurisdiction, request);
+        DisclosureDraftMutationResult result = idempotencyService.execute(
+                "I5_DISCLOSURE_DRAFT_SAVE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(jurisdiction, String.valueOf(request)),
+                DisclosureDraftMutationResult.class,
+                () -> DisclosureDraftMutationResult.from(doSaveDisclosureDraft(jurisdiction, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<DisclosureDraftView> doSaveDisclosureDraft(
+            String jurisdiction, String idempotencyKey, DisclosureDraftRequest request) {
+        trustDisclosureRepository.lockDisclosureJurisdiction(jurisdiction);
+        String requestedVersion = request.version() == null ? "" : request.version().trim();
+        DisclosureDraftView requestedDraft = StringUtils.hasText(requestedVersion)
+                ? trustDisclosureRepository.findDisclosureVersion(jurisdiction, requestedVersion).orElse(null)
+                : null;
+        String expectedVersion = nextDisclosureVersionForCreate(jurisdiction);
+        if (requestedDraft == null && StringUtils.hasText(requestedVersion)
+                && !requestedVersion.equalsIgnoreCase(expectedVersion)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_VERSION_SEQUENCE_INVALID");
+        }
+        DisclosureDraftRequest normalized = normalizeDisclosureRequest(jurisdiction, request,
+                requestedDraft == null ? expectedVersion : requestedDraft.version());
         DisclosureDraftView existing = trustDisclosureRepository.findDisclosureVersion(normalized.jurisdiction(), normalized.version()).orElse(null);
         if (existing != null && !"draft".equalsIgnoreCase(existing.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PUBLISHED_DISCLOSURE_IMMUTABLE");
         }
-        trustDisclosureRepository.saveDisclosureDraft(normalized, "DRAFT", now());
-        DisclosureDraftView draft = trustDisclosureRepository.findDraft(normalized.jurisdiction()).orElse(null);
+        DisclosureDraftView draft;
+        try {
+            draft = trustDisclosureRepository.saveDisclosureDraft(
+                    normalized, "DRAFT", DisclosureContentHash.from(normalized), now());
+        } catch (org.springframework.dao.DuplicateKeyException ex) {
+            return ApiResult.fail(409, "DISCLOSURE_VERSION_ALREADY_EXISTS");
+        } catch (org.springframework.dao.OptimisticLockingFailureException ex) {
+            return ApiResult.fail(409, ex.getMessage());
+        }
         audit("I5_DISCLOSURE_DRAFT_SAVED", "DISCLOSURE_DRAFT", normalized.jurisdiction(), normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
                 "version", normalized.version(),
-                "languageScope", normalized.languageScope()));
+                "languageScope", normalized.languageScope(),
+                "revision", draft.revision(),
+                "contentHash", draft.contentHash()));
         return ApiResult.ok(draft);
+    }
+
+    public ApiResult<DisclosureVersionItem> disclosureVersion(String jurisdiction, String version) {
+        DisclosureDraftView draft = trustDisclosureRepository.findDisclosureVersion(jurisdiction, version).orElse(null);
+        if (draft == null) return ApiResult.fail(404, "DISCLOSURE_VERSION_NOT_FOUND");
+        return ApiResult.ok(toDisclosureVersionItem(draft));
+    }
+
+    @Transactional
+    public ApiResult<DisclosureDraftView> updateDisclosureDraft(
+            String jurisdiction, String version, String idempotencyKey, DisclosureDraftRequest request) {
+        if (request == null) return ApiResult.fail(422, "DISCLOSURE_FIELDS_REQUIRED");
+        if (StringUtils.hasText(request.version()) && !version.equalsIgnoreCase(request.version().trim())) {
+            return ApiResult.fail(422, "DISCLOSURE_VERSION_IMMUTABLE");
+        }
+        return saveDisclosureDraft(jurisdiction, idempotencyKey, withDisclosureVersion(request, version));
+    }
+
+    @Transactional
+    public ApiResult<Void> deleteDisclosureDraft(
+            String jurisdiction, String version, String idempotencyKey, TrustDisclosureActionRequest request) {
+        ApiResult<Void> guard = requireAction(idempotencyKey, request);
+        if (guard != null) return guard;
+        VoidMutationResult result = idempotencyService.execute(
+                "I5_DISCLOSURE_DRAFT_DELETE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(jurisdiction, version, String.valueOf(request)),
+                VoidMutationResult.class,
+                () -> VoidMutationResult.from(doDeleteDisclosureDraft(
+                        jurisdiction, version, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<Void> doDeleteDisclosureDraft(
+            String jurisdiction, String version, String idempotencyKey, TrustDisclosureActionRequest request) {
+        DisclosureDraftView draft = trustDisclosureRepository.findDisclosureVersion(jurisdiction, version).orElse(null);
+        if (draft == null) return ApiResult.fail(404, "DISCLOSURE_VERSION_NOT_FOUND");
+        if (!"draft".equalsIgnoreCase(draft.status())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PUBLISHED_DISCLOSURE_IMMUTABLE");
+        }
+        if (request.expectedRevision() == null || request.expectedRevision() != draft.revision()
+                || !StringUtils.hasText(request.expectedContentHash())
+                || !request.expectedContentHash().trim().equals(draft.contentHash())) {
+            return ApiResult.fail(409, "DISCLOSURE_DRAFT_REVISION_CONFLICT");
+        }
+        try {
+            trustDisclosureRepository.deleteDisclosureDraft(
+                    jurisdiction, version, request.expectedRevision(), request.expectedContentHash().trim(), now());
+        } catch (org.springframework.dao.OptimisticLockingFailureException ex) {
+            return ApiResult.fail(409, ex.getMessage());
+        }
+        audit("I5_DISCLOSURE_DRAFT_DELETED", "DISCLOSURE_DRAFT", jurisdiction + ":" + version,
+                authenticatedOperator(), idempotencyKey, request.reason(), Map.of(
+                        "revision", draft.revision(), "contentHash", draft.contentHash()));
+        return ApiResult.ok(null);
     }
 
     @Transactional
@@ -321,17 +414,37 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("I", "disclosure_jurisdiction", jurisdiction) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
+        if (!Boolean.TRUE.equals(request.requiresReack())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_REACK_REQUIRED");
+        }
+        trustDisclosureRepository.lockDisclosureJurisdiction(jurisdiction);
         DisclosureJurisdictionView current = findJurisdiction(jurisdiction);
-        DisclosureDraftRequest normalized = normalizeDisclosureRequest(jurisdiction, request);
+        DisclosureDraftRequest normalized = normalizeDisclosureRequest(jurisdiction, request,
+                request.version() == null ? "" : request.version().trim());
+        String highestAllocatedVersion = trustDisclosureRepository.listDisclosureVersionsIncludingDeleted(jurisdiction).stream()
+                .filter(StringUtils::hasText)
+                .filter(version -> DISCLOSURE_VERSION_PATTERN.matcher(version.trim()).matches())
+                .max(this::compareDisclosureVersions).orElse("");
+        boolean advancesPublished = current == null || !StringUtils.hasText(current.version())
+                || compareDisclosureVersions(normalized.version(), current.version()) > 0;
+        if (!normalized.version().equalsIgnoreCase(highestAllocatedVersion) || !advancesPublished) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_VERSION_SEQUENCE_INVALID");
+        }
         DisclosureDraftView draft = trustDisclosureRepository.findDisclosureVersion(normalized.jurisdiction(), normalized.version()).orElse(null);
         if (draft == null || !"draft".equalsIgnoreCase(draft.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "DISCLOSURE_DRAFT_VERSION_NOT_FOUND");
         }
         List<DisclosureChapterView> storedChapters = trustDisclosureRepository.listChapters(normalized.jurisdiction(), normalized.version());
+        String storedHash = DisclosureContentHash.from(draft, storedChapters);
+        if (request.expectedRevision() == null || request.expectedRevision() != draft.revision()
+                || !StringUtils.hasText(request.expectedContentHash())
+                || !request.expectedContentHash().trim().equals(draft.contentHash())
+                || !storedHash.equals(draft.contentHash())) {
+            return ApiResult.fail(409, "DISCLOSURE_DRAFT_SNAPSHOT_CHANGED");
+        }
         if (!sameDisclosureDraft(draft, normalized) || !sameDisclosureChapters(storedChapters, normalized.chapters())) {
             return ApiResult.fail(409, "DISCLOSURE_DRAFT_CHANGED_SAVE_BEFORE_PUBLISH");
         }
@@ -339,11 +452,16 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         String targetJurisdiction = current == null ? normalized.jurisdiction() : current.code();
-        trustDisclosureRepository.publishDisclosure(targetJurisdiction, normalized, now());
+        LocalDateTime publishedAt = now();
+        trustDisclosureRepository.publishDisclosure(targetJurisdiction, normalized, publishedAt);
         DisclosureJurisdictionView updated = findJurisdiction(targetJurisdiction);
+        disclosureReackNotificationService.notifyPublished(
+                targetJurisdiction, normalized.version(), updated == null ? List.of() : updated.countryCodes(), publishedAt);
         requiredAudit("I5_DISCLOSURE_PUBLISHED", "DISCLOSURE_JURISDICTION", targetJurisdiction, normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
                 "from", current == null ? "" : current.version(),
                 "to", normalized.version(),
+                "revision", draft.revision(),
+                "contentHash", draft.contentHash(),
                 "requiresReack", String.valueOf(Boolean.TRUE.equals(normalized.requiresReack()))));
         return ApiResult.ok(updated);
     }
@@ -354,16 +472,58 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
+        OverviewMutationResult result = idempotencyService.execute(
+                "I5_DISCLOSURE_MATRIX_CONFIGURE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(jurisdiction, String.valueOf(request)),
+                OverviewMutationResult.class,
+                () -> OverviewMutationResult.from(doConfigureMatrix(jurisdiction, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustDisclosureOverview> doConfigureMatrix(
+            String jurisdiction, String idempotencyKey, DisclosureMatrixRequest request) {
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         DisclosureJurisdictionView current = findJurisdiction(jurisdiction);
-        if (current != null && "published".equalsIgnoreCase(current.status())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PUBLISHED_DISCLOSURE_IMMUTABLE");
+        List<String> normalizedCountries = request.countryCodes().stream()
+                .map(CountryCodeNormalizer::normalize).distinct().sorted().toList();
+        boolean countryConflict = trustDisclosureRepository.listJurisdictions().stream()
+                .filter(row -> !row.code().equalsIgnoreCase(jurisdiction))
+                .filter(row -> !"archived".equalsIgnoreCase(row.status()))
+                .flatMap(row -> row.countryCodes().stream())
+                .map(CountryCodeNormalizer::normalize)
+                .anyMatch(normalizedCountries::contains);
+        if (countryConflict) {
+            return ApiResult.fail(409, "DISCLOSURE_COUNTRY_MAPPING_CONFLICT");
+        }
+        boolean publishedAdjustment = current != null && "published".equalsIgnoreCase(current.status());
+        if (publishedAdjustment && !current.version().equalsIgnoreCase(request.version().trim())) {
+            return ApiResult.fail(409, "DISCLOSURE_MATRIX_VERSION_READONLY");
+        }
+        if (publishedAdjustment) {
+            DisclosureDraftView target = trustDisclosureRepository
+                    .findDisclosureVersion(current.code(), current.version()).orElse(null);
+            if (target == null || !("published".equalsIgnoreCase(target.status())
+                    || "superseded".equalsIgnoreCase(target.status()))) {
+                return ApiResult.fail(409, "DISCLOSURE_MATRIX_VERSION_NOT_PUBLISHED");
+            }
         }
         DisclosureMatrixRequest normalized = new DisclosureMatrixRequest(jurisdiction.trim().toUpperCase(Locale.ROOT),
-                request.jurisdictionName().trim(), request.countryCodes().stream()
-                .map(code -> code.trim().toUpperCase(Locale.ROOT)).distinct().sorted().toList(),
-                request.version().trim(), "DRAFT",
+                request.jurisdictionName().trim(), normalizedCountries,
+                request.version().trim(), publishedAdjustment ? "PUBLISHED" : "DRAFT",
                 operator(request.operator()), request.reason().trim());
-        trustDisclosureRepository.upsertDisclosureMatrix(normalized, now());
+        LocalDateTime adjustedAt = now();
+        trustDisclosureRepository.upsertDisclosureMatrix(normalized, adjustedAt);
+        if (publishedAdjustment && !new java.util.TreeSet<>(current.countryCodes())
+                .equals(new java.util.TreeSet<>(normalizedCountries))) {
+            List<String> affectedCountries = java.util.stream.Stream
+                    .concat(current.countryCodes().stream(), normalizedCountries.stream())
+                    .map(CountryCodeNormalizer::normalize).filter(StringUtils::hasText)
+                    .distinct().sorted().toList();
+            trustDisclosureRepository.markDisclosureMatrixUsersStale(
+                    normalized.jurisdictionCode(), affectedCountries, normalized.version(), adjustedAt);
+        }
         audit("I5_DISCLOSURE_MATRIX_CONFIGURED", "DISCLOSURE_MATRIX", normalized.jurisdictionCode(), normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
                 "version", normalized.version(), "status", normalized.status()));
         return ApiResult.ok(authorizedOverview(currentOverview()));
@@ -373,10 +533,26 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     public ApiResult<TrustDisclosureOverview> archiveMatrix(String jurisdiction, String idempotencyKey, TrustDisclosureActionRequest request) {
         ApiResult<Void> guard = requireAction(idempotencyKey, request);
         if (guard != null) return fail(guard);
+        OverviewMutationResult result = idempotencyService.execute(
+                "I5_DISCLOSURE_MATRIX_ARCHIVE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(jurisdiction, String.valueOf(request)),
+                OverviewMutationResult.class,
+                () -> OverviewMutationResult.from(doArchiveMatrix(jurisdiction, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustDisclosureOverview> doArchiveMatrix(
+            String jurisdiction, String idempotencyKey, TrustDisclosureActionRequest request) {
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         DisclosureJurisdictionView current = findJurisdiction(jurisdiction);
         if (current == null) return ApiResult.fail(404, "DISCLOSURE_JURISDICTION_NOT_FOUND");
-        trustDisclosureRepository.archiveDisclosureMatrix(current.code(), operator(request.operator()), now());
-        audit("I5_DISCLOSURE_MATRIX_ARCHIVED", "DISCLOSURE_MATRIX", current.code(), request.operator(), idempotencyKey, request.reason(), Map.of("version", current.version()));
+        if ("published".equalsIgnoreCase(current.status())) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "PUBLISHED_DISCLOSURE_ARCHIVE_FORBIDDEN");
+        }
+        trustDisclosureRepository.archiveDisclosureMatrix(current.code(), authenticatedOperator(), now());
+        audit("I5_DISCLOSURE_MATRIX_ARCHIVED", "DISCLOSURE_MATRIX", current.code(), authenticatedOperator(), idempotencyKey, request.reason(), Map.of("version", current.version()));
         return ApiResult.ok(authorizedOverview(currentOverview()));
     }
 
@@ -418,6 +594,18 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 .filter(key -> APP_TRUST_SECTION_KEYS.contains(normalizeSectionKey(key)))
                 .toList();
         List<DisclosureJurisdictionView> jurisdictions = trustDisclosureRepository.listJurisdictions();
+        List<DisclosureDraftView> disclosureDrafts = trustDisclosureRepository.listDisclosureVersionItems();
+        List<DisclosureVersionItem> disclosureVersionItems = disclosureDrafts.stream()
+                .map(this::toDisclosureVersionItem).toList();
+        Map<String, String> nextVersionByJurisdiction = new LinkedHashMap<>();
+        jurisdictions.forEach(row -> nextVersionByJurisdiction.put(
+                row.code(), nextDisclosureVersionForCreate(row.code())));
+        disclosureDrafts.stream().map(DisclosureDraftView::jurisdiction).distinct()
+                .filter(code -> !nextVersionByJurisdiction.containsKey(code))
+                .forEach(code -> nextVersionByJurisdiction.put(code, nextDisclosureVersionForCreate(code)));
+        String primaryJurisdiction = trustDisclosureRepository.findLatestDraft()
+                .map(DisclosureDraftView::jurisdiction)
+                .orElseGet(() -> jurisdictions.isEmpty() ? "" : jurisdictions.get(0).code());
         List<DisclosureChapterView> chapters = new ArrayList<>(jurisdictions.stream()
                 .flatMap(jurisdiction -> trustDisclosureRepository.listChapters(jurisdiction.code(), jurisdiction.version()).stream())
                 .toList());
@@ -435,7 +623,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 trustDisclosureRepository.listFinancialFields(),
                 sectionFields,
                 jurisdictions,
-                COUNTRY_OPTIONS,
+                availableCountryOptions(jurisdictions),
                 chapters,
                 gateActions,
                 trustDisclosureRepository.findLatestDraft().orElse(null),
@@ -443,7 +631,12 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 LANGUAGE_SCOPES,
                 trustDisclosureRepository.listDisclosureVersions(),
                 gateScope(gateActions),
-                SOURCES);
+                SOURCES,
+                disclosureVersionItems,
+                StringUtils.hasText(primaryJurisdiction)
+                        ? nextVersionByJurisdiction.getOrDefault(primaryJurisdiction, "v1") : "v1",
+                nextVersionByJurisdiction,
+                jurisdictions);
     }
 
     private TrustDisclosureOverview authorizedOverview(TrustDisclosureOverview full) {
@@ -476,7 +669,11 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 canReadI5 ? full.languageScopes() : List.of(),
                 canReadI5 ? full.disclosureVersions() : List.of(),
                 canReadI5 ? full.gateScope() : "",
-                visibleSources);
+                visibleSources,
+                canReadI5 ? full.disclosureVersionItems() : List.of(),
+                canReadI5 ? full.nextDisclosureVersion() : "",
+                canReadI5 ? full.nextVersionByJurisdiction() : Map.of(),
+                canReadI5 ? full.jurisdictionCatalog() : List.of());
     }
 
     private TrustDisclosureStats stats(List<TrustSectionView> sections, List<DisclosureJurisdictionView> jurisdictions) {
@@ -500,6 +697,20 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 .map(DisclosureGateActionView::name)
                 .collect(Collectors.joining(" + "));
         return StringUtils.hasText(scope) ? scope : "提现";
+    }
+
+    private List<DisclosureCountryOption> availableCountryOptions(List<DisclosureJurisdictionView> jurisdictions) {
+        Map<String, String> names = new LinkedHashMap<>();
+        COUNTRY_OPTIONS.forEach(option -> names.put(option.code(), option.name()));
+        if (jurisdictions != null) {
+            jurisdictions.stream().flatMap(row -> row.countryCodes().stream())
+                    .filter(StringUtils::hasText)
+                    .map(code -> code.trim().toUpperCase(Locale.ROOT))
+                    .forEach(code -> names.putIfAbsent(code, code));
+        }
+        return names.entrySet().stream()
+                .map(entry -> new DisclosureCountryOption(entry.getKey(), entry.getValue()))
+                .toList();
     }
 
     private Set<String> resolveGateKeys(String scope) {
@@ -588,7 +799,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (action != null) {
             return action;
         }
-        if (!StringUtils.hasText(jurisdiction) || request == null || !StringUtils.hasText(request.version())
+        if (!StringUtils.hasText(jurisdiction) || request == null
                 || !StringUtils.hasText(request.languageScope()) || !StringUtils.hasText(request.effectiveDate())
                 || !StringUtils.hasText(request.zh()) || !StringUtils.hasText(request.vi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_FIELDS_REQUIRED");
@@ -829,9 +1040,12 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 || !StringUtils.hasText(request.version()) || !"DRAFT".equalsIgnoreCase(request.status())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_MATRIX_FIELDS_REQUIRED");
         }
-        Set<String> allowedCountries = COUNTRY_OPTIONS.stream().map(DisclosureCountryOption::code).collect(Collectors.toSet());
-        boolean invalidCountry = request.countryCodes().stream().anyMatch(code -> !StringUtils.hasText(code)
-                || !allowedCountries.contains(code.trim().toUpperCase(Locale.ROOT)));
+        Set<String> allowedCountries = availableCountryOptions(trustDisclosureRepository.listJurisdictions()).stream()
+                .map(DisclosureCountryOption::code).collect(Collectors.toSet());
+        boolean invalidCountry = request.countryCodes().stream().anyMatch(code -> {
+            String normalized = CountryCodeNormalizer.normalize(code);
+            return !StringUtils.hasText(normalized) || !allowedCountries.contains(normalized);
+        });
         if (invalidCountry || !trustDisclosureRepository.listDisclosureVersions().contains(request.version().trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_MATRIX_CATALOG_VALUE_INVALID");
         }
@@ -868,9 +1082,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return null;
     }
 
-    private DisclosureDraftRequest normalizeDisclosureRequest(String jurisdiction, DisclosureDraftRequest request) {
+    private DisclosureDraftRequest normalizeDisclosureRequest(String jurisdiction, DisclosureDraftRequest request, String version) {
         return new DisclosureDraftRequest(
-                request.version().trim(),
+                version.trim(),
                 jurisdiction.trim().toUpperCase(Locale.ROOT),
                 request.languageScope().trim(),
                 request.effectiveDate().trim(),
@@ -883,8 +1097,75 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         StringUtils.hasText(chapter.enTitle()) ? chapter.enTitle().trim() : "",
                         chapter.zhBody().trim(), chapter.viBody().trim(),
                         StringUtils.hasText(chapter.enBody()) ? chapter.enBody().trim() : "")).toList(),
-                operator(request.operator()),
+                request.expectedRevision(),
+                StringUtils.hasText(request.expectedContentHash()) ? request.expectedContentHash().trim() : null,
+                authenticatedOperator(),
                 request.reason().trim());
+    }
+
+    private String nextDisclosureVersionForCreate(String jurisdiction) {
+        String highest = trustDisclosureRepository.listDisclosureVersionsIncludingDeleted(jurisdiction).stream()
+                .filter(StringUtils::hasText)
+                .filter(version -> DISCLOSURE_VERSION_PATTERN.matcher(version.trim()).matches())
+                .max(this::compareDisclosureVersions)
+                .orElse(null);
+        return incrementDisclosureVersion(highest);
+    }
+
+    private String incrementDisclosureVersion(String currentVersion) {
+        if (!StringUtils.hasText(currentVersion)) {
+            return "v1";
+        }
+        Matcher matcher = DISCLOSURE_VERSION_PATTERN.matcher(currentVersion.trim());
+        if (!matcher.matches()) {
+            return "";
+        }
+        String numeric = currentVersion.trim().substring(1);
+        String[] segments = numeric.split("\\.");
+        int last = segments.length - 1;
+        long number = Long.parseLong(segments[last]);
+        if (number >= 99_999_999L) return "";
+        segments[last] = Long.toString(number + 1);
+        return "v" + String.join(".", segments);
+    }
+
+    private int compareDisclosureVersions(String left, String right) {
+        String[] a = left.trim().substring(1).split("\\.");
+        String[] b = right.trim().substring(1).split("\\.");
+        int max = Math.max(a.length, b.length);
+        for (int index = 0; index < max; index++) {
+            long av = index < a.length ? Long.parseLong(a[index]) : 0;
+            long bv = index < b.length ? Long.parseLong(b[index]) : 0;
+            int compared = Long.compare(av, bv);
+            if (compared != 0) return compared;
+        }
+        return Integer.compare(a.length, b.length);
+    }
+
+    private String authenticatedOperator() {
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && authentication.isAuthenticated() && StringUtils.hasText(authentication.getName())
+                ? authentication.getName().trim()
+                : "system";
+    }
+
+    private DisclosureDraftRequest withDisclosureVersion(DisclosureDraftRequest request, String version) {
+        return new DisclosureDraftRequest(
+                version, request.jurisdiction(), request.languageScope(), request.effectiveDate(),
+                request.requiresReack(), request.zh(), request.vi(), request.en(), request.chapters(),
+                request.expectedRevision(), request.expectedContentHash(), request.operator(), request.reason());
+    }
+
+    private DisclosureVersionItem toDisclosureVersionItem(DisclosureDraftView draft) {
+        DisclosureJurisdictionView jurisdiction = findJurisdiction(draft.jurisdiction());
+        return new DisclosureVersionItem(
+                draft.jurisdiction(), draft.version(), draft.status(), draft.languageScope(), draft.effectiveDate(),
+                draft.requiresReack(), draft.zh(), draft.vi(), draft.en(),
+                trustDisclosureRepository.listChapters(draft.jurisdiction(), draft.version()),
+                draft.revision(), draft.contentHash(),
+                jurisdiction == null ? 0 : jurisdiction.affected(),
+                jurisdiction == null ? 0 : jurisdiction.ackProgress(),
+                jurisdiction == null ? 0 : jurisdiction.blocked());
     }
 
     private boolean containsUnsafeText(String... values) {
@@ -1046,6 +1327,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         persisted.vi(),
                         persisted.en(),
                         chapters,
+                        longVal(p, "expectedRevision"),
+                        str(p, "expectedContentHash"),
                         operator,
                         reason);
                 return publishDisclosure(jurisdiction, idem, req);
@@ -1054,6 +1337,17 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 // amplifies=true: 写 platform config 放松资金类合规拦截,configFacade.upsertAdminValue 天然幂等
                 DisclosureGateUpdateRequest req = new DisclosureGateUpdateRequest(str(p, "scope"), operator, reason);
                 return updateGateScope(idem, req);
+            }
+            case "i5_matrix_configure" -> {
+                String jurisdiction = str(p, "jurisdiction");
+                DisclosureMatrixRequest req = new DisclosureMatrixRequest(
+                        jurisdiction, str(p, "jurisdictionName"), stringList(p, "countryCodes"),
+                        str(p, "version"), "DRAFT", operator, reason);
+                return configureMatrix(jurisdiction, idem, req);
+            }
+            case "i5_matrix_archive" -> {
+                String jurisdiction = str(p, "jurisdiction");
+                return archiveMatrix(jurisdiction, idem, new TrustDisclosureActionRequest(operator, reason));
             }
             case "i7_course_reward_adjust" -> {
                 // 委托 OpsI18nLearningService + amplifies=true: 改 rewardNex 放大未来 NEX 流出,B1 红线前置由原方法 coverageFacade.snapshot() 只读 guard 保留
@@ -1091,6 +1385,16 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
     }
 
+    private static List<String> stringList(Map<String, Object> params, String key) {
+        Object value = params == null ? null : params.get(key);
+        if (value instanceof List<?> list) {
+            return list.stream().map(String::valueOf).map(String::trim).filter(StringUtils::hasText).toList();
+        }
+        if (value == null) return List.of();
+        return java.util.Arrays.stream(String.valueOf(value).split(","))
+                .map(String::trim).filter(StringUtils::hasText).toList();
+    }
+
     /** 从 replay params 取 BigDecimal,null 安全(I7 rewardNex 用)。 */
     private static BigDecimal bdVal(Map<String, Object> params, String key) {
         Object v = params.get(key);
@@ -1101,6 +1405,36 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             return new BigDecimal(String.valueOf(v).trim());
         } catch (NumberFormatException ex) {
             return null;
+        }
+    }
+
+    private record DisclosureDraftMutationResult(int code, String message, DisclosureDraftView data) {
+        private static DisclosureDraftMutationResult from(ApiResult<DisclosureDraftView> result) {
+            return new DisclosureDraftMutationResult(result.getCode(), result.getMessage(), result.getData());
+        }
+
+        private ApiResult<DisclosureDraftView> toApiResult() {
+            return code == 0 ? ApiResult.ok(data) : ApiResult.fail(code, message);
+        }
+    }
+
+    private record VoidMutationResult(int code, String message) {
+        private static VoidMutationResult from(ApiResult<Void> result) {
+            return new VoidMutationResult(result.getCode(), result.getMessage());
+        }
+
+        private ApiResult<Void> toApiResult() {
+            return code == 0 ? ApiResult.ok(null) : ApiResult.fail(code, message);
+        }
+    }
+
+    private record OverviewMutationResult(int code, String message, TrustDisclosureOverview data) {
+        private static OverviewMutationResult from(ApiResult<TrustDisclosureOverview> result) {
+            return new OverviewMutationResult(result.getCode(), result.getMessage(), result.getData());
+        }
+
+        private ApiResult<TrustDisclosureOverview> toApiResult() {
+            return code == 0 ? ApiResult.ok(data) : ApiResult.fail(code, message);
         }
     }
 }

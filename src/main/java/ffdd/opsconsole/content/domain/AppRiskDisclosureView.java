@@ -11,5 +11,8 @@ public record AppRiskDisclosureView(
         String effectiveDate,
         boolean acknowledged,
         LocalDateTime acknowledgedAt,
-        List<DisclosureChapterView> chapters) {
+        List<DisclosureChapterView> chapters,
+        String acknowledgmentToken,
+        LocalDateTime acknowledgmentTokenExpiresAt,
+        long minimumReadingSeconds) {
 }

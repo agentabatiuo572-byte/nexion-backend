@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.domain;
 
 import java.util.List;
+import java.util.Map;
 
 public record TrustDisclosureOverview(
         TrustDisclosureStats stats,
@@ -18,5 +19,9 @@ public record TrustDisclosureOverview(
         List<String> languageScopes,
         List<String> disclosureVersions,
         String gateScope,
-        List<String> sources) {
+        List<String> sources,
+        List<DisclosureVersionItem> disclosureVersionItems,
+        String nextDisclosureVersion,
+        Map<String, String> nextVersionByJurisdiction,
+        List<DisclosureJurisdictionView> jurisdictionCatalog) {
 }
