@@ -17,6 +17,7 @@ import ffdd.opsconsole.content.domain.DisclosureChapterView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureGateActionView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
+import ffdd.opsconsole.content.domain.DisclosureJurisdictionCatalogView;
 import ffdd.opsconsole.content.domain.FinancialFieldView;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionFieldView;
@@ -26,6 +27,7 @@ import ffdd.opsconsole.content.domain.NotificationCapRuleView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
 import ffdd.opsconsole.content.dto.DisclosureChapterInput;
 import ffdd.opsconsole.content.dto.DisclosureMatrixRequest;
+import ffdd.opsconsole.content.dto.DisclosureJurisdictionCatalogRequest;
 import ffdd.opsconsole.content.dto.DisclosureGateUpdateRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
 import ffdd.opsconsole.content.dto.TrustDisclosureActionRequest;
@@ -561,7 +563,7 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
-    void publishDisclosurePersistsReackAndAudits() {
+    void publishDisclosureApprovesImmutableVersionWithoutChangingRuntimeMapping() {
         var request = disclosureRequest();
         var saved = service.saveDisclosureDraft("SFC", "idem-i5-save-before-publish", request);
         assertThat(saved.getCode()).isZero();
@@ -570,15 +572,18 @@ class OpsTrustDisclosureServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v13");
-        assertThat(result.getData().ackProgress()).isZero();
+        assertThat(result.getData().status()).isEqualTo("published");
         assertThat(repository.drafts.get("SFC::v13").status()).isEqualTo("published");
+        assertThat(repository.findJurisdiction("SFC").orElseThrow().version()).isEqualTo("v12");
+        assertThat(repository.findJurisdiction("SFC").orElseThrow().ackProgress()).isEqualTo(72);
+        verifyNoInteractions(disclosureReackNotificationService);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(any(AuditLogWriteRequest.class));
         verify(auditLogService).recordRequired(captor.capture());
         AuditLogWriteRequest publishedAudit = captor.getValue();
         assertThat(publishedAudit.getAction()).isEqualTo("I5_DISCLOSURE_PUBLISHED");
-        assertThat(publishedAudit.getResourceType()).isEqualTo("DISCLOSURE_JURISDICTION");
+        assertThat(publishedAudit.getResourceType()).isEqualTo("DISCLOSURE_VERSION");
     }
 
     @Test
@@ -637,6 +642,125 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void jurisdictionCatalogCrudIsIndependentFromRuntimeMatrix() {
+        var created = service.createJurisdiction("idem-i5-jurisdiction-create",
+                new DisclosureJurisdictionCatalogRequest(
+                        "SBV", "越南国家银行", null, "spoofed", "新增越南披露法域"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(created.getData().status()).isEqualTo("DISABLED");
+        assertThat(created.getData().revision()).isEqualTo(1L);
+        assertThat(repository.findJurisdiction("SBV")).isEmpty();
+
+        var renamed = service.updateJurisdiction("SBV", "idem-i5-jurisdiction-update",
+                new DisclosureJurisdictionCatalogRequest(
+                        "SBV", "越南监管法域", 1L, "spoofed", "修正法域显示名称"));
+
+        assertThat(renamed.getCode()).isZero();
+        assertThat(renamed.getData().name()).isEqualTo("越南监管法域");
+        assertThat(renamed.getData().revision()).isEqualTo(2L);
+
+        var changedCode = service.updateJurisdiction("SBV", "idem-i5-jurisdiction-code-change",
+                new DisclosureJurisdictionCatalogRequest(
+                        "NEW", "越南监管法域", 2L, "spoofed", "尝试修改字段标识"));
+        assertThat(changedCode.getCode()).isEqualTo(422);
+        assertThat(changedCode.getMessage()).isEqualTo("DISCLOSURE_JURISDICTION_CODE_IMMUTABLE");
+    }
+
+    @Test
+    void activeRuntimeMappingMustBeArchivedBeforeCatalogCanBeDisabledOrArchived() {
+        A2ReplayContext.enterReplay();
+
+        var disabled = service.changeJurisdictionStatus("SFC", "DISABLED", "idem-i5-disable-active",
+                new TrustDisclosureActionRequest(1L, null, "spoofed", "停用香港法域"));
+        var archived = service.changeJurisdictionStatus("SFC", "ARCHIVED", "idem-i5-archive-active",
+                new TrustDisclosureActionRequest(1L, null, "spoofed", "归档香港法域"));
+
+        assertThat(disabled.getCode()).isEqualTo(409);
+        assertThat(disabled.getMessage()).isEqualTo("DISCLOSURE_JURISDICTION_ACTIVE_MAPPING_EXISTS");
+        assertThat(archived.getCode()).isEqualTo(409);
+        assertThat(archived.getMessage()).isEqualTo("DISCLOSURE_JURISDICTION_ACTIVE_MAPPING_EXISTS");
+    }
+
+    @Test
+    void pendingA2JurisdictionProposalLocksDraftSaveAndDelete() {
+        var saved = service.saveDisclosureDraft("SFC", "idem-i5-lock-seed", disclosureRequest());
+        assertThat(saved.getCode()).isZero();
+        when(lockMapper.countActiveByTarget("I", "disclosure_jurisdiction", "SFC")).thenReturn(1);
+
+        var update = service.updateDisclosureDraft("SFC", "v13", "idem-i5-lock-update",
+                withSnapshot(disclosureRequest(), saved.getData()));
+        var delete = service.deleteDisclosureDraft("SFC", "v13", "idem-i5-lock-delete",
+                new TrustDisclosureActionRequest(saved.getData().revision(), saved.getData().contentHash(),
+                        "spoofed", "删除待发布披露草稿"));
+
+        assertThat(update.getCode()).isEqualTo(409);
+        assertThat(update.getMessage()).isEqualTo("OBJECT_LOCKED_BY_A2");
+        assertThat(delete.getCode()).isEqualTo(409);
+        assertThat(delete.getMessage()).isEqualTo("OBJECT_LOCKED_BY_A2");
+    }
+
+    @Test
+    void disabledJurisdictionCannotCreateDisclosureVersionUntilA2EnablesIt() {
+        service.createJurisdiction("idem-i5-jurisdiction-create-disabled",
+                new DisclosureJurisdictionCatalogRequest(
+                        "SBV", "越南国家银行", null, "spoofed", "新增越南披露法域"));
+
+        var disabledCreate = service.createDisclosureVersion("SBV", "idem-i5-disabled-version",
+                disclosureRequest("", true, "spoofed-operator"));
+        var directEnable = service.changeJurisdictionStatus("SBV", "ACTIVE", "idem-i5-direct-enable",
+                new TrustDisclosureActionRequest(1L, null, "spoofed", "启用越南披露法域"));
+
+        assertThat(disabledCreate.getCode()).isEqualTo(409);
+        assertThat(disabledCreate.getMessage()).isEqualTo("DISCLOSURE_JURISDICTION_NOT_ACTIVE");
+        assertThat(directEnable.getCode()).isEqualTo(409);
+        assertThat(directEnable.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+
+        A2ReplayContext.enterReplay();
+        var enabled = service.changeJurisdictionStatus("SBV", "ACTIVE", "idem-i5-enable",
+                new TrustDisclosureActionRequest(1L, null, "spoofed", "启用越南披露法域"));
+        var version = service.createDisclosureVersion("SBV", "idem-i5-first-version",
+                disclosureRequest("", true, "spoofed-operator"));
+
+        assertThat(enabled.getCode()).isZero();
+        assertThat(enabled.getData().status()).isEqualTo("ACTIVE");
+        assertThat(version.getCode()).isZero();
+        assertThat(version.getData().version()).isEqualTo("v1");
+    }
+
+    @Test
+    void createVersionRejectsClientSuppliedVersionAndCannotUpdateExistingDraft() {
+        var supplied = service.createDisclosureVersion("SFC", "idem-i5-client-version",
+                disclosureRequest("v13", true, "spoofed-operator"));
+        var created = service.createDisclosureVersion("SFC", "idem-i5-server-version-only",
+                disclosureRequest("", true, "spoofed-operator"));
+        var secondPost = service.createDisclosureVersion("SFC", "idem-i5-second-post",
+                disclosureRequest(created.getData().version(), true, "spoofed-operator"));
+
+        assertThat(supplied.getCode()).isEqualTo(422);
+        assertThat(supplied.getMessage()).isEqualTo("DISCLOSURE_VERSION_SERVER_ASSIGNED");
+        assertThat(created.getCode()).isZero();
+        assertThat(secondPost.getCode()).isEqualTo(422);
+        assertThat(secondPost.getMessage()).isEqualTo("DISCLOSURE_VERSION_SERVER_ASSIGNED");
+    }
+
+    @Test
+    void referencedJurisdictionCanBeArchivedButCannotBePhysicallyDeleted() {
+        A2ReplayContext.enterReplay();
+        repository.jurisdictionCatalogs.put("SFC", new DisclosureJurisdictionCatalogView(
+                "SFC", "香港", "DISABLED", 3L, 1L, false, "tester", "2026-06-18"));
+
+        var archived = service.changeJurisdictionStatus("SFC", "ARCHIVED", "idem-i5-catalog-archive",
+                new TrustDisclosureActionRequest(3L, null, "spoofed", "归档香港披露法域"));
+        var deleted = service.deleteJurisdiction("SFC", "idem-i5-catalog-delete",
+                new TrustDisclosureActionRequest(4L, null, "spoofed", "删除已归档披露法域"));
+
+        assertThat(archived.getCode()).isZero();
+        assertThat(deleted.getCode()).isEqualTo(409);
+        assertThat(deleted.getMessage()).isEqualTo("DISCLOSURE_JURISDICTION_REFERENCED");
+    }
+
+    @Test
     void saveDisclosureDraftIncrementsLegacyDottedVersionWithoutMigrationLoss() {
         repository.jurisdictions.put("SFC", new DisclosureJurisdictionView(
                 "SFC", "香港", List.of("HK"), "v2024.4", "published", "06-08", 9_400, 72, 312));
@@ -649,13 +773,12 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
-    void archiveMatrixRejectsPublishedJurisdictionForOrdinaryEditor() {
+    void archiveMatrixAllowsPublishedMappingOnlyInsideA2Replay() {
         A2ReplayContext.enterReplay();
         var result = service.archiveMatrix("SFC", "idem-i5-archive-published", actionRequest());
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("PUBLISHED_DISCLOSURE_ARCHIVE_FORBIDDEN");
-        assertThat(repository.findJurisdiction("SFC").orElseThrow().status()).isEqualTo("published");
+        assertThat(result.getCode()).isZero();
+        assertThat(repository.findJurisdiction("SFC").orElseThrow().status()).isEqualTo("archived");
     }
 
     @Test
@@ -688,38 +811,86 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
-    void matrixUsesBackendCatalogAndOnlyCreatesDraftMappings() {
-        assertThat(service.saveDisclosureDraft("SFC", "idem-i5-catalog-draft", disclosureRequest()).getCode()).isZero();
+    void matrixUsesActiveJurisdictionCatalogAndOnlyApprovedVersions() {
+        repository.jurisdictionCatalogs.put("SBV", new DisclosureJurisdictionCatalogView(
+                "SBV", "越南国家银行", "ACTIVE", 1L, 1L, false, "tester", "2026-06-18"));
+        repository.drafts.put("SBV::v1", publishedDraft("SBV", "v1"));
         A2ReplayContext.enterReplay();
 
         var created = service.configureMatrix("SBV", "idem-i5-matrix-create", new DisclosureMatrixRequest(
-                "SBV", "越南国家银行", List.of("VN"), "v13", "DRAFT", "Marina K.", "新增越南披露矩阵"));
+                "SBV", "客户端伪造名称", List.of("VN"), "v1", "DRAFT", "Marina K.", "新增越南披露矩阵"));
         assertThat(created.getCode()).isZero();
         assertThat(repository.findJurisdiction("SBV").orElseThrow().countryCodes()).containsExactly("VN");
+        assertThat(repository.findJurisdiction("SBV").orElseThrow().name()).isEqualTo("越南国家银行");
+        verify(disclosureReackNotificationService).notifyPublished(
+                eq("SBV"), eq("v1"), eq(List.of("VN")), eq("idem-i5-matrix-create"), any(LocalDateTime.class));
 
-        var directPublish = service.configureMatrix("NEW", "idem-i5-matrix-publish", new DisclosureMatrixRequest(
-                "NEW", "非法直发", List.of("VN"), "v13", "PUBLISHED", "Marina K.", "禁止绕过发布流程"));
-        assertThat(directPublish.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        repository.jurisdictionCatalogs.put("NEW", new DisclosureJurisdictionCatalogView(
+                "NEW", "新法域", "ACTIVE", 1L, 0L, false, "tester", "2026-06-18"));
+        repository.drafts.put("NEW::v1", publishedDraft("NEW", "v1"));
 
         var unknownCountry = service.configureMatrix("NEW", "idem-i5-matrix-country", new DisclosureMatrixRequest(
-                "NEW", "未知国家", List.of("XX"), "v13", "DRAFT", "Marina K.", "校验国家目录来源"));
+                "NEW", "未知国家", List.of("XX"), "v1", "DRAFT", "Marina K.", "校验国家目录来源"));
         assertThat(unknownCountry.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
 
         var unknownVersion = service.configureMatrix("NEW", "idem-i5-matrix-version", new DisclosureMatrixRequest(
-                "NEW", "未知版本", List.of("VN"), "v999", "DRAFT", "Marina K.", "校验版本目录来源"));
-        assertThat(unknownVersion.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+                "NEW", "未知版本", List.of("US"), "v999", "DRAFT", "Marina K.", "校验版本目录来源"));
+        assertThat(unknownVersion.getCode()).isEqualTo(409);
+        assertThat(unknownVersion.getMessage()).isEqualTo("DISCLOSURE_MATRIX_VERSION_NOT_PUBLISHED");
+    }
+
+    @Test
+    void firstJurisdictionVersionBecomesEffectiveOnlyAfterApprovedMappingIsConfigured() {
+        var createdCatalog = service.createJurisdiction("idem-i5-first-catalog",
+                new DisclosureJurisdictionCatalogRequest(
+                        "SBV", "越南国家银行", null, "spoofed", "新增越南披露法域"));
+        assertThat(createdCatalog.getCode()).isZero();
+
+        A2ReplayContext.enterReplay();
+        var enabled = service.changeJurisdictionStatus("SBV", "ACTIVE", "idem-i5-first-enable",
+                new TrustDisclosureActionRequest(createdCatalog.getData().revision(), null,
+                        "spoofed", "启用越南披露法域"));
+        assertThat(enabled.getCode()).isZero();
+
+        DisclosureDraftRequest body = new DisclosureDraftRequest(
+                "", "SBV", "zh+vi+en", "2026-06-30", true,
+                "中文披露 {version}", "Công bố {version}", "Disclosure {version}",
+                disclosureChapters(), "spoofed", "创建首版披露");
+        var draft = service.createDisclosureVersion("SBV", "idem-i5-first-draft", body);
+        assertThat(draft.getCode()).isZero();
+        assertThat(draft.getData().version()).isEqualTo("v1");
+        assertThat(repository.findJurisdiction("SBV")).isEmpty();
+
+        DisclosureDraftRequest publishBody = new DisclosureDraftRequest(
+                draft.getData().version(), "SBV", body.languageScope(), body.effectiveDate(), body.requiresReack(),
+                body.zh(), body.vi(), body.en(), body.chapters(), draft.getData().revision(),
+                draft.getData().contentHash(), body.operator(), body.reason());
+        var published = service.publishDisclosure("SBV", "idem-i5-first-publish", publishBody);
+        assertThat(published.getCode()).isZero();
+        assertThat(published.getData().status()).isEqualTo("published");
+        assertThat(repository.findJurisdiction("SBV")).isEmpty();
+        verifyNoInteractions(disclosureReackNotificationService);
+
+        var mapped = service.configureMatrix("SBV", "idem-i5-first-mapping", new DisclosureMatrixRequest(
+                "SBV", "客户端伪造名称", List.of("VN"), "v1", "DRAFT",
+                "spoofed", "启用越南投放映射"));
+        assertThat(mapped.getCode()).isZero();
+        assertThat(repository.findJurisdiction("SBV").orElseThrow().version()).isEqualTo("v1");
+        verify(disclosureReackNotificationService).notifyPublished(
+                eq("SBV"), eq("v1"), eq(List.of("VN")), eq("idem-i5-first-mapping"), any(LocalDateTime.class));
     }
 
     @Test
     void matrixRejectsLegacyCallingCodeThatOverlapsCanonicalCountryInAnotherJurisdiction() {
         repository.jurisdictions.put("SBV", new DisclosureJurisdictionView(
                 "SBV", "越南国家银行", List.of("VN"), "v12", "published", "06-08", 1_000, 0, 0));
-        assertThat(service.saveDisclosureDraft(
-                "SFC", "idem-i5-country-conflict-draft", disclosureRequest()).getCode()).isZero();
+        repository.jurisdictionCatalogs.put("NEW", new DisclosureJurisdictionCatalogView(
+                "NEW", "重叠越南法域", "ACTIVE", 1L, 1L, false, "tester", "2026-06-18"));
+        repository.drafts.put("NEW::v1", publishedDraft("NEW", "v1"));
         A2ReplayContext.enterReplay();
 
         var result = service.configureMatrix("NEW", "idem-i5-country-conflict", new DisclosureMatrixRequest(
-                "NEW", "重叠越南法域", List.of("84"), "v13", "DRAFT", "Marina K.", "阻止跨法域重复国家"));
+                "NEW", "重叠越南法域", List.of("84"), "v1", "DRAFT", "Marina K.", "阻止跨法域重复国家"));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("DISCLOSURE_COUNTRY_MAPPING_CONFLICT");
@@ -727,14 +898,14 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
-    void publishedMatrixCannotBeEditedInPlace() {
+    void matrixRejectsDraftVersionUntilItIsPublished() {
         assertThat(service.saveDisclosureDraft("SFC", "idem-i5-immutable-draft", disclosureRequest()).getCode()).isZero();
         A2ReplayContext.enterReplay();
         var result = service.configureMatrix("SFC", "idem-i5-matrix-immutable", new DisclosureMatrixRequest(
                 "SFC", "香港", List.of("HK"), "v13", "DRAFT", "Marina K.", "禁止改写已发布快照"));
 
         assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("DISCLOSURE_MATRIX_VERSION_READONLY");
+        assertThat(result.getMessage()).isEqualTo("DISCLOSURE_MATRIX_VERSION_NOT_PUBLISHED");
     }
 
     @Test
@@ -922,6 +1093,12 @@ class OpsTrustDisclosureServiceTest {
                 saved.revision(), saved.contentHash(), request.operator(), request.reason());
     }
 
+    private static DisclosureDraftView publishedDraft(String jurisdiction, String version) {
+        return new DisclosureDraftView(
+                version, jurisdiction, "zh+vi", "2026-06-18", true,
+                "中文已发布正文", "Nội dung đã công bố", "", "published", 1L, "published-hash");
+    }
+
     private static List<DisclosureChapterInput> disclosureChapters() {
         return java.util.stream.IntStream.rangeClosed(1, 7)
                 .mapToObj(index -> new DisclosureChapterInput(
@@ -939,6 +1116,7 @@ class OpsTrustDisclosureServiceTest {
         private final Map<String, TrustSectionView> sections = new LinkedHashMap<>();
         private final Map<String, TrustSectionVersionView> sectionVersions = new LinkedHashMap<>();
         private final Map<String, DisclosureJurisdictionView> jurisdictions = new LinkedHashMap<>();
+        private final Map<String, DisclosureJurisdictionCatalogView> jurisdictionCatalogs = new LinkedHashMap<>();
         private final Map<String, DisclosureDraftView> drafts = new LinkedHashMap<>();
         private final Set<String> deletedDraftKeys = new LinkedHashSet<>();
         private final Map<String, List<DisclosureChapterView>> chapterVersions = new LinkedHashMap<>();
@@ -966,6 +1144,10 @@ class OpsTrustDisclosureServiceTest {
                     "published", 1L, "system", "2026-03-08"));
             jurisdictions.put("MAS", new DisclosureJurisdictionView("MAS", "新加坡", List.of("SG"), "v11", "published", "05-02", 41_200, 100, 0));
             jurisdictions.put("SFC", new DisclosureJurisdictionView("SFC", "香港", List.of("HK"), "v12", "published", "06-08", 9_400, 72, 312));
+            jurisdictionCatalogs.put("MAS", new DisclosureJurisdictionCatalogView(
+                    "MAS", "新加坡", "ACTIVE", 1L, 1L, true, "system", "2026-06-18"));
+            jurisdictionCatalogs.put("SFC", new DisclosureJurisdictionCatalogView(
+                    "SFC", "香港", "ACTIVE", 1L, 1L, true, "system", "2026-06-18"));
             chapterVersions.put("MAS::v11", List.of(
                     new DisclosureChapterView("MAS", "v11", "01", "收益预估不构成承诺", "Ước tính không phải cam kết", "Earnings estimates are not guarantees", "中文正文", "Nội dung", "English body"),
                     new DisclosureChapterView("MAS", "v11", "02", "硬件衰减与产量波动", "Suy giảm phần cứng", "Hardware decay and output variance", "中文正文", "Nội dung", "English body")));
@@ -1050,6 +1232,68 @@ class OpsTrustDisclosureServiceTest {
         @Override
         public Optional<DisclosureJurisdictionView> findJurisdiction(String jurisdiction) {
             return Optional.ofNullable(jurisdictions.get(jurisdiction));
+        }
+
+        @Override
+        public List<DisclosureJurisdictionCatalogView> listJurisdictionCatalog() {
+            return new ArrayList<>(jurisdictionCatalogs.values());
+        }
+
+        @Override
+        public Optional<DisclosureJurisdictionCatalogView> findJurisdictionCatalog(String jurisdiction) {
+            return Optional.ofNullable(jurisdictionCatalogs.get(jurisdiction));
+        }
+
+        @Override
+        public boolean jurisdictionCatalogCodeExists(String jurisdiction) {
+            return jurisdictionCatalogs.containsKey(jurisdiction);
+        }
+
+        @Override
+        public DisclosureJurisdictionCatalogView createJurisdictionCatalog(
+                DisclosureJurisdictionCatalogRequest request, String operator, LocalDateTime now) {
+            DisclosureJurisdictionCatalogView created = new DisclosureJurisdictionCatalogView(
+                    request.code().toUpperCase(), request.name(), "DISABLED", 1L, 0L, false, operator, now.toString());
+            jurisdictionCatalogs.put(created.code(), created);
+            return created;
+        }
+
+        @Override
+        public DisclosureJurisdictionCatalogView updateJurisdictionCatalog(
+                String jurisdiction, DisclosureJurisdictionCatalogRequest request, String operator, LocalDateTime now) {
+            DisclosureJurisdictionCatalogView current = jurisdictionCatalogs.get(jurisdiction);
+            if (current == null || current.revision() != request.expectedRevision()) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_JURISDICTION_REVISION_CONFLICT");
+            }
+            DisclosureJurisdictionCatalogView updated = new DisclosureJurisdictionCatalogView(
+                    current.code(), request.name(), current.status(), current.revision() + 1,
+                    current.referencedVersionCount(), current.hasActiveMapping(), operator, now.toString());
+            jurisdictionCatalogs.put(jurisdiction, updated);
+            return updated;
+        }
+
+        @Override
+        public DisclosureJurisdictionCatalogView changeJurisdictionCatalogStatus(
+                String jurisdiction, String status, long expectedRevision, String operator, LocalDateTime now) {
+            DisclosureJurisdictionCatalogView current = jurisdictionCatalogs.get(jurisdiction);
+            if (current == null || current.revision() != expectedRevision) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_JURISDICTION_REVISION_CONFLICT");
+            }
+            DisclosureJurisdictionCatalogView updated = new DisclosureJurisdictionCatalogView(
+                    current.code(), current.name(), status, current.revision() + 1,
+                    current.referencedVersionCount(), current.hasActiveMapping(), operator, now.toString());
+            jurisdictionCatalogs.put(jurisdiction, updated);
+            return updated;
+        }
+
+        @Override
+        public void deleteJurisdictionCatalog(
+                String jurisdiction, long expectedRevision, String operator, LocalDateTime now) {
+            DisclosureJurisdictionCatalogView current = jurisdictionCatalogs.get(jurisdiction);
+            if (current == null || current.revision() != expectedRevision || !"ARCHIVED".equals(current.status())) {
+                throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_JURISDICTION_REVISION_CONFLICT");
+            }
+            jurisdictionCatalogs.remove(jurisdiction);
         }
 
         @Override
@@ -1183,6 +1427,16 @@ class OpsTrustDisclosureServiceTest {
         }
 
         @Override
+        public void lockJurisdictionCatalog(String jurisdiction) {
+            // In-memory fake is single-threaded; production serializes lifecycle and version mutations.
+        }
+
+        @Override
+        public void lockAllJurisdictionCatalogs() {
+            // In-memory fake is single-threaded; production serializes cross-jurisdiction country mappings.
+        }
+
+        @Override
         public void publishDisclosure(String jurisdiction, DisclosureDraftRequest request, LocalDateTime now) {
             String key = jurisdiction + "::" + request.version();
             DisclosureDraftView old = drafts.get(key);
@@ -1192,17 +1446,6 @@ class OpsTrustDisclosureServiceTest {
                     : draft);
             drafts.put(key, new DisclosureDraftView(old.version(), old.jurisdiction(), old.languageScope(), old.effectiveDate(),
                     true, old.zh(), old.vi(), old.en(), "published", old.revision(), old.contentHash()));
-            DisclosureJurisdictionView current = jurisdictions.get(jurisdiction);
-            jurisdictions.put(jurisdiction, new DisclosureJurisdictionView(
-                    current.code(),
-                    current.name(),
-                    current.countryCodes(),
-                    request.version(),
-                    "published",
-                    "06-18",
-                    current.affected(),
-                    Boolean.TRUE.equals(request.requiresReack()) ? 0 : 100,
-                    current.blocked()));
         }
 
         @Override

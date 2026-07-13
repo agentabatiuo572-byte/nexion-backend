@@ -10,6 +10,7 @@ import ffdd.opsconsole.content.mapper.DisclosureChapterMapper;
 import ffdd.opsconsole.content.mapper.DisclosureDraftMapper;
 import ffdd.opsconsole.content.mapper.DisclosureGateActionMapper;
 import ffdd.opsconsole.content.mapper.DisclosureJurisdictionMapper;
+import ffdd.opsconsole.content.mapper.DisclosureJurisdictionCatalogMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionFieldMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionVersionMapper;
@@ -28,6 +29,7 @@ class MybatisTrustDisclosureRepositoryTest {
     @Mock private TrustSectionFieldMapper trustSectionFieldMapper;
     @Mock private TrustSectionVersionMapper trustSectionVersionMapper;
     @Mock private DisclosureJurisdictionMapper disclosureJurisdictionMapper;
+    @Mock private DisclosureJurisdictionCatalogMapper disclosureJurisdictionCatalogMapper;
     @Mock private DisclosureChapterMapper disclosureChapterMapper;
     @Mock private DisclosureGateActionMapper disclosureGateActionMapper;
     @Mock private DisclosureDraftMapper disclosureDraftMapper;
@@ -39,7 +41,7 @@ class MybatisTrustDisclosureRepositoryTest {
     void setUp() {
         repository = new MybatisTrustDisclosureRepository(
                 trustSectionMapper, trustSectionFieldMapper, trustSectionVersionMapper,
-                disclosureJurisdictionMapper, disclosureChapterMapper, disclosureGateActionMapper,
+                disclosureJurisdictionMapper, disclosureJurisdictionCatalogMapper, disclosureChapterMapper, disclosureGateActionMapper,
                 disclosureDraftMapper, disclosureAckStatusMapper);
     }
 
@@ -73,6 +75,23 @@ class MybatisTrustDisclosureRepositoryTest {
         verify(trustSectionFieldMapper, never()).insert(any(TrustSectionFieldEntity.class));
         org.assertj.core.api.Assertions.assertThat(existing.getFieldValue()).isEqualTo("新内容");
         org.assertj.core.api.Assertions.assertThat(existing.getIsDeleted()).isZero();
+    }
+
+    @Test
+    void activeJurisdictionLookupAvoidsHeavyReferenceAndMappingAggregation() {
+        DisclosureJurisdictionCatalogEntity entity = new DisclosureJurisdictionCatalogEntity();
+        entity.setJurisdictionCode("SBV");
+        entity.setJurisdictionName("越南国家银行");
+        entity.setStatus("ACTIVE");
+        entity.setRevision(2L);
+        entity.setIsDeleted(0);
+        when(disclosureJurisdictionCatalogMapper.selectList(any())).thenReturn(List.of(entity));
+
+        var result = repository.listActiveJurisdictionCatalog();
+
+        org.assertj.core.api.Assertions.assertThat(result).extracting(row -> row.code()).containsExactly("SBV");
+        verify(disclosureJurisdictionCatalogMapper, never()).countVersionReferences(any());
+        verify(disclosureJurisdictionCatalogMapper, never()).hasActiveMapping(any());
     }
 
     private static TrustSectionVersionEntity version(long id, int deleted) {

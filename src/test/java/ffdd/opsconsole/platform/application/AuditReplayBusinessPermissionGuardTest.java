@@ -99,6 +99,17 @@ class AuditReplayBusinessPermissionGuardTest {
         assertThat(result.getMessage()).isEqualTo("A2_DISCLOSURE_SNAPSHOT_CHANGED");
     }
 
+    @Test
+    void jurisdictionLifecycleProposalRequiresDisclosurePublishPermission() {
+        authenticate("content_i5_write");
+
+        for (String operation : List.of("i5_jurisdiction_status", "i5_jurisdiction_delete")) {
+            var result = guard.validateProposal(new AuditReplayCommand("I", operation, Map.of()));
+            assertThat(result.getCode()).isEqualTo(403);
+            assertThat(result.getMessage()).endsWith("content_i5_disclosure_publish");
+        }
+    }
+
     private AuditReplayCommand sectionCommand(String sectionKey, String action) {
         return new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
                 "sectionKey", sectionKey, "action", action));

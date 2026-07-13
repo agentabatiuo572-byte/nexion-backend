@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.OpsTrustDisclosureService;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
+import ffdd.opsconsole.content.domain.DisclosureJurisdictionCatalogView;
 import ffdd.opsconsole.content.domain.DisclosureVersionItem;
 import ffdd.opsconsole.content.domain.TrustDisclosureOverview;
 import ffdd.opsconsole.content.domain.TrustSectionView;
@@ -11,12 +12,14 @@ import ffdd.opsconsole.content.domain.TrustSectionVersionView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
 import ffdd.opsconsole.content.dto.DisclosureGateUpdateRequest;
 import ffdd.opsconsole.content.dto.DisclosureMatrixRequest;
+import ffdd.opsconsole.content.dto.DisclosureJurisdictionCatalogRequest;
 import ffdd.opsconsole.content.dto.TrustDisclosureActionRequest;
 import ffdd.opsconsole.content.dto.TrustSectionPublishRequest;
 import ffdd.opsconsole.content.dto.TrustSectionRollbackRequest;
 import ffdd.opsconsole.content.dto.TrustSectionDraftRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
+import java.util.List;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -115,7 +118,66 @@ public class OpsTrustDisclosureController {
             @PathVariable String jurisdiction,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DisclosureDraftRequest request) {
-        return trustDisclosureService.saveDisclosureDraft(jurisdiction, idempotencyKey, request);
+        return trustDisclosureService.createDisclosureVersion(jurisdiction, idempotencyKey, request);
+    }
+
+    @GetMapping("/disclosures/jurisdictions")
+    @PreAuthorize("hasAuthority('content_i5_read')")
+    public ApiResult<List<DisclosureJurisdictionCatalogView>> jurisdictions() {
+        return trustDisclosureService.jurisdictionCatalog();
+    }
+
+    @PostMapping("/disclosures/jurisdictions")
+    @PreAuthorize("hasAuthority('content_i5_write')")
+    public ApiResult<DisclosureJurisdictionCatalogView> createJurisdiction(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DisclosureJurisdictionCatalogRequest request) {
+        return trustDisclosureService.createJurisdiction(idempotencyKey, request);
+    }
+
+    @PatchMapping("/disclosures/jurisdictions/{jurisdiction}")
+    @PreAuthorize("hasAuthority('content_i5_write')")
+    public ApiResult<DisclosureJurisdictionCatalogView> updateJurisdiction(
+            @PathVariable String jurisdiction,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DisclosureJurisdictionCatalogRequest request) {
+        return trustDisclosureService.updateJurisdiction(jurisdiction, idempotencyKey, request);
+    }
+
+    @PostMapping("/disclosures/jurisdictions/{jurisdiction}/enable")
+    @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
+    public ApiResult<DisclosureJurisdictionCatalogView> enableJurisdiction(
+            @PathVariable String jurisdiction,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody TrustDisclosureActionRequest request) {
+        return trustDisclosureService.changeJurisdictionStatus(jurisdiction, "ACTIVE", idempotencyKey, request);
+    }
+
+    @PostMapping("/disclosures/jurisdictions/{jurisdiction}/disable")
+    @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
+    public ApiResult<DisclosureJurisdictionCatalogView> disableJurisdiction(
+            @PathVariable String jurisdiction,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody TrustDisclosureActionRequest request) {
+        return trustDisclosureService.changeJurisdictionStatus(jurisdiction, "DISABLED", idempotencyKey, request);
+    }
+
+    @PostMapping("/disclosures/jurisdictions/{jurisdiction}/archive")
+    @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
+    public ApiResult<DisclosureJurisdictionCatalogView> archiveJurisdiction(
+            @PathVariable String jurisdiction,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody TrustDisclosureActionRequest request) {
+        return trustDisclosureService.changeJurisdictionStatus(jurisdiction, "ARCHIVED", idempotencyKey, request);
+    }
+
+    @DeleteMapping("/disclosures/jurisdictions/{jurisdiction}")
+    @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
+    public ApiResult<Void> deleteJurisdiction(
+            @PathVariable String jurisdiction,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody TrustDisclosureActionRequest request) {
+        return trustDisclosureService.deleteJurisdiction(jurisdiction, idempotencyKey, request);
     }
 
     @GetMapping("/disclosures/{jurisdiction}/versions/{version}")
@@ -144,9 +206,9 @@ public class OpsTrustDisclosureController {
     }
 
     @PostMapping("/disclosures/{jurisdiction}/publish")
-    // HIGH：披露版本发布，触发用户 re-ack 重签字
+    // HIGH：审批披露版本为不可变快照；实际投放及 re-ack 由法域映射配置触发
     @PreAuthorize("hasAuthority('content_i5_disclosure_publish')")
-    public ApiResult<DisclosureJurisdictionView> publishDisclosure(
+    public ApiResult<DisclosureDraftView> publishDisclosure(
             @PathVariable String jurisdiction,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DisclosureDraftRequest request) {

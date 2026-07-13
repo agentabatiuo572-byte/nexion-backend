@@ -31,7 +31,8 @@ public class AuditReplayBusinessPermissionGuard {
         String requiredAuthority = switch (operation) {
             case "i4_trust_section_manage" -> sectionAuthority(command.params());
             case "i4_disclosure_publish", "i5_disclosure_publish",
-                    "i5_matrix_configure", "i5_matrix_archive" -> "content_i5_disclosure_publish";
+                    "i5_matrix_configure", "i5_matrix_archive",
+                    "i5_jurisdiction_status", "i5_jurisdiction_delete" -> "content_i5_disclosure_publish";
             case "i4_gate_adjust", "i5_gate_adjust" -> "content_i5_gate_adjust";
             default -> null;
         };

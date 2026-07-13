@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.domain;
 
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
 import ffdd.opsconsole.content.dto.DisclosureMatrixRequest;
+import ffdd.opsconsole.content.dto.DisclosureJurisdictionCatalogRequest;
 import ffdd.opsconsole.content.dto.TrustSectionDraftRequest;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -31,6 +32,28 @@ public interface TrustDisclosureRepository {
 
     List<DisclosureJurisdictionView> listJurisdictions();
 
+    List<DisclosureJurisdictionCatalogView> listJurisdictionCatalog();
+    default List<DisclosureJurisdictionCatalogView> listActiveJurisdictionCatalog() {
+        return listJurisdictionCatalog().stream()
+                .filter(row -> "ACTIVE".equalsIgnoreCase(row.status()))
+                .toList();
+    }
+
+    Optional<DisclosureJurisdictionCatalogView> findJurisdictionCatalog(String jurisdiction);
+
+    boolean jurisdictionCatalogCodeExists(String jurisdiction);
+
+    DisclosureJurisdictionCatalogView createJurisdictionCatalog(
+            DisclosureJurisdictionCatalogRequest request, String operator, LocalDateTime now);
+
+    DisclosureJurisdictionCatalogView updateJurisdictionCatalog(
+            String jurisdiction, DisclosureJurisdictionCatalogRequest request, String operator, LocalDateTime now);
+
+    DisclosureJurisdictionCatalogView changeJurisdictionCatalogStatus(
+            String jurisdiction, String status, long expectedRevision, String operator, LocalDateTime now);
+
+    void deleteJurisdictionCatalog(String jurisdiction, long expectedRevision, String operator, LocalDateTime now);
+
     Optional<DisclosureJurisdictionView> findJurisdiction(String jurisdiction);
 
     List<DisclosureChapterView> listChapters(String jurisdiction, String version);
@@ -57,6 +80,10 @@ public interface TrustDisclosureRepository {
                                String expectedContentHash, LocalDateTime now);
 
     void lockDisclosureJurisdiction(String jurisdiction);
+
+    void lockJurisdictionCatalog(String jurisdiction);
+
+    void lockAllJurisdictionCatalogs();
 
     void publishDisclosure(String jurisdiction, DisclosureDraftRequest request, LocalDateTime now);
 

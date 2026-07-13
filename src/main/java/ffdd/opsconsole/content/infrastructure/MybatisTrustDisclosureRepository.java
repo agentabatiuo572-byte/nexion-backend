@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.domain.DisclosureChapterView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureGateActionView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
+import ffdd.opsconsole.content.domain.DisclosureJurisdictionCatalogView;
 import ffdd.opsconsole.content.domain.FinancialFieldView;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionFieldView;
@@ -15,6 +16,7 @@ import ffdd.opsconsole.content.domain.TrustSectionVersionView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
 import ffdd.opsconsole.content.dto.DisclosureChapterInput;
 import ffdd.opsconsole.content.dto.DisclosureMatrixRequest;
+import ffdd.opsconsole.content.dto.DisclosureJurisdictionCatalogRequest;
 import ffdd.opsconsole.content.dto.TrustSectionDraftRequest;
 import ffdd.opsconsole.content.dto.TrustSectionFieldInput;
 import ffdd.opsconsole.content.mapper.DisclosureChapterMapper;
@@ -22,6 +24,7 @@ import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
 import ffdd.opsconsole.content.mapper.DisclosureDraftMapper;
 import ffdd.opsconsole.content.mapper.DisclosureGateActionMapper;
 import ffdd.opsconsole.content.mapper.DisclosureJurisdictionMapper;
+import ffdd.opsconsole.content.mapper.DisclosureJurisdictionCatalogMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionFieldMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionVersionMapper;
@@ -52,6 +55,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     private final TrustSectionFieldMapper trustSectionFieldMapper;
     private final TrustSectionVersionMapper trustSectionVersionMapper;
     private final DisclosureJurisdictionMapper disclosureJurisdictionMapper;
+    private final DisclosureJurisdictionCatalogMapper disclosureJurisdictionCatalogMapper;
     private final DisclosureChapterMapper disclosureChapterMapper;
     private final DisclosureGateActionMapper disclosureGateActionMapper;
     private final DisclosureDraftMapper disclosureDraftMapper;
@@ -219,6 +223,82 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     }
 
     @Override
+    public List<DisclosureJurisdictionCatalogView> listJurisdictionCatalog() {
+        return disclosureJurisdictionCatalogMapper.selectList(
+                        new LambdaQueryWrapper<DisclosureJurisdictionCatalogEntity>()
+                                .eq(DisclosureJurisdictionCatalogEntity::getIsDeleted, 0)
+                                .orderByAsc(DisclosureJurisdictionCatalogEntity::getId))
+                .stream().map(this::toJurisdictionCatalog).toList();
+    }
+
+    @Override
+    public List<DisclosureJurisdictionCatalogView> listActiveJurisdictionCatalog() {
+        return disclosureJurisdictionCatalogMapper.selectList(
+                        new LambdaQueryWrapper<DisclosureJurisdictionCatalogEntity>()
+                                .eq(DisclosureJurisdictionCatalogEntity::getIsDeleted, 0)
+                                .eq(DisclosureJurisdictionCatalogEntity::getStatus, "ACTIVE")
+                                .orderByAsc(DisclosureJurisdictionCatalogEntity::getId))
+                .stream()
+                .map(entity -> new DisclosureJurisdictionCatalogView(
+                        entity.getJurisdictionCode(), entity.getJurisdictionName(), entity.getStatus(),
+                        entity.getRevision() == null ? 0L : entity.getRevision(), 0L, false,
+                        operator(entity.getLastOperator()),
+                        entity.getUpdatedAt() == null ? "" : entity.getUpdatedAt().toString()))
+                .toList();
+    }
+
+    @Override
+    public Optional<DisclosureJurisdictionCatalogView> findJurisdictionCatalog(String jurisdiction) {
+        return Optional.ofNullable(findJurisdictionCatalogEntity(jurisdiction, false)).map(this::toJurisdictionCatalog);
+    }
+
+    @Override
+    public boolean jurisdictionCatalogCodeExists(String jurisdiction) {
+        return findJurisdictionCatalogEntity(jurisdiction, true) != null;
+    }
+
+    @Override
+    public DisclosureJurisdictionCatalogView createJurisdictionCatalog(
+            DisclosureJurisdictionCatalogRequest request, String operator, LocalDateTime now) {
+        DisclosureJurisdictionCatalogEntity entity = new DisclosureJurisdictionCatalogEntity();
+        entity.setJurisdictionCode(normalizeUpper(request.code()));
+        entity.setJurisdictionName(normalize(request.name()));
+        entity.setStatus("DISABLED");
+        entity.setRevision(1L);
+        entity.setLastOperator(operator(operator));
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        disclosureJurisdictionCatalogMapper.insert(entity);
+        return toJurisdictionCatalog(entity);
+    }
+
+    @Override
+    public DisclosureJurisdictionCatalogView updateJurisdictionCatalog(
+            String jurisdiction, DisclosureJurisdictionCatalogRequest request, String operator, LocalDateTime now) {
+        int updated = disclosureJurisdictionCatalogMapper.updateNameOptimistically(
+                normalizeUpper(jurisdiction), normalize(request.name()), request.expectedRevision(), operator(operator), now);
+        if (updated != 1) throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_JURISDICTION_REVISION_CONFLICT");
+        return toJurisdictionCatalog(findJurisdictionCatalogEntity(jurisdiction, false));
+    }
+
+    @Override
+    public DisclosureJurisdictionCatalogView changeJurisdictionCatalogStatus(
+            String jurisdiction, String status, long expectedRevision, String operator, LocalDateTime now) {
+        int updated = disclosureJurisdictionCatalogMapper.updateStatusOptimistically(
+                normalizeUpper(jurisdiction), normalizeUpper(status), expectedRevision, operator(operator), now);
+        if (updated != 1) throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_JURISDICTION_REVISION_CONFLICT");
+        return toJurisdictionCatalog(findJurisdictionCatalogEntity(jurisdiction, false));
+    }
+
+    @Override
+    public void deleteJurisdictionCatalog(String jurisdiction, long expectedRevision, String operator, LocalDateTime now) {
+        int deleted = disclosureJurisdictionCatalogMapper.softDeleteOptimistically(
+                normalizeUpper(jurisdiction), expectedRevision, operator(operator), now);
+        if (deleted != 1) throw new org.springframework.dao.OptimisticLockingFailureException("DISCLOSURE_JURISDICTION_REVISION_CONFLICT");
+    }
+
+    @Override
     public List<String> listDisclosureVersions() {
         Set<String> versions = new TreeSet<>();
         disclosureJurisdictionMapper.selectList(new LambdaQueryWrapper<DisclosureJurisdictionEntity>().eq(DisclosureJurisdictionEntity::getIsDeleted, 0))
@@ -336,7 +416,6 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
             }
         }
         replaceDisclosureChapters(normalizeUpper(request.jurisdiction()), normalize(request.version()), request, now);
-        ensureJurisdictionForDraft(request, status, now);
         return toDraft(findDraftEntity(request.jurisdiction(), request.version()));
     }
 
@@ -359,8 +438,17 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     }
 
     @Override
+    public void lockJurisdictionCatalog(String jurisdiction) {
+        disclosureJurisdictionCatalogMapper.selectAnyForUpdate(normalizeUpper(jurisdiction));
+    }
+
+    @Override
+    public void lockAllJurisdictionCatalogs() {
+        disclosureJurisdictionCatalogMapper.selectAllIdsForUpdate();
+    }
+
+    @Override
     public void publishDisclosure(String jurisdiction, DisclosureDraftRequest request, LocalDateTime now) {
-        DisclosureJurisdictionEntity current = findJurisdictionEntity(jurisdiction);
         disclosureDraftMapper.selectList(new LambdaQueryWrapper<DisclosureDraftEntity>()
                         .eq(DisclosureDraftEntity::getJurisdictionCode, normalizeUpper(jurisdiction))
                         .eq(DisclosureDraftEntity::getStatus, "PUBLISHED")
@@ -378,26 +466,6 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         target.setLastOperator(operator(request.operator()));
         target.setUpdatedAt(now);
         disclosureDraftMapper.updateById(target);
-        current = findJurisdictionEntity(jurisdiction);
-        if (current != null) {
-            current.setVersionLabel(normalize(request.version()));
-            current.setStatus("PUBLISHED");
-            current.setPublishedAtLabel(DAY_LABEL.format(now));
-            current.setAckProgressPct(Boolean.TRUE.equals(request.requiresReack()) ? BigDecimal.ZERO : BigDecimal.valueOf(100));
-            current.setLastOperator(operator(request.operator()));
-            current.setUpdatedAt(now);
-            disclosureJurisdictionMapper.updateById(current);
-        }
-        if (Boolean.TRUE.equals(request.requiresReack()) && current != null) {
-            List<String> countryCodes = countryCodes(current.getCountryCodes());
-            if (!countryCodes.isEmpty()) {
-                disclosureAckStatusMapper.markJurisdictionUsersStale(
-                        normalizeUpper(jurisdiction), countryCodes, normalize(request.version()), now);
-            }
-        } else if (current != null) {
-            disclosureAckStatusMapper.carryForwardAcknowledgedVersion(
-                    normalizeUpper(jurisdiction), normalize(request.version()), now);
-        }
     }
 
     @Override
@@ -435,28 +503,6 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
         if (entity == null) return;
         entity.setStatus("ARCHIVED"); entity.setLastOperator(operator(operator)); entity.setUpdatedAt(now);
         disclosureJurisdictionMapper.updateById(entity);
-    }
-
-    private void ensureJurisdictionForDraft(DisclosureDraftRequest request, String status, LocalDateTime now) {
-        DisclosureJurisdictionEntity current = findJurisdictionEntity(request.jurisdiction());
-        if (current != null) {
-            return;
-        }
-        DisclosureJurisdictionEntity entity = new DisclosureJurisdictionEntity();
-        entity.setJurisdictionCode(normalizeUpper(request.jurisdiction()));
-        entity.setJurisdictionName(normalizeUpper(request.jurisdiction()));
-        entity.setCountryCodes(normalizeUpper(request.jurisdiction()));
-        entity.setVersionLabel(normalize(request.version()));
-        entity.setStatus(normalizeUpper(status));
-        entity.setPublishedAtLabel("PUBLISHED".equalsIgnoreCase(status) ? DAY_LABEL.format(now) : "");
-        entity.setAffectedCount(0L);
-        entity.setAckProgressPct(Boolean.TRUE.equals(request.requiresReack()) ? BigDecimal.ZERO : BigDecimal.valueOf(100));
-        entity.setBlockedCount(0L);
-        entity.setLastOperator(operator(request.operator()));
-        entity.setCreatedAt(now);
-        entity.setUpdatedAt(now);
-        entity.setIsDeleted(0);
-        disclosureJurisdictionMapper.insert(entity);
     }
 
     @Override
@@ -774,6 +820,24 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
 
     private String normalizeUpper(String value) {
         return normalize(value).toUpperCase(Locale.ROOT);
+    }
+
+    private DisclosureJurisdictionCatalogEntity findJurisdictionCatalogEntity(String jurisdiction, boolean includeDeleted) {
+        return disclosureJurisdictionCatalogMapper.selectOne(
+                new LambdaQueryWrapper<DisclosureJurisdictionCatalogEntity>()
+                        .eq(DisclosureJurisdictionCatalogEntity::getJurisdictionCode, normalizeUpper(jurisdiction))
+                        .eq(!includeDeleted, DisclosureJurisdictionCatalogEntity::getIsDeleted, 0)
+                        .last("LIMIT 1"));
+    }
+
+    private DisclosureJurisdictionCatalogView toJurisdictionCatalog(DisclosureJurisdictionCatalogEntity entity) {
+        if (entity == null) return null;
+        return new DisclosureJurisdictionCatalogView(
+                entity.getJurisdictionCode(), entity.getJurisdictionName(), normalizeUpper(entity.getStatus()),
+                entity.getRevision() == null ? 0L : entity.getRevision(),
+                disclosureJurisdictionCatalogMapper.countVersionReferences(entity.getJurisdictionCode()),
+                disclosureJurisdictionCatalogMapper.hasActiveMapping(entity.getJurisdictionCode()),
+                operator(entity.getLastOperator()), entity.getUpdatedAt() == null ? "" : entity.getUpdatedAt().toString());
     }
 
     private void addVersion(Set<String> versions, String value) {

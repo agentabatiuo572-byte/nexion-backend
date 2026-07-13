@@ -7,12 +7,14 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.domain.DisclosureChapterView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureGateActionView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
+import ffdd.opsconsole.content.domain.DisclosureJurisdictionCatalogView;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.dto.AppRiskDisclosureAckRequest;
 import ffdd.opsconsole.content.infrastructure.DisclosureAckStatusEntity;
@@ -38,6 +40,10 @@ class AppRiskDisclosureServiceTest {
 
     @BeforeEach
     void setUpPublishedVietnamDisclosure() {
+        when(repository.listActiveJurisdictionCatalog()).thenReturn(List.of(
+                new DisclosureJurisdictionCatalogView("SBV", "越南国家银行", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12"),
+                new DisclosureJurisdictionCatalogView("CN-RISK", "中国法域", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12"),
+                new DisclosureJurisdictionCatalogView("VN-ALT", "越南替代法域", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12")));
         when(ackMapper.findUserCountryCode(42L)).thenReturn("vn");
         when(ackMapper.insertReadToken(anyString(), eq(42L), eq("SBV"), eq("v13"),
                 any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
@@ -66,6 +72,30 @@ class AppRiskDisclosureServiceTest {
         assertThat(result.getData().acknowledged()).isTrue();
         assertThat(result.getData().chapters()).hasSize(1);
         assertThat(result.getData().acknowledgmentToken()).isNull();
+        verify(repository).listActiveJurisdictionCatalog();
+        verify(repository, never()).listJurisdictionCatalog();
+    }
+
+    @Test
+    void currentAcceptsSupersededSnapshotSelectedByAnOlderActiveMappingAndUsesCatalogName() {
+        when(repository.listActiveJurisdictionCatalog()).thenReturn(List.of(
+                new DisclosureJurisdictionCatalogView(
+                        "SBV", "越南法域新名称", "ACTIVE", 2L, 2L, true, "tester", "2026-07-12")));
+        when(repository.listJurisdictions()).thenReturn(List.of(
+                new DisclosureJurisdictionView(
+                        "SBV", "旧映射名称", List.of("VN"), "v12", "published", "2026-07-01", 100, 0, 0)));
+        when(repository.findDisclosureVersion("SBV", "v12")).thenReturn(Optional.of(new DisclosureDraftView(
+                "v12", "SBV", "zh+vi+en", "2026-07-01", true,
+                "中文", "Tiếng Việt", "English", "superseded")));
+        when(repository.listChapters("SBV", "v12")).thenReturn(List.of());
+        when(ackMapper.insertReadToken(anyString(), eq(42L), eq("SBV"), eq("v12"),
+                any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
+
+        var result = service.current(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v12");
+        assertThat(result.getData().jurisdictionName()).isEqualTo("越南法域新名称");
     }
 
     @Test

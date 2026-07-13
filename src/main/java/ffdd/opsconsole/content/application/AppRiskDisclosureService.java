@@ -23,6 +23,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -116,7 +117,8 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         if (resolution.error() != null) return ApiResult.fail(resolution.error().code(), resolution.error().message());
         DisclosureJurisdictionView jurisdiction = resolution.jurisdiction();
         DisclosureDraftView disclosure = repository.findDisclosureVersion(jurisdiction.code(), jurisdiction.version()).orElse(null);
-        if (disclosure == null || !"published".equalsIgnoreCase(disclosure.status())) {
+        if (disclosure == null || !("published".equalsIgnoreCase(disclosure.status())
+                || "superseded".equalsIgnoreCase(disclosure.status()))) {
             return ApiResult.fail(404, "RISK_DISCLOSURE_PUBLISHED_VERSION_NOT_FOUND");
         }
         DisclosureAckStatusEntity ack = ackMapper.findUserAck(userId, jurisdiction.code());
@@ -142,11 +144,20 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         if (!StringUtils.hasText(country)) {
             return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
         }
+        var activeJurisdictions = repository.listActiveJurisdictionCatalog().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        row -> row.code().toUpperCase(java.util.Locale.ROOT), row -> row.name(),
+                        (first, ignored) -> first, LinkedHashMap::new));
         List<DisclosureJurisdictionView> matches = repository.listJurisdictions().stream()
+                .filter(row -> activeJurisdictions.containsKey(row.code().toUpperCase(java.util.Locale.ROOT)))
                 .filter(row -> "published".equalsIgnoreCase(row.status()))
                 .filter(row -> row.countryCodes().stream()
                         .map(CountryCodeNormalizer::normalize)
                         .anyMatch(country::equals))
+                .map(row -> new DisclosureJurisdictionView(
+                        row.code(), activeJurisdictions.get(row.code().toUpperCase(java.util.Locale.ROOT)),
+                        row.countryCodes(), row.version(), row.status(), row.publishedAt(), row.affected(),
+                        row.ackProgress(), row.blocked()))
                 .toList();
         if (matches.isEmpty()) return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
         if (matches.size() > 1) return JurisdictionResolution.error(409, "RISK_DISCLOSURE_JURISDICTION_AMBIGUOUS");

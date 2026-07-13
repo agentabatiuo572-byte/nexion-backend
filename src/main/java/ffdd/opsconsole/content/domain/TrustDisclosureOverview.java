@@ -23,5 +23,5 @@ public record TrustDisclosureOverview(
         List<DisclosureVersionItem> disclosureVersionItems,
         String nextDisclosureVersion,
         Map<String, String> nextVersionByJurisdiction,
-        List<DisclosureJurisdictionView> jurisdictionCatalog) {
+        List<DisclosureJurisdictionCatalogView> jurisdictionCatalog) {
 }

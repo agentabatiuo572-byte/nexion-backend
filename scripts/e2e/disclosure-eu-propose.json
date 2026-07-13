@@ -1,5 +1,5 @@
 {
-  "action": "I4 disclosure jurisdiction publish (EU) lock-guard test",
+  "action": "I5 disclosure jurisdiction publish (EU) lock-guard test",
   "obj": "disclosure_jurisdiction.EU",
   "operator": "e2e_tester",
   "operatorRole": "super",
@@ -7,6 +7,6 @@
   "amplifies": false,
   "reason": "e2e verify disclosure direct 409 lock guard EU",
   "sourceDomain": "I",
-  "command": {"domain": "I", "op": "i4_disclosure_publish", "params": {"version": "v2024.5", "jurisdiction": "EU", "languageScope": "en+zh", "effectiveDate": "2026-07-10", "requiresReack": false, "zh": "EU ack zh {date}", "en": "EU ack en {date}"}},
+  "command": {"domain": "I", "op": "i5_disclosure_publish", "params": {"version": "v2", "jurisdiction": "EU"}},
   "target": {"domain": "I", "type": "disclosure_jurisdiction", "id": "EU"}
 }

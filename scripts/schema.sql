@@ -4683,6 +4683,21 @@ CREATE TABLE IF NOT EXISTS nx_trust_section_field (
   KEY idx_trust_section_field_order (section_key, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_disclosure_jurisdiction_catalog (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  jurisdiction_code VARCHAR(32) NOT NULL,
+  jurisdiction_name VARCHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'DISABLED',
+  revision BIGINT NOT NULL DEFAULT 1,
+  last_operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_disclosure_jurisdiction_catalog_code (jurisdiction_code),
+  KEY idx_disclosure_jurisdiction_catalog_status (status, is_deleted),
+  CONSTRAINT chk_disclosure_jurisdiction_catalog_status CHECK (status IN ('ACTIVE','DISABLED','ARCHIVED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_disclosure_jurisdiction (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   jurisdiction_code VARCHAR(32) NOT NULL,
