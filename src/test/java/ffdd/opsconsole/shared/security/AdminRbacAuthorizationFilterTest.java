@@ -71,6 +71,37 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void janusRoutesUseTheK6RiskAuthorities() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
+        AtomicBoolean writeInvoked = new AtomicBoolean(false);
+        authenticate("risk_k6_read", "risk_k6_write");
+
+        filter.doFilter(request("GET", "/api/admin/janus/health"),
+                new MockHttpServletResponse(), mark(readInvoked));
+        filter.doFilter(request("POST", "/api/admin/janus/exports"),
+                new MockHttpServletResponse(), mark(writeInvoked));
+
+        assertThat(readInvoked).isTrue();
+        assertThat(writeInvoked).isTrue();
+
+        AtomicBoolean deniedWriteInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse deniedWrite = new MockHttpServletResponse();
+        authenticate("risk_k6_read");
+        filter.doFilter(request("POST", "/api/admin/janus/exports"),
+                deniedWrite, mark(deniedWriteInvoked));
+        assertThat(deniedWriteInvoked).isFalse();
+        assertThat(deniedWrite.getStatus()).isEqualTo(403);
+
+        AtomicBoolean deniedReadInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse deniedRead = new MockHttpServletResponse();
+        authenticate("risk_k6_write");
+        filter.doFilter(request("GET", "/api/admin/janus/health"),
+                deniedRead, mark(deniedReadInvoked));
+        assertThat(deniedReadInvoked).isFalse();
+        assertThat(deniedRead.getStatus()).isEqualTo(403);
+    }
+
+    @Test
     void permitsOverviewRoleOnDashboardAndBDomainTreasuryRoutes() throws Exception {
         AtomicBoolean dashboardInvoked = new AtomicBoolean(false);
         AtomicBoolean treasuryInvoked = new AtomicBoolean(false);

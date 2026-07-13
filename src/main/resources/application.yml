@@ -1,5 +1,8 @@
 server:
   port: 8110
+  # Tomcat only trusts forwarding headers from its internal-proxy allowlist, so
+  # getRemoteAddr remains per-client behind Nginx/Ingress without trusting direct spoofed headers.
+  forward-headers-strategy: ${NEXION_FORWARD_HEADERS_STRATEGY:native}
 
 spring:
   application:

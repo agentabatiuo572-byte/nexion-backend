@@ -64,6 +64,9 @@ public class OpsAdminAuthService {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_DISABLED");
         }
 
+        // A fresh login is an explicit authorization refresh boundary. This also
+        // closes the cache gap after SQL migrations or out-of-band RBAC changes.
+        permissionCache.evict(admin.getId());
         boolean mustChangePassword = passwordChangeRequired(admin.getId());
         List<String> authorities = mustChangePassword ? List.of() : effectiveAuthorities(admin);
         String sessionId;

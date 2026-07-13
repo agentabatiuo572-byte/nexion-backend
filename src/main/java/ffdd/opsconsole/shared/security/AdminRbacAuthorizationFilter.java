@@ -72,6 +72,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/content/**", "content_"),
             rule("/api/admin/emergency-control/**", "emergency_"),
             rule("/api/admin/emergency/**", "emergency_"),
+            rule("/api/admin/janus/**", "risk_k6_"),
             rule("/api/admin/risk/**", "risk_"),
             rule("/api/admin/bi/**", "bi_"));
 

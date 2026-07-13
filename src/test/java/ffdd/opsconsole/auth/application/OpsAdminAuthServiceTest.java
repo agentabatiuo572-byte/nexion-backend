@@ -79,6 +79,7 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getData().session().authorities())
                 .contains("PERM_SYSTEM_READ", "PERM_USER_READ")
                 .doesNotContain("PERM_SYSTEM_WRITE", "PERM_SUPPORT_SEAT_WRITE");
+        verify(permissionCache).evict(1L);
         Claims claims = tokenProvider.parse(result.getData().accessToken());
         assertThat(claims.get("subjectType")).isEqualTo("ADMIN");
         assertThat(claims.get("sessionId")).isEqualTo("admin-session-1");
@@ -267,6 +268,7 @@ class OpsAdminAuthServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.UNAUTHORIZED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("ADMIN_CREDENTIAL_INVALID");
         assertThat(result.getData()).isNull();
+        verify(permissionCache, never()).evict(1L);
     }
 
     @Test

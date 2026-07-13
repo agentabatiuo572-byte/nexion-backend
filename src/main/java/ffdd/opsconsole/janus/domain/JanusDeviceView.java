@@ -1,0 +1,42 @@
+package ffdd.opsconsole.janus.domain;
+
+import com.fasterxml.jackson.databind.JsonNode;
+
+public record JanusDeviceView(
+        String sid,
+        String deviceId,
+        Long firstSeenAt,
+        Long lastSeenAt,
+        Long installAt,
+        Integer installDays,
+        String inviteCode,
+        String channel,
+        String cohortId,
+        String status,
+        String desiredStatus,
+        String commandState,
+        String statusSource,
+        boolean activated,
+        String remoteUrlKey,
+        Integer maturityScore,
+        Integer recommendationScore,
+        Integer environmentRiskScore,
+        Integer priorityScore,
+        String ua,
+        String platform,
+        String model,
+        String osName,
+        String browser,
+        JsonNode maturity,
+        JsonNode environment,
+        String hitStrategy,
+        Integer hitStrategyVersion,
+        JsonNode latestDecision,
+        JsonNode latestSession,
+        JsonNode manualOverride,
+        String lastOperatorId,
+        String lastOperationReason,
+        String activationKind,
+        JsonNode tags,
+        long version) {
+}

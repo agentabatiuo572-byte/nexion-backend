@@ -58,19 +58,19 @@ public class OpsRiskController {
     private final OpsRiskService riskService;
 
     @GetMapping("/overview")
-    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read','risk_k6_read')")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read')")
     public ApiResult<Map<String, Object>> overview() {
         return riskService.overview();
     }
 
     @GetMapping("/cases")
-    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read','risk_k6_read')")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read')")
     public ApiResult<PageResult<RiskCaseView>> cases(@ModelAttribute RiskCaseQueryRequest request) {
         return riskService.cases(request);
     }
 
     @GetMapping("/cases/{caseNo}")
-    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read','risk_k6_read')")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read')")
     public ApiResult<RiskCaseView> detail(@PathVariable String caseNo) {
         return riskService.detail(caseNo);
     }
