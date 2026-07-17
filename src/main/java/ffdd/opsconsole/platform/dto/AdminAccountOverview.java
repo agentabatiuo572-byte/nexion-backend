@@ -37,7 +37,40 @@ public record AdminAccountOverview(
             String lastLogin,
             int sessions,
             String tfaResetAt,
-            String credentialDeliveryStatus) {
+            String credentialDeliveryStatus,
+            List<SessionRecord> sessionDetails,
+            List<RoleHistoryRecord> roleHistory) {
+        public OperatorRecord(
+                String id,
+                String name,
+                String username,
+                String email,
+                String role,
+                boolean tfa,
+                String status,
+                String lastLogin,
+                int sessions,
+                String tfaResetAt,
+                String credentialDeliveryStatus) {
+            this(id, name, username, email, role, tfa, status, lastLogin, sessions,
+                    tfaResetAt, credentialDeliveryStatus, List.of(), List.of());
+        }
+    }
+
+    public record SessionRecord(
+            String sessionId,
+            String ipAddress,
+            String device,
+            String issuedAt,
+            String lastSeenAt) {
+    }
+
+    public record RoleHistoryRecord(
+            String fromRole,
+            String toRole,
+            String changedAt,
+            String operator,
+            String source) {
     }
 
     public record RbacAction(

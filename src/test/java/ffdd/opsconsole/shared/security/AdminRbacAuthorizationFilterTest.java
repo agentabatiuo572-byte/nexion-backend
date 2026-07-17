@@ -71,6 +71,15 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void permitsMfaChallengeVerificationWithoutAuthentication() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+
+        filter.doFilter(request("POST", "/api/admin/auth/mfa/verify"), new MockHttpServletResponse(), mark(invoked));
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
     void janusRoutesUseTheK6RiskAuthorities() throws Exception {
         AtomicBoolean readInvoked = new AtomicBoolean(false);
         AtomicBoolean writeInvoked = new AtomicBoolean(false);
@@ -252,6 +261,20 @@ class AdminRbacAuthorizationFilterTest {
 
         assertThat(meInvoked).isTrue();
         assertThat(changeInvoked).isTrue();
+    }
+
+    @Test
+    void permitsLogoutForAnyAuthenticatedAdminIncludingPasswordChangeRequired() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticateAs("4", "platform_a1_read");
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(4L);
+        state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
+        when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(state);
+
+        filter.doFilter(request("POST", "/api/admin/auth/logout"), new MockHttpServletResponse(), mark(invoked));
+
+        assertThat(invoked).isTrue();
     }
 
     @Test

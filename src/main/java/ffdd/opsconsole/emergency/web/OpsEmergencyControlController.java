@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
 import ffdd.opsconsole.emergency.dto.GeoCountryStatusRequest;
+import ffdd.opsconsole.emergency.dto.GeoCountryListRequest;
 import ffdd.opsconsole.emergency.dto.GeoEdgeJudgeRequest;
 import ffdd.opsconsole.emergency.dto.GeoEmergencyBlockRequest;
 import ffdd.opsconsole.emergency.dto.GeoEndpointCountriesRequest;
@@ -39,6 +40,12 @@ public class OpsEmergencyControlController {
         return emergencyControlService.geoBlockOverview();
     }
 
+    @GetMapping("/geo-block/alerts")
+    @PreAuthorize("hasAuthority('emergency_j2_read') and @superAdminAuthorization.isSuperAdmin(authentication)")
+    public ApiResult<Map<String, Object>> geoBlockAlerts() {
+        return emergencyControlService.geoBlockAlerts();
+    }
+
     @PutMapping("/geo-block/countries/{countryCode}")
     @PreAuthorize("hasAuthority('emergency_j2_country_manage')")
     public ApiResult<Map<String, Object>> updateGeoCountry(
@@ -46,6 +53,15 @@ public class OpsEmergencyControlController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GeoCountryStatusRequest request) {
         return emergencyControlService.updateGeoCountry(countryCode, idempotencyKey, request);
+    }
+
+    @PutMapping("/geo-block/country-lists/{status}")
+    @PreAuthorize("hasAuthority('emergency_j2_country_manage')")
+    public ApiResult<Map<String, Object>> replaceGeoCountryList(
+            @PathVariable String status,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GeoCountryListRequest request) {
+        return emergencyControlService.replaceGeoCountryList(status, idempotencyKey, request);
     }
 
     @PutMapping("/geo-block/endpoints/{endpointKey}")
@@ -58,7 +74,7 @@ public class OpsEmergencyControlController {
     }
 
     @PutMapping("/geo-block/edge-judge")
-    @PreAuthorize("hasAuthority('emergency_j2_write')")
+    @PreAuthorize("hasAuthority('emergency_j2_edge_source_manage')")
     public ApiResult<Map<String, Object>> updateGeoEdgeJudge(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GeoEdgeJudgeRequest request) {
@@ -76,12 +92,19 @@ public class OpsEmergencyControlController {
     @GetMapping("/tamper/overview")
     @PreAuthorize("hasAuthority('emergency_j3_read')")
     public ApiResult<Map<String, Object>> tamperOverview(
+            @RequestParam(value = "window", defaultValue = "24h") String window,
             @RequestParam(value = "accountPage", defaultValue = "1") int accountPage,
             @RequestParam(value = "accountPageSize", defaultValue = "5") int accountPageSize) {
-        return emergencyControlService.tamperOverview(accountPage, accountPageSize);
+        return emergencyControlService.tamperOverview(window, accountPage, accountPageSize);
     }
 
-    @PatchMapping("/tamper/alert-config")
+    @GetMapping("/tamper/config-alerts")
+    @PreAuthorize("hasAuthority('emergency_j3_alert_config')")
+    public ApiResult<Map<String, Object>> tamperConfigAlerts() {
+        return emergencyControlService.tamperConfigAlerts();
+    }
+
+    @PutMapping("/tamper/alert-config")
     @PreAuthorize("hasAuthority('emergency_j3_alert_config')")
     public ApiResult<Map<String, Object>> updateTamperAlertConfig(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -90,7 +113,7 @@ public class OpsEmergencyControlController {
     }
 
     @PostMapping("/tamper/reports")
-    @PreAuthorize("hasAuthority('emergency_j3_write')")
+    @PreAuthorize("hasAuthority('emergency_j3_export')")
     public ApiResult<Map<String, Object>> createTamperReport(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody TamperReportRequest request) {
@@ -139,7 +162,7 @@ public class OpsEmergencyControlController {
     }
 
     @PostMapping("/sop/playbooks/{code}/executions/{executionId}/rollback")
-    @PreAuthorize("hasAuthority('emergency_j4_playbook_execute')")
+    @PreAuthorize("hasAuthority('emergency_j4_playbook_execute') and hasAuthority('emergency_j1_gate_resume')")
     public ApiResult<Map<String, Object>> rollbackPlaybookExecution(
             @PathVariable String code,
             @PathVariable String executionId,

@@ -79,6 +79,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public BigDecimal sumWithdrawalRequested24hUsdt() {
+        return nz(mapper.sumWithdrawalRequested24hUsdt());
+    }
+
+    @Override
     public long countActiveWithdrawalQueue() {
         return mapper.countActiveWithdrawalQueue();
     }
@@ -128,6 +133,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     @Override
     public BigDecimal currentReserveUsd() {
         return nz(mapper.currentReserveUsd());
+    }
+
+    @Override
+    public BigDecimal walletLedgerReconciliationGapUsdt() {
+        return nz(mapper.walletLedgerReconciliationGapUsdt());
     }
 
     @Override

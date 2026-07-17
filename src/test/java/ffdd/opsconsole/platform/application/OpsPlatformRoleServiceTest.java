@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -226,6 +227,25 @@ class OpsPlatformRoleServiceTest {
         verify(roleMenuMapper).restoreRoleMenus(9L, List.of(3L));
         verify(roleMenuMapper).insertMissingRoleMenus(9L, List.of(3L));
         verify(permissionCache).evict(31L);
+    }
+
+    @Test
+    void approvedGrantChangeFailsTheTransactionWhenPermissionCacheCannotBeInvalidated() {
+        when(roleMapper.selectById(9L)).thenReturn(role(9L, "CUSTOM_OPS", 1));
+        when(rolePermissionMapper.selectActivePermissionCodesByRole(9L)).thenReturn(List.of());
+        when(roleMenuMapper.selectActiveMenuIdsByRole(9L)).thenReturn(List.of());
+        when(roleRelationMapper.selectAdminIdsByRole(9L)).thenReturn(List.of(31L));
+        org.mockito.Mockito.doThrow(new IllegalStateException("redis down"))
+                .when(permissionCache).evict(31L);
+        A2ReplayContext.enterReplay();
+
+        assertThatThrownBy(() -> service.updateRoleGrants(9L, "idem-cache-down",
+                new PlatformRoleGrantsUpdateRequest(List.of("user_c1_read"), List.of(3L),
+                        "approved", "approver")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("redis down");
+
+        verify(auditLogService, never()).record(any());
     }
 
     private AdminRoleEntity role(Long id, String code, int status) {

@@ -10,7 +10,9 @@ import ffdd.opsconsole.emergency.dto.GeoCountryStatusRequest;
 import ffdd.opsconsole.emergency.dto.SopPlaybookRunRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
+import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsEmergencyControlControllerTest {
     private final OpsEmergencyControlService service = mock(OpsEmergencyControlService.class);
@@ -24,6 +26,14 @@ class OpsEmergencyControlControllerTest {
         assertThat(controller.updateGeoCountry("VE", "idem-j2", request).getData()).containsEntry("ok", true);
 
         verify(service).updateGeoCountry("VE", "idem-j2", request);
+    }
+
+    @Test
+    void geoAlertFeedRequiresReadPermissionAndAuthoritativeSuperAdminGuard() throws Exception {
+        Method method = OpsEmergencyControlController.class.getMethod("geoBlockAlerts");
+
+        assertThat(method.getAnnotation(PreAuthorize.class).value())
+                .isEqualTo("hasAuthority('emergency_j2_read') and @superAdminAuthorization.isSuperAdmin(authentication)");
     }
 
     @Test

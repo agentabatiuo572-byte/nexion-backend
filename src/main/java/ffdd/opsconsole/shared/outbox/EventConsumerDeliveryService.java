@@ -71,6 +71,7 @@ public class EventConsumerDeliveryService {
         return new ConsumerClaim(updated > 0, eventId, status, attemptCount);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ConsumerFailure markFailure(
             String consumerGroup,
             String eventId,

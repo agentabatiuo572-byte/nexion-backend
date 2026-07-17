@@ -7,6 +7,10 @@ server:
 spring:
   application:
     name: nexion-backend
+  task:
+    scheduling:
+      pool:
+        size: ${NEXION_SCHEDULING_POOL_SIZE:2}
   servlet:
     multipart:
       max-file-size: ${NEXION_MEDIA_MAX_FILE_SIZE:200MB}
@@ -23,11 +27,27 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  gateway:
+    # Header-based subject impersonation is opt-in for trusted internal gateways only.
+    # Production must inject a unique secret and enumerate the exact ingress peers.
+    header-authentication-enabled: ${NEXION_GATEWAY_HEADER_AUTH_ENABLED:false}
+    internal-secret: ${NEXION_GATEWAY_INTERNAL_SECRET:}
+    trusted-proxy-addresses: ${NEXION_GATEWAY_TRUSTED_PROXIES:127.0.0.1,::1,0:0:0:0:0:0:0:1}
   architecture:
     deployment-mode: modular-monolith
     distributed-runtime-enabled: false
   ops-console:
     admin-prefix: /api/admin
+  admin-auth:
+    mfa:
+      # Temporary recovery switch; production remains fail-closed unless explicitly enabled.
+      temporary-superadmin-bypass-enabled: ${NEXION_ADMIN_MFA_TEMPORARY_SUPERADMIN_BYPASS:false}
+  geo-block:
+    enabled: ${NEXION_GEO_BLOCK_ENABLED:true}
+    # Fail closed by default. Local development may explicitly set this env var to true.
+    allow-loopback-without-country: ${NEXION_GEO_ALLOW_LOOPBACK_WITHOUT_COUNTRY:false}
+    # Production must list only the actual ingress/edge peers or their CIDR ranges.
+    trusted-proxy-addresses: ${NEXION_GEO_TRUSTED_PROXIES:127.0.0.1,::1,0:0:0:0:0:0:0:1}
   storage:
     endpoint: ${NEXION_MINIO_ENDPOINT:http://127.0.0.1:9000}
     access-key: ${NEXION_MINIO_ACCESS_KEY:minioadmin}

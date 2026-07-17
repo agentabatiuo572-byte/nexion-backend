@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -9,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.AdminLoginRequest;
 import ffdd.opsconsole.auth.dto.AdminLoginResponse;
+import ffdd.opsconsole.auth.dto.AdminMfaVerifyRequest;
 import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
@@ -24,6 +26,7 @@ import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import io.jsonwebtoken.Claims;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -39,6 +42,11 @@ class OpsAdminAuthServiceTest {
     private final JwtTokenProvider tokenProvider = new JwtTokenProvider(jwtProperties());
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
+    private final AdminTotpService totpService = mock(AdminTotpService.class);
+    private final AdminMfaCipher mfaCipher = mock(AdminMfaCipher.class);
+    private final AdminMfaChallengeRegistry mfaChallenges = mock(AdminMfaChallengeRegistry.class);
+    private final AdminMfaProperties mfaProperties = mock(AdminMfaProperties.class);
+    private final AdminLoginGuard loginGuard = mock(AdminLoginGuard.class);
     private final OpsAdminAuthService service =
             new OpsAdminAuthService(
                     adminMapper,
@@ -47,7 +55,12 @@ class OpsAdminAuthServiceTest {
                     passwordEncoder,
                     tokenProvider,
                     permissionCache,
-                    adminSessionRegistry);
+                    adminSessionRegistry,
+                    totpService,
+                    mfaCipher,
+                    mfaChallenges,
+                    mfaProperties,
+                    loginGuard);
 
     private JwtProperties jwtProperties() {
         JwtProperties properties = new JwtProperties();
@@ -58,14 +71,13 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void loginIssuesAdminTokenFromStoredHashAndEffectiveAuthorities() {
-        AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("Admin@123456"));
+        AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(permissionCache.getPermissionCodes(1L))
                 .thenReturn(new LinkedHashSet<>(List.of("PERM_SYSTEM_READ", "PERM_USER_READ")));
         when(adminSessionRegistry.createSession(1L, "superadmin")).thenReturn("admin-session-1");
 
-        ApiResult<AdminLoginResponse> result =
-                service.login(new AdminLoginRequest("superadmin", "Admin@123456"));
+        ApiResult<AdminLoginResponse> result = loginWithMfa(admin, "superadmin", "ValidPass@123", null);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isNotBlank();
@@ -86,6 +98,80 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
+    void temporarySuperadminMfaBypassIssuesSessionWithoutChangingMfaBinding() {
+        AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(mfaProperties.isTemporarySuperadminBypassEnabled()).thenReturn(true);
+        when(permissionCache.getPermissionCodes(1L))
+                .thenReturn(new LinkedHashSet<>(List.of("PERM_SYSTEM_READ", "PERM_USER_READ")));
+        when(adminSessionRegistry.createSession(1L, "superadmin", "10.0.0.8", "A1-Test-UA"))
+                .thenReturn("admin-session-bypass");
+
+        ApiResult<AdminLoginResponse> result = service.login(
+                new AdminLoginRequest("superadmin", "ValidPass@123"),
+                "10.0.0.8",
+                "A1-Test-UA");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().accessToken()).isNotBlank();
+        assertThat(result.getData().session().username()).isEqualTo("superadmin");
+        assertThat(result.getData().mfa()).isNull();
+        verify(mfaChallenges, never()).create(any(), anyString(), anyString(), any(Boolean.class));
+        verify(accountStateMapper, never()).upsertMfaBinding(any(), anyString(), any());
+        verify(adminSessionRegistry).createSession(1L, "superadmin", "10.0.0.8", "A1-Test-UA");
+        verify(loginGuard).recordSuccess("superadmin");
+    }
+
+    @Test
+    void temporarySuperadminMfaBypassNeverAppliesToRegularAdmins() {
+        AdminEntity admin = activeAdmin(4L, "superadmin", "Lookalike", passwordEncoder.encode("ValidPass@123"));
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(mfaProperties.isTemporarySuperadminBypassEnabled()).thenReturn(true);
+        when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(boundState(4L));
+        when(mfaCipher.decrypt("encrypted-secret")).thenReturn("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        when(mfaCipher.encrypt(anyString())).thenReturn("encrypted-secret");
+        when(mfaProperties.getChallengeTtlSeconds()).thenReturn(300L);
+        when(mfaChallenges.create(4L, "superadmin", "encrypted-secret", false))
+                .thenReturn("regular-admin-challenge");
+
+        ApiResult<AdminLoginResponse> result = service.login(
+                new AdminLoginRequest("superadmin", "ValidPass@123"),
+                "10.0.0.8",
+                "A1-Test-UA");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().accessToken()).isNull();
+        assertThat(result.getData().session()).isNull();
+        assertThat(result.getData().mfa().challengeId()).isEqualTo("regular-admin-challenge");
+        verify(adminSessionRegistry, never()).createSession(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void temporarySuperadminMfaBypassDoesNotApplyToOtherSuperAdminAccounts() {
+        AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
+        admin.setId(2L);
+        admin.setUsername("backup.superadmin");
+        when(adminMapper.selectOne(any())).thenReturn(admin);
+        when(mfaProperties.isTemporarySuperadminBypassEnabled()).thenReturn(true);
+        when(accountStateMapper.selectActiveByAdminId(2L)).thenReturn(boundState(2L));
+        when(mfaCipher.decrypt("encrypted-secret")).thenReturn("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        when(mfaCipher.encrypt(anyString())).thenReturn("encrypted-secret");
+        when(mfaProperties.getChallengeTtlSeconds()).thenReturn(300L);
+        when(mfaChallenges.create(2L, "backup.superadmin", "encrypted-secret", false))
+                .thenReturn("backup-super-challenge");
+
+        ApiResult<AdminLoginResponse> result = service.login(
+                new AdminLoginRequest("backup.superadmin", "ValidPass@123"),
+                "10.0.0.8",
+                "A1-Test-UA");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().accessToken()).isNull();
+        assertThat(result.getData().mfa().challengeId()).isEqualTo("backup-super-challenge");
+        verify(adminSessionRegistry, never()).createSession(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void loginUsesRoleRelationForNonSuperAdminSessions() {
         AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
@@ -97,8 +183,7 @@ class OpsAdminAuthServiceTest {
                 new AdminLoginResponse.EffectiveMenuNode("risk_cases", "风险案件", "/risk/cases", "risk", 2)));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
 
-        ApiResult<AdminLoginResponse> result =
-                service.login(new AdminLoginRequest("risk.shift", "RiskShift@123"));
+        ApiResult<AdminLoginResponse> result = loginWithMfa(admin, "risk.shift", "RiskShift@123", null);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().role()).isEqualTo("risk");
@@ -119,8 +204,7 @@ class OpsAdminAuthServiceTest {
                 new AdminLoginResponse.EffectiveMenuNode("I7", "教程中心", "/content/learn", "I", 6)));
         when(adminSessionRegistry.createSession(4L, "content.shift")).thenReturn("admin-session-content");
 
-        ApiResult<AdminLoginResponse> result =
-                service.login(new AdminLoginRequest("content.shift", "ContentShift@123"));
+        ApiResult<AdminLoginResponse> result = loginWithMfa(admin, "content.shift", "ContentShift@123", null);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().effectiveMenus()).containsExactly("I", "I7");
@@ -141,8 +225,7 @@ class OpsAdminAuthServiceTest {
                 .thenReturn(new LinkedHashSet<>(List.of("finance_d4_read")));
         when(adminSessionRegistry.createSession(9L, "custom.ops")).thenReturn("admin-session-9");
 
-        ApiResult<AdminLoginResponse> result =
-                service.login(new AdminLoginRequest("custom.ops", "CustomOps@123"));
+        ApiResult<AdminLoginResponse> result = loginWithMfa(admin, "custom.ops", "CustomOps@123", null);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().role()).isEqualTo("custom_settlement");
@@ -157,14 +240,16 @@ class OpsAdminAuthServiceTest {
         AdminAccountStateEntity state = new AdminAccountStateEntity();
         state.setAdminId(4L);
         state.setCredentialDeliveryStatus("PASSWORD_CHANGE_REQUIRED");
+        state.setTfaRequired(1);
+        state.setTfaSecretEncrypted("encrypted-secret");
+        state.setTfaBoundAt(LocalDateTime.now());
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(state);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
         when(permissionCache.getPermissionCodes(4L)).thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ")));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
 
-        ApiResult<AdminLoginResponse> result =
-                service.login(new AdminLoginRequest("risk.shift", "RiskShift@123"));
+        ApiResult<AdminLoginResponse> result = loginWithMfa(admin, "risk.shift", "RiskShift@123", state);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().passwordChangeRequired()).isTrue();
@@ -181,14 +266,16 @@ class OpsAdminAuthServiceTest {
         AdminAccountStateEntity state = new AdminAccountStateEntity();
         state.setAdminId(4L);
         state.setCredentialDeliveryStatus("HANDOFF_PENDING");
+        state.setTfaRequired(1);
+        state.setTfaSecretEncrypted("encrypted-secret");
+        state.setTfaBoundAt(LocalDateTime.now());
         when(adminMapper.selectOne(any())).thenReturn(admin);
         when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(state);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
         when(permissionCache.getPermissionCodes(4L)).thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ")));
         when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-4");
 
-        ApiResult<AdminLoginResponse> result =
-                service.login(new AdminLoginRequest("risk.shift", "RiskShift@123"));
+        ApiResult<AdminLoginResponse> result = loginWithMfa(admin, "risk.shift", "RiskShift@123", state);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().session().passwordChangeRequired()).isTrue();
@@ -201,7 +288,8 @@ class OpsAdminAuthServiceTest {
         when(adminMapper.selectById(4L)).thenReturn(admin);
         when(roleRelationMapper.activeRoleCode(4L)).thenReturn("RISK");
         when(permissionCache.getPermissionCodes(4L)).thenReturn(new LinkedHashSet<>(List.of("PERM_RISK_READ")));
-        when(adminSessionRegistry.createSession(4L, "risk.shift")).thenReturn("admin-session-new");
+        when(adminSessionRegistry.createSession(4L, "risk.shift", "10.0.0.8", "A1-Test-UA"))
+                .thenReturn("admin-session-new");
         when(adminMapper.updateById(any(AdminEntity.class))).thenAnswer(invocation -> {
             AdminEntity patch = invocation.getArgument(0);
             admin.setPasswordHash(patch.getPasswordHash());
@@ -210,14 +298,19 @@ class OpsAdminAuthServiceTest {
         var authentication = new UsernamePasswordAuthenticationToken("4", null, List.of());
 
         ApiResult<AdminLoginResponse> result =
-                service.changePassword(authentication, new AdminPasswordChangeRequest("RiskShift@123", "87654321"));
+                service.changePassword(
+                        authentication,
+                        new AdminPasswordChangeRequest("RiskShift@123", "NewRiskShift@4567"),
+                        "10.0.0.8",
+                        "A1-Test-UA");
 
         assertThat(result.getCode()).isZero();
-        assertThat(passwordEncoder.matches("87654321", admin.getPasswordHash())).isTrue();
+        assertThat(passwordEncoder.matches("NewRiskShift@4567", admin.getPasswordHash())).isTrue();
         assertThat(result.getData().accessToken()).isNotBlank();
         assertThat(result.getData().session().passwordChangeRequired()).isFalse();
         verify(accountStateMapper).upsertCredentialStatus(4L, "ACTIVE");
         verify(adminSessionRegistry).revokeSessionsExcept(4L, "admin-session-new");
+        verify(adminSessionRegistry).createSession(4L, "risk.shift", "10.0.0.8", "A1-Test-UA");
     }
 
     @Test
@@ -225,12 +318,12 @@ class OpsAdminAuthServiceTest {
         AdminEntity admin = activeAdmin(4L, "risk.shift", "风险值班", passwordEncoder.encode("RiskShift@123"));
         String originalHash = admin.getPasswordHash();
         when(adminMapper.selectById(4L)).thenReturn(admin);
-        when(adminSessionRegistry.createSession(4L, "risk.shift"))
+        when(adminSessionRegistry.createSession(4L, "risk.shift", "unknown", "unknown"))
                 .thenThrow(new IllegalStateException("redis down"));
         var authentication = new UsernamePasswordAuthenticationToken("4", null, List.of());
 
         ApiResult<AdminLoginResponse> result =
-                service.changePassword(authentication, new AdminPasswordChangeRequest("RiskShift@123", "87654321"));
+                service.changePassword(authentication, new AdminPasswordChangeRequest("RiskShift@123", "NewRiskShift@4567"));
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("ADMIN_SESSION_STORE_UNAVAILABLE");
@@ -260,7 +353,7 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void loginRejectsWrongPasswordWithoutLeakingAccountState() {
-        when(adminMapper.selectOne(any())).thenReturn(activeSuperAdmin(passwordEncoder.encode("Admin@123456")));
+        when(adminMapper.selectOne(any())).thenReturn(activeSuperAdmin(passwordEncoder.encode("ValidPass@123")));
 
         ApiResult<AdminLoginResponse> result =
                 service.login(new AdminLoginRequest("superadmin", "wrong"));
@@ -272,13 +365,48 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
+    void verifyMfaRejectsAnAlreadyConsumedPasswordChallenge() {
+        AdminMfaChallengeRegistry.Challenge challenge = new AdminMfaChallengeRegistry.Challenge(
+                4L, "risk.shift", "encrypted-secret", false, 0);
+        when(mfaChallenges.read("already-used")).thenReturn(challenge);
+        when(mfaCipher.decrypt("encrypted-secret")).thenReturn("secret");
+        when(totpService.matchingCounter("secret", "123456")).thenReturn(42L);
+        when(mfaChallenges.consume("already-used")).thenReturn(null);
+
+        ApiResult<AdminLoginResponse> result = service.verifyMfa(
+                new AdminMfaVerifyRequest("already-used", "123456"), "10.0.0.8", "A1-Test-UA");
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.UNAUTHORIZED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("ADMIN_MFA_CHALLENGE_INVALID");
+        verify(adminSessionRegistry, never()).createSession(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void verifyMfaRejectsAReplayedTotpCounterAcrossChallenges() {
+        AdminMfaChallengeRegistry.Challenge challenge = new AdminMfaChallengeRegistry.Challenge(
+                4L, "risk.shift", "encrypted-secret", false, 0);
+        when(mfaChallenges.read("fresh-challenge")).thenReturn(challenge);
+        when(mfaCipher.decrypt("encrypted-secret")).thenReturn("secret");
+        when(totpService.matchingCounter("secret", "123456")).thenReturn(42L);
+        when(mfaChallenges.consume("fresh-challenge")).thenReturn(challenge);
+        when(mfaChallenges.claimTotpCounter(4L, 42L)).thenReturn(false);
+
+        ApiResult<AdminLoginResponse> result = service.verifyMfa(
+                new AdminMfaVerifyRequest("fresh-challenge", "123456"), "10.0.0.8", "A1-Test-UA");
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.UNAUTHORIZED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("ADMIN_MFA_CODE_REPLAYED");
+        verify(adminSessionRegistry, never()).createSession(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void loginRejectsDisabledAdmin() {
-        AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("Admin@123456"));
+        AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
         admin.setStatus(0);
         when(adminMapper.selectOne(any())).thenReturn(admin);
 
         ApiResult<AdminLoginResponse> result =
-                service.login(new AdminLoginRequest("superadmin", "Admin@123456"));
+                service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
         assertThat(result.getMessage()).isEqualTo("ADMIN_DISABLED");
@@ -286,7 +414,7 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void currentSessionLoadsAdminByTokenSubjectAndKeepsTokenAuthorities() {
-        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin(passwordEncoder.encode("Admin@123456")));
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin(passwordEncoder.encode("ValidPass@123")));
         var authentication = new UsernamePasswordAuthenticationToken(
                 "1",
                 null,
@@ -311,6 +439,49 @@ class OpsAdminAuthServiceTest {
         admin.setStatus(1);
         admin.setIsDeleted(0);
         return admin;
+    }
+
+    private ApiResult<AdminLoginResponse> loginWithMfa(
+            AdminEntity admin, String username, String password, AdminAccountStateEntity suppliedState) {
+        when(adminMapper.selectById(admin.getId())).thenReturn(admin);
+        when(adminSessionRegistry.createSession(
+                org.mockito.ArgumentMatchers.eq(admin.getId()),
+                org.mockito.ArgumentMatchers.eq(admin.getUsername()),
+                anyString(),
+                anyString())).thenReturn("admin-session-" + admin.getId());
+        AdminAccountStateEntity state = suppliedState == null ? boundState(admin.getId()) : suppliedState;
+        when(accountStateMapper.selectActiveByAdminId(admin.getId())).thenReturn(state);
+        when(mfaCipher.decrypt("encrypted-secret")).thenReturn("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        when(mfaCipher.encrypt(anyString())).thenReturn("encrypted-secret");
+        when(mfaProperties.getChallengeTtlSeconds()).thenReturn(300L);
+        when(mfaChallenges.create(admin.getId(), admin.getUsername(), "encrypted-secret", false))
+                .thenReturn("challenge-" + admin.getId());
+        when(mfaChallenges.read("challenge-" + admin.getId())).thenReturn(
+                new AdminMfaChallengeRegistry.Challenge(
+                        admin.getId(), admin.getUsername(), "encrypted-secret", false, 0));
+        when(mfaChallenges.consume("challenge-" + admin.getId())).thenReturn(
+                new AdminMfaChallengeRegistry.Challenge(
+                        admin.getId(), admin.getUsername(), "encrypted-secret", false, 0));
+        when(mfaChallenges.claimTotpCounter(admin.getId(), 42L)).thenReturn(true);
+        when(totpService.matchingCounter(anyString(), anyString())).thenReturn(42L);
+
+        ApiResult<AdminLoginResponse> challenged = service.login(new AdminLoginRequest(username, password));
+        assertThat(challenged.getCode()).isZero();
+        assertThat(challenged.getData().accessToken()).isNull();
+        assertThat(challenged.getData().session()).isNull();
+        assertThat(challenged.getData().mfa().challengeId()).isEqualTo("challenge-" + admin.getId());
+
+        return service.verifyMfa(new AdminMfaVerifyRequest("challenge-" + admin.getId(), "123456"));
+    }
+
+    private AdminAccountStateEntity boundState(Long adminId) {
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(adminId);
+        state.setTfaRequired(1);
+        state.setTfaSecretEncrypted("encrypted-secret");
+        state.setTfaBoundAt(LocalDateTime.now());
+        state.setCredentialDeliveryStatus("ACTIVE");
+        return state;
     }
 
     private AdminEntity activeAdmin(Long id, String username, String nickname, String hash) {

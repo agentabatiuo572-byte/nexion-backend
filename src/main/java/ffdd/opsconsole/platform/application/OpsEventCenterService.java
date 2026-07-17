@@ -272,18 +272,6 @@ public class OpsEventCenterService {
                                     row("disclosure.viewed / acked / reack_triggered / gated_action_blocked", "披露操作链(I5)占位中"),
                                     row("learn.course_started / quiz_passed / course_completed", "课程链(I7)已落地:进度、答题结果、完课与奖励账本均由后端事务写入"))),
                     new EventDomainExtensionBatch(
-                            "j-schema",
-                            "J 域 schema 批",
-                            "pending",
-                            "应急域(J3/J4)",
-                            "risk / admin 域内新事件,无需新 domain",
-                            List.of(new EventDomainItem("risk.tamper_detected", false),
-                                    new EventDomainItem("admin.emergency_playbook_*", false)),
-                            List.of(
-                                    row("risk.tamper_detected", "篡改防御命中(J3)"),
-                                    row("admin.emergency_playbook_executed", "应急剧本执行(J4)"),
-                                    row("admin.emergency_playbook_edited", "应急剧本编辑(J4)"))),
-                    new EventDomainExtensionBatch(
                             "v4-close",
                             "V4 收口核对",
                             "scheduled",
@@ -295,6 +283,21 @@ public class OpsEventCenterService {
                                     row("目标", "无遗漏 · 无双源 · 命名合规"),
                                     row("产出", "差异清单 → 逐条补注册或改名")))));
         }
+
+        // J3 is a live canonical event and must remain visible even when optional read-time demo
+        // batches are disabled. Keeping it outside the seed policy prevents a false A4 pending state.
+        batches.add(new EventDomainExtensionBatch(
+                "j-schema",
+                "J 域 schema 批",
+                "inprogress",
+                "应急域(J3/J4)",
+                "J3 篡改事件已注册并落地；J4 剧本事件仍待注册",
+                List.of(new EventDomainItem("risk.tamper_detected", true),
+                        new EventDomainItem("admin.emergency_playbook_*", false)),
+                List.of(
+                        row("risk.tamper_detected", "篡改防御命中(J3)"),
+                        row("admin.emergency_playbook_executed", "应急剧本执行(J4)"),
+                        row("admin.emergency_playbook_edited", "应急剧本编辑(J4)"))));
 
         configFacade.activeValuesByGroup(GROUP_A4).entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(BATCH_KEY_PREFIX) && entry.getKey().endsWith(BATCH_KEY_SUFFIX))

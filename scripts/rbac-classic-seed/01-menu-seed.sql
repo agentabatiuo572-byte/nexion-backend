@@ -180,7 +180,8 @@ UPDATE nx_admin_permission p JOIN nx_admin_menu m ON m.route_path = p.resource_p
 SET p.menu_id = m.id WHERE p.menu_id IS NULL;
 
 -- ===== 3. role_menu 绑定（角色×菜单可见性）=====
--- 规则（高保真域 roles + 业务）：superadmin/审计 全可见；各域主操作角色见该域；B/L 全角色；A 仅 superadmin(+审计)。
+-- 规则（高保真域 roles + 业务）：superadmin/审计 全可见；各域主操作角色见该域；B/L 全角色；
+-- A 默认仅 superadmin(+审计)，RISK 仅补 A 父级和 A2 只读跟踪入口，不开放其他 A 域页面。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m WHERE r.role_code IN ('SUPER_ADMIN','AUDITOR');
 -- C: support+risk
@@ -210,6 +211,12 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 
 -- K: risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'K%' WHERE r.role_code='RISK';
+-- K5: support read-only visibility (K parent + K5 only; no other K menus)
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('K','K5') WHERE r.role_code='SUPPORT';
+-- RISK: 可追踪自己发起的 C2/K1 待确认工单，只开放 A 父级和 A2。
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('A','A2') WHERE r.role_code='RISK';
 -- M: support+risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'M%' WHERE r.role_code IN ('SUPPORT','RISK');

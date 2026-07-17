@@ -32,6 +32,24 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
 
     @Update("""
             UPDATE nx_admin_idempotency_record
+               SET request_hash = #{requestHash},
+                   status = 'PROCESSING',
+                   response_json = NULL,
+                   error_message = NULL,
+                   expires_at = #{expiresAt},
+                   is_deleted = 0,
+                   updated_at = NOW()
+             WHERE scope = #{scope}
+               AND idempotency_key = #{idempotencyKey}
+               AND (expires_at <= NOW() OR is_deleted = 1)
+            """)
+    int resetExpired(@Param("scope") String scope,
+                     @Param("idempotencyKey") String idempotencyKey,
+                     @Param("requestHash") String requestHash,
+                     @Param("expiresAt") java.time.LocalDateTime expiresAt);
+
+    @Update("""
+            UPDATE nx_admin_idempotency_record
                SET status = 'SUCCEEDED',
                    response_json = #{responseJson},
                    error_message = NULL,

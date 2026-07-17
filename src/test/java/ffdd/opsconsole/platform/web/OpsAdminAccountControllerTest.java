@@ -55,7 +55,6 @@ class OpsAdminAccountControllerTest {
         controller.changeRole("idem-role", "op-001", roleRequest);
         controller.updateProfile("idem-profile", "op-001", profileRequest);
         controller.updateStatus("idem-status", "op-001", statusRequest);
-        controller.deleteAccount("idem-delete", "op-001", actionRequest);
         controller.reset2fa("idem-2fa", "op-001", actionRequest);
         controller.resetPassword("idem-password", "op-001", actionRequest);
         controller.revokeSessions("idem-session", "op-001", actionRequest);
@@ -64,7 +63,6 @@ class OpsAdminAccountControllerTest {
         verify(accountService).changeRole("idem-role", "op-001", roleRequest);
         verify(accountService).updateProfile("idem-profile", "op-001", profileRequest);
         verify(accountService).updateStatus("idem-status", "op-001", statusRequest);
-        verify(accountService).deleteAccount("idem-delete", "op-001", actionRequest);
         verify(accountService).reset2fa("idem-2fa", "op-001", actionRequest);
         verify(accountService).resetPassword("idem-password", "op-001", actionRequest);
         verify(accountService).revokeSessions("idem-session", "op-001", actionRequest);

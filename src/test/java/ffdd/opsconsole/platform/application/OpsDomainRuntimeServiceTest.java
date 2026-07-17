@@ -49,6 +49,20 @@ class OpsDomainRuntimeServiceTest {
     }
 
     @Test
+    void emergencyContractPublishesTheDirectionSpecificJ1Authorities() {
+        ApiResult<OpsDomainRuntimeContract> result = service.contract("emergency");
+
+        assertThat(result.getData().apiFamilies())
+                .filteredOn(api -> api.path().equals("/api/admin/emergency/kill-switches/{key}"))
+                .extracting(api -> api.writePermission())
+                .containsExactlyInAnyOrder("emergency_j1_gate_kill", "emergency_j1_gate_resume");
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("EmergencyDisable");
+            assertThat(api.writePermission()).isEqualTo("emergency_j1_batch_kill");
+        });
+    }
+
+    @Test
     void contentContractIncludesM4KnowledgeApi() {
         ApiResult<OpsDomainRuntimeContract> result = service.contract("content");
 

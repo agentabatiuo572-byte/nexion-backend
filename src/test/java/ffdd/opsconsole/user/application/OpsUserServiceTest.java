@@ -227,6 +227,23 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void accountActionAccountResolvesAnExactUserOutsideTheOverviewPage() {
+        ApiResult<UserAccountView> result = service.accountActionAccount("U00000001");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isNotNull();
+        assertThat(result.getData().userNo()).isEqualTo("U00000001");
+    }
+
+    @Test
+    void accountActionAccountReturnsNotFoundInsteadOfSelectingAnotherUser() {
+        ApiResult<UserAccountView> result = service.accountActionAccount("U99999999");
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("USER_NOT_FOUND");
+    }
+
+    @Test
     void accountActionOverviewReadsExistingC2BusinessRows() {
         userRepository.loadAccountActionFixtures();
 
@@ -271,6 +288,17 @@ class OpsUserServiceTest {
                 new UserAccountListUpsertRequest(1L, "ALLOW", "duplicate allowlist", "risklead_h", null));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void accountListUpsertRejectsAnAlreadyExpiredActiveEntry() {
+        ApiResult<UserAccountListEntryView> result = service.upsertAccountList(
+                "idem-c2-expired-list",
+                new UserAccountListUpsertRequest(1L, "BLOCK", "expired list must not become active",
+                        "risklead_h", "2000-01-01"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("ACCOUNT_LIST_EXPIRES_AT_NOT_FUTURE");
     }
 
     @Test
@@ -329,6 +357,17 @@ class OpsUserServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("C2_USER_IMPERSONATION_STARTED");
+    }
+
+    @Test
+    void startingImpersonationRejectsTtlAboveTheThirtyMinutePrivacyLimit() {
+        ApiResult<Map<String, Object>> result = service.startImpersonation(
+                1L,
+                "idem-c2-imp-too-long",
+                new UserImpersonationRequest(31, "oversized impersonation window", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("IMPERSONATION_TTL_OUT_OF_RANGE");
     }
 
     @Test
@@ -871,16 +910,52 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void replayC2AccountFreezeInvokesUpdateStatusAndSucceeds() {
+    void replayC2AccountFreezeDerivesStatusFromOperationInsteadOfClientParams() {
         AuditReplayCommand cmd = new AuditReplayCommand("C", "c2_account_freeze", Map.of(
                 "userId", 1L,
-                "status", "FROZEN"));
+                "status", "ACTIVE"));
         AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay freeze user", "idem-replay-c2-freeze");
 
         ApiResult<?> result = service.replay(cmd, ctx);
 
         assertThat(result.getCode()).isZero();
         assertThat(userRepository.user.status()).isEqualTo("FROZEN");
+    }
+
+    @Test
+    void delegatedProposerCannotBypassA2WithDirectC2ServiceCallButApprovedReplayStillWorks() {
+        var authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
+                "risk-user", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_proposal_create"),
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("user_c1hub_account_freeze")));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            var denied = service.updateStatus(
+                    1L, "idem-direct-bypass",
+                    new UserStatusUpdateRequest("FROZEN", "attempt direct delegated freeze", "risk-user"));
+
+            assertThat(denied.getCode()).isEqualTo(403);
+            assertThat(denied.getMessage()).isEqualTo("A2_PROPOSAL_REQUIRED");
+            assertThat(userRepository.user.status()).isEqualTo("ACTIVE");
+            verify(auditLogService).record(org.mockito.ArgumentMatchers.argThat(audit ->
+                    "A2_DIRECT_EXECUTION_REJECTED".equals(audit.getAction())
+                            && "REJECTED".equals(audit.getResult())
+                            && audit.getDetail() instanceof Map<?, ?> detail
+                            && Boolean.FALSE.equals(detail.get("businessDataChanged"))));
+
+            ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+            try {
+                var replayed = service.replay(
+                        new AuditReplayCommand("C", "c2_account_freeze", Map.of("userId", 1L, "status", "ACTIVE")),
+                        new AuditReplayContext("approver", "approved replay freeze", "idem-approved-replay"));
+                assertThat(replayed.getCode()).isZero();
+                assertThat(userRepository.user.status()).isEqualTo("FROZEN");
+            } finally {
+                ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+            }
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        }
     }
 
     @Test

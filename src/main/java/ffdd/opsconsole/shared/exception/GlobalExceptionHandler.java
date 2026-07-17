@@ -8,9 +8,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -18,6 +20,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
 @RequiredArgsConstructor
+@Slf4j
 public class GlobalExceptionHandler {
     private final AuditLogService auditLogService;
 
@@ -47,9 +50,15 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "MEDIA_UPLOAD_TOO_LARGE");
     }
 
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex) {
+        return ApiResult.fail(400, "REQUEST_BODY_INVALID");
+    }
+
     @ExceptionHandler(Exception.class)
     public ApiResult<Void> handleException(Exception ex) {
-        return ApiResult.fail(500, ex.getMessage());
+        log.error("Unhandled API exception", ex);
+        return ApiResult.fail(OpsErrorCode.INTERNAL_ERROR.httpStatus(), "INTERNAL_SERVER_ERROR");
     }
 
     private void auditAccessDenied(AccessDeniedException ex, HttpServletRequest request) {

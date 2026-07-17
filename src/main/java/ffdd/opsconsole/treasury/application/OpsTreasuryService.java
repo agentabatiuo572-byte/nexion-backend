@@ -10,10 +10,13 @@ import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
@@ -22,6 +25,7 @@ import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
+import ffdd.opsconsole.treasury.dto.BankRunThresholdRequest;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -36,8 +40,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -48,11 +54,13 @@ public class OpsTreasuryService {
     private static final String REDLINE_CONFIG_KEY = "wallet.dual-ledger.redline-pct";
     private static final String HEALTHY_CONFIG_KEY = "wallet.dual-ledger.healthy-pct";
     private static final String RUN_RISK_CONFIG_KEY = "wallet.dual-ledger.run-risk-pct";
+    private static final String BANK_RUN_YELLOW_CONFIG_KEY = BankRunThresholdPolicy.YELLOW_CONFIG_KEY;
     private static final String SCOPE_CONFIG_KEY = "wallet.dual-ledger.scope";
     private static final String B_ALERT_COVERAGE_ID = "coverage-redline";
     private static final String B_ALERT_COVERAGE_ACK_KEY = "wallet.dual-ledger.alert.coverage-redline.ack";
     private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
     private static final String B_RESERVE_INJECTION_IDEMPOTENCY_SCOPE = "TREASURY_B_RESERVE_INJECTION";
+    private static final String B_BANK_RUN_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_BANKRUN_THRESHOLD";
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现闸"),
             new GateSeed("exchange", "兑换闸"),
@@ -62,6 +70,7 @@ public class OpsTreasuryService {
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
     private final EmergencyControlRepository emergencyRepository;
+    private final RiskTamperSignalFacade riskTamperSignalFacade;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
     private final Clock clock;
@@ -381,6 +390,81 @@ public class OpsTreasuryService {
         return ApiResult.ok(response);
     }
 
+    @Transactional
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ApiResult<Map<String, Object>> updateBankRunThresholds(
+            String idempotencyKey,
+            BankRunThresholdRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        boolean hasYellow = StringUtils.hasText(request.yellowPct());
+        boolean hasRedline = StringUtils.hasText(request.redlinePct());
+        if (!hasYellow && !hasRedline) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BANKRUN_THRESHOLD_REQUIRED");
+        }
+        BankRunThresholdPolicy.Bands currentBands = BankRunThresholdPolicy.resolve(configFacade);
+        BigDecimal yellow = hasYellow
+                ? bankRunThreshold(request.yellowPct(), "yellowPct", new BigDecimal("5"), new BigDecimal("50"))
+                : currentBands.yellowPct();
+        BigDecimal redline = hasRedline
+                ? bankRunThreshold(request.redlinePct(), "redlinePct", new BigDecimal("10"), new BigDecimal("80"))
+                : currentBands.redlinePct();
+        if (redline.compareTo(yellow) <= 0) {
+            return ApiResult.fail(
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BANKRUN_REDLINE_MUST_EXCEED_YELLOW");
+        }
+        String operator = AdminActorResolver.resolve(request.operator());
+        if (!StringUtils.hasText(operator)) {
+            return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
+        }
+        String reason = request.reason().trim();
+        String requestHash = structuredRequestHash(section(
+                "yellowPct", yellow,
+                "redlinePct", redline,
+                "changeYellow", hasYellow,
+                "changeRedline", hasRedline,
+                "reason", reason,
+                "operator", operator), "B5_BANKRUN_THRESHOLD_HASH_FAILED");
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+                B_BANK_RUN_THRESHOLD_IDEMPOTENCY_SCOPE,
+                idempotencyKey,
+                requestHash,
+                ApiResult.class,
+                () -> updateBankRunThresholdsNew(
+                        idempotencyKey.trim(), yellow, redline, hasYellow, hasRedline, reason, operator));
+    }
+
+    private ApiResult<Map<String, Object>> updateBankRunThresholdsNew(
+            String idempotencyKey,
+            BigDecimal yellow,
+            BigDecimal redline,
+            boolean hasYellow,
+            boolean hasRedline,
+            String reason,
+            String operator) {
+        if (hasYellow) {
+            configFacade.upsertAdminValue(
+                    BANK_RUN_YELLOW_CONFIG_KEY, yellow.stripTrailingZeros().toPlainString(),
+                    "NUMBER", "risk", "B5 bank-run warning threshold");
+        }
+        if (hasRedline) {
+            configFacade.upsertAdminValue(
+                    TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY,
+                    redline.stripTrailingZeros().toPlainString(),
+                    "NUMBER", "risk", "B5 bank-run automatic stop threshold used by J1 R1");
+        }
+        audit("B5_BANKRUN_THRESHOLDS_CHANGED", "RISK_THRESHOLD", "bankrun", operator, section(
+                "yellowPct", yellow,
+                "redlinePct", redline,
+                "reason", reason,
+                "idempotencyKey", idempotencyKey,
+                "linkedDomain", "J1:R1"));
+        return bDomainDashboard();
+    }
+
     public ApiResult<PageResult<TreasuryLedgerBillView>> ledgerBills(TreasuryLedgerQueryRequest request) {
         ensureD4FallbackSeedData();
         int pageNum = clamp(request == null || request.pageNum() == null ? 1 : request.pageNum(), 1, 10_000);
@@ -577,7 +661,6 @@ public class OpsTreasuryService {
     private Map<String, Object> riskRadarDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
         Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
         List<Map<String, Object>> feed = new ArrayList<>();
-        feed.add(dynamicCoverageFeed(snapshot));
         LocalDateTime since = LocalDateTime.now(clock).minusDays(7);
         List<BigDecimal> pressure = ledgerRepository.riskPressureSeries(since);
         List<Map<String, Object>> rules = ledgerRepository.riskRuleBuckets(since);
@@ -585,8 +668,20 @@ public class OpsTreasuryService {
         List<Map<String, Object>> volume = ledgerRepository.riskVolumeBuckets(since);
         BigDecimal pressureTightPct = decimal(snapshot.get("runRiskPct"));
         BigDecimal reserveUsd = decimal(snapshot.get("reserveUsd"));
-        BigDecimal queueBacklogUsd = decimal(snapshot.get("queueBacklogUsd"));
-        BigDecimal bankRunRatio = pctScale(pct(queueBacklogUsd, reserveUsd));
+        BigDecimal withdrawalRequests24h = safe(ledgerRepository.sumWithdrawalRequested24hUsdt());
+        BigDecimal bankRunRatio = pctScale(pct(withdrawalRequests24h, reserveUsd));
+        BankRunThresholdPolicy.Bands bankRunBands = BankRunThresholdPolicy.resolve(configFacade);
+        BigDecimal bankRunYellowPct = bankRunBands.yellowPct();
+        BigDecimal bankRunRedlinePct = bankRunBands.redlinePct();
+        feed.add(dynamicCoverageFeed(snapshot, bankRunRatio, bankRunYellowPct, bankRunRedlinePct));
+        RiskTamperSignalFacade.TamperRadarSnapshot tamperRadar = riskTamperSignalFacade.tamperRadarSnapshot(since);
+        if (tamperRadar.signalCount() > 0) {
+            feed.add(section(
+                    "sev", "p1",
+                    "t", "篡改拦截 " + tamperRadar.signalCount() + " 起 · 涉及 " + tamperRadar.accountCount() + " 个账户",
+                    "m", "J3 服务器拦截事件 · 最近 " + tamperRadar.latestAt(),
+                    "href", "/emergency/tamper"));
+        }
         List<Map<String, Object>> gates = riskGates();
         long tripped = gates.stream().filter(gate -> Boolean.FALSE.equals(gate.get("on"))).count();
         return section(
@@ -601,12 +696,17 @@ public class OpsTreasuryService {
                 "severity", severity,
                 "volume", volume,
                 "bankRunRatio", bankRunRatio,
+                "bankRunYellowPct", bankRunYellowPct,
+                "bankRunRedlinePct", bankRunRedlinePct,
                 "sources", List.of(
                         "nx_emergency_control_setting:killswitch.*",
                         "nx_emergency_control_setting:emergency.killswitch.*",
                         "B1 dualLedger",
+                        "nx_config_item:" + BANK_RUN_YELLOW_CONFIG_KEY,
+                        "nx_config_item:" + TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY,
                         "nx_withdrawal_order",
-                        "nx_risk_decision"));
+                        "nx_risk_decision",
+                        "nx_risk_signal:TAMPER_DETECTED"));
     }
 
     private List<Map<String, Object>> riskGates() {
@@ -614,39 +714,37 @@ public class OpsTreasuryService {
         for (GateSeed seed : B_RISK_GATE_SEEDS) {
             String key = seed.key();
             String configKey = "killswitch." + key;
-            String emergencyKey = "emergency.killswitch." + key;
-            String sourceKey = null;
-            String configured = controlValue(configKey).filter(StringUtils::hasText).orElse(null);
-            if (StringUtils.hasText(configured)) {
-                sourceKey = configKey;
-            }
-            if (!StringUtils.hasText(configured)) {
-                configured = controlValue(emergencyKey).filter(StringUtils::hasText).orElse(null);
-                if (StringUtils.hasText(configured)) {
-                    sourceKey = emergencyKey;
-                }
-            }
-            boolean configuredPresent = StringUtils.hasText(configured);
-            if (!configuredPresent) {
-                continue;
-            }
-            boolean on = !configuredPresent || enabledFromConfig(configured);
-            String state = configuredPresent ? (on ? "on" : "off") : "missing";
+            String legacyKey = legacyKillSwitchKey(key);
+            Optional<String> primary = controlValue(configKey).filter(StringUtils::hasText);
+            Optional<String> legacy = controlValue(legacyKey).filter(StringUtils::hasText);
+            boolean on = KillSwitchState.enabled(primary, legacy);
+            boolean configuredPresent = primary.isPresent() || legacy.isPresent();
+            String sourceKey = primary.isPresent() ? configKey : legacy.isPresent() ? legacyKey : configKey;
+            String state = configuredPresent ? (on ? "on" : "off") : "default_on";
             gates.add(section("nm", seed.name(), "dom", key, "on", on, "state", state, "configKey", sourceKey));
         }
         return gates;
+    }
+
+    private String legacyKillSwitchKey(String key) {
+        return Set.of("staking", "genesis").contains(key)
+                ? "J.killswitch." + key
+                : "emergency.killswitch." + key;
     }
 
     private Optional<String> controlValue(String key) {
         return emergencyRepository.settingValue(key);
     }
 
-    private Map<String, Object> dynamicCoverageFeed(Map<String, Object> snapshot) {
-        BigDecimal reserve = decimal(snapshot.get("reserveUsd"));
-        BigDecimal queue = decimal(snapshot.get("queueBacklogUsd"));
-        BigDecimal bankRun = pctScale(pct(queue, reserve));
+    private Map<String, Object> dynamicCoverageFeed(
+            Map<String, Object> snapshot,
+            BigDecimal bankRun,
+            BigDecimal bankRunYellowPct,
+            BigDecimal bankRunRedlinePct) {
         BigDecimal coverage = decimal(snapshot.get("coverageRatio"));
-        String severity = bankRun.compareTo(new BigDecimal("40")) >= 0 ? "p0" : bankRun.compareTo(new BigDecimal("20")) >= 0 ? "p1" : "p2";
+        String severity = bankRun.compareTo(bankRunRedlinePct) >= 0
+                ? "p0"
+                : bankRun.compareTo(bankRunYellowPct) >= 0 ? "p1" : "p2";
         return section(
                 "sev", severity,
                 "t", "挤兑比率 " + bankRun.stripTrailingZeros().toPlainString() + "% · 覆盖率 " + coverage.stripTrailingZeros().toPlainString() + "%",
@@ -771,14 +869,6 @@ public class OpsTreasuryService {
         return money(safe(value)).divide(new BigDecimal("10000"), 2, RoundingMode.HALF_UP);
     }
 
-    private boolean enabledFromConfig(String value) {
-        if (!StringUtils.hasText(value)) {
-            return true;
-        }
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return !List.of("0", "false", "off", "disabled", "disable", "closed", "close").contains(normalized);
-    }
-
     private BigDecimal decimal(Object value) {
         if (value == null) {
             return BigDecimal.ZERO;
@@ -830,6 +920,18 @@ public class OpsTreasuryService {
             return HexFormat.of().formatHex(digest.digest());
         } catch (JsonProcessingException ex) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "B_RESERVE_INJECTION_HASH_FAILED");
+        } catch (NoSuchAlgorithmException ex) {
+            throw new BizException(500, "SHA256_UNAVAILABLE");
+        }
+    }
+
+    private String structuredRequestHash(Map<String, Object> payload, String errorCode) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(objectMapper.writeValueAsString(payload).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (JsonProcessingException ex) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), errorCode);
         } catch (NoSuchAlgorithmException ex) {
             throw new BizException(500, "SHA256_UNAVAILABLE");
         }
@@ -951,6 +1053,20 @@ public class OpsTreasuryService {
             throw new IllegalArgumentException(fieldName + " is out of range");
         }
         return normalized;
+    }
+
+    private BigDecimal bankRunThreshold(String value, String fieldName, BigDecimal min, BigDecimal max) {
+        try {
+            BigDecimal normalized = new BigDecimal(value.trim()).setScale(1, RoundingMode.HALF_UP);
+            if (normalized.compareTo(min) < 0 || normalized.compareTo(max) > 0) {
+                throw new NumberFormatException("out of range");
+            }
+            return normalized;
+        } catch (RuntimeException ex) {
+            throw new BizException(
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "BANKRUN_" + fieldName.toUpperCase(Locale.ROOT) + "_OUT_OF_RANGE");
+        }
     }
 
     private String requireText(String value, String message) {

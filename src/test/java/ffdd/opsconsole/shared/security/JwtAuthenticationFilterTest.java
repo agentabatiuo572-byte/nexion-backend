@@ -96,6 +96,8 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void trustedGatewayHeadersPreserveUserSubjectTypeForAppEndpoints() throws Exception {
+        gatewayProperties.setHeaderAuthenticationEnabled(true);
+        gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
         MockHttpServletRequest request = new MockHttpServletRequest(
                 "POST", "/content/app/conversations/CV-1/receipts/read");
         request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
@@ -115,9 +117,59 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void trustedGatewayHeadersWithoutSubjectTypeDoNotAuthenticate() throws Exception {
+        gatewayProperties.setHeaderAuthenticationEnabled(true);
+        gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/content/app/test");
         request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
         request.addHeader(AuthHeaders.SUBJECT_ID, "1001");
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    void failsClosedWithServiceUnavailableWhenAdminSessionStoreCannotBeRead() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        when(adminSessionRegistry.isSessionActive(1L, "admin-session-1"))
+                .thenThrow(new IllegalStateException("redis down"));
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
+                1L,
+                "ADMIN",
+                "superadmin",
+                List.of("PERM_SYSTEM_READ"),
+                "admin-session-1"));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) -> invoked.set(true));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("ADMIN_SESSION_STORE_UNAVAILABLE");
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    void gatewayHeaderAuthenticationIsDisabledByDefault() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/trial/eligibility");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET, "nexion-local-gateway-secret");
+        request.addHeader(AuthHeaders.SUBJECT_ID, "52");
+        request.addHeader(AuthHeaders.SUBJECT_TYPE, "USER");
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    void gatewayHeaderAuthenticationRejectsUntrustedPeer() throws Exception {
+        gatewayProperties.setHeaderAuthenticationEnabled(true);
+        gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/trial/eligibility");
+        request.setRemoteAddr("203.0.113.10");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
+        request.addHeader(AuthHeaders.SUBJECT_ID, "52");
+        request.addHeader(AuthHeaders.SUBJECT_TYPE, "USER");
 
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
 

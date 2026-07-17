@@ -34,10 +34,12 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             "HANDOFF_PENDING");
     private static final Set<String> PASSWORD_CHANGE_ALLOWED_PATHS = Set.of(
             "/api/admin/auth/me",
-            "/api/admin/auth/password/change");
+            "/api/admin/auth/password/change",
+            "/api/admin/auth/logout");
     private static final Set<String> ANY_ADMIN_PATHS = Set.of(
             "/api/admin/auth/me",
             "/api/admin/auth/password/change",
+            "/api/admin/auth/logout",
             "/api/admin/options/*/*");
     // 经典 RBAC 域级前缀兜底：GET 需 <域>_*_read，非 GET 需 <域>_*（非 _read 结尾，含 write/high）。
     // null 前缀 = 仅验认证。路径域→权限码前缀映射（treasury→finance / teams→network / market→finprod / support→service 为跨域）。
@@ -71,6 +73,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/content/support-workbench/**", "service_"),
             rule("/api/admin/content/**", "content_"),
             rule("/api/admin/emergency-control/**", "emergency_"),
+            rule("/api/admin/emergency/kill-switches/alerts", null),
             rule("/api/admin/emergency/**", "emergency_"),
             rule("/api/admin/janus/**", "risk_k6_"),
             rule("/api/admin/risk/**", "risk_"),
@@ -84,7 +87,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String path = request.getRequestURI();
-        if (!path.startsWith(ADMIN_PREFIX) || "/api/admin/auth/login".equals(path)) {
+        if (!path.startsWith(ADMIN_PREFIX)
+                || "/api/admin/auth/login".equals(path)
+                || "/api/admin/auth/mfa/verify".equals(path)) {
             filterChain.doFilter(request, response);
             return;
         }

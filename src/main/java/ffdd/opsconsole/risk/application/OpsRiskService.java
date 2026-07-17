@@ -6,6 +6,10 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
@@ -29,6 +33,8 @@ import ffdd.opsconsole.risk.domain.RiskScoreConfigView;
 import ffdd.opsconsole.risk.domain.RiskScoreDimensionView;
 import ffdd.opsconsole.risk.domain.RiskScoreDistributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
+import ffdd.opsconsole.risk.domain.RiskScoreModelView;
+import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
 import ffdd.opsconsole.risk.domain.RiskScoringSourceCatalog;
@@ -37,11 +43,14 @@ import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
 import ffdd.opsconsole.risk.dto.RiskArbitrageParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskClusterStatusRequest;
+import ffdd.opsconsole.risk.dto.RiskClusterReviewRequest;
 import ffdd.opsconsole.risk.dto.RiskDecisionRequest;
 import ffdd.opsconsole.risk.dto.RiskIpWhitelistRequest;
 import ffdd.opsconsole.risk.dto.RiskKycManualReviewRequest;
+import ffdd.opsconsole.risk.dto.RiskKycAlertSubscriptionRequest;
 import ffdd.opsconsole.risk.dto.RiskKycReviewDecisionRequest;
 import ffdd.opsconsole.risk.dto.RiskKycReviewOverviewQueryRequest;
+import ffdd.opsconsole.risk.dto.RiskKycReviewParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleCreateRequest;
@@ -50,7 +59,11 @@ import ffdd.opsconsole.risk.dto.RiskRuleHitQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleOverviewQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleStatusRequest;
 import ffdd.opsconsole.risk.dto.RiskScoreCommandRequest;
+import ffdd.opsconsole.risk.dto.RiskScoreBatchCommandRequest;
 import ffdd.opsconsole.risk.dto.RiskScoreOverrideRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringModelDraftRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringModelPublishRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringModelRestoreRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringOverviewQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringBandRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
@@ -59,11 +72,18 @@ import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
 import ffdd.opsconsole.user.facade.UserKycStatusFacade;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Supplier;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -73,6 +93,8 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -81,10 +103,40 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Set<String> MANUAL_DECISIONS = Set.of("ALLOW", "BLOCK", "HOLD");
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
     private static final Set<String> RULE_ACTIONS = Set.of("pass", "delay", "freeze", "manual");
+    private static final Set<String> K3_CONFIGURABLE_ACTIONS = Set.of("delay", "freeze", "manual");
     private static final Set<String> RULE_STATES = Set.of("draft", "active", "paused", "archived");
+    private static final Map<String, Set<String>> K3_RULE_TRANSITIONS = Map.of(
+            "draft", Set.of("active"),
+            "active", Set.of("paused"),
+            "paused", Set.of("active", "archived"),
+            "archived", Set.of());
+    private static final Map<String, Integer> K3_ACTION_SEVERITY = Map.of(
+            "pass", 0, "delay", 1, "manual", 2, "freeze", 3);
     private static final Set<String> CLUSTER_STATES = Set.of("detected", "flagged", "frozen", "released", "cleared");
     private static final Set<String> CLUSTER_LAYERS = Set.of("ip", "device", "payment");
+    private static final Set<String> K1_CLUSTER_SORTS = Set.of("strength_desc", "account_desc");
+    private static final Map<String, int[]> K1_INTEGER_PARAMS = Map.of(
+            "maxSignupPerIp24h", new int[]{1, 10},
+            "maxAccountsPerDevice", new int[]{1, 5},
+            "maxAccountsPerPaymentInstrument", new int[]{1, 5});
+    private static final Set<String> K1_DECIMAL_PARAMS = Set.of("clusterFreezeSuggestThreshold");
+    private static final Map<String, Set<String>> K1_CLUSTER_TRANSITIONS = Map.of(
+            "detected", Set.of("flagged", "cleared"),
+            "flagged", Set.of("frozen", "released"),
+            "frozen", Set.of("released"),
+            "released", Set.of(),
+            "cleared", Set.of());
+    private static final Map<String, String> K1_STATUS_AUTHORITIES = Map.of(
+            "flagged", "risk_k1_cluster_flag",
+            "frozen", "risk_k1_cluster_freeze",
+            "released", "risk_k1_cluster_release",
+            "cleared", "risk_k1_cluster_cleared");
     private static final Set<String> KYC_REVIEW_DECISIONS = Set.of("passed", "rejected");
+    private static final Set<String> KYC_REJECT_REASON_CODES = Set.of(
+            "KYC_MATERIAL_INVALID", "IDENTITY_MISMATCH", "SANCTIONS_LIST_MATCH", "OTHER");
+    private static final List<String> K4_DIMENSION_KEYS = List.of(
+            "multiAccount", "arbitrage", "kycStatus",
+            "withdrawVelocity", "accountAge", "anomalyBehavior");
     private static final Pattern K2_TRIAL_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*次\\s*/\\s*(\\d+)\\s*天$");
     private static final Pattern K2_WELCOME_GIFT_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*笔\\s*/\\s*(实体|账户簇|手机号|设备)$");
     private static final Pattern K2_LEADERBOARD_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*x\\s*(基线|上周期|7日均值|同层级均值)$", Pattern.CASE_INSENSITIVE);
@@ -97,7 +149,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Pattern K5_SCORE_LINE = Pattern.compile("^(>=|>)\\s*(\\d+)$");
     private static final Set<String> K3_ADDRESS_REPUTATION_RULES = Set.of(
             "黑名单 / 低信誉地址", "内部黑名单 + 链上信誉", "内部黑名单", "链上信誉", "第三方链上信誉", "内部 + 第三方信誉");
-    private static final Set<String> K5_TICKET_FILTERS = Set.of("all", "大额提现", "大额兑换", "累计过线", "overdue");
+    private static final Set<String> K5_TICKET_FILTERS = Set.of(
+            "all", "大额提现", "大额兑换", "累计过线", "手动触发", "风险分触发", "overdue");
     private static final Map<String, String> OTP_CANONICAL_CONFIG_KEYS = Map.of(
             "otpGate.resendSeconds", "auth.risk.otp_cooldown_seconds",
             "otpGate.captchaAfterSends", "auth.risk.otp_max_24h",
@@ -105,32 +158,36 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             "otpGate.maxVerifyAttempts", "auth.risk.otp_max_verify_attempts",
             "otpGate.captchaTicketTtlSeconds", "auth.risk.captcha_ticket_ttl_seconds");
     private static final Map<String, K2ActionSpec> K2_ACTIONS = Map.of(
-            "mark", new K2ActionSpec("flag", "已标记套利", "K2_ARBITRAGE_MARKED"),
-            "block-gift", new K2ActionSpec("blockgift", "新人礼已拦截", "K2_WELCOME_GIFT_BLOCKED"),
-            "board-flag", new K2ActionSpec("boardflag", "已标记刷榜", "K2_LEADERBOARD_FLAGGED"),
-            "freeze-cluster", new K2ActionSpec("freeze", "已联动 K1 冻结", "K2_CLUSTER_FREEZE_LINKED"));
+            "mark", new K2ActionSpec("flag", "已标记套利", "K2_ARBITRAGE_MARKED", "risk_k2_row_flag"),
+            "block-gift", new K2ActionSpec("blockgift", "新人礼已拦截", "K2_WELCOME_GIFT_BLOCKED", "risk_k2_row_blockgift"),
+            "board-flag", new K2ActionSpec("boardflag", "已标记刷榜", "K2_LEADERBOARD_FLAGGED", "risk_k2_row_boardflag"),
+            "freeze-cluster", new K2ActionSpec("freeze", "已联动 K1 冻结", "K2_CLUSTER_FREEZE_LINKED", "risk_k2_row_freeze"));
     private static final List<K2ViewSpec> K2_VIEWS = List.of(
             new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
-                    List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益", "层数命中", "判定", "动作"),
+                    List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益"),
                     "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑上级 / 试用循环。"),
-            new K2ViewSpec("tradein", "换新套利", "· 以旧换新套利 · 没满最短持有月就想换新,残值已被服务器算成 $0 拦下",
-                    List.of("账户", "设备", "购入时间", "持有月数 / 门槛", "残值拦截", "层数命中", "动作"),
-                    "最短持有月数由 E3 配置,这里只读；服务器守卫已把不满门槛的残值算成 $0。"),
+            new K2ViewSpec("tradein", "换新套利", "· 高频下架置换 · 礼金/返佣叠加行为证据后再判定闭环",
+                    List.of("账户 / 实体", "设备链", "观察窗口", "高频下架置换", "礼金/返佣叠加"),
+                    "置换抵扣阶梯归 E3；K2 只根据高频下架置换与礼金/返佣叠加证据判定异常，不使用持有月或旧残值闸门。"),
             new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
-                    List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征", "层数命中", "动作"),
+                    List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
                     "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
             new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/佣金增速异常的冲榜账户",
-                    List.of("账户", "本期累计佣金", "增速(对基线)", "直推增长", "关联簇", "判定", "动作"),
+                    List.of("账户", "本期累计佣金", "增速(对基线)", "直推增长", "关联簇"),
                     "这里只标记并发信号给 F8 和风险雷达；取消参榜资格、从奖池剔除由 F8 执行。"));
-    private static final Map<String, DimensionMeta> K3_DIMENSION_META = Map.of(
-            "largeAmountUsdt", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0),
-            "金额", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0),
-            "velocity24h", new DimensionMeta("velocity24h", "速度", "由 nx_admin_risk_withdraw_rule 配置", "wave", 1),
-            "速度", new DimensionMeta("velocity24h", "速度", "由 nx_admin_risk_withdraw_rule 配置", "wave", 1),
-            "newAccountProtectDays", new DimensionMeta("newAccountProtectDays", "新账户", "由 nx_admin_risk_withdraw_rule 配置", "user", 2),
-            "新账户", new DimensionMeta("newAccountProtectDays", "新账户", "由 nx_admin_risk_withdraw_rule 配置", "user", 2),
-            "addressReputationSource", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3),
-            "地址信誉", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3));
+    private static final Map<String, DimensionMeta> K3_DIMENSION_META = Map.ofEntries(
+            Map.entry("largeAmountUsdt", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
+            Map.entry("amount", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
+            Map.entry("金额", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
+            Map.entry("velocity24h", new DimensionMeta("velocity24h", "速度", "由 nx_admin_risk_withdraw_rule 配置", "wave", 1)),
+            Map.entry("velocity", new DimensionMeta("velocity24h", "速度", "由 nx_admin_risk_withdraw_rule 配置", "wave", 1)),
+            Map.entry("速度", new DimensionMeta("velocity24h", "速度", "由 nx_admin_risk_withdraw_rule 配置", "wave", 1)),
+            Map.entry("newAccountProtectDays", new DimensionMeta("newAccountProtectDays", "新账户", "由 nx_admin_risk_withdraw_rule 配置", "user", 2)),
+            Map.entry("accountAge", new DimensionMeta("newAccountProtectDays", "新账户", "由 nx_admin_risk_withdraw_rule 配置", "user", 2)),
+            Map.entry("新账户", new DimensionMeta("newAccountProtectDays", "新账户", "由 nx_admin_risk_withdraw_rule 配置", "user", 2)),
+            Map.entry("addressReputationSource", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3)),
+            Map.entry("addressReputation", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3)),
+            Map.entry("地址信誉", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3)));
 
     private final RiskOpsRepository riskRepository;
     private final UserKycStatusFacade userKycStatusFacade;
@@ -139,6 +196,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
+    private final AdminIdempotencyService idempotencyService;
+    private final SuperAdminAuthorization superAdminAuthorization;
+    private final K4RiskScorer k4RiskScorer = new K4RiskScorer();
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(riskRepository.overview());
@@ -244,41 +304,76 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     public ApiResult<Map<String, Object>> multiAccountOverview(Integer clusterPageNum, Integer clusterPageSize, String clusterLayer,
                                                                Integer whitelistPageNum, Integer whitelistPageSize) {
+        return multiAccountOverview(clusterPageNum, clusterPageSize, clusterLayer, null, "strength_desc",
+                whitelistPageNum, whitelistPageSize);
+    }
+
+    public ApiResult<Map<String, Object>> multiAccountOverview(
+            Integer clusterPageNum, Integer clusterPageSize, String clusterLayer,
+            String clusterStatus, String clusterSort,
+            Integer whitelistPageNum, Integer whitelistPageSize) {
+        String normalizedStatus = trimmed(clusterStatus).toLowerCase(Locale.ROOT);
+        String normalizedSort = trimmed(clusterSort).toLowerCase(Locale.ROOT);
+        String normalizedLayer = normalizeClusterLayer(clusterLayer);
+        if (StringUtils.hasText(clusterLayer) && normalizedLayer == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_LAYER_FILTER_INVALID");
+        }
+        if (StringUtils.hasText(clusterStatus) && !CLUSTER_STATES.contains(normalizedStatus)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_STATUS_FILTER_INVALID");
+        }
+        if (!StringUtils.hasText(normalizedSort)) normalizedSort = "strength_desc";
+        if (!K1_CLUSTER_SORTS.contains(normalizedSort)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_SORT_INVALID");
+        }
         return ApiResult.ok(riskRepository.multiAccountOverview(
                 normalizePageNum(clusterPageNum),
                 normalizeLimit(clusterPageSize, 5, 50),
-                normalizeClusterLayer(clusterLayer),
+                normalizedLayer,
+                StringUtils.hasText(normalizedStatus) ? normalizedStatus : null,
+                normalizedSort,
                 normalizePageNum(whitelistPageNum),
                 normalizeLimit(whitelistPageSize, 5, 50)));
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateMultiAccountParam(String key, String idempotencyKey, RiskParamUpdateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<Map<String, Object>> guard = requireK1Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
         String normalizedKey = trimmed(key);
-        String value = trimmed(request.value());
-        if (!StringUtils.hasText(normalizedKey) || !StringUtils.hasText(value)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_PARAM_VALUE_REQUIRED");
+        String value = normalizeK1Param(normalizedKey, request.value());
+        if (!StringUtils.hasText(value)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_PARAM_VALUE_INVALID");
         }
-        if ("linkWeight".equals(normalizedKey)) {
-            value = normalizeLinkWeight(value);
-            if (!StringUtils.hasText(value)) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_LINK_WEIGHT_INVALID");
-            }
-        }
-        Map<String, Object> updated = riskRepository.updateMultiAccountParam(normalizedKey, value);
-        audit("K1_MULTI_ACCOUNT_PARAM_CHANGED", "RISK_MULTI_ACCOUNT_PARAM", normalizedKey, null, operator(request.operator()), Map.of(
-                "key", normalizedKey,
-                "value", value,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        String actor = authenticatedOperator();
+        String normalizedValue = value;
+        return idempotentK1("K1_PARAM:" + normalizedKey, idempotencyKey,
+                requestHash(normalizedKey, normalizedValue, request.reason()), () -> {
+                    String beforeValue = riskRepository.multiAccountParamValue(normalizedKey)
+                            .orElseThrow(() -> new IllegalStateException("K1_PARAM_NOT_FOUND"));
+                    Map<String, Object> updated = riskRepository.updateMultiAccountParam(normalizedKey, normalizedValue);
+                    String afterValue = riskRepository.multiAccountParamValue(normalizedKey)
+                            .orElseThrow(() -> new IllegalStateException("K1_PARAM_WRITE_NOT_VISIBLE"));
+                    auditRequired("K1_MULTI_ACCOUNT_PARAM_CHANGED", "RISK_MULTI_ACCOUNT_PARAM", normalizedKey, actor, Map.of(
+                            "key", normalizedKey,
+                            "value", normalizedValue,
+                            "before", k1ParamSnapshot(normalizedKey, beforeValue),
+                            "after", k1ParamSnapshot(normalizedKey, afterValue),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(updated);
+                });
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateMultiAccountClusterStatus(String clusterId, String idempotencyKey, RiskClusterStatusRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<Map<String, Object>> approvalGuard = delegatedDirectExecutionGuard(
+                "k1_cluster_status", "RISK_MULTI_ACCOUNT_CLUSTER", clusterId);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
+        ApiResult<Map<String, Object>> guard = requireK1Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
@@ -287,59 +382,132 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!StringUtils.hasText(normalizedCluster) || !CLUSTER_STATES.contains(status)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_STATUS_INVALID");
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "cluster", normalizedCluster) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_EXPECTED_VERSION_REQUIRED");
         }
-        if (!riskRepository.updateMultiAccountClusterStatus(normalizedCluster, status, request.reason().trim(), operator(request.operator()))) {
-            return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
+        ApiResult<Map<String, Object>> permissionGuard = requireK1StatusAuthority(status);
+        if (permissionGuard != null) {
+            return permissionGuard;
         }
-        audit("K1_CLUSTER_STATUS_CHANGED", "RISK_MULTI_ACCOUNT_CLUSTER", normalizedCluster, null, operator(request.operator()), Map.of(
-                "clusterId", normalizedCluster,
-                "status", status,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return multiAccountOverview(1, 5, null, 1, 5);
+        String actor = authenticatedOperator();
+        return idempotentK1("K1_CLUSTER_STATUS:" + normalizedCluster, idempotencyKey,
+                requestHash(normalizedCluster, status, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "cluster", normalizedCluster) > 0) {
+                        return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                    }
+                    RiskOpsRepository.MultiAccountClusterState before = riskRepository.multiAccountClusterState(normalizedCluster).orElse(null);
+                    if (before == null) {
+                        return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
+                    }
+                    if (before.version() != request.expectedVersion()) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
+                    }
+                    if (!K1_CLUSTER_TRANSITIONS.getOrDefault(before.status(), Set.of()).contains(status)) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    if (!riskRepository.updateMultiAccountClusterStatus(
+                            normalizedCluster, before.status(), request.expectedVersion(), status, request.reason().trim(), actor)) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
+                    }
+                    auditRequired("K1_CLUSTER_STATUS_CHANGED", "RISK_MULTI_ACCOUNT_CLUSTER", normalizedCluster, actor, Map.of(
+                            "clusterId", normalizedCluster,
+                            "fromStatus", before.status(),
+                            "status", status,
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return multiAccountOverview(1, 5, null, 1, 5);
+                });
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> upsertIpWhitelist(String idempotencyKey, RiskIpWhitelistRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<Map<String, Object>> guard = requireK1Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        String cidr = trimmed(request.cidr());
-        if (!StringUtils.hasText(cidr)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_WHITELIST_CIDR_REQUIRED");
+        String cidr = normalizeIpv4Cidr(request.cidr());
+        String note = trimmed(request.note());
+        String expireText = trimmed(request.expireText());
+        if (!StringUtils.hasText(cidr) || note.length() < 2 || note.length() > 200 || !futureDate(expireText)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_WHITELIST_INVALID");
         }
-        String note = StringUtils.hasText(request.note()) ? request.note().trim() : request.reason().trim();
-        String expireText = StringUtils.hasText(request.expireText()) ? request.expireText().trim() : "2026-12-31";
-        riskRepository.upsertIpWhitelist(cidr, note, operator(request.operator()), expireText);
-        audit("K1_IP_WHITELIST_UPSERTED", "RISK_IP_WHITELIST", cidr, null, operator(request.operator()), Map.of(
-                "cidr", cidr,
-                "note", note,
-                "expireText", expireText,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return multiAccountOverview(1, 5, null, 1, 5);
+        String actor = authenticatedOperator();
+        return idempotentK1("K1_WHITELIST_UPSERT:" + cidr, idempotencyKey,
+                requestHash(cidr, note, expireText, request.reason()), () -> {
+                    RiskOpsRepository.IpWhitelistState before = riskRepository.ipWhitelistState(cidr).orElse(null);
+                    riskRepository.upsertIpWhitelist(cidr, note, actor, expireText);
+                    RiskOpsRepository.IpWhitelistState after = riskRepository.ipWhitelistState(cidr)
+                            .orElseThrow(() -> new IllegalStateException("K1_WHITELIST_WRITE_NOT_VISIBLE"));
+                    auditRequired("K1_IP_WHITELIST_UPSERTED", "RISK_IP_WHITELIST", cidr, actor, Map.of(
+                            "cidr", cidr,
+                            "note", note,
+                            "expireText", expireText,
+                            "before", k1WhitelistSnapshot(cidr, before),
+                            "after", k1WhitelistSnapshot(cidr, after),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return multiAccountOverview(1, 5, null, 1, 5);
+                });
     }
 
+    @Transactional
+    public ApiResult<Map<String, Object>> updateMultiAccountClusterReviewNote(
+            String clusterId, String idempotencyKey, RiskClusterReviewRequest request) {
+        ApiResult<Map<String, Object>> guard = requireK1Command(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        String normalizedCluster = trimmed(clusterId);
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_EXPECTED_VERSION_REQUIRED");
+        }
+        ApiResult<Map<String, Object>> authorityGuard = requireK1Authority("risk_k1_write");
+        if (authorityGuard != null) return authorityGuard;
+        String actor = authenticatedOperator();
+        return idempotentK1("K1_CLUSTER_REVIEW:" + normalizedCluster, idempotencyKey,
+                requestHash(normalizedCluster, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    RiskOpsRepository.MultiAccountClusterState before = riskRepository.multiAccountClusterState(normalizedCluster).orElse(null);
+                    if (before == null) return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
+                    if (before.version() != request.expectedVersion()) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
+                    }
+                    if (!riskRepository.updateMultiAccountClusterReviewNote(
+                            normalizedCluster, request.expectedVersion(), request.reason().trim(), actor)) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
+                    }
+                    auditRequired("K1_CLUSTER_REVIEW_NOTED", "RISK_MULTI_ACCOUNT_CLUSTER", normalizedCluster, actor, Map.of(
+                            "clusterId", normalizedCluster, "status", before.status(),
+                            "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+                    return multiAccountOverview(1, 5, null, 1, 5);
+                });
+    }
+
+    @Transactional
     public ApiResult<Map<String, Object>> disableIpWhitelist(String idempotencyKey, RiskIpWhitelistRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<Map<String, Object>> guard = requireK1Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        String cidr = trimmed(request.cidr());
+        String cidr = normalizeIpv4Cidr(request.cidr());
         if (!StringUtils.hasText(cidr)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_WHITELIST_CIDR_REQUIRED");
         }
-        if (!riskRepository.disableIpWhitelist(cidr, operator(request.operator()))) {
-            return ApiResult.fail(404, "K1_WHITELIST_NOT_FOUND");
-        }
-        audit("K1_IP_WHITELIST_DISABLED", "RISK_IP_WHITELIST", cidr, null, operator(request.operator()), Map.of(
-                "cidr", cidr,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return multiAccountOverview(1, 5, null, 1, 5);
+        String actor = authenticatedOperator();
+        return idempotentK1("K1_WHITELIST_DISABLE:" + cidr, idempotencyKey,
+                requestHash(cidr, request.reason()), () -> {
+                    RiskOpsRepository.IpWhitelistState before = riskRepository.ipWhitelistState(cidr).orElse(null);
+                    if (!riskRepository.disableIpWhitelist(cidr, actor)) {
+                        return ApiResult.fail(404, "K1_WHITELIST_NOT_FOUND");
+                    }
+                    RiskOpsRepository.IpWhitelistState after = riskRepository.ipWhitelistState(cidr)
+                            .orElseThrow(() -> new IllegalStateException("K1_WHITELIST_DISABLE_NOT_VISIBLE"));
+                    auditRequired("K1_IP_WHITELIST_DISABLED", "RISK_IP_WHITELIST", cidr, actor, Map.of(
+                            "cidr", cidr,
+                            "before", k1WhitelistSnapshot(cidr, before),
+                            "after", k1WhitelistSnapshot(cidr, after),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return multiAccountOverview(1, 5, null, 1, 5);
+                });
     }
 
     public ApiResult<Map<String, Object>> withdrawRuleOverview() {
@@ -379,8 +547,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(riskRepository.pageWithdrawRuleHits(action, pageNum, pageSize));
     }
 
+    @Transactional
     public ApiResult<RiskRuleView> createWithdrawRule(String idempotencyKey, RiskRuleCreateRequest request) {
-        ApiResult<RiskRuleView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<RiskRuleView> guard = requireK3Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
@@ -399,30 +568,54 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!StringUtils.hasText(condition)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_INVALID");
         }
-        String action = normalizeRuleAction(request.action());
+        String action = normalizeK3ConfigurableAction(request.action());
         if (action == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_ACTION_INVALID");
         }
-        String ruleKey = dimension + ":" + condition;
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "rule", ruleKey) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        Integer priority = normalizeK3Priority(request.priority());
+        if (priority == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_PRIORITY_INVALID");
         }
-        String ruleId = nextRuleId();
-        RiskRuleView created = riskRepository.createWithdrawRule(ruleId, dimension, condition, action, "draft", operator(request.operator()));
-        audit("K3_WITHDRAW_RULE_CREATED", "WITHDRAW_RULE", created.ruleId(), null, operator(request.operator()), Map.of(
-                "ruleId", created.ruleId(),
-                "dimension", created.dimension(),
-                "action", created.action(),
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(created);
+        ApiResult<RiskRuleView> permissionGuard = requireK3Authority("risk_k3_rule_create");
+        if (permissionGuard != null) return permissionGuard;
+        String ruleKey = dimension + ":" + condition;
+        String normalizedCondition = condition;
+        String actor = authenticatedK3Operator();
+        return idempotentCommand("K3_RULE_CREATE", idempotencyKey,
+                requestHash(dimension, normalizedCondition, action, String.valueOf(priority), request.reason()), () -> {
+                    if (k3PriorityConflicts(null, dimension, priority)) {
+                        return rejectK3Write("CREATE", ruleKey, actor,
+                                OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_PRIORITY_CONFLICT",
+                                request.reason(), idempotencyKey);
+                    }
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "rule", ruleKey) > 0) {
+                        return rejectK3Write("CREATE", ruleKey, actor, 409, "OBJECT_LOCKED_BY_A2",
+                                request.reason(), idempotencyKey);
+                    }
+                    String ruleId = nextRuleId();
+                    RiskRuleView created = riskRepository.createWithdrawRule(
+                            ruleId, dimension, normalizedCondition, action, "draft", priority, actor);
+                    auditRequired("K3_WITHDRAW_RULE_CREATED", "WITHDRAW_RULE", created.ruleId(), actor, Map.of(
+                            "ruleId", created.ruleId(),
+                            "dimension", created.dimension(),
+                            "action", created.action(),
+                            "priority", created.priority(),
+                            "after", k3RuleSnapshot(created),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(created);
+                });
     }
 
+    @Transactional
     public ApiResult<RiskRuleView> updateWithdrawRuleState(String ruleId, String idempotencyKey, RiskRuleStatusRequest request) {
-        ApiResult<RiskRuleView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<RiskRuleView> guard = requireK3Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_REQUIRED_FIELDS_MISSING");
         }
         String normalized = trimmed(ruleId);
         if (!StringUtils.hasText(normalized)) {
@@ -432,35 +625,53 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (state == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_STATE_INVALID");
         }
-        RiskRuleView before = riskRepository.findWithdrawRule(normalized).orElse(null);
-        if (before == null) {
-            return ApiResult.fail(404, "RULE_NOT_FOUND");
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_EXPECTED_VERSION_REQUIRED");
         }
-        if ("archived".equals(before.state()) && !"archived".equals(state)) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "rule", normalized) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        if (state.equals(before.state())) {
-            return ApiResult.ok(before);
-        }
-        RiskRuleView updated = riskRepository.updateWithdrawRuleState(normalized, state).orElse(null);
-        if (updated == null) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "WITHDRAW_RULE_RELOAD_FAILED");
-        }
-        audit("K3_WITHDRAW_RULE_STATE_CHANGED", "WITHDRAW_RULE", normalized, null, operator(request.operator()), Map.of(
-                "ruleId", normalized,
-                "fromState", before.state(),
-                "toState", updated.state(),
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        String requiredAuthority = "archived".equals(state) ? "risk_k3_rule_archive" : "risk_k3_rule_toggle";
+        ApiResult<RiskRuleView> permissionGuard = requireK3Authority(requiredAuthority);
+        if (permissionGuard != null) return permissionGuard;
+        String actor = authenticatedK3Operator();
+        return idempotentCommand("K3_RULE_STATE:" + normalized, idempotencyKey,
+                requestHash(normalized, state, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "rule", normalized) > 0) {
+                        return rejectK3Write("STATE_CHANGE", normalized, actor, 409, "OBJECT_LOCKED_BY_A2",
+                                request.reason(), idempotencyKey);
+                    }
+                    RiskRuleView before = riskRepository.findWithdrawRule(normalized).orElse(null);
+                    if (before == null) {
+                        return rejectK3Write("STATE_CHANGE", normalized, actor, 404, "RULE_NOT_FOUND",
+                                request.reason(), idempotencyKey);
+                    }
+                    if (!request.expectedVersion().equals(before.version())) {
+                        return rejectK3Write("STATE_CHANGE", normalized, actor, 409, "K3_RULE_CONCURRENT_UPDATE",
+                                request.reason(), idempotencyKey);
+                    }
+                    if (!K3_RULE_TRANSITIONS.getOrDefault(trimmed(before.state()).toLowerCase(Locale.ROOT), Set.of()).contains(state)) {
+                        return rejectK3Write("STATE_CHANGE", normalized, actor,
+                                OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K3_RULE_TRANSITION_INVALID",
+                                request.reason(), idempotencyKey);
+                    }
+                    RiskRuleView updated = riskRepository.updateWithdrawRuleState(
+                            normalized, request.expectedVersion(), state).orElse(null);
+                    if (updated == null) {
+                        return rejectK3Write("STATE_CHANGE", normalized, actor, 409, "K3_RULE_CONCURRENT_UPDATE",
+                                request.reason(), idempotencyKey);
+                    }
+                    auditRequired("K3_WITHDRAW_RULE_STATE_CHANGED", "WITHDRAW_RULE", normalized, actor, Map.of(
+                            "ruleId", normalized,
+                            "before", k3RuleSnapshot(before),
+                            "after", k3RuleSnapshot(updated),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(updated);
+                });
     }
 
+    @Transactional
     public ApiResult<RiskRuleView> updateWithdrawRuleCondition(String ruleId, String idempotencyKey, RiskRuleConditionRequest request) {
-        ApiResult<RiskRuleView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<RiskRuleView> guard = requireK3Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
@@ -475,124 +686,187 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (condition.length() > 1000) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_TOO_LONG");
         }
-        RiskRuleView before = riskRepository.findWithdrawRule(normalized).orElse(null);
-        if (before == null) {
-            return ApiResult.fail(404, "RULE_NOT_FOUND");
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_EXPECTED_VERSION_REQUIRED");
         }
-        if ("archived".equals(before.state())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        ApiResult<RiskRuleView> permissionGuard = requireK3Authority("risk_k3_write");
+        if (permissionGuard != null) return permissionGuard;
+        String actor = authenticatedK3Operator();
+        RiskRuleView current = riskRepository.findWithdrawRule(normalized).orElse(null);
+        if (current == null) {
+            return rejectK3Write("CONFIG_CHANGE", normalized, actor, 404, "RULE_NOT_FOUND",
+                    request.reason(), idempotencyKey);
         }
-        condition = normalizeWithdrawRuleCondition(before.dimension(), condition);
+        condition = normalizeWithdrawRuleCondition(current.dimension(), condition);
         if (!StringUtils.hasText(condition)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_INVALID");
+            return rejectK3Write("CONFIG_CHANGE", normalized, actor,
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_CONDITION_INVALID",
+                    request.reason(), idempotencyKey);
         }
-        RiskRuleView updated = riskRepository.updateWithdrawRuleCondition(normalized, condition).orElse(null);
-        if (updated == null) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "WITHDRAW_RULE_RELOAD_FAILED");
+        String action = request.action() == null ? current.action() : normalizeK3ConfigurableAction(request.action());
+        Integer priority = request.priority() == null ? current.priority() : normalizeK3Priority(request.priority());
+        if (action == null) {
+            return rejectK3Write("CONFIG_CHANGE", normalized, actor,
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "RULE_ACTION_INVALID",
+                    request.reason(), idempotencyKey);
         }
-        audit("K3_WITHDRAW_RULE_CONDITION_CHANGED", "WITHDRAW_RULE", normalized, null, operator(request.operator()), Map.of(
-                "ruleId", normalized,
-                "fromCondition", before.conditionText(),
-                "toCondition", updated.conditionText(),
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        if (priority == null) {
+            return rejectK3Write("CONFIG_CHANGE", normalized, actor,
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_PRIORITY_INVALID",
+                    request.reason(), idempotencyKey);
+        }
+        String normalizedCondition = condition;
+        return idempotentCommand("K3_RULE_CONFIG:" + normalized, idempotencyKey,
+                requestHash(normalized, normalizedCondition, action, String.valueOf(priority),
+                        String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "rule", normalized) > 0) {
+                        return rejectK3Write("CONFIG_CHANGE", normalized, actor, 409, "OBJECT_LOCKED_BY_A2",
+                                request.reason(), idempotencyKey);
+                    }
+                    RiskRuleView before = riskRepository.findWithdrawRule(normalized).orElse(null);
+                    if (before == null) {
+                        return rejectK3Write("CONFIG_CHANGE", normalized, actor, 404, "RULE_NOT_FOUND",
+                                request.reason(), idempotencyKey);
+                    }
+                    if ("archived".equalsIgnoreCase(before.state())) {
+                        return rejectK3Write("CONFIG_CHANGE", normalized, actor,
+                                OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K3_RULE_TRANSITION_INVALID",
+                                request.reason(), idempotencyKey);
+                    }
+                    if (!request.expectedVersion().equals(before.version())) {
+                        return rejectK3Write("CONFIG_CHANGE", normalized, actor, 409, "K3_RULE_CONCURRENT_UPDATE",
+                                request.reason(), idempotencyKey);
+                    }
+                    if (k3PriorityConflicts(normalized, before.dimension(), priority)) {
+                        return rejectK3Write("CONFIG_CHANGE", normalized, actor,
+                                OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_PRIORITY_CONFLICT",
+                                request.reason(), idempotencyKey);
+                    }
+                    RiskRuleView updated = riskRepository.updateWithdrawRuleConfiguration(
+                            normalized, request.expectedVersion(), normalizedCondition, action, priority).orElse(null);
+                    if (updated == null) {
+                        return rejectK3Write("CONFIG_CHANGE", normalized, actor, 409, "K3_RULE_CONCURRENT_UPDATE",
+                                request.reason(), idempotencyKey);
+                    }
+                    auditRequired("K3_WITHDRAW_RULE_CONDITION_CHANGED", "WITHDRAW_RULE", normalized, actor, Map.of(
+                            "ruleId", normalized,
+                            "before", k3RuleSnapshot(before),
+                            "after", k3RuleSnapshot(updated),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(updated);
+                });
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> dryRunWithdrawRules(String idempotencyKey, RiskRuleDryRunRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<Map<String, Object>> guard = requireK3Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        String batchNo = "K3-DRY-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10).toUpperCase(Locale.ROOT);
-        List<RiskRuleView> activeRules = riskRepository.withdrawRules().stream()
-                .filter(rule -> "active".equalsIgnoreCase(trimmed(rule.state())))
-                .toList();
-        List<RiskWithdrawCandidateView> candidates = activeRules.isEmpty()
-                ? List.of()
-                : riskRepository.withdrawRuleCandidates(200);
-        int hitCount = 0;
-        Map<String, Integer> hitCountsByRule = new LinkedHashMap<>();
-        for (RiskWithdrawCandidateView candidate : candidates) {
-            for (RiskRuleView rule : activeRules) {
-                if (!withdrawRuleMatches(rule, candidate)) {
-                    continue;
-                }
-                riskRepository.recordWithdrawRuleHit(candidate.withdrawalNo(), candidate.userNo(), candidate.amount(), rule);
-                hitCount++;
-                hitCountsByRule.merge(rule.ruleId(), 1, Integer::sum);
-            }
-        }
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("batchNo", batchNo);
-        response.put("status", "STARTED");
-        response.put("sampleWindowDays", 30);
-        response.put("evaluatedWithdrawals", candidates.size());
-        response.put("activeRules", activeRules.size());
-        response.put("hitCount", hitCount);
-        response.put("hitCountsByRule", hitCountsByRule);
-        response.put("routeCounts", riskRepository.withdrawRouteCounts());
-        response.put("startedAt", LocalDateTime.now());
-        audit("K3_WITHDRAW_RULE_DRY_RUN_STARTED", "WITHDRAW_RULE_DRY_RUN", batchNo, null, operator(request.operator()), Map.of(
-                "batchNo", batchNo,
-                "evaluatedWithdrawals", candidates.size(),
-                "activeRules", activeRules.size(),
-                "hitCount", hitCount,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(response);
+        ApiResult<Map<String, Object>> permissionGuard = requireK3Authority("risk_k3_write");
+        if (permissionGuard != null) return permissionGuard;
+        String actor = authenticatedK3Operator();
+        return idempotentCommand("K3_RULE_DRY_RUN", idempotencyKey,
+                requestHash(request.reason()), () -> {
+                    String batchNo = "K3-DRY-" + UUID.randomUUID().toString().replace("-", "")
+                            .substring(0, 10).toUpperCase(Locale.ROOT);
+                    List<RiskRuleView> activeRules = riskRepository.withdrawRules().stream()
+                            .filter(rule -> "active".equalsIgnoreCase(trimmed(rule.state())))
+                            .toList();
+                    List<RiskWithdrawCandidateView> candidates = activeRules.isEmpty()
+                            ? List.of() : riskRepository.withdrawRuleCandidates(200);
+                    int hitCount = 0;
+                    Map<String, Integer> hitCountsByRule = new LinkedHashMap<>();
+                    Map<String, Integer> routeCountMap = new LinkedHashMap<>();
+                    Map<String, String> primaryRuleIds = new LinkedHashMap<>();
+                    for (RiskWithdrawCandidateView candidate : candidates) {
+                        List<RiskRuleView> matches = activeRules.stream()
+                                .filter(rule -> withdrawRuleMatches(rule, candidate)).toList();
+                        hitCount += matches.size();
+                        matches.forEach(rule -> hitCountsByRule.merge(rule.ruleId(), 1, Integer::sum));
+                        RiskRuleView primary = matches.stream().max(k3RuleStrengthComparator()).orElse(null);
+                        String route = primary == null ? "pass" : primary.action();
+                        routeCountMap.merge(route, 1, Integer::sum);
+                        if (primary != null) primaryRuleIds.put(candidate.withdrawalNo(), primary.ruleId());
+                    }
+                    List<RiskRouteCountView> routeCounts = List.of(
+                            k3DryRunRoute("pass", "通过", routeCountMap, "#22c55e"),
+                            k3DryRunRoute("delay", "延迟", routeCountMap, "#f59e0b"),
+                            k3DryRunRoute("manual", "人工审核", routeCountMap, "#3b82f6"),
+                            k3DryRunRoute("freeze", "冻结", routeCountMap, "#ef4444"));
+                    LocalDateTime completedAt = LocalDateTime.now();
+                    Map<String, Object> response = new LinkedHashMap<>();
+                    response.put("batchNo", batchNo);
+                    response.put("status", "COMPLETED");
+                    response.put("sampleWindowDays", 30);
+                    response.put("evaluatedWithdrawals", candidates.size());
+                    response.put("activeRules", activeRules.size());
+                    response.put("hitCount", hitCount);
+                    response.put("hitCountsByRule", hitCountsByRule);
+                    response.put("routeCounts", routeCounts);
+                    response.put("primaryRuleIdsByWithdrawal", primaryRuleIds);
+                    response.put("completedAt", completedAt);
+                    auditRequired("K3_WITHDRAW_RULE_DRY_RUN_COMPLETED", "WITHDRAW_RULE_DRY_RUN", batchNo, actor, Map.of(
+                            "batchNo", batchNo,
+                            "evaluatedWithdrawals", candidates.size(),
+                            "activeRules", activeRules.size(),
+                            "hitCount", hitCount,
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(response);
+                });
     }
 
     private boolean withdrawRuleMatches(RiskRuleView rule, RiskWithdrawCandidateView candidate) {
-        String dimension = trimmed(rule.dimension()).toLowerCase(Locale.ROOT);
+        String dimension = dimensionMeta(rule.dimension()).ruleKey();
         String condition = trimmed(rule.conditionText()).toLowerCase(Locale.ROOT);
-        boolean velocityRule = condition.contains("24h") || condition.contains("24小时") || dimension.contains("速度")
-                || dimension.contains("velocity") || dimension.contains("count");
-        boolean amountRule = condition.contains("$") || condition.contains("usdt") || condition.contains("单笔")
-                || condition.contains("single") || condition.contains("amount") || dimension.contains("金额")
-                || dimension.contains("amount");
-        boolean accountRule = condition.contains("注册") || condition.contains("account") || dimension.contains("新账户")
-                || dimension.contains("账户");
-        boolean addressRule = condition.contains("地址") || condition.contains("blacklist") || condition.contains("reputation")
-                || dimension.contains("地址") || dimension.contains("信誉");
-        if (velocityRule) {
-            if (withdrawVelocityRuleMatches(condition, candidate.withdrawalCount24h(), candidate.amount())) {
-                return true;
-            }
-            if (condition.contains("或") || condition.contains(" or ")) {
-                return false;
-            }
-        }
-        if (amountRule) {
+        if ("largeAmountUsdt".equals(dimension)) {
             BigDecimal threshold = firstDecimal(condition);
             return threshold != null && candidate.amount() != null
                     && compareRuleValue(candidate.amount(), threshold, condition);
         }
-        if (accountRule || addressRule) {
-            String signals = trimmed(candidate.existingSignals()).toLowerCase(Locale.ROOT);
-            return StringUtils.hasText(signals)
-                    && ((StringUtils.hasText(dimension) && signals.contains(dimension))
-                    || (StringUtils.hasText(condition) && signals.contains(condition))
-                    || signals.contains("account")
-                    || signals.contains("address")
-                    || signals.contains("账户")
-                    || signals.contains("地址"));
+        if ("velocity24h".equals(dimension)) {
+            return withdrawVelocityRuleMatches(
+                    condition, candidate.withdrawalCount24h(), candidate.withdrawalSum24h());
+        }
+        if ("newAccountProtectDays".equals(dimension)) {
+            BigDecimal threshold = firstDecimal(condition);
+            return threshold != null && candidate.accountAgeDays() != null
+                    && compareRuleValue(BigDecimal.valueOf(candidate.accountAgeDays()), threshold, condition);
+        }
+        if ("addressReputationSource".equals(dimension)) {
+            String reputation = trimmed(candidate.addressReputation()).toLowerCase(Locale.ROOT);
+            return Set.of("low", "blacklist", "blacklisted").contains(reputation);
         }
         return false;
     }
 
-    private boolean withdrawVelocityRuleMatches(String condition, Integer count24h, BigDecimal amount) {
+    private boolean withdrawVelocityRuleMatches(String condition, Integer count24h, BigDecimal withdrawalSum24h) {
         Matcher matcher = K3_VELOCITY_RULE.matcher(trimmed(condition).replace(",", ""));
         if (matcher.matches()) {
             boolean countMatched = count24h != null
                     && compareRuleValue(BigDecimal.valueOf(count24h), new BigDecimal(matcher.group(2)), matcher.group(1));
-            boolean amountMatched = amount != null
-                    && compareRuleValue(amount, new BigDecimal(matcher.group(4)), matcher.group(3));
+            boolean amountMatched = withdrawalSum24h != null
+                    && compareRuleValue(withdrawalSum24h, new BigDecimal(matcher.group(4)), matcher.group(3));
             return countMatched || amountMatched;
         }
         BigDecimal threshold = firstDecimal(condition);
         return threshold != null && count24h != null
                 && compareRuleValue(BigDecimal.valueOf(count24h), threshold, condition);
+    }
+
+    private Comparator<RiskRuleView> k3RuleStrengthComparator() {
+        return Comparator
+                .comparingInt((RiskRuleView rule) -> K3_ACTION_SEVERITY.getOrDefault(rule.action(), 0))
+                .thenComparingInt(rule -> rule.priority() == null ? 0 : rule.priority())
+                .thenComparing(RiskRuleView::ruleId);
+    }
+
+    private RiskRouteCountView k3DryRunRoute(
+            String routeKey, String label, Map<String, Integer> routeCounts, String color) {
+        return new RiskRouteCountView(routeKey, label, routeCounts.getOrDefault(routeKey, 0).longValue(), color);
     }
 
     private BigDecimal firstDecimal(String value) {
@@ -602,15 +876,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private boolean compareRuleValue(BigDecimal actual, BigDecimal threshold, String condition) {
         String text = trimmed(condition);
-        if (text.contains("<=") || text.contains("≤")) {
+        if (text.contains("<=" ) || text.contains("≤")) {
             return actual.compareTo(threshold) <= 0;
         }
         if (text.contains("<")) {
             return actual.compareTo(threshold) < 0;
         }
-        if (text.contains(">") || text.contains(">=") || text.contains("≥")) {
+        if (text.contains(">=") || text.contains("≥")) {
             return actual.compareTo(threshold) >= 0;
         }
+        if (text.contains(">")) return actual.compareTo(threshold) > 0;
         return actual.compareTo(threshold) >= 0;
     }
 
@@ -629,19 +904,19 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .toList();
         Map<String, Object> response = new LinkedHashMap<>();
         List<RiskArbitrageParamView> params = riskRepository.arbitrageParams().stream()
+                .filter(param -> !"minHoldingMonths".equals(param.key()))
                 .map(this::withCanonicalOtpValue)
                 .toList();
         response.put("stats", riskRepository.arbitrageStats());
         response.put("params", params);
         response.put("views", views);
-        response.put("minHoldingMonths", configuredParamValue(params, "minHoldingMonths"));
         response.put("redlines", List.of("K2 only marks and emits signals", "account freezing is linked to K1 action chain", "welcome gift blocking never touches settled assets"));
         return ApiResult.ok(response);
     }
 
     @Transactional
     public ApiResult<RiskArbitrageParamView> updateArbitrageParam(String key, String idempotencyKey, RiskArbitrageParamUpdateRequest request) {
-        ApiResult<RiskArbitrageParamView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<RiskArbitrageParamView> guard = requireK2Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
@@ -650,6 +925,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!StringUtils.hasText(normalizedKey) || !StringUtils.hasText(value)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_PARAM_VALUE_REQUIRED");
         }
+        ApiResult<RiskArbitrageParamView> permissionGuard = requireK2ActionAuthority("risk_k2_write");
+        if (permissionGuard != null) return permissionGuard;
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_PARAM_EXPECTED_VERSION_REQUIRED");
+        }
         if (value.length() > 128) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_PARAM_VALUE_TOO_LONG");
         }
@@ -657,21 +937,39 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!StringUtils.hasText(value)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_PARAM_VALUE_INVALID");
         }
-        RiskArbitrageParamView updated = riskRepository.updateArbitrageParam(normalizedKey, value).orElse(null);
-        if (updated == null) {
-            return ApiResult.fail(404, "K2_PARAM_NOT_FOUND");
-        }
-        persistCanonicalOtpValue(normalizedKey, value);
-        audit("K2_PARAM_CHANGED", "RISK_ARBITRAGE_PARAM", normalizedKey, null, operator(request.operator()), Map.of(
-                "key", normalizedKey,
-                "value", value,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(withCanonicalOtpValue(updated));
+        String normalizedValue = value;
+        String actor = authenticatedOperator();
+        return idempotentCommand("K2_PARAM:" + normalizedKey, idempotencyKey,
+                requestHash(normalizedKey, normalizedValue, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    RiskArbitrageParamView before = riskRepository.arbitrageParams().stream()
+                            .filter(param -> normalizedKey.equals(param.key()))
+                            .findFirst().orElse(null);
+                    if (before == null) return ApiResult.fail(404, "K2_PARAM_NOT_FOUND");
+                    // Capture the canonical value before either persistence layer is mutated.
+                    // Otherwise OTP-backed parameters would re-read the newly written config
+                    // and make the audit before/after snapshots identical.
+                    RiskArbitrageParamView beforeCanonical = withCanonicalOtpValue(before);
+                    if (before.version() != request.expectedVersion()) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K2_PARAM_CONCURRENT_UPDATE");
+                    }
+                    RiskArbitrageParamView updated = riskRepository.updateArbitrageParam(
+                            normalizedKey, request.expectedVersion(), normalizedValue).orElse(null);
+                    if (updated == null) throw new BizException(409, "K2_PARAM_CONCURRENT_UPDATE");
+                    persistCanonicalOtpValue(normalizedKey, normalizedValue);
+                    RiskArbitrageParamView after = withCanonicalOtpValue(updated);
+                    auditRequired("K2_PARAM_CHANGED", "RISK_ARBITRAGE_PARAM", normalizedKey, actor, Map.of(
+                            "key", normalizedKey,
+                            "before", k2ParamSnapshot(beforeCanonical),
+                            "after", k2ParamSnapshot(after),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(after);
+                });
     }
 
+    @Transactional
     public ApiResult<RiskArbitrageRowView> executeArbitrageAction(String rowId, String action, String idempotencyKey, RiskArbitrageActionRequest request) {
-        ApiResult<RiskArbitrageRowView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        ApiResult<RiskArbitrageRowView> guard = requireK2Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
@@ -681,53 +979,81 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!StringUtils.hasText(normalizedRowId) || spec == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_ACTION_INVALID");
         }
-        RiskArbitrageRowView before = riskRepository.findArbitrageRow(normalizedRowId).orElse(null);
-        if (before == null) {
-            return ApiResult.fail(404, "K2_ROW_NOT_FOUND");
-        }
-        if (StringUtils.hasText(before.disposition())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        if (!before.actions().contains(spec.requiredRowAction())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "arbitrage_row", normalizedRowId) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        if (!A2ReplayContext.isReplaying()
-                && "freeze-cluster".equals(normalizedAction)
-                && StringUtils.hasText(before.clusterId())
-                && lockMapper.countActiveByTarget("K", "cluster", before.clusterId()) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        boolean linkedClusterFrozen = false;
         if ("freeze-cluster".equals(normalizedAction)) {
-            String clusterId = trimmed(before.clusterId());
-            if (!StringUtils.hasText(clusterId)) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_CLUSTER_ID_REQUIRED");
-            }
-            if (!riskRepository.updateMultiAccountClusterStatus(clusterId, "frozen", request.reason().trim(), operator(request.operator()))) {
-                return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
-            }
-            linkedClusterFrozen = true;
-            audit("K1_CLUSTER_STATUS_CHANGED_BY_K2", "RISK_MULTI_ACCOUNT_CLUSTER", clusterId, null, operator(request.operator()), Map.of(
-                    "clusterId", clusterId,
-                    "status", "frozen",
-                    "sourceRowId", normalizedRowId,
-                    "reason", request.reason().trim(),
-                    "idempotencyKey", idempotencyKey.trim()));
+            ApiResult<RiskArbitrageRowView> approvalGuard = delegatedDirectExecutionGuard(
+                    "k2_row_freeze", "RISK_ARBITRAGE_ROW", normalizedRowId);
+            if (approvalGuard != null) return approvalGuard;
         }
-        RiskArbitrageRowView updated = riskRepository.updateArbitrageDisposition(normalizedRowId, spec.disposition()).orElse(before);
-        audit(spec.auditAction(), "RISK_ARBITRAGE_ROW", normalizedRowId, null, operator(request.operator()), Map.of(
-                "rowId", normalizedRowId,
-                "viewKey", before.viewKey(),
-                "action", normalizedAction,
-                "clusterId", before.clusterId() == null ? "" : before.clusterId(),
-                "linkedClusterFrozen", linkedClusterFrozen,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        ApiResult<RiskArbitrageRowView> permissionGuard = requireK2ActionAuthority(spec.requiredAuthority());
+        if (permissionGuard != null) return permissionGuard;
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_ROW_EXPECTED_VERSION_REQUIRED");
+        }
+        String actor = authenticatedOperator();
+        return idempotentCommand("K2_ACTION:" + normalizedRowId, idempotencyKey,
+                requestHash(normalizedRowId, normalizedAction, String.valueOf(request.expectedVersion()),
+                        String.valueOf(request.clusterExpectedVersion()), request.reason()), () -> {
+                    RiskArbitrageRowView before = riskRepository.findArbitrageRow(normalizedRowId).orElse(null);
+                    if (before == null) return ApiResult.fail(404, "K2_ROW_NOT_FOUND");
+                    if (!request.expectedVersion().equals(before.version())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K2_ROW_CONCURRENT_UPDATE");
+                    }
+                    if (StringUtils.hasText(before.disposition()) || !before.actions().contains(spec.requiredRowAction())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "arbitrage_row", normalizedRowId) > 0) {
+                        return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                    }
+                    boolean linkedClusterFrozen = false;
+                    if ("freeze-cluster".equals(normalizedAction)) {
+                        String clusterId = trimmed(before.clusterId());
+                        if (!StringUtils.hasText(clusterId)) {
+                            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_CLUSTER_ID_REQUIRED");
+                        }
+                        if (request.clusterExpectedVersion() == null || request.clusterExpectedVersion() < 0) {
+                            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_CLUSTER_EXPECTED_VERSION_REQUIRED");
+                        }
+                        if (!A2ReplayContext.isReplaying()
+                                && lockMapper.countActiveByTarget("K", "cluster", clusterId) > 0) {
+                            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                        }
+                        RiskOpsRepository.MultiAccountClusterState clusterBefore =
+                                riskRepository.multiAccountClusterState(clusterId).orElse(null);
+                        if (clusterBefore == null) return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
+                        if (clusterBefore.version() != request.clusterExpectedVersion()) {
+                            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
+                        }
+                        if (!K1_CLUSTER_TRANSITIONS.getOrDefault(clusterBefore.status(), Set.of()).contains("frozen")) {
+                            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_FLAG_REQUIRED");
+                        }
+                        if (!riskRepository.updateMultiAccountClusterStatus(
+                                clusterId, clusterBefore.status(), clusterBefore.version(), "frozen",
+                                request.reason().trim(), actor)) {
+                            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
+                        }
+                        linkedClusterFrozen = true;
+                        auditRequired("K1_CLUSTER_STATUS_CHANGED_BY_K2", "RISK_MULTI_ACCOUNT_CLUSTER", clusterId, actor, Map.of(
+                                "clusterId", clusterId,
+                                "before", Map.of("status", clusterBefore.status(), "version", clusterBefore.version()),
+                                "after", Map.of("status", "frozen", "version", clusterBefore.version() + 1),
+                                "sourceRowId", normalizedRowId,
+                                "reason", request.reason().trim(),
+                                "idempotencyKey", idempotencyKey.trim()));
+                    }
+                    RiskArbitrageRowView updated = riskRepository.updateArbitrageDisposition(
+                            normalizedRowId, request.expectedVersion(), spec.disposition()).orElse(null);
+                    if (updated == null) throw new BizException(409, "K2_ROW_CONCURRENT_UPDATE");
+                    auditRequired(spec.auditAction(), "RISK_ARBITRAGE_ROW", normalizedRowId, actor, Map.of(
+                            "rowId", normalizedRowId,
+                            "action", normalizedAction,
+                            "before", k2RowSnapshot(before),
+                            "after", k2RowSnapshot(updated),
+                            "linkedClusterFrozen", linkedClusterFrozen,
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(updated);
+                });
     }
 
     public ApiResult<Map<String, Object>> scoringOverview() {
@@ -736,16 +1062,25 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     public ApiResult<Map<String, Object>> scoringOverview(RiskScoringOverviewQueryRequest request) {
         List<RiskScoreDistributionView> distribution = riskRepository.scoringDistribution();
+        RiskScoreModelView activeModel = riskRepository.activeScoringModel().orElse(null);
         int overridePageNum = normalizePageNum(request == null ? null : request.overridePageNum());
         int overridePageSize = normalizeLimit(request == null ? null : request.overridePageSize(), 5, 50);
         Map<String, Object> response = new LinkedHashMap<>();
+        response.put("model", activeModel);
+        response.put("draft", riskRepository.draftScoringModel().orElse(null));
+        response.put("modelHistory", riskRepository.scoringModels());
         response.put("dimensions", riskRepository.scoringDimensions());
         response.put("config", riskRepository.scoringConfig());
         response.put("distribution", distribution);
         response.put("totalUsers", distribution.stream().mapToLong(v -> v.count() == null ? 0L : v.count()).sum());
+        response.put("recomputePending", activeModel == null
+                ? 0L : riskRepository.countScoreUsersNeedingProjection(activeModel.version()));
         response.put("overrides", riskRepository.pageScoreOverrides(overridePageNum, overridePageSize));
         response.put("overrideActive", riskRepository.countActiveScoreOverrides());
-        response.put("redlines", List.of("weights must sum to 100", "model changes require platform admin reason", "single-user override must be reversible"));
+        response.put("redlines", List.of(
+                "API weight ratios must sum to 1 +/- 0.001; the UI displays canonical percentage points",
+                "model changes require platform admin reason",
+                "single-user override must be reversible"));
         return ApiResult.ok(response);
     }
 
@@ -755,6 +1090,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
         }
         return riskRepository.findScoreUser(normalized)
+                .map(this::withK4ScoreHistory)
                 .map(ApiResult::ok)
                 .orElseGet(() -> ApiResult.fail(404, "SCORE_USER_NOT_FOUND"));
     }
@@ -764,138 +1100,292 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(riskRepository.searchScoreUsers(trimmed(keyword), normalizedLimit));
     }
 
+    /** @deprecated K4 model changes must be saved as a versioned draft and explicitly published. */
+    @Deprecated
     public ApiResult<Map<String, Object>> updateScoringWeights(String idempotencyKey, RiskScoringWeightsRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        Map<String, Integer> weights = request.weights();
-        if (weights == null || weights.isEmpty()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_WEIGHTS_REQUIRED");
-        }
-        Set<String> knownKeys = riskRepository.scoringDimensions().stream()
-                .map(RiskScoreDimensionView::dimKey)
-                .collect(Collectors.toSet());
-        if (!knownKeys.equals(weights.keySet())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_WEIGHT_KEYS_INVALID");
-        }
-        int total = weights.values().stream().mapToInt(v -> v == null ? -1 : v).sum();
-        boolean invalid = weights.values().stream().anyMatch(v -> v == null || v < 0 || v > 100);
-        if (invalid || total != 100) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_WEIGHTS_MUST_SUM_100");
-        }
-        List<RiskScoreDimensionView> updated = riskRepository.updateScoringWeights(new LinkedHashMap<>(weights));
-        audit("K4_SCORE_WEIGHTS_CHANGED", "RISK_SCORE_MODEL", "weights", null, operator(request.operator()), Map.of(
-                "weights", updated,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return scoringOverview();
+        return rejectK4Write("legacyWeights", "active", authenticatedK4Operator(), 409,
+                "K4_MODEL_DRAFT_REQUIRED", request == null ? null : request.reason(), idempotencyKey);
     }
 
     public ApiResult<Map<String, Object>> updateScoringSource(String idempotencyKey, RiskScoringSourceRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        String inputSource = trimmed(request.inputSource());
-        if (!RiskScoringSourceCatalog.contains(inputSource)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_SOURCE_INVALID");
-        }
-        riskRepository.updateScoringConfig("inputSource", inputSource);
-        audit("K4_SCORE_SOURCE_TOGGLED", "RISK_SCORE_MODEL", "source", null, operator(request.operator()), Map.of(
-                "inputSource", inputSource,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return scoringOverview();
+        return rejectK4Write("legacySource", "active", authenticatedK4Operator(), 409,
+                "K4_MODEL_DRAFT_REQUIRED", request == null ? null : request.reason(), idempotencyKey);
     }
 
     public ApiResult<Map<String, Object>> updateScoringBand(String idempotencyKey, RiskScoringBandRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        Integer lowMax = request.lowMax();
-        Integer highMin = request.highMin();
-        if (lowMax == null || highMin == null || lowMax < 0 || highMin > 100 || lowMax >= highMin) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_BAND_INVALID");
-        }
-        riskRepository.updateScoringConfig("bandLowMax", String.valueOf(lowMax));
-        riskRepository.updateScoringConfig("bandHighMin", String.valueOf(highMin));
-        audit("K4_SCORE_BAND_CHANGED", "RISK_SCORE_MODEL", "band", null, operator(request.operator()), Map.of(
-                "lowMax", lowMax,
-                "highMin", highMin,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return scoringOverview();
+        return rejectK4Write("legacyBand", "active", authenticatedK4Operator(), 409,
+                "K4_MODEL_DRAFT_REQUIRED", request == null ? null : request.reason(), idempotencyKey);
     }
 
     public ApiResult<Map<String, Object>> updateScoringEscalate(String idempotencyKey, RiskScoringEscalateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        Integer score = request.score();
-        if (score == null || score < 70 || score > 100) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_ESCALATE_INVALID");
-        }
-        riskRepository.updateScoringConfig("autoEscalateScore", String.valueOf(score));
-        audit("K4_SCORE_ESCALATE_CHANGED", "RISK_SCORE_MODEL", "escalate", null, operator(request.operator()), Map.of(
-                "score", score,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return scoringOverview();
+        return rejectK4Write("legacyEscalate", "active", authenticatedK4Operator(), 409,
+                "K4_MODEL_DRAFT_REQUIRED", request == null ? null : request.reason(), idempotencyKey);
     }
 
+    @Transactional
+    public ApiResult<Map<String, Object>> saveScoringModelDraft(
+            String idempotencyKey, RiskScoringModelDraftRequest request) {
+        String actor = authenticatedK4Operator();
+        ApiResult<Map<String, Object>> guard = validateK4Draft(idempotencyKey, request);
+        if (guard != null) {
+            return rejectK4Write("saveDraft", "draft", actor, guard.getCode(), guard.getMessage(),
+                    request == null ? null : request.reason(), idempotencyKey);
+        }
+        return executeK4Write("saveDraft", "draft", actor, request.reason(), idempotencyKey, () ->
+                idempotentCommand("K4_MODEL_DRAFT", idempotencyKey,
+                requestHash(k4DraftHash(request)), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "score_model", "draft") > 0) {
+                        return rejectK4Write("saveDraft", "draft", actor, 409,
+                                "OBJECT_LOCKED_BY_A2", request.reason(), idempotencyKey);
+                    }
+                    RiskScoreModelView before = riskRepository.draftScoringModel()
+                            .orElseGet(() -> riskRepository.activeScoringModel().orElse(null));
+                    RiskScoreModelView saved = riskRepository.saveScoringModelDraft(
+                            request.expectedVersion(), request, actor).orElse(null);
+                    if (saved == null) {
+                        return rejectK4Write("saveDraft", "draft", actor, 409,
+                                "K4_MODEL_CONCURRENT_UPDATE", request.reason(), idempotencyKey);
+                    }
+                    auditRequired("K4_MODEL_DRAFT_SAVED", "RISK_SCORE_MODEL", String.valueOf(saved.version()), actor,
+                            k4AuditDetail(before, saved, request.reason(), idempotencyKey));
+                    return scoringOverview();
+                }));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> publishScoringModel(
+            String idempotencyKey, RiskScoringModelPublishRequest request) {
+        String actor = authenticatedK4Operator();
+        ApiResult<Map<String, Object>> guard = requireK4Command(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return rejectK4Write("publish", "draft", actor, guard.getCode(), guard.getMessage(),
+                    request == null ? null : request.reason(), idempotencyKey);
+        }
+        if (request == null || request.expectedVersion() == null) {
+            return rejectK4Write("publish", "draft", actor, OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "K4_MODEL_VERSION_REQUIRED", request == null ? null : request.reason(), idempotencyKey);
+        }
+        if (!A2ReplayContext.isReplaying()
+                && !superAdminAuthorization.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            return rejectK4Write("publish", "draft", actor, OpsErrorCode.FORBIDDEN.httpStatus(),
+                    OpsErrorCode.FORBIDDEN.name(), request.reason(), idempotencyKey);
+        }
+        return executeK4Write("publish", "draft", actor, request.reason(), idempotencyKey, () ->
+                idempotentCommand("K4_MODEL_PUBLISH", idempotencyKey,
+                requestHash(String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "score_model", "draft") > 0) {
+                        return rejectK4Write("publish", "draft", actor, 409,
+                                "OBJECT_LOCKED_BY_A2", request.reason(), idempotencyKey);
+                    }
+                    RiskScoreModelView candidate = riskRepository.draftScoringModel().orElse(null);
+                    if (candidate != null && !validK4ModelSnapshot(candidate)) {
+                        return rejectK4Write("publish", "draft", actor, 422,
+                                "K4_MODEL_SNAPSHOT_INVALID", request.reason(), idempotencyKey);
+                    }
+                    RiskScoreModelView before = riskRepository.activeScoringModel().orElse(null);
+                    RiskScoreModelView published = riskRepository.publishScoringModel(
+                            request.expectedVersion(), request.reason(), actor).orElse(null);
+                    if (published == null) {
+                        return rejectK4Write("publish", "draft", actor, 409,
+                                "K4_MODEL_CONCURRENT_UPDATE", request.reason(), idempotencyKey);
+                    }
+                    recomputeK4Scores(published, riskRepository.scoreUserNosNeedingProjection(
+                            published.version(), K4ScoreBackfillInitializer.CHUNK_SIZE));
+                    auditRequired("K4_MODEL_PUBLISHED", "RISK_SCORE_MODEL", String.valueOf(published.version()), actor,
+                            k4AuditDetail(before, published, request.reason(), idempotencyKey));
+                    return scoringOverview();
+                }));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> restoreScoringModelDraft(
+            String idempotencyKey, RiskScoringModelRestoreRequest request) {
+        String actor = authenticatedK4Operator();
+        ApiResult<Map<String, Object>> guard = requireK4Command(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null || request == null || request.modelVersion() == null || request.expectedVersion() == null) {
+            String code = guard == null ? "K4_MODEL_RESTORE_INVALID" : guard.getMessage();
+            int status = guard == null ? OpsErrorCode.VALIDATION_FAILED.httpStatus() : guard.getCode();
+            return rejectK4Write("restoreDraft", "model-history", actor, status, code,
+                    request == null ? null : request.reason(), idempotencyKey);
+        }
+        RiskScoreModelView historical = riskRepository.scoringModel(request.modelVersion()).orElse(null);
+        if (historical == null || "draft".equals(historical.state())) {
+            return rejectK4Write("restoreDraft", String.valueOf(request.modelVersion()), actor, 404,
+                    "K4_MODEL_HISTORY_NOT_FOUND", request.reason(), idempotencyKey);
+        }
+        if (!validK4ModelSnapshot(historical)) {
+            return rejectK4Write("restoreDraft", String.valueOf(request.modelVersion()), actor, 422,
+                    "K4_MODEL_SNAPSHOT_INVALID", request.reason(), idempotencyKey);
+        }
+        return executeK4Write("restoreDraft", String.valueOf(request.modelVersion()), actor,
+                request.reason(), idempotencyKey, () -> idempotentCommand("K4_MODEL_RESTORE_DRAFT", idempotencyKey,
+                requestHash(String.valueOf(request.modelVersion()), String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    RiskScoringModelDraftRequest restored = new RiskScoringModelDraftRequest(
+                            request.expectedVersion(), historical.weights(), historical.inputSources(), historical.scoreMappings(),
+                            historical.bandLowMax(), historical.bandHighMin(), historical.autoEscalateScore(),
+                            request.reason(), actor);
+                    RiskScoreModelView saved = riskRepository.saveScoringModelDraft(
+                            request.expectedVersion(), restored, actor).orElse(null);
+                    if (saved == null) {
+                        return rejectK4Write("restoreDraft", String.valueOf(request.modelVersion()), actor, 409,
+                                "K4_MODEL_CONCURRENT_UPDATE", request.reason(), idempotencyKey);
+                    }
+                    auditRequired("K4_MODEL_HISTORY_RESTORED_TO_DRAFT", "RISK_SCORE_MODEL",
+                            String.valueOf(saved.version()), actor,
+                            k4AuditDetail(historical, saved, request.reason(), idempotencyKey));
+                    return scoringOverview();
+                }));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> recomputeScores(
+            String idempotencyKey, RiskScoreBatchCommandRequest request) {
+        String actor = authenticatedK4Operator();
+        ApiResult<Map<String, Object>> guard = requireK4Command(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return rejectK4Write("batchRecompute", "batch", actor, guard.getCode(), guard.getMessage(),
+                    request == null ? null : request.reason(), idempotencyKey);
+        }
+        if (request.expectedModelVersion() == null || request.expectedModelVersion() < 1) {
+            return rejectK4Write("batchRecompute", "batch", actor, 422,
+                    "K4_MODEL_VERSION_REQUIRED", request.reason(), idempotencyKey);
+        }
+        List<String> requested = request.userNos() == null ? List.of() : request.userNos().stream()
+                .map(this::trimmed).filter(StringUtils::hasText).distinct().toList();
+        if (requested.size() > 1000) {
+            return rejectK4Write("batchRecompute", "batch", actor, 422,
+                    "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
+        }
+        List<String> targets = requested.isEmpty() ? riskRepository.scoreUserNos() : requested;
+        if (targets.size() > 1000) {
+            return rejectK4Write("batchRecompute", "batch", actor, 422,
+                    "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
+        }
+        return executeK4Write("batchRecompute", "batch", actor, request.reason(), idempotencyKey, () ->
+                idempotentCommand("K4_SCORE_BATCH_RECOMPUTE", idempotencyKey,
+                requestHash(String.join(",", targets), String.valueOf(request.expectedModelVersion()), request.reason()), () -> {
+                    RiskScoreModelView model = riskRepository.activeScoringModel().orElse(null);
+                    if (model == null) {
+                        return rejectK4Write("batchRecompute", "batch", actor, 409,
+                                "K4_ACTIVE_MODEL_REQUIRED", request.reason(), idempotencyKey);
+                    }
+                    if (!java.util.Objects.equals(model.version(), request.expectedModelVersion())) {
+                        return rejectK4Write("batchRecompute", "batch", actor, 409,
+                                "K4_MODEL_VERSION_CONFLICT", request.reason(), idempotencyKey);
+                    }
+                    List<Map<String, Object>> results = new java.util.ArrayList<>();
+                    for (String userNo : targets) {
+                        RiskScoreUserView current = riskRepository.findScoreUser(userNo).orElse(null);
+                        RiskScoreRawInput input = riskRepository.scoringInput(userNo).orElse(null);
+                        if (current == null || input == null) {
+                            throw new BizException(404, "SCORE_USER_NOT_FOUND:" + userNo);
+                        }
+                        K4RiskScorer.ScoreResult score = k4RiskScorer.score(input, model);
+                        RiskScoreUserView updated = riskRepository.recomputeScore(
+                                userNo, current.rowVersion(), model, score.score(), score.contributions()).orElse(null);
+                        if (updated == null) throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE:" + userNo);
+                        results.add(Map.of("userNo", userNo, "before", current.effectiveScore(),
+                                "after", updated.effectiveScore(), "modelVersion", model.version()));
+                    }
+                    auditRequired("K4_SCORE_BATCH_RECOMPUTED", "RISK_SCORE_USER_BATCH", "batch", actor, Map.of(
+                            "users", results,
+                            "count", results.size(),
+                            "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    return ApiResult.ok(Map.of("count", results.size(), "users", results));
+                }));
+    }
+
+    @Transactional
     public ApiResult<RiskScoreUserView> overrideScore(String userNo, String idempotencyKey, RiskScoreOverrideRequest request) {
-        ApiResult<RiskScoreUserView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        String actor = authenticatedK4Operator();
+        String normalized = trimmed(userNo);
+        ApiResult<RiskScoreUserView> guard = requireK4Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
-            return guard;
+            return rejectK4Write("override", normalized, actor, guard.getCode(), guard.getMessage(),
+                    request == null ? null : request.reason(), idempotencyKey);
         }
         Integer score = request.score();
-        String normalized = trimmed(userNo);
-        if (!StringUtils.hasText(normalized) || score == null || score < 0 || score > 100) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_OVERRIDE_INVALID");
+        if (!StringUtils.hasText(normalized) || request.expectedVersion() == null
+                || score == null || score < 0 || score > 100) {
+            return rejectK4Write("override", normalized, actor, OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "SCORE_OVERRIDE_INVALID", request.reason(), idempotencyKey);
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "score_user", normalized) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        RiskScoreOverrideView updated = riskRepository.overrideScore(normalized, score, request.reason().trim(), operator(request.operator())).orElse(null);
-        if (updated == null) {
-            return ApiResult.fail(404, "SCORE_USER_NOT_FOUND");
-        }
-        audit("K4_SCORE_OVERRIDDEN", "RISK_SCORE_USER", normalized, null, operator(request.operator()), Map.of(
-                "userNo", normalized,
-                "overrideScore", score,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        RiskScoreUserView scoreUser = riskRepository.findScoreUser(normalized).orElse(null);
-        triggerKycReviewIfScoreCrossed(scoreUser, request.reason().trim(), operator(request.operator()), idempotencyKey.trim());
-        return scoreUser == null ? scoreUser(normalized) : ApiResult.ok(scoreUser);
+        return executeK4Write("override", normalized, actor, request.reason(), idempotencyKey, () ->
+                idempotentCommand("K4_SCORE_OVERRIDE:" + normalized, idempotencyKey,
+                requestHash(normalized, String.valueOf(request.expectedVersion()), String.valueOf(score), request.reason()), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "score_user", normalized) > 0) {
+                        return rejectK4Write("override", normalized, actor, 409,
+                                "OBJECT_LOCKED_BY_A2", request.reason(), idempotencyKey);
+                    }
+                    RiskScoreUserView before = riskRepository.findScoreUser(normalized).orElse(null);
+                    if (before == null) {
+                        return rejectK4Write("override", normalized, actor, 404,
+                                "SCORE_USER_NOT_FOUND", request.reason(), idempotencyKey);
+                    }
+                    RiskScoreOverrideView updated = riskRepository.overrideScore(
+                            normalized, request.expectedVersion(), score, request.reason().trim(), actor).orElse(null);
+                    if (updated == null) {
+                        return rejectK4Write("override", normalized, actor, 409,
+                                "K4_SCORE_CONCURRENT_UPDATE", request.reason(), idempotencyKey);
+                    }
+                    RiskScoreUserView scoreUser = riskRepository.findScoreUser(normalized).orElseThrow();
+                    auditRequired("K4_SCORE_OVERRIDDEN", "RISK_SCORE_USER", normalized, actor,
+                            k4AuditDetail(before, scoreUser, request.reason(), idempotencyKey), "MEDIUM");
+                    triggerKycReviewIfScoreCrossed(scoreUser, request.reason().trim(), actor, idempotencyKey.trim());
+                    return ApiResult.ok(scoreUser);
+                }));
     }
 
+    @Transactional
     public ApiResult<RiskScoreUserView> recomputeScore(String userNo, String idempotencyKey, RiskScoreCommandRequest request) {
-        ApiResult<RiskScoreUserView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
+        String actor = authenticatedK4Operator();
         String normalized = trimmed(userNo);
-        if (!StringUtils.hasText(normalized)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
+        ApiResult<RiskScoreUserView> guard = requireK4Command(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return rejectK4Write("recompute", normalized, actor, guard.getCode(), guard.getMessage(),
+                    request == null ? null : request.reason(), idempotencyKey);
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "score_user", normalized) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        if (!StringUtils.hasText(normalized) || request.expectedVersion() == null) {
+            return rejectK4Write("recompute", normalized, actor, OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "SCORE_USER_REQUIRED", request.reason(), idempotencyKey);
         }
-        RiskScoreUserView updated = riskRepository.recomputeScore(normalized).orElse(null);
-        if (updated == null) {
-            return ApiResult.fail(404, "SCORE_USER_NOT_FOUND");
-        }
-        audit("K4_SCORE_RECOMPUTED", "RISK_SCORE_USER", normalized, null, operator(request.operator()), Map.of(
-                "userNo", normalized,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        return executeK4Write("recompute", normalized, actor, request.reason(), idempotencyKey, () ->
+                idempotentCommand("K4_SCORE_RECOMPUTE:" + normalized, idempotencyKey,
+                requestHash(normalized, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "score_user", normalized) > 0) {
+                        return rejectK4Write("recompute", normalized, actor, 409,
+                                "OBJECT_LOCKED_BY_A2", request.reason(), idempotencyKey);
+                    }
+                    RiskScoreUserView before = riskRepository.findScoreUser(normalized).orElse(null);
+                    RiskScoreRawInput input = riskRepository.scoringInput(normalized).orElse(null);
+                    RiskScoreModelView model = riskRepository.activeScoringModel().orElse(null);
+                    if (before == null || input == null) {
+                        return rejectK4Write("recompute", normalized, actor, 404,
+                                "SCORE_USER_NOT_FOUND", request.reason(), idempotencyKey);
+                    }
+                    if (model == null) {
+                        return rejectK4Write("recompute", normalized, actor, 409,
+                                "K4_ACTIVE_MODEL_REQUIRED", request.reason(), idempotencyKey);
+                    }
+                    K4RiskScorer.ScoreResult result = k4RiskScorer.score(input, model);
+                    RiskScoreUserView updated = riskRepository.recomputeScore(
+                            normalized, request.expectedVersion(), model, result.score(), result.contributions()).orElse(null);
+                    if (updated == null) {
+                        return rejectK4Write("recompute", normalized, actor, 409,
+                                "K4_SCORE_CONCURRENT_UPDATE", request.reason(), idempotencyKey);
+                    }
+                    auditRequired("K4_SCORE_RECOMPUTED", "RISK_SCORE_USER", normalized, actor,
+                            k4AuditDetail(before, updated, request.reason(), idempotencyKey));
+                    return ApiResult.ok(updated);
+                }));
     }
 
     public ApiResult<Map<String, Object>> kycReviewOverview() {
@@ -906,87 +1396,225 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         int ticketPageNum = normalizePageNum(request == null ? null : request.ticketPageNum());
         int ticketPageSize = normalizeLimit(request == null ? null : request.ticketPageSize(), 5, 50);
         String ticketFilter = normalizeKycTicketFilter(request == null ? null : request.ticketFilter());
-        return ApiResult.ok(riskRepository.kycReviewOverview(ticketPageNum, ticketPageSize, ticketFilter));
+        Map<String, Object> overview = new LinkedHashMap<>(riskRepository.kycReviewOverview(ticketPageNum, ticketPageSize, ticketFilter));
+        Map<String, Object> subscription = riskRepository.kycAlertSubscription(authenticatedOperator());
+        overview.put("subscription", subscription);
+        overview.put("alerts", riskRepository.kycAlerts(stringList(subscription.get("alertTypes"))));
+        return ApiResult.ok(overview);
     }
 
-    public ApiResult<Map<String, Object>> updateKycReviewParam(String key, String idempotencyKey, RiskParamUpdateRequest request) {
+    public ApiResult<List<Map<String, Object>>> kycReviewUsers(String keyword, Integer limit) {
+        int normalizedLimit = normalizeLimit(limit, 20, 50);
+        return ApiResult.ok(userKycStatusFacade.reviewCandidates(keyword, normalizedLimit));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updateKycReviewParam(
+            String key, String idempotencyKey, RiskKycReviewParamUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
+        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
+        if (reasonGuard != null) return reasonGuard;
+        ApiResult<Map<String, Object>> permission = requireK5Authority("risk_k5_write");
+        if (permission != null) return permission;
         String normalizedKey = trimmed(key);
         String value = trimmed(request.value());
-        if (!StringUtils.hasText(normalizedKey) || !StringUtils.hasText(value)) {
+        if (!StringUtils.hasText(normalizedKey) || !StringUtils.hasText(value) || request.expectedVersion() == null
+                || request.expectedVersion() < 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_PARAM_VALUE_REQUIRED");
         }
         value = normalizeK5Param(normalizedKey, value);
         if (!StringUtils.hasText(value)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_PARAM_VALUE_INVALID");
         }
-        Map<String, Object> updated = riskRepository.updateKycReviewParam(normalizedKey, value);
-        audit("K5_KYC_REVIEW_PARAM_CHANGED", "RISK_KYC_REVIEW_PARAM", normalizedKey, null, operator(request.operator()), Map.of(
-                "key", normalizedKey,
-                "value", value,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        String actor = authenticatedOperator();
+        String normalizedValue = value;
+        return idempotentCommand("K5_PARAM:" + normalizedKey, idempotencyKey,
+                requestHash(normalizedKey, normalizedValue, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    Map<String, Object> updated = riskRepository
+                            .updateKycReviewParam(normalizedKey, normalizedValue, request.expectedVersion()).orElse(null);
+                    if (updated == null) return ApiResult.fail(409, "K5_PARAM_VERSION_CONFLICT");
+                    updated.put("subscription", riskRepository.kycAlertSubscription(actor));
+                    Map<String, Object> detail = new LinkedHashMap<>();
+                    detail.put("key", normalizedKey);
+                    detail.put("value", normalizedValue);
+                    detail.put("expectedVersion", request.expectedVersion());
+                    detail.put("reason", request.reason().trim());
+                    detail.put("idempotencyKey", idempotencyKey.trim());
+                    detail.put("slaRecomputedTickets", updated.getOrDefault("slaRecomputedTickets", 0));
+                    auditRequired("K5_KYC_REVIEW_PARAM_CHANGED", "RISK_KYC_REVIEW_PARAM", normalizedKey, actor, detail);
+                    return ApiResult.ok(updated);
+                });
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> decideKycReviewTicket(String ticketId, String idempotencyKey, RiskKycReviewDecisionRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
+        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
+        if (reasonGuard != null) return reasonGuard;
         String normalizedTicket = trimmed(ticketId);
         String decision = trimmed(request.decision()).toLowerCase(Locale.ROOT);
         if (!StringUtils.hasText(normalizedTicket) || !KYC_REVIEW_DECISIONS.contains(decision)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_DECISION_INVALID");
         }
-        KycReviewTicketContext ticket = riskRepository.findKycReviewTicket(normalizedTicket).orElse(null);
-        if (ticket == null) {
-            return ApiResult.fail(404, "K5_REVIEW_TICKET_NOT_FOUND");
+        if ("rejected".equals(decision)
+                && (!StringUtils.hasText(request.reasonCode())
+                || !KYC_REJECT_REASON_CODES.contains(request.reasonCode().trim()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_REJECT_REASON_CODE_INVALID");
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "ticket", normalizedTicket) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        String actor = authenticatedOperator();
+        ApiResult<Map<String, Object>> permission = requireK5Authority(
+                "passed".equals(decision) ? "risk_k5_ticket_pass" : "risk_k5_ticket_reject");
+        if (permission != null) {
+            return rejectK5Decision(normalizedTicket, actor, permission.getCode(), permission.getMessage(),
+                    request.reason(), idempotencyKey);
         }
-        if (!riskRepository.updateKycReviewTicketStatus(normalizedTicket, decision, request.reason().trim(), operator(request.operator()))) {
-            return ApiResult.fail(404, "K5_REVIEW_TICKET_NOT_FOUND");
-        }
-        Map<String, Object> downstream = applyKycReviewDecision(ticket, decision, request.reason().trim(), operator(request.operator()));
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("ticketId", normalizedTicket);
-        detail.put("userNo", ticket.userNo());
-        detail.put("decision", decision);
-        detail.put("kycStatus", "passed".equals(decision) ? "APPROVED" : "REJECTED");
-        detail.put("reason", request.reason().trim());
-        detail.put("idempotencyKey", idempotencyKey.trim());
-        detail.put("downstream", downstream);
-        audit("K5_KYC_REVIEW_DECIDED", "RISK_KYC_REVIEW_TICKET", normalizedTicket, null, operator(request.operator()), detail);
-        return kycReviewOverview();
+        Long requestedVersion = request.expectedVersion();
+        String reasonCode = StringUtils.hasText(request.reasonCode())
+                ? request.reasonCode().trim() : "KYC_REVIEW_PASSED";
+        String hash = requestHash(normalizedTicket, decision, String.valueOf(requestedVersion), reasonCode, request.reason());
+        return executeK5Decision(normalizedTicket, actor, request.reason(), idempotencyKey, () ->
+                idempotentCommand("K5_DECISION:" + normalizedTicket, idempotencyKey, hash, () -> {
+                    KycReviewTicketContext ticket = riskRepository.findKycReviewTicket(normalizedTicket).orElse(null);
+                    if (ticket == null) {
+                        return rejectK5Decision(normalizedTicket, actor, 404, "K5_REVIEW_TICKET_NOT_FOUND",
+                                request.reason(), idempotencyKey);
+                    }
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("K", "ticket", normalizedTicket) > 0) {
+                        return rejectK5Decision(normalizedTicket, actor, 409, "OBJECT_LOCKED_BY_A2",
+                                request.reason(), idempotencyKey);
+                    }
+                    if (!"in-review".equals(ticket.status())) {
+                        return rejectK5Decision(normalizedTicket, actor, 409, "K5_REVIEW_TICKET_NOT_REVIEWABLE",
+                                request.reason(), idempotencyKey);
+                    }
+                    Long expectedVersion = requestedVersion;
+                    if (expectedVersion == null && A2ReplayContext.isReplaying()) expectedVersion = ticket.version();
+                    if (expectedVersion == null || expectedVersion < 0 || ticket.version() != expectedVersion) {
+                        return rejectK5Decision(normalizedTicket, actor, 409, "K5_REVIEW_TICKET_VERSION_CONFLICT",
+                                request.reason(), idempotencyKey);
+                    }
+                    long version = expectedVersion;
+                    if (!riskRepository.updateKycReviewTicketStatus(normalizedTicket, decision, version,
+                            reasonCode, request.reason().trim(), actor)) {
+                        return rejectK5Decision(normalizedTicket, actor, 409, "K5_REVIEW_TICKET_VERSION_CONFLICT",
+                                request.reason(), idempotencyKey);
+                    }
+                    Map<String, Object> downstream = applyKycReviewDecision(ticket, decision, request.reason().trim(), actor);
+                    Map<String, Object> detail = new LinkedHashMap<>();
+                    detail.put("ticketId", normalizedTicket);
+                    detail.put("userNo", ticket.userNo());
+                    detail.put("decision", decision);
+                    detail.put("reasonCode", reasonCode);
+                    detail.put("expectedVersion", version);
+                    detail.put("reason", request.reason().trim());
+                    detail.put("idempotencyKey", idempotencyKey.trim());
+                    detail.put("downstream", downstream);
+                    auditRequired("K5_KYC_REVIEW_DECIDED", "RISK_KYC_REVIEW_TICKET", normalizedTicket, actor, detail);
+                    return kycReviewOverview();
+                }));
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> createManualKycReviewTicket(String idempotencyKey, RiskKycManualReviewRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
+        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
+        if (reasonGuard != null) return reasonGuard;
         String userNo = trimmed(request.userNo());
         if (!StringUtils.hasText(userNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_USER_REQUIRED");
+        }
+        ApiResult<Map<String, Object>> permission = requireK5Authority("risk_k5_ticket_manual");
+        if (permission != null) return permission;
+        if (!userKycStatusFacade.userExists(userNo)) {
+            return ApiResult.fail(404, "K5_REVIEW_USER_NOT_FOUND");
         }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("K", "user", userNo) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        String ticketId = "KR-M-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
-        riskRepository.createManualKycReviewTicket(ticketId, userNo, request.reason().trim(), operator(request.operator()));
-        audit("K5_KYC_REVIEW_MANUAL_CREATED", "RISK_KYC_REVIEW_TICKET", ticketId, null, operator(request.operator()), Map.of(
-                "ticketId", ticketId,
-                "userNo", userNo,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return kycReviewOverview();
+        String actor = authenticatedOperator();
+        return idempotentCommand("K5_MANUAL:" + userNo, idempotencyKey,
+                requestHash(userNo, request.reason()), () -> {
+                    KycReviewTicketContext open = riskRepository.findOpenKycReviewTicketByUser(userNo).orElse(null);
+                    String ticketId;
+                    String action;
+                    boolean merged;
+                    if (open != null) {
+                        if (!riskRepository.mergeOpenKycReviewTicket(open.ticketId(), open.version(), request.reason().trim(), actor)) {
+                            return ApiResult.fail(409, "K5_REVIEW_TICKET_VERSION_CONFLICT");
+                        }
+                        ticketId = open.ticketId();
+                        action = "K5_KYC_REVIEW_MANUAL_MERGED";
+                        merged = true;
+                    } else {
+                        ticketId = "KR-M-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
+                        try {
+                            riskRepository.createManualKycReviewTicket(ticketId, userNo, request.reason().trim(), actor);
+                            action = "K5_KYC_REVIEW_MANUAL_CREATED";
+                            merged = false;
+                        } catch (DuplicateKeyException race) {
+                            KycReviewTicketContext winner = riskRepository.findOpenKycReviewTicketByUser(userNo).orElse(null);
+                            if (winner == null || !riskRepository.mergeOpenKycReviewTicket(
+                                    winner.ticketId(), winner.version(), request.reason().trim(), actor)) {
+                                return ApiResult.fail(409, "K5_REVIEW_TICKET_CONCURRENT_TRIGGER");
+                            }
+                            ticketId = winner.ticketId();
+                            action = "K5_KYC_REVIEW_MANUAL_MERGED";
+                            merged = true;
+                        }
+                    }
+                    auditRequired(action, "RISK_KYC_REVIEW_TICKET", ticketId, actor, Map.of(
+                            "ticketId", ticketId, "userNo", userNo, "reason", request.reason().trim(),
+                            "idempotencyKey", idempotencyKey.trim()));
+                    ApiResult<Map<String, Object>> result = kycReviewOverview();
+                    result.getData().put("manualResult", Map.of(
+                            "ticketId", ticketId,
+                            "userNo", userNo,
+                            "merged", merged));
+                    return result;
+                });
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updateKycAlertSubscription(
+            String idempotencyKey, RiskKycAlertSubscriptionRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
+        if (reasonGuard != null) return reasonGuard;
+        ApiResult<Map<String, Object>> permission = requireK5Authority("risk_k5_write");
+        if (permission != null) return permission;
+        if (request.expectedVersion() == null || request.expectedVersion() < 0
+                || request.alertTypes() == null || request.channels() == null
+                || request.alertTypes().isEmpty() || request.channels().isEmpty()
+                || !Set.of("sla-breach", "threshold-hit", "large-withdraw-burst").containsAll(request.alertTypes())
+                || !Set.of("in-app").containsAll(request.channels())) {
+            return ApiResult.fail(422, "K5_ALERT_SUBSCRIPTION_INVALID");
+        }
+        List<String> alertTypes = request.alertTypes().stream().distinct().sorted().toList();
+        List<String> channels = request.channels().stream().distinct().sorted().toList();
+        String actor = authenticatedOperator();
+        return idempotentCommand("K5_ALERT_SUBSCRIPTION:" + actor, idempotencyKey,
+                requestHash(String.join(",", alertTypes), String.join(",", channels),
+                        String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    Map<String, Object> subscription = riskRepository.updateKycAlertSubscription(
+                            actor, alertTypes, channels, request.expectedVersion()).orElse(null);
+                    if (subscription == null) return ApiResult.fail(409, "K5_ALERT_SUBSCRIPTION_VERSION_CONFLICT");
+                    auditRequired("K5_ALERT_SUBSCRIPTION_CHANGED", "RISK_KYC_ALERT_SUBSCRIPTION", actor, actor, Map.of(
+                            "alertTypes", alertTypes, "channels", channels, "expectedVersion", request.expectedVersion(),
+                            "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+                    return kycReviewOverview();
+                });
     }
 
     private void triggerKycReviewIfScoreCrossed(RiskScoreUserView user, String reason, String operator, String idempotencyKey) {
@@ -998,44 +1626,101 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             return;
         }
         if (riskRepository.hasOpenKycReviewTicket(user.userNo())) {
+            KycReviewTicketContext open = riskRepository.findOpenKycReviewTicketByUser(user.userNo()).orElse(null);
+            if (open == null || !riskRepository.mergeOpenKycReviewTicket(
+                    open.ticketId(), open.version(), reason, operator)) {
+                throw new IllegalStateException("K5_REVIEW_SCORE_TRIGGER_MERGE_CONFLICT");
+            }
+            auditRequired("K5_KYC_REVIEW_SCORE_TRIGGER_MERGED", "RISK_KYC_REVIEW_TICKET", open.ticketId(), operator, Map.of(
+                    "ticketId", open.ticketId(), "userNo", user.userNo(), "effectiveScore", user.effectiveScore(),
+                    "threshold", threshold, "source", "K4_SCORE_OVERRIDE", "reason", reason,
+                    "idempotencyKey", idempotencyKey));
             return;
         }
         String ticketId = "KR-K4-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
-        riskRepository.createScoreTriggeredKycReviewTicket(ticketId, user.userNo(), user.effectiveScore(), threshold, reason, operator);
-        audit("K5_KYC_REVIEW_TRIGGERED_BY_SCORE", "RISK_KYC_REVIEW_TICKET", ticketId, null, operator, Map.of(
-                "ticketId", ticketId,
-                "userNo", user.userNo(),
-                "effectiveScore", user.effectiveScore(),
-                "threshold", threshold,
-                "source", "K4_SCORE_OVERRIDE",
-                "reason", reason,
-                "idempotencyKey", idempotencyKey));
+        try {
+            riskRepository.createScoreTriggeredKycReviewTicket(
+                    ticketId, user.userNo(), user.effectiveScore(), threshold, reason, operator);
+            auditRequired("K5_KYC_REVIEW_TRIGGERED_BY_SCORE", "RISK_KYC_REVIEW_TICKET", ticketId, operator, Map.of(
+                    "ticketId", ticketId,
+                    "userNo", user.userNo(),
+                    "effectiveScore", user.effectiveScore(),
+                    "threshold", threshold,
+                    "source", "K4_SCORE_OVERRIDE",
+                    "reason", reason,
+                    "idempotencyKey", idempotencyKey));
+        } catch (DuplicateKeyException race) {
+            KycReviewTicketContext winner = riskRepository.findOpenKycReviewTicketByUser(user.userNo()).orElse(null);
+            if (winner == null || !riskRepository.mergeOpenKycReviewTicket(
+                    winner.ticketId(), winner.version(), reason, operator)) {
+                throw race;
+            }
+            auditRequired("K5_KYC_REVIEW_SCORE_TRIGGER_MERGED", "RISK_KYC_REVIEW_TICKET", winner.ticketId(), operator, Map.of(
+                    "ticketId", winner.ticketId(), "userNo", user.userNo(), "effectiveScore", user.effectiveScore(),
+                    "threshold", threshold, "source", "K4_SCORE_OVERRIDE", "reason", reason,
+                    "idempotencyKey", idempotencyKey));
+        }
     }
 
     private Map<String, Object> applyKycReviewDecision(KycReviewTicketContext ticket, String decision, String reason, String operator) {
         Map<String, Object> downstream = new LinkedHashMap<>();
         String kycStatus = "passed".equals(decision) ? "APPROVED" : "REJECTED";
-        downstream.put("c4KycUpdated", userKycStatusFacade.updateKycStatusByUserNo(ticket.userNo(), kycStatus, reason, operator));
-        String sourceDomain = ticketInfoValue(ticket.infoJson(), "sourceDomain");
-        String sourceNo = ticketInfoValue(ticket.infoJson(), "sourceNo");
-        downstream.put("sourceDomain", sourceDomain);
-        downstream.put("sourceNo", sourceNo);
-        if (!StringUtils.hasText(sourceDomain) || !StringUtils.hasText(sourceNo)) {
-            downstream.put("sourceUpdated", false);
-            return downstream;
+        boolean c4Updated = userKycStatusFacade.updateKycStatusByUserNo(ticket.userNo(), kycStatus, reason, operator);
+        if (!c4Updated) {
+            throw new IllegalStateException("K5_C4_KYC_UPDATE_FAILED");
         }
-        boolean sourceUpdated = false;
-        if ("D2".equalsIgnoreCase(sourceDomain)) {
-            sourceUpdated = "passed".equals(decision)
-                    ? financeWithdrawalKycReviewFacade.releaseWithdrawalReview(sourceNo, reason, operator)
-                    : financeWithdrawalKycReviewFacade.rejectWithdrawalReview(sourceNo, reason, operator);
-        } else if ("G2".equalsIgnoreCase(sourceDomain)) {
-            sourceUpdated = "passed".equals(decision)
-                    ? marketExchangeKycReviewFacade.releaseExchangeReview(sourceNo, reason, operator)
-                    : marketExchangeKycReviewFacade.rejectExchangeReview(sourceNo, reason, operator);
+        downstream.put("c4KycUpdated", true);
+        Map<String, RiskOpsRepository.KycReviewSource> uniqueSources = new LinkedHashMap<>();
+        for (RiskOpsRepository.KycReviewSource source : riskRepository.kycReviewSources(ticket.ticketId())) {
+            addKycReviewSource(uniqueSources, source.sourceDomain(), source.sourceNo());
         }
-        downstream.put("sourceUpdated", sourceUpdated);
+        // Backward compatibility for tickets created before the normalized source table existed.
+        addKycReviewSource(uniqueSources,
+                ticketInfoValue(ticket.infoJson(), "sourceDomain"),
+                ticketInfoValue(ticket.infoJson(), "sourceNo"));
+
+        List<Map<String, Object>> sourceUpdates = new ArrayList<>();
+        for (RiskOpsRepository.KycReviewSource source : uniqueSources.values()) {
+            String sourceDomain = source.sourceDomain();
+            String sourceNo = source.sourceNo();
+            boolean sourceUpdated = false;
+            if ("D2".equalsIgnoreCase(sourceDomain)) {
+                sourceUpdated = "passed".equals(decision)
+                        ? financeWithdrawalKycReviewFacade.releaseWithdrawalReview(
+                                sourceNo, ticket.ticketId(), reason, operator)
+                        : financeWithdrawalKycReviewFacade.rejectWithdrawalReview(
+                                sourceNo, ticket.ticketId(), reason, operator);
+            } else if ("G2".equalsIgnoreCase(sourceDomain)) {
+                sourceUpdated = "passed".equals(decision)
+                        ? marketExchangeKycReviewFacade.releaseExchangeReview(sourceNo, reason, operator)
+                        : marketExchangeKycReviewFacade.rejectExchangeReview(sourceNo, reason, operator);
+            }
+            if (("D2".equalsIgnoreCase(sourceDomain) || "G2".equalsIgnoreCase(sourceDomain)) && !sourceUpdated) {
+                throw new IllegalStateException("K5_SOURCE_STATE_UPDATE_FAILED");
+            }
+            sourceUpdates.add(Map.of(
+                    "sourceDomain", sourceDomain,
+                    "sourceNo", sourceNo,
+                    "updated", sourceUpdated));
+        }
+        downstream.put("sourceUpdates", sourceUpdates);
+        downstream.put("sourceUpdatedCount", sourceUpdates.stream()
+                .filter(update -> Boolean.TRUE.equals(update.get("updated"))).count());
+        downstream.put("sourceUpdated", sourceUpdates.stream()
+                .anyMatch(update -> Boolean.TRUE.equals(update.get("updated"))));
+        if (sourceUpdates.size() == 1) {
+            downstream.put("sourceDomain", sourceUpdates.get(0).get("sourceDomain"));
+            downstream.put("sourceNo", sourceUpdates.get(0).get("sourceNo"));
+        }
         return downstream;
+    }
+
+    private void addKycReviewSource(
+            Map<String, RiskOpsRepository.KycReviewSource> sources, String sourceDomain, String sourceNo) {
+        if (!StringUtils.hasText(sourceDomain) || !StringUtils.hasText(sourceNo)) return;
+        String domain = sourceDomain.trim().toUpperCase(Locale.ROOT);
+        String number = sourceNo.trim();
+        sources.putIfAbsent(domain + ":" + number, new RiskOpsRepository.KycReviewSource(domain, number));
     }
 
     private String ticketInfoValue(String infoJson, String key) {
@@ -1055,6 +1740,348 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
+    }
+
+    private <T> ApiResult<T> requireK5Reason(String reason) {
+        int length = reason == null ? 0 : reason.trim().length();
+        if (length < 8 || length > 200) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REASON_LENGTH_INVALID");
+        }
+        return null;
+    }
+
+    private <T> ApiResult<T> requireK1Command(String idempotencyKey, String reason) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        int length = StringUtils.hasText(reason) ? reason.trim().length() : 0;
+        if (length < 8 || length > 200) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
+    private <T> ApiResult<T> requireK2Command(String idempotencyKey, String reason) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        int length = StringUtils.hasText(reason) ? reason.trim().length() : 0;
+        if (length < 8 || length > 200) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
+    private <T> ApiResult<T> requireK3Command(String idempotencyKey, String reason) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        int length = StringUtils.hasText(reason) ? reason.trim().length() : 0;
+        if (length < 8 || length > 200) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
+    private <T> ApiResult<T> requireK4Command(String idempotencyKey, String reason) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(),
+                    OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        int length = StringUtils.hasText(reason) ? reason.trim().length() : 0;
+        if (length < 8 || length > 200) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
+    private ApiResult<Map<String, Object>> validateK4Draft(
+            String idempotencyKey, RiskScoringModelDraftRequest request) {
+        ApiResult<Map<String, Object>> guard = requireK4Command(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (request == null || request.expectedVersion() == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_VERSION_REQUIRED");
+        }
+        Map<String, Integer> weightPercentages = request.weightPercentages();
+        if (!weightPercentages.keySet().equals(Set.copyOf(K4_DIMENSION_KEYS))
+                || weightPercentages.values().stream().anyMatch(value -> value < 0 || value > 100)
+                || weightPercentages.values().stream().mapToInt(Integer::intValue).sum() != 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_WEIGHTS_INVALID");
+        }
+        if (request.inputSources() == null
+                || !request.inputSources().keySet().equals(Set.copyOf(K4_DIMENSION_KEYS))
+                || request.inputSources().values().stream().anyMatch(java.util.Objects::isNull)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_SOURCES_INVALID");
+        }
+        if (!validK4Mappings(request.scoreMappings())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_MAPPINGS_INVALID");
+        }
+        if (request.lowMax() == null || request.highMin() == null
+                || request.lowMax() < 0 || request.highMin() > 100 || request.lowMax() >= request.highMin()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_BANDS_INVALID");
+        }
+        if (request.autoEscalateScore() == null
+                || request.autoEscalateScore() < 70 || request.autoEscalateScore() > 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_ESCALATE_INVALID");
+        }
+        return null;
+    }
+
+    private String k4DraftHash(RiskScoringModelDraftRequest request) {
+        List<String> values = new java.util.ArrayList<>();
+        values.add(String.valueOf(request.expectedVersion()));
+        Map<String, Integer> weights = request.weightPercentages();
+        K4_DIMENSION_KEYS.forEach(key -> values.add(key + "=" + weights.get(key)));
+        K4_DIMENSION_KEYS.forEach(key -> values.add(key + "=" + request.inputSources().get(key)));
+        K4RiskScorer.DEFAULT_MAPPINGS.keySet().stream().sorted()
+                .forEach(key -> values.add(key + "=" + request.scoreMappings().get(key)));
+        values.add(String.valueOf(request.lowMax()));
+        values.add(String.valueOf(request.highMin()));
+        values.add(String.valueOf(request.autoEscalateScore()));
+        values.add(request.reason());
+        return String.join("|", values);
+    }
+
+    private boolean validK4Mappings(Map<String, Integer> mappings) {
+        if (mappings == null || !mappings.keySet().equals(K4RiskScorer.DEFAULT_MAPPINGS.keySet())
+                || mappings.values().stream().anyMatch(java.util.Objects::isNull)) {
+            return false;
+        }
+        for (Map.Entry<String, Integer> entry : mappings.entrySet()) {
+            int value = entry.getValue();
+            if (entry.getKey().endsWith("Score") && (value < 0 || value > 100)) return false;
+            if ("withdraw.largeAmountUsd".equals(entry.getKey()) && (value < 1 || value > 1_000_000)) return false;
+            if ("withdraw.baselineMultiplierPct".equals(entry.getKey()) && (value < 100 || value > 1_000)) return false;
+            if (Set.of("multiAccount.mediumMin", "multiAccount.highMin",
+                            "withdraw.highFrequency24h").contains(entry.getKey())
+                    && (value < 1 || value > 100)) return false;
+            if ("arbitrage.repeatMin".equals(entry.getKey()) && (value < 2 || value > 100)) return false;
+            if (Set.of("account.newDays", "account.matureDays").contains(entry.getKey())
+                    && (value < 1 || value > 10_000)) return false;
+        }
+        return mappings.get("multiAccount.mediumMin") < mappings.get("multiAccount.highMin")
+                && mappings.get("account.newDays") < mappings.get("account.matureDays")
+                && nonDecreasing(mappings, "multiAccount.mediumScore", "multiAccount.highScore", "multiAccount.fraudScore")
+                && nonDecreasing(mappings, "arbitrage.singleScore", "arbitrage.repeatScore", "arbitrage.severeScore")
+                && nonDecreasing(mappings, "kyc.reviewScore", "kyc.pendingScore", "kyc.rejectedScore", "kyc.sanctionedScore")
+                && nonDecreasing(mappings, "withdraw.baselineScore", "withdraw.highScore")
+                && nonDecreasing(mappings, "account.middleScore", "account.newLargeScore")
+                && nonDecreasing(mappings, "anomaly.lowScore", "anomaly.tamperScore");
+    }
+
+    private boolean validK4ModelSnapshot(RiskScoreModelView model) {
+        return model != null
+                && model.weights() != null
+                && model.weights().keySet().equals(Set.copyOf(K4_DIMENSION_KEYS))
+                && model.weights().values().stream().noneMatch(java.util.Objects::isNull)
+                && model.weights().values().stream().allMatch(value -> value >= 0 && value <= 100)
+                && model.weights().values().stream().mapToInt(Integer::intValue).sum() == 100
+                && model.inputSources() != null
+                && model.inputSources().keySet().equals(Set.copyOf(K4_DIMENSION_KEYS))
+                && model.inputSources().values().stream().noneMatch(java.util.Objects::isNull)
+                && validK4Mappings(model.scoreMappings())
+                && model.bandLowMax() != null && model.bandHighMin() != null
+                && model.bandLowMax() >= 0 && model.bandHighMin() <= 100
+                && model.bandLowMax() < model.bandHighMin()
+                && model.autoEscalateScore() != null
+                && model.autoEscalateScore() >= 70 && model.autoEscalateScore() <= 100;
+    }
+
+    private boolean nonDecreasing(Map<String, Integer> mappings, String... keys) {
+        for (int index = 1; index < keys.length; index++) {
+            if (mappings.get(keys[index - 1]) > mappings.get(keys[index])) return false;
+        }
+        return true;
+    }
+
+    private String authenticatedK4Operator() {
+        return authenticatedK3Operator();
+    }
+
+    private RiskScoreUserView withK4ScoreHistory(RiskScoreUserView user) {
+        return new RiskScoreUserView(
+                user.userNo(), user.modelScore(), user.effectiveScore(), user.overridden(),
+                user.bandLabel(), user.bandTone(), user.modelVersion(), user.rowVersion(),
+                user.asOf(), user.updatedText(), user.contributions(),
+                riskRepository.scoreHistory(user.userNo(), 20));
+    }
+
+    private void recomputeK4Scores(RiskScoreModelView model, List<String> scoreUsers) {
+        for (String userNo : scoreUsers) {
+            RiskScoreUserView current = riskRepository.findScoreUser(userNo)
+                    .orElseThrow(() -> new BizException(409, "K4_SCORE_USER_MISSING_DURING_PUBLISH"));
+            RiskScoreRawInput input = riskRepository.scoringInput(userNo)
+                    .orElseThrow(() -> new BizException(409, "K4_SCORE_INPUT_MISSING_DURING_PUBLISH"));
+            K4RiskScorer.ScoreResult score = k4RiskScorer.score(input, model);
+            if (riskRepository.recomputeScore(
+                    userNo, current.rowVersion(), model, score.score(), score.contributions()).isEmpty()) {
+                throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE_DURING_PUBLISH");
+            }
+        }
+    }
+
+    private String normalizeK1Param(String key, String rawValue) {
+        String value = trimmed(rawValue);
+        if ("linkWeight".equals(key)) {
+            return normalizeLinkWeight(value);
+        }
+        int[] range = K1_INTEGER_PARAMS.get(key);
+        if (range != null) {
+            if (!value.matches("\\d+")) {
+                return null;
+            }
+            try {
+                int parsed = Integer.parseInt(value);
+                return parsed >= range[0] && parsed <= range[1] ? String.valueOf(parsed) : null;
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
+        if (K1_DECIMAL_PARAMS.contains(key)) {
+            try {
+                BigDecimal parsed = new BigDecimal(value);
+                if (parsed.compareTo(BigDecimal.ZERO) < 0 || parsed.compareTo(BigDecimal.ONE) > 0) {
+                    return null;
+                }
+                return parsed.stripTrailingZeros().toPlainString();
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private ApiResult<Map<String, Object>> requireK1StatusAuthority(String targetStatus) {
+        if (A2ReplayContext.isReplaying()) {
+            return null;
+        }
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return null;
+        }
+        String required = K1_STATUS_AUTHORITIES.get(targetStatus);
+        boolean allowed = required != null && authentication.getAuthorities().stream()
+                .anyMatch(authority -> required.equals(authority.getAuthority()));
+        return allowed ? null : ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+    }
+
+    private ApiResult<Map<String, Object>> requireK1Authority(String required) {
+        if (A2ReplayContext.isReplaying()) return null;
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) return null;
+        return authentication.getAuthorities().stream().anyMatch(authority -> required.equals(authority.getAuthority()))
+                ? null : ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+    }
+
+    private <T> ApiResult<T> requireK2ActionAuthority(String required) {
+        if (A2ReplayContext.isReplaying()) return null;
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+        }
+        return authentication.getAuthorities().stream().anyMatch(authority -> required.equals(authority.getAuthority()))
+                ? null : ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+    }
+
+    private <T> ApiResult<T> requireK5Authority(String required) {
+        return A2ReplayContext.isReplaying() ? null : requireK2ActionAuthority(required);
+    }
+
+    private <T> ApiResult<T> requireK3Authority(String required) {
+        if (A2ReplayContext.isReplaying()) return null;
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+        }
+        return authentication.getAuthorities().stream().anyMatch(authority -> required.equals(authority.getAuthority()))
+                ? null : ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<Map<String, Object>> idempotentK1(
+            String scope, String idempotencyKey, String requestHash,
+            java.util.function.Supplier<ApiResult<Map<String, Object>>> action) {
+        return idempotentCommand(scope, idempotencyKey, requestHash, action);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> idempotentCommand(
+            String scope, String idempotencyKey, String requestHash,
+            java.util.function.Supplier<ApiResult<T>> action) {
+        return (ApiResult<T>) idempotencyService.execute(
+                scope, idempotencyKey.trim(), requestHash, ApiResult.class, (java.util.function.Supplier) action);
+    }
+
+    private String requestHash(String... values) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String value : values) {
+                digest.update((value == null ? "<null>" : value).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
+    }
+
+    private static List<String> stringList(Object value) {
+        if (!(value instanceof java.util.Collection<?> values)) return List.of();
+        return values.stream().filter(java.util.Objects::nonNull).map(String::valueOf).toList();
+    }
+
+    private String normalizeIpv4Cidr(String value) {
+        String[] parts = trimmed(value).split("/", -1);
+        if (parts.length != 2) {
+            return null;
+        }
+        int prefix;
+        try {
+            prefix = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+        if (prefix < 0 || prefix > 32) {
+            return null;
+        }
+        String[] octets = parts[0].split("\\.", -1);
+        if (octets.length != 4) {
+            return null;
+        }
+        long address = 0;
+        for (String octet : octets) {
+            if (!octet.matches("0|[1-9]\\d{0,2}")) {
+                return null;
+            }
+            int parsed = Integer.parseInt(octet);
+            if (parsed > 255) return null;
+            address = (address << 8) | parsed;
+        }
+        long mask = prefix == 0 ? 0L : (0xffffffffL << (32 - prefix)) & 0xffffffffL;
+        long network = address & mask;
+        return ((network >>> 24) & 255) + "." + ((network >>> 16) & 255) + "."
+                + ((network >>> 8) & 255) + "." + (network & 255) + "/" + prefix;
+    }
+
+    private boolean futureDate(String value) {
+        try {
+            return LocalDate.parse(value).isAfter(LocalDate.now());
+        } catch (DateTimeParseException ex) {
+            return false;
+        }
+    }
+
+    private String authenticatedOperator() {
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && authentication.isAuthenticated() && StringUtils.hasText(authentication.getName())
+                ? authentication.getName().trim()
+                : "system";
+    }
+
+    private String authenticatedK3Operator() {
+        String actor = AdminActorResolver.resolve("system");
+        return StringUtils.hasText(actor) ? actor : "system";
     }
 
     private boolean isFinal(RiskCaseView riskCase) {
@@ -1081,6 +2108,24 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private String normalizeRuleAction(String action) {
         String normalized = trimmed(action).toLowerCase(Locale.ROOT);
         return RULE_ACTIONS.contains(normalized) ? normalized : null;
+    }
+
+    private String normalizeK3ConfigurableAction(String action) {
+        String normalized = trimmed(action).toLowerCase(Locale.ROOT);
+        return K3_CONFIGURABLE_ACTIONS.contains(normalized) ? normalized : null;
+    }
+
+    private Integer normalizeK3Priority(Integer priority) {
+        return priority != null && priority >= 1 && priority <= 1000 ? priority : null;
+    }
+
+    private boolean k3PriorityConflicts(String excludedRuleId, String dimension, int priority) {
+        String canonicalDimension = dimensionMeta(dimension).ruleKey();
+        return riskRepository.withdrawRules().stream()
+                .filter(rule -> excludedRuleId == null || !excludedRuleId.equals(rule.ruleId()))
+                .filter(rule -> !"archived".equalsIgnoreCase(trimmed(rule.state())))
+                .filter(rule -> canonicalDimension.equals(dimensionMeta(rule.dimension()).ruleKey()))
+                .anyMatch(rule -> rule.priority() != null && rule.priority() == priority);
     }
 
     private String normalizeRuleState(String state) {
@@ -1182,7 +2227,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             case "otpGate.otpTtlSeconds" -> normalizeOtpTtlSeconds(value);
             case "otpGate.maxVerifyAttempts" -> normalizeBoundedInteger(value, 1, 10);
             case "otpGate.captchaTicketTtlSeconds" -> normalizeBoundedInteger(value, 30, 600);
-            default -> value;
+            default -> "";
         };
     }
 
@@ -1221,7 +2266,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 return param;
             }
         }
-        return new RiskArbitrageParamView(param.key(), param.name(), value, param.sub(), param.note());
+        return new RiskArbitrageParamView(param.key(), param.name(), value, param.sub(), param.note(), param.version());
     }
 
     private void persistCanonicalOtpValue(String key, String value) {
@@ -1238,10 +2283,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private String normalizeWithdrawRuleCondition(String dimension, String value) {
         String condition = stripRuleActionSuffix(trimmed(value)).replace("，", ",");
         return switch (trimmed(dimension)) {
-            case "金额", "largeAmountUsdt" -> normalizeK3AmountRule(condition);
-            case "速度", "velocity24h" -> normalizeK3VelocityRule(condition);
-            case "新账户", "newAccountProtectDays" -> normalizeK3NewAccountRule(condition);
-            case "地址信誉", "addressReputationSource" -> normalizeK3AddressReputationRule(condition);
+            case "金额", "largeAmountUsdt", "amount" -> normalizeK3AmountRule(condition);
+            case "速度", "velocity24h", "velocity" -> normalizeK3VelocityRule(condition);
+            case "新账户", "newAccountProtectDays", "accountAge" -> normalizeK3NewAccountRule(condition);
+            case "地址信誉", "addressReputationSource", "addressReputation" -> normalizeK3AddressReputationRule(condition);
             default -> "";
         };
     }
@@ -1465,7 +2510,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             meta.note(),
                             rule.action(),
                             meta.note(),
-                            meta.icon());
+                            meta.icon(),
+                            rule.priority(),
+                            rule.version());
                 })
                 .sorted(Comparator
                         .comparingInt((RiskRuleDimensionView v) -> dimensionMeta(v.ruleKey()).sortOrder())
@@ -1511,6 +2558,250 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .build());
     }
 
+    private void auditRequired(String action, String resourceType, String resourceId, String operator, Map<String, Object> detail) {
+        auditRequired(action, resourceType, resourceId, operator, detail, "HIGH");
+    }
+
+    private void auditRequired(
+            String action, String resourceType, String resourceId, String operator,
+            Map<String, Object> detail, String riskLevel) {
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action(action)
+                .resourceType(resourceType)
+                .resourceId(resourceId)
+                .bizNo(resourceId)
+                .actorType("ADMIN")
+                .actorUsername(operator)
+                .result("SUCCESS")
+                .riskLevel(riskLevel)
+                .detail(detail)
+                .build());
+    }
+
+    private <T> ApiResult<T> rejectK3Write(
+            String operation,
+            String resourceId,
+            String actor,
+            int status,
+            String reasonCode,
+            String requestReason,
+            String idempotencyKey) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("operation", operation);
+        detail.put("reasonCode", reasonCode);
+        detail.put("requestReason", trimmed(requestReason));
+        detail.put("idempotencyKey", trimmed(idempotencyKey));
+        detail.put("businessDataChanged", false);
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("K3_WITHDRAW_RULE_WRITE_REJECTED")
+                .resourceType("WITHDRAW_RULE")
+                .resourceId(resourceId)
+                .bizNo(resourceId)
+                .actorType("ADMIN")
+                .actorUsername(actor)
+                .result("REJECTED")
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
+        return ApiResult.fail(status, reasonCode);
+    }
+
+    private <T> ApiResult<T> rejectK4Write(
+            String operation,
+            String resourceId,
+            String actor,
+            int status,
+            String reasonCode,
+            String requestReason,
+            String idempotencyKey) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("operation", operation);
+        detail.put("reasonCode", reasonCode);
+        detail.put("requestReason", trimmed(requestReason));
+        detail.put("idempotencyKey", trimmed(idempotencyKey));
+        detail.put("businessDataChanged", false);
+        boolean userScoped = "override".equals(operation) || "recompute".equals(operation)
+                || "batchRecompute".equals(operation);
+        String resourceType = "batchRecompute".equals(operation)
+                ? "RISK_SCORE_USER_BATCH" : userScoped ? "RISK_SCORE_USER" : "RISK_SCORE_MODEL";
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("K4_RISK_SCORING_WRITE_REJECTED")
+                .resourceType(resourceType)
+                .resourceId(resourceId)
+                .bizNo(resourceId)
+                .actorType("ADMIN")
+                .actorUsername(actor)
+                .result("REJECTED")
+                .riskLevel("override".equals(operation) ? "MEDIUM" : "HIGH")
+                .detail(detail)
+                .build());
+        return ApiResult.fail(status, reasonCode);
+    }
+
+    private <T> ApiResult<T> rejectK5Decision(
+            String ticketId,
+            String actor,
+            int status,
+            String reasonCode,
+            String requestReason,
+            String idempotencyKey) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("operation", "decideTicket");
+        detail.put("reasonCode", reasonCode);
+        detail.put("requestReason", trimmed(requestReason));
+        detail.put("idempotencyKey", trimmed(idempotencyKey));
+        detail.put("businessDataChanged", false);
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("K5_KYC_REVIEW_DECISION_REJECTED")
+                .resourceType("RISK_KYC_REVIEW_TICKET")
+                .resourceId(ticketId)
+                .bizNo(ticketId)
+                .actorType("ADMIN")
+                .actorUsername(actor)
+                .result("REJECTED")
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
+        return ApiResult.fail(status, reasonCode);
+    }
+
+    private <T> ApiResult<T> executeK5Decision(
+            String ticketId,
+            String actor,
+            String requestReason,
+            String idempotencyKey,
+            Supplier<ApiResult<T>> command) {
+        try {
+            return command.get();
+        } catch (RuntimeException failure) {
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("operation", "decideTicket");
+            detail.put("failureType", failure.getClass().getSimpleName());
+            detail.put("requestReason", trimmed(requestReason));
+            detail.put("idempotencyKey", trimmed(idempotencyKey));
+            detail.put("businessDataChanged", false);
+            try {
+                auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                        .action("K5_KYC_REVIEW_DECISION_FAILED")
+                        .resourceType("RISK_KYC_REVIEW_TICKET")
+                        .resourceId(ticketId)
+                        .bizNo(ticketId)
+                        .actorType("ADMIN")
+                        .actorUsername(actor)
+                        .result("FAILED")
+                        .riskLevel("HIGH")
+                        .detail(detail)
+                        .build());
+            } catch (RuntimeException auditFailure) {
+                failure.addSuppressed(auditFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private <T> ApiResult<T> executeK4Write(
+            String operation,
+            String resourceId,
+            String actor,
+            String requestReason,
+            String idempotencyKey,
+            Supplier<ApiResult<T>> command) {
+        try {
+            return command.get();
+        } catch (RuntimeException failure) {
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("operation", operation);
+            detail.put("failureType", failure.getClass().getSimpleName());
+            detail.put("requestReason", trimmed(requestReason));
+            detail.put("idempotencyKey", trimmed(idempotencyKey));
+            detail.put("businessDataChanged", false);
+            boolean userScoped = "override".equals(operation) || "recompute".equals(operation)
+                    || "batchRecompute".equals(operation);
+            String resourceType = "batchRecompute".equals(operation)
+                    ? "RISK_SCORE_USER_BATCH" : userScoped ? "RISK_SCORE_USER" : "RISK_SCORE_MODEL";
+            try {
+                auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                        .action("K4_RISK_SCORING_WRITE_FAILED")
+                        .resourceType(resourceType)
+                        .resourceId(resourceId)
+                        .bizNo(resourceId)
+                        .actorType("ADMIN")
+                        .actorUsername(actor)
+                        .result("FAILED")
+                        .riskLevel("override".equals(operation) ? "MEDIUM" : "HIGH")
+                        .detail(detail)
+                        .build());
+            } catch (RuntimeException ignored) {
+                failure.addSuppressed(ignored);
+            }
+            throw failure;
+        }
+    }
+
+    private static Map<String, Object> k4AuditDetail(
+            Object before, Object after, String reason, String idempotencyKey) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("before", before);
+        detail.put("after", after);
+        detail.put("reason", reason == null ? "" : reason.trim());
+        detail.put("idempotencyKey", idempotencyKey == null ? "" : idempotencyKey.trim());
+        return detail;
+    }
+
+    private static Map<String, Object> k1ParamSnapshot(String key, String value) {
+        return Map.of("exists", true, "key", key, "value", value);
+    }
+
+    private static Map<String, Object> k3RuleSnapshot(RiskRuleView rule) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("ruleId", rule.ruleId());
+        snapshot.put("dimension", rule.dimension());
+        snapshot.put("conditionText", rule.conditionText());
+        snapshot.put("action", rule.action());
+        snapshot.put("state", rule.state());
+        snapshot.put("priority", rule.priority());
+        snapshot.put("version", rule.version());
+        return snapshot;
+    }
+
+    private static Map<String, Object> k2ParamSnapshot(RiskArbitrageParamView param) {
+        return Map.of(
+                "key", param.key(),
+                "name", param.name(),
+                "value", param.value(),
+                "sub", param.sub(),
+                "note", param.note(),
+                "version", param.version());
+    }
+
+    private static Map<String, Object> k2RowSnapshot(RiskArbitrageRowView row) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("rowId", row.rowId());
+        snapshot.put("viewKey", row.viewKey());
+        snapshot.put("clusterId", row.clusterId() == null ? "" : row.clusterId());
+        snapshot.put("cells", row.cells());
+        snapshot.put("level", row.level());
+        snapshot.put("actions", row.actions());
+        snapshot.put("disposition", row.disposition() == null ? "" : row.disposition());
+        snapshot.put("version", row.version());
+        snapshot.put("clusterStatus", row.clusterStatus() == null ? "" : row.clusterStatus());
+        snapshot.put("clusterVersion", row.clusterVersion() == null ? -1L : row.clusterVersion());
+        return snapshot;
+    }
+
+    private static Map<String, Object> k1WhitelistSnapshot(
+            String cidr, RiskOpsRepository.IpWhitelistState state) {
+        if (state == null) return Map.of("exists", false, "cidr", cidr);
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("exists", true);
+        snapshot.put("cidr", state.cidr());
+        snapshot.put("note", state.note());
+        snapshot.put("expireText", state.expireText());
+        snapshot.put("active", state.active());
+        snapshot.put("operator", state.operator());
+        return snapshot;
+    }
+
     private record DimensionMeta(
             String ruleKey,
             String name,
@@ -1523,7 +2814,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private record K2ActionSpec(
             String requiredRowAction,
             String disposition,
-            String auditAction
+            String auditAction,
+            String requiredAuthority
     ) {
     }
 
@@ -1541,7 +2833,43 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return "K";
     }
 
+    private <T> ApiResult<T> delegatedDirectExecutionGuard(
+            String operation, String resourceType, String resourceId) {
+        if (A2ReplayContext.isReplaying()) {
+            return null;
+        }
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return null;
+        }
+        Set<String> authorities = authentication.getAuthorities().stream()
+                .map(authority -> authority.getAuthority())
+                .collect(Collectors.toSet());
+        if (!authorities.contains("platform_a2_proposal_create")
+                || authorities.contains("platform_a2_operation_approve")) {
+            return null;
+        }
+        String safeResourceId = resourceId == null ? "" : resourceId;
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("A2_DIRECT_EXECUTION_REJECTED")
+                .resourceType(resourceType)
+                .resourceId(safeResourceId)
+                .bizNo(safeResourceId)
+                .actorType("ADMIN")
+                .actorUsername(String.valueOf(authentication.getName()))
+                .result("REJECTED")
+                .riskLevel("HIGH")
+                .detail(Map.of(
+                        "operation", operation,
+                        "target", safeResourceId,
+                        "reason", "A2_PROPOSAL_REQUIRED",
+                        "businessDataChanged", false))
+                .build());
+        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_PROPOSAL_REQUIRED");
+    }
+
     @Override
+    @Transactional
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
         String operator = ctx.operator();
@@ -1555,7 +2883,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     case "k1_cluster_cleared" -> "cleared";
                     default -> "flagged";
                 };
-                RiskClusterStatusRequest req = new RiskClusterStatusRequest(status, reason, operator);
+                RiskClusterStatusRequest req = new RiskClusterStatusRequest(
+                        status, reason, operator, longVal(p, "expectedVersion"));
                 return updateMultiAccountClusterStatus(str(p, "clusterId"), idem, req);
             }
             case "k2_row_flag", "k2_row_blockgift", "k2_row_boardflag", "k2_row_freeze" -> {
@@ -1565,7 +2894,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     case "k2_row_boardflag" -> "board-flag";
                     default -> "freeze-cluster";
                 };
-                RiskArbitrageActionRequest req = new RiskArbitrageActionRequest(reason, operator);
+                RiskArbitrageActionRequest req = new RiskArbitrageActionRequest(
+                        reason, operator, longVal(p, "expectedVersion"), longVal(p, "clusterExpectedVersion"));
                 return executeArbitrageAction(str(p, "rowId"), action, idem, req);
             }
             case "k3_rule_create" -> {
@@ -1620,6 +2950,17 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (v instanceof Number n) return n.intValue();
         try {
             return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private static Long longVal(Map<String, Object> params, String key) {
+        Object value = params.get(key);
+        if (value instanceof Number number) return number.longValue();
+        if (value == null) return null;
+        try {
+            return Long.parseLong(String.valueOf(value));
         } catch (NumberFormatException ex) {
             return null;
         }

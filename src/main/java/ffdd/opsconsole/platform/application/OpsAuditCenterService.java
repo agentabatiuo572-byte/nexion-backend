@@ -186,11 +186,33 @@ public class OpsAuditCenterService {
         ticket.setIsDeleted(0);
         // 存回放指令(供 approve 时回放执行)
         AuditReplayCommand command = request.command();
-        if (command != null) {
-            ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(command);
-            if (businessPermission.getCode() != 0) {
-                return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
+        ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(command);
+        if (businessPermission.getCode() != 0) {
+            return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
+        }
+        ApiResult<AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor> proposalContext =
+                replayBusinessPermissionGuard.validateProposalContext(request);
+        if (proposalContext.getCode() != 0) {
+            return ApiResult.fail(proposalContext.getCode(), proposalContext.getMessage());
+        }
+        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor descriptor = proposalContext.getData();
+        AuditLockTarget target = request.target();
+        if (descriptor != null) {
+            ticket.setAction(descriptor.action());
+            ticket.setObjectText(descriptor.objectId());
+            ticket.setBeforeValue(descriptor.beforeValue());
+            ticket.setAfterValue(descriptor.afterValue());
+            if (replayBusinessPermissionGuard.delegatedProposal()) {
+                ticket.setOperatorRole("风控");
             }
+            ticket.setOperationType(descriptor.operationType());
+            ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
+            ticket.setSos(0);
+            ticket.setRoleGate("门槛者");
+            sourceDomain = descriptor.sourceDomain();
+            target = descriptor.target();
+        }
+        if (command != null) {
             try {
                 ticket.setCommandJson(objectMapper.writeValueAsString(command));
             } catch (Exception ex) {
@@ -198,7 +220,6 @@ public class OpsAuditCenterService {
             }
         }
         // 加目标对象锁(防 pending 期间重复发起)
-        AuditLockTarget target = request.target();
         if (target != null) {
             int exists = lockMapper.countActiveByTarget(target.domain(), target.type(), target.id());
             if (exists > 0) {
@@ -419,6 +440,10 @@ public class OpsAuditCenterService {
             AuditReplayCommand cmd = deserializeCommand(ticket.getCommandJson());
             if (cmd == null) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
+            }
+            ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(cmd);
+            if (businessPermission.getCode() != 0) {
+                return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
             }
             AuditReplayContext ctx = new AuditReplayContext(
                     authenticatedOperator, request.reason().trim(), idempotencyKey.trim());

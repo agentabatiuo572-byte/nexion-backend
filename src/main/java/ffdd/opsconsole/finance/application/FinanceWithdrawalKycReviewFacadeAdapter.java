@@ -16,21 +16,27 @@ public class FinanceWithdrawalKycReviewFacadeAdapter implements FinanceWithdrawa
     private final AuditLogService auditLogService;
 
     @Override
-    public boolean releaseWithdrawalReview(String withdrawalNo, String reason, String operator) {
-        if (!StringUtils.hasText(withdrawalNo)) {
+    public boolean releaseWithdrawalReview(String withdrawalNo, String ticketId, String reason, String operator) {
+        if (!StringUtils.hasText(withdrawalNo) || !StringUtils.hasText(ticketId)) {
             return false;
         }
-        withdrawalRepository.updateStatus(withdrawalNo.trim(), "PENDING_CHAIN", null);
-        audit("D2_WITHDRAWAL_RELEASED_BY_C4", withdrawalNo, "PENDING_CHAIN", reason, operator);
+        if (!withdrawalRepository.transitionK5FrozenStatus(
+                withdrawalNo.trim(), ticketId.trim(), "REVIEWING", null)) {
+            return false;
+        }
+        audit("D2_WITHDRAWAL_RELEASED_BY_C4", withdrawalNo, "REVIEWING", reason, operator);
         return true;
     }
 
     @Override
-    public boolean rejectWithdrawalReview(String withdrawalNo, String reason, String operator) {
-        if (!StringUtils.hasText(withdrawalNo)) {
+    public boolean rejectWithdrawalReview(String withdrawalNo, String ticketId, String reason, String operator) {
+        if (!StringUtils.hasText(withdrawalNo) || !StringUtils.hasText(ticketId)) {
             return false;
         }
-        withdrawalRepository.updateStatus(withdrawalNo.trim(), "REJECTED", text(reason, "KYC_REVIEW_REJECTED"));
+        if (!withdrawalRepository.transitionK5FrozenStatus(
+                withdrawalNo.trim(), ticketId.trim(), "REJECTED", text(reason, "KYC_REVIEW_REJECTED"))) {
+            return false;
+        }
         audit("D2_WITHDRAWAL_REJECTED_BY_C4", withdrawalNo, "REJECTED", reason, operator);
         return true;
     }

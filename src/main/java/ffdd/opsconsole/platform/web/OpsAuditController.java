@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.application.OpsAuditCenterService;
@@ -45,6 +46,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsAuditController {
     private final AuditLogService auditLogService;
     private final OpsAuditCenterService auditCenterService;
+    private final AdminOperatorRoleResolver operatorRoleResolver;
 
     @GetMapping("/overview")
     public ApiResult<AuditCenterOverview> overview() {
@@ -185,7 +187,7 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations")
-    @PreAuthorize("hasAuthority('platform_a2_write')")
+    @PreAuthorize("hasAnyAuthority('platform_a2_write','platform_a2_proposal_create')")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> createOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditOperationProposalRequest request) {
@@ -214,7 +216,7 @@ public class OpsAuditController {
         }
         return new AuditOperationProposalRequest(
                 request.action(), request.obj(), request.beforeValue(), request.afterValue(),
-                AdminActorResolver.resolve(request.operator()), request.operatorRole(), request.type(),
+                AdminActorResolver.resolve(request.operator()), operatorRoleResolver.resolve(), request.type(),
                 request.amplifies(), request.sos(), request.roleGate(), request.reason(), request.sourceDomain(),
                 request.command(), request.target(), request.targets());
     }

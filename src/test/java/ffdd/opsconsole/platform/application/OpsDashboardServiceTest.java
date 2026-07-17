@@ -78,7 +78,8 @@ class OpsDashboardServiceTest {
         when(killSwitchService.matrix()).thenReturn(ApiResult.ok(Map.of(
                 "activeGates", List.of(
                         Map.of("key", "withdraw", "enabled", true),
-                        Map.of("key", "staking", "enabled", false)))));
+                        Map.of("key", "staking", "enabled", false)),
+                "autoConfirmations", List.of(Map.of("key", "staking", "overdue", true)))));
         when(biService.overview()).thenReturn(ApiResult.ok(Map.of(
                 "l1", Map.of("kpis", List.of(Map.of(
                         "n", 1,
@@ -115,6 +116,10 @@ class OpsDashboardServiceTest {
 
         Map<String, Object> killSwitch = cast(data.get("killSwitch"));
         assertThat((List<?>) killSwitch.get("gates")).hasSize(2);
+        List<Map<String, Object>> alerts = cast(data.get("alerts"));
+        assertThat(alerts).anySatisfy(alert -> assertThat(alert)
+                .containsEntry("id", "J1-AUTO-CONFIRM")
+                .containsEntry("level", "high"));
 
         List<Map<String, Object>> pendingOperations = cast(data.get("pendingOperations"));
         assertThat(pendingOperations)

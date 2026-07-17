@@ -363,6 +363,18 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void missingJ1RowsKeepTheRealH2TrialGateEnabledLikeTheJ1DisplayDefault() {
+        emergencyRepository.settings.remove("killswitch.trial");
+        emergencyRepository.settings.remove("emergency.killswitch.trial");
+
+        ApiResult<Map<String, Object>> overview = service.trials();
+
+        assertThat(detailMap(overview.getData().get("j1TrialGate")))
+                .containsEntry("enabled", true)
+                .containsEntry("blockedBy", null);
+    }
+
+    @Test
     void killAutoPushWritesConfigAndAudit() {
         ApiResult<Map<String, Object>> result = service.killTrialAutoPush(
                 "idem-h2-kill",
@@ -1607,8 +1619,14 @@ class OpsGrowthServiceTest {
         }
 
         @Override
-        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
-                                            List<Map<String, Object>> rollbackActions) {
+        public boolean claimExecutionRollback(String executionId) {
+            return false;
+        }
+
+        @Override
+        public boolean completeExecutionRollback(String executionId, LocalDateTime rollbackAt, String reason,
+                                                 List<Map<String, Object>> rollbackActions) {
+            return false;
         }
     }
 

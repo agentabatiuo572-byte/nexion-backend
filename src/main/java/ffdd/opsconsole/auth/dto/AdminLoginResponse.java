@@ -2,7 +2,19 @@ package ffdd.opsconsole.auth.dto;
 
 import java.util.List;
 
-public record AdminLoginResponse(String accessToken, String tokenType, AdminSession session) {
+public record AdminLoginResponse(String accessToken, String tokenType, AdminSession session, MfaChallenge mfa) {
+    public AdminLoginResponse(String accessToken, String tokenType, AdminSession session) {
+        this(accessToken, tokenType, session, null);
+    }
+
+    public record MfaChallenge(
+            String challengeId,
+            String mode,
+            long expiresInSeconds,
+            String provisioningUri,
+            String manualKey) {
+    }
+
     public record AdminSession(
             Long adminId,
             String username,

@@ -265,8 +265,9 @@ public class OpsDomainRuntimeService {
                 api("LearningFeaturedCourse", "/api/admin/content/i18n-learning/courses/featured", "content_i7_read", "content_i7_write", false)));
         map.put(DomainCode.J, List.of(
                 api("KillSwitch", "/api/admin/emergency/kill-switches", "emergency_j1_read", "emergency_j1_write", false),
-                api("KillSwitchUpdate", "/api/admin/emergency/kill-switches/{key}", "emergency_j1_read", "emergency_j1_write", false),
-                api("EmergencyDisable", "/api/admin/emergency/kill-switches/emergency-disable", "emergency_j1_read", "emergency_j1_gate_kill", false)));
+                api("KillSwitchKill", "/api/admin/emergency/kill-switches/{key}", "emergency_j1_read", "emergency_j1_gate_kill", false),
+                api("KillSwitchResume", "/api/admin/emergency/kill-switches/{key}", "emergency_j1_read", "emergency_j1_gate_resume", false),
+                api("EmergencyDisable", "/api/admin/emergency/kill-switches/emergency-disable", "emergency_j1_read", "emergency_j1_batch_kill", false)));
         map.put(DomainCode.K, List.of(
                 api("RiskCase", "/api/admin/risk/cases", "risk_k1_read", "risk_k1_write", false),
                 api("RiskCaseDecision", "/api/admin/risk/cases/{caseNo}/decision", "risk_k1_read", "risk_k1_write", false),

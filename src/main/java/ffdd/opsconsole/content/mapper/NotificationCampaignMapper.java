@@ -106,6 +106,14 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
 
     @Select("""
             SELECT COUNT(*)
+              FROM nx_notification
+             WHERE biz_no = #{bizNo}
+               AND is_deleted = 0
+            """)
+    int countNotificationsByBizNo(@Param("bizNo") String bizNo);
+
+    @Select("""
+            SELECT COUNT(*)
               FROM nx_user
              WHERE is_deleted = 0
                AND status = 'ACTIVE'

@@ -12,6 +12,8 @@ import lombok.EqualsAndHashCode;
 public class AdminAccountStateEntity extends BaseEntity {
     private Long adminId;
     private Integer tfaRequired;
+    private String tfaSecretEncrypted;
+    private LocalDateTime tfaBoundAt;
     private LocalDateTime lastLoginAt;
     private LocalDateTime tfaResetAt;
     private LocalDateTime sessionsRevokedAt;

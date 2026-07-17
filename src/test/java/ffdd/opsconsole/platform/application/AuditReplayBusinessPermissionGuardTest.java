@@ -9,6 +9,8 @@ import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -118,5 +120,190 @@ class AuditReplayBusinessPermissionGuardTest {
     private void authenticate(String... authorities) {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 "proposer", "n/a", java.util.Arrays.stream(authorities).map(SimpleGrantedAuthority::new).toList()));
+    }
+
+    @Test
+    void j1ImmediateOperationsCannotEnterTheLegacyA2ProposalPath() {
+        authenticate("emergency_j1_gate_kill", "emergency_j1_gate_resume", "emergency_j1_batch_kill");
+
+        for (String operation : List.of("j1_gate_kill", "j1_gate_resume", "j1_batch_kill")) {
+            var result = guard.validateProposal(new AuditReplayCommand("J", operation, Map.of()));
+            assertThat(result.getCode()).isEqualTo(409);
+            assertThat(result.getMessage()).isEqualTo("J1_DIRECT_EXECUTION_REQUIRED");
+        }
+    }
+
+    @Test
+    void delegatedRiskProposalRequiresTheMatchingC2OrK1BusinessPermission() {
+        authenticate("platform_a2_proposal_create", "risk_k1_cluster_freeze", "user_c2_account_freeze");
+
+        assertThat(guard.validateProposal(new AuditReplayCommand(
+                "K", "k1_cluster_freeze", Map.of("clusterId", "CL-1"))).getCode()).isZero();
+        assertThat(guard.validateProposal(new AuditReplayCommand(
+                "C", "c2_account_freeze", Map.of("userId", "1"))).getCode()).isZero();
+
+        var denied = guard.validateProposal(new AuditReplayCommand(
+                "K", "k1_cluster_release", Map.of("clusterId", "CL-1")));
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).endsWith("risk_k1_cluster_release");
+    }
+
+    @Test
+    void delegatedK2FreezeProposalRequiresItsExactBusinessPermission() {
+        authenticate("platform_a2_proposal_create", "risk_k2_row_freeze");
+
+        assertThat(guard.validateProposal(new AuditReplayCommand(
+                "K", "k2_row_freeze", Map.of(
+                        "rowId", "T-318", "expectedVersion", 0, "clusterExpectedVersion", 0))).getCode()).isZero();
+
+        var denied = guard.validateProposal(new AuditReplayCommand(
+                "K", "k2_row_flag", Map.of("rowId", "T-318", "expectedVersion", 0)));
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).endsWith("risk_k2_row_flag");
+    }
+
+    @Test
+    void delegatedRiskProposalFailsClosedForUnmappedCommands() {
+        authenticate("platform_a2_proposal_create", "risk_k1_cluster_freeze");
+
+        var result = guard.validateProposal(new AuditReplayCommand("E", "e5_datacenter_delete", Map.of()));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("A2_BUSINESS_PERMISSION_UNMAPPED");
+    }
+
+    @Test
+    void delegatedProposalRequiresACommand() {
+        authenticate("platform_a2_proposal_create", "user_c2_account_freeze");
+
+        var result = guard.validateProposal(null);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("A2_BUSINESS_COMMAND_REQUIRED");
+    }
+
+    @Test
+    void delegatedProposalBindsDisplayedObjectAndLockToExecutableCommand() {
+        authenticate("platform_a2_proposal_create", "user_c2_account_unfreeze");
+        AuditReplayCommand command = new AuditReplayCommand(
+                "C", "c2_account_unfreeze", Map.of("userId", 52, "status", "ACTIVE"));
+        AuditOperationProposalRequest valid = new AuditOperationProposalRequest(
+                "client supplied copy", "52", "client before", "client after", "risk-user", "risk",
+                "param", false, true, "client gate", "restore verified account", "C2", command,
+                new AuditLockTarget("C", "user", "52"), null);
+
+        var allowed = guard.validateProposalContext(valid);
+        AuditOperationProposalRequest mismatched = new AuditOperationProposalRequest(
+                valid.action(), "99", valid.beforeValue(), valid.afterValue(), valid.operator(), valid.operatorRole(),
+                valid.type(), valid.amplifies(), valid.sos(), valid.roleGate(), valid.reason(), valid.sourceDomain(),
+                command, new AuditLockTarget("C", "user", "99"), null);
+        var denied = guard.validateProposalContext(mismatched);
+
+        assertThat(allowed.getCode()).isZero();
+        assertThat(allowed.getData())
+                .extracting(
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::action,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::objectId,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::afterValue,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies)
+                .containsExactly("恢复账户 · 52", "52", "ACTIVE", "C2", true);
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
+    }
+
+    @Test
+    void delegatedAccountStatusMustMatchTheExecutableOperationAndUsesOneCanonicalLockId() {
+        authenticate("platform_a2_proposal_create", "user_c2_account_freeze");
+        AuditReplayCommand mismatchedCommand = new AuditReplayCommand(
+                "C", "c2_account_freeze", Map.of("userId", "001", "status", "ACTIVE"));
+        AuditOperationProposalRequest mismatched = new AuditOperationProposalRequest(
+                "freeze", "1", "ACTIVE", "FROZEN", "risk-user", "risk", "acct", false, true,
+                "gate", "freeze suspicious account", "C2", mismatchedCommand,
+                new AuditLockTarget("C", "user", "1"), null);
+
+        var denied = guard.validateProposalContext(mismatched);
+
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
+
+        AuditReplayCommand canonicalCommand = new AuditReplayCommand(
+                "C", "c2_account_freeze", Map.of("userId", "001", "status", "FROZEN"));
+        AuditOperationProposalRequest canonical = new AuditOperationProposalRequest(
+                "freeze", "1", "ACTIVE", "FROZEN", "risk-user", "risk", "acct", false, true,
+                "gate", "freeze suspicious account", "C2", canonicalCommand,
+                new AuditLockTarget("C", "user", "1"), null);
+
+        var allowed = guard.validateProposalContext(canonical);
+
+        assertThat(allowed.getCode()).isZero();
+        assertThat(allowed.getData().objectId()).isEqualTo("1");
+        assertThat(allowed.getData().target().id()).isEqualTo("1");
+    }
+
+    @Test
+    void fullWriterC2CommandStillUsesCanonicalDisplayObjectAndLock() {
+        authenticate("platform_a2_write", "user_c2_account_freeze");
+        AuditReplayCommand command = new AuditReplayCommand(
+                "C", "c2_account_freeze", Map.of("userId", 1, "status", "FROZEN"));
+        AuditOperationProposalRequest mismatched = new AuditOperationProposalRequest(
+                "freeze user 99", "99", "ACTIVE", "FROZEN", "superadmin", "superadmin", "acct",
+                false, true, "gate", "freeze suspicious account", "C2", command,
+                new AuditLockTarget("C", "user", "99"), null);
+
+        var denied = guard.validateProposalContext(mismatched);
+
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
+    }
+
+    @Test
+    void delegatedVariableParametersAreValidatedAndShownInCanonicalApprovalCopy() {
+        authenticate("platform_a2_proposal_create", "user_c2_impersonate_start", "user_c2_blocklist_add");
+        AuditReplayCommand impersonation = new AuditReplayCommand(
+                "C", "c2_impersonate_start", Map.of("userId", 7, "ttlMinutes", "015"));
+        AuditOperationProposalRequest validImpersonation = new AuditOperationProposalRequest(
+                "impersonate", "7", "none", "session", "risk", "risk", "acct", false, true,
+                "gate", "investigate suspicious account", "C2", impersonation,
+                new AuditLockTarget("C", "user", "7"), null);
+
+        var impersonationResult = guard.validateProposalContext(validImpersonation);
+
+        assertThat(impersonationResult.getCode()).isZero();
+        assertThat(impersonationResult.getData().afterValue()).isEqualTo("只读会话 · 15 分钟");
+
+        for (Object invalidTtl : List.of(4, 31, "not-a-number")) {
+            AuditReplayCommand invalid = new AuditReplayCommand(
+                    "C", "c2_impersonate_start", Map.of("userId", 7, "ttlMinutes", invalidTtl));
+            AuditOperationProposalRequest invalidRequest = new AuditOperationProposalRequest(
+                    "impersonate", "7", "none", "session", "risk", "risk", "acct", false, true,
+                    "gate", "investigate suspicious account", "C2", invalid,
+                    new AuditLockTarget("C", "user", "7"), null);
+            assertThat(guard.validateProposalContext(invalidRequest).getCode()).isEqualTo(403);
+        }
+
+        AuditReplayCommand permanentBlock = new AuditReplayCommand(
+                "C", "c2_blocklist_upsert", Map.of("userId", 8, "kind", "BLOCK", "expiresAt", "PERMANENT"));
+        AuditOperationProposalRequest blockRequest = new AuditOperationProposalRequest(
+                "block", "8", "none", "blocked", "risk", "risk", "acct", false, true,
+                "gate", "block confirmed abusive account", "C2", permanentBlock,
+                new AuditLockTarget("C", "accountlist", "8"), null);
+        assertThat(guard.validateProposalContext(blockRequest).getData().afterValue()).isEqualTo("禁入 · 长期");
+
+        AuditReplayCommand invalidExpiry = new AuditReplayCommand(
+                "C", "c2_blocklist_upsert", Map.of("userId", 8, "kind", "BLOCK", "expiresAt", "tomorrow"));
+        AuditOperationProposalRequest invalidExpiryRequest = new AuditOperationProposalRequest(
+                "block", "8", "none", "blocked", "risk", "risk", "acct", false, true,
+                "gate", "block confirmed abusive account", "C2", invalidExpiry,
+                new AuditLockTarget("C", "accountlist", "8"), null);
+        assertThat(guard.validateProposalContext(invalidExpiryRequest).getCode()).isEqualTo(403);
+
+        AuditReplayCommand pastExpiry = new AuditReplayCommand(
+                "C", "c2_blocklist_upsert", Map.of("userId", 8, "kind", "BLOCK", "expiresAt", "2000-01-01"));
+        AuditOperationProposalRequest pastExpiryRequest = new AuditOperationProposalRequest(
+                "block", "8", "none", "blocked", "risk", "risk", "acct", false, true,
+                "gate", "block confirmed abusive account", "C2", pastExpiry,
+                new AuditLockTarget("C", "accountlist", "8"), null);
+        assertThat(guard.validateProposalContext(pastExpiryRequest).getCode()).isEqualTo(403);
     }
 }

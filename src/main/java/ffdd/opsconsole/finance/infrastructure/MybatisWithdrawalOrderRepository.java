@@ -48,6 +48,17 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public boolean transitionK5FrozenStatus(
+            String withdrawalNo, String ticketId, String status, String failureReason) {
+        return mapper.transitionK5FrozenStatus(withdrawalNo, ticketId, status, failureReason) > 0;
+    }
+
+    @Override
+    public boolean freezeForK5Review(String withdrawalNo, String expectedStatus, String ticketId) {
+        return mapper.freezeForK5Review(withdrawalNo, expectedStatus, ticketId) > 0;
+    }
+
+    @Override
     public int freezePendingByUserId(Long userId, String reason) {
         return mapper.freezePendingByUserId(userId, reason);
     }

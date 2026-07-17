@@ -74,12 +74,17 @@ public class MybatisJanusRepository implements JanusRepository {
     }
 
     @Override
-    public boolean insertEvaluation(String sid, String reportId, String sessionId, String strategyId,
+    public boolean insertEvaluation(String sid, String reportId, String requestHash, String sessionId, String strategyId,
                                     Integer strategyVersion, String inputSnapshotJson, String ruleResultsJson,
                                     String action, String recommendedStatus, String errorCode, int elapsedMs,
                                     String engineVersion) {
-        return mapper.insertEvaluation(sid, reportId, sessionId, strategyId, strategyVersion, inputSnapshotJson,
+        return mapper.insertEvaluation(sid, reportId, requestHash, sessionId, strategyId, strategyVersion, inputSnapshotJson,
                 ruleResultsJson, action, recommendedStatus, errorCode, elapsedMs, engineVersion) == 1;
+    }
+
+    @Override
+    public Optional<String> findEvaluationRequestHash(String sid, String reportId) {
+        return Optional.ofNullable(mapper.findEvaluationRequestHash(sid, reportId));
     }
 
     @Override

@@ -1,8 +1,13 @@
 package ffdd.opsconsole.risk.infrastructure;
 
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
+import ffdd.opsconsole.risk.domain.KycBusinessDayDeadline;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
@@ -13,13 +18,18 @@ import ffdd.opsconsole.risk.domain.RiskRuleHitView;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.risk.domain.RiskScoreConfigView;
 import ffdd.opsconsole.risk.domain.RiskScoreContributionView;
+import ffdd.opsconsole.risk.domain.RiskScoreHistoryView;
 import ffdd.opsconsole.risk.domain.RiskScoreDimensionView;
 import ffdd.opsconsole.risk.domain.RiskScoreDistributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
+import ffdd.opsconsole.risk.domain.RiskScoreModelView;
+import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.application.K4RiskScorer;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringModelDraftRequest;
 import ffdd.opsconsole.risk.mapper.RiskOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
@@ -31,6 +41,8 @@ import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
@@ -38,6 +50,16 @@ import org.springframework.util.StringUtils;
 @Repository
 @RequiredArgsConstructor
 public class MybatisRiskOpsRepository implements RiskOpsRepository {
+    private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
+    private static final List<String> K4_DIMENSION_KEYS = List.of(
+            "multiAccount", "arbitrage", "kycStatus",
+            "withdrawVelocity", "accountAge", "anomalyBehavior");
+    private static final Map<String, Integer> K4_DEFAULT_WEIGHTS = Map.of(
+            "multiAccount", 25, "arbitrage", 20, "kycStatus", 20,
+            "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10);
+    private static final Map<String, Boolean> K4_DEFAULT_SOURCES = Map.of(
+            "multiAccount", true, "arbitrage", true, "kycStatus", true,
+            "withdrawVelocity", true, "accountAge", true, "anomalyBehavior", true);
     private static final List<RiskArbitrageParamView> RHYTHM_ARBITRAGE_PARAMS = List.of(
             new RiskArbitrageParamView("rewardRisk.lockMode", "新人礼发放模式", "risk_bucket", "配置持久化；待发奖服务消费", "当前不改变实际入账"),
             new RiskArbitrageParamView("rewardRisk.usdtAmount", "新人礼 USDT 金额", "5", "配置持久化；待发奖服务消费", "当前不改变实际入账"),
@@ -55,23 +77,108 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         mapper.createRiskDecisionTable();
         mapper.createRiskSignalTable();
         mapper.createWithdrawRuleTable();
+        ensureWithdrawRuleColumns();
         mapper.createRouteCountTable();
         mapper.createWithdrawHitTable();
         ensureWithdrawHitUniqueKey();
         mapper.createArbitrageStatTable();
         mapper.createArbitrageParamTable();
+        ensureArbitrageParamVersionColumn();
         mapper.createArbitrageRowTable();
+        ensureArbitrageRowVersionColumn();
+        mapper.retireObsoleteArbitrageParam("minHoldingMonths");
+        ensureK4Schema();
+        mapper.createRiskParamTable();
+        tryAlter(mapper::addRiskParamVersionColumn);
+        mapper.createMultiAccountClusterTable();
+        ensureMultiAccountClusterColumns();
+        mapper.createIpWhitelistTable();
+        ensureK1Params();
+        mapper.createKycReviewTicketTable();
+        mapper.createKycReviewSourceTable();
+        tryAlter(mapper::addKycTicketAmountColumn);
+        tryAlter(mapper::addKycTicketDueAtColumn);
+        tryAlter(mapper::addKycTicketVersionColumn);
+        mapper.mergeDuplicateOpenKycTickets();
+        ensureKycOpenTicketBoundary();
+        mapper.promoteTriggeredKycTickets();
+        mapper.backfillKycReviewSources();
+        mapper.createKycAlertTable();
+        tryAlter(mapper::addKycAlertEventKeyColumn);
+        tryAlter(mapper::addKycAlertEventUniqueKey);
+        mapper.createKycAlertSubscriptionTable();
+        ensureK5Params();
+    }
+
+    private void ensureKycOpenTicketBoundary() {
+        int columnCount = mapper.countKycTicketOpenUserKeyColumn();
+        String expression = columnCount == 0 ? null : mapper.kycTicketOpenUserKeyExpression();
+        boolean coversBothOpenStates = expression != null
+                && expression.toLowerCase(Locale.ROOT).contains("triggered")
+                && expression.toLowerCase(Locale.ROOT).contains("in-review");
+        if (columnCount > 0 && !coversBothOpenStates) {
+            if (mapper.countKycTicketOpenUserUniqueKey() > 0) {
+                mapper.dropKycTicketOpenUserUniqueKey();
+            }
+            mapper.dropKycTicketOpenUserKeyColumn();
+            columnCount = 0;
+        }
+        if (columnCount == 0) {
+            mapper.addKycTicketOpenUserKeyColumn();
+        }
+        if (mapper.countKycTicketOpenUserUniqueKey() == 0) {
+            mapper.addKycTicketOpenUserUniqueKey();
+        }
+        String verifiedExpression = mapper.kycTicketOpenUserKeyExpression();
+        if (mapper.countKycTicketOpenUserKeyColumn() != 1
+                || verifiedExpression == null
+                || !verifiedExpression.toLowerCase(Locale.ROOT).contains("triggered")
+                || !verifiedExpression.toLowerCase(Locale.ROOT).contains("in-review")
+                || mapper.countKycTicketOpenUserUniqueKey() != 1) {
+            throw new IllegalStateException("K5_OPEN_TICKET_UNIQUE_BOUNDARY_MISSING");
+        }
+    }
+
+    private void ensureK4Schema() {
         mapper.createScoreDimensionTable();
+        mapper.createScoreModelTable();
+        tryAlter(mapper::addScoreModelMappingColumn);
+        mapper.backfillScoreModelMappings(json(K4RiskScorer.DEFAULT_MAPPINGS));
         mapper.createScoreConfigTable();
         mapper.createScoreDistributionTable();
         mapper.createScoreUserTable();
         mapper.createScoreContributionTable();
+        mapper.createScoreHistoryTable();
         mapper.createScoreOverrideTable();
-        mapper.createRiskParamTable();
-        mapper.createMultiAccountClusterTable();
-        mapper.createIpWhitelistTable();
-        mapper.createKycReviewTicketTable();
-        mapper.createKycAlertTable();
+        tryAlter(mapper::addScoreUserRowVersionColumn);
+        tryAlter(mapper::addScoreUserAsOfColumn);
+        tryAlter(mapper::addScoreContributionDimKeyColumn);
+        tryAlter(mapper::addScoreContributionHitColumn);
+        tryAlter(mapper::addScoreContributionSubScoreColumn);
+        tryAlter(mapper::addScoreContributionWeightColumn);
+        tryAlter(mapper::addScoreContributionModelVersionColumn);
+        tryAlter(mapper::addScoreOverrideActiveKeyColumn);
+        mapper.deactivateDuplicateActiveScoreOverrides();
+        tryAlter(mapper::addScoreOverrideActiveUniqueKey);
+        mapper.deactivateOrphanScoreOverrides();
+        mapper.retireOrphanScoreContributions();
+        mapper.retireOrphanScoreUsers();
+        mapper.ensureAllActiveUsersHaveScoreRows();
+        if (mapper.countScoreModels() == 0) {
+            mapper.insertInitialScoreModel(
+                    json(K4_DEFAULT_WEIGHTS), json(K4_DEFAULT_SOURCES), json(K4RiskScorer.DEFAULT_MAPPINGS));
+        }
+        long activeVersion = activeScoringModel().map(RiskScoreModelView::version).orElse(1L);
+        mapper.backfillContributionModelVersion(activeVersion);
+        activeScoringModel().ifPresent(this::projectActiveModel);
+    }
+
+    private void tryAlter(Runnable operation) {
+        try {
+            operation.run();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column or index.
+        }
     }
 
     private void ensureWithdrawHitUniqueKey() {
@@ -139,6 +246,108 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         mapper.insertSignal(signalNo, userId, signalType, severity, evidence, operator);
     }
 
+    private void ensureWithdrawRuleColumns() {
+        try {
+            mapper.addWithdrawRulePriorityColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+        try {
+            mapper.addWithdrawRuleVersionColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+    }
+
+    private void ensureArbitrageRowVersionColumn() {
+        try {
+            mapper.addArbitrageRowVersionColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+    }
+
+    private void ensureArbitrageParamVersionColumn() {
+        try {
+            mapper.addArbitrageParamVersionColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+    }
+
+    private void ensureMultiAccountClusterColumns() {
+        try {
+            mapper.addMultiAccountClusterEdgesColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+        try {
+            mapper.addMultiAccountClusterVersionColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+        try {
+            mapper.addMultiAccountClusterFingerprintColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+        try {
+            mapper.addMultiAccountClusterThresholdHitColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+        mapper.widenMultiAccountEvidenceColumns();
+    }
+
+    private void ensureK1Params() {
+        mapper.upsertK1RiskParam("maxSignupPerIp24h", "同 IP 24h 最大注册数", "3", "个", "范围 1-10", "超过阈值参与多账户聚类", 10);
+        mapper.upsertK1RiskParam("maxAccountsPerDevice", "同设备最大账户数", "2", "个", "范围 1-5", "设备指纹关联阈值", 20);
+        mapper.upsertK1RiskParam("maxAccountsPerPaymentInstrument", "同支付工具最大账户数", "2", "个", "范围 1-5", "支付工具关联阈值", 30);
+        mapper.upsertK1RiskParam("linkWeight", "关联权重", "设备 0.50 · 支付 0.40 · IP 0.10", "", "三项总和必须为 1", "只计算建议强度，不自动冻结", 40);
+        mapper.upsertK1RiskParam("clusterFreezeSuggestThreshold", "冻结建议阈值", "0.7", "", "范围 0-1", "达到阈值只给出冻结建议", 50);
+        mapper.deactivateLegacyK1RiskParams();
+    }
+
+    @Override
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+    public TamperProjection projectTamperSignal(
+            String signalNo, Long userId, String userNo, String evidence, int eventCount,
+            boolean feedK4, String operator) {
+        String canonicalUserNo = StringUtils.hasText(userNo)
+                ? userNo.trim()
+                : "U" + String.format(Locale.ROOT, "%08d", userId);
+        mapper.insertSignal(signalNo, userId, "TAMPER_DETECTED", "HIGH", evidence, operator);
+        if (!feedK4) {
+            return new TamperProjection(false, 0, true);
+        }
+        // Serialize per-user score projection so each event receipt reports only its own applied delta.
+        mapper.ensureTamperScoreUser(canonicalUserNo);
+        int before = Optional.ofNullable(mapper.lockTamperScoreValue(canonicalUserNo)).orElse(0);
+        int requestedPoints = Math.max(1, Math.min(20, eventCount));
+        mapper.applyTamperScore(canonicalUserNo, requestedPoints);
+        int after = Optional.ofNullable(mapper.scoreValue(canonicalUserNo)).orElse(before);
+        int appliedPoints = Math.max(0, after - before);
+        mapper.insertTamperScoreContribution(
+                canonicalUserNo,
+                "服务器篡改拦截事件 " + signalNo,
+                appliedPoints);
+        // B5 reads the same committed nx_risk_signal rows in its radar feed, so successful insertion
+        // is the durable B5 acceptance boundary rather than a locally inferred UI flag.
+        return new TamperProjection(true, appliedPoints, true);
+    }
+
+    @Override
+    public TamperRadarSnapshot tamperRadarSnapshot(java.time.LocalDateTime since) {
+        RiskOpsMapper.TamperRadarRecord row = mapper.tamperRadarSnapshot(since);
+        if (row == null) {
+            return new TamperRadarSnapshot(0, 0, "");
+        }
+        return new TamperRadarSnapshot(
+                Optional.ofNullable(row.signalCount()).orElse(0L),
+                Optional.ofNullable(row.accountCount()).orElse(0L),
+                Optional.ofNullable(row.latestAt()).orElse(""));
+    }
+
     @Override
     public RiskCaseView createManualReviewCase(String caseNo, Long userId, String bizType, String bizNo, String reason, int riskScore, String ruleCodes, String ruleSnapshot, String operator) {
         mapper.insertManualReviewCase(caseNo, userId, bizType, bizNo, reason, riskScore, ruleCodes, ruleSnapshot, operator);
@@ -167,20 +376,23 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
-    public RiskRuleView createWithdrawRule(String ruleId, String dimension, String conditionText, String action, String state, String operator) {
-        mapper.insertWithdrawRule(ruleId, dimension, conditionText, action, state, false, operator);
+    public RiskRuleView createWithdrawRule(
+            String ruleId, String dimension, String conditionText, String action,
+            String state, int priority, String operator) {
+        mapper.insertWithdrawRule(ruleId, dimension, conditionText, action, state, false, priority, operator);
         return findWithdrawRule(ruleId).orElseThrow();
     }
 
     @Override
-    public Optional<RiskRuleView> updateWithdrawRuleState(String ruleId, String state) {
-        int updated = mapper.updateWithdrawRuleState(ruleId, state);
+    public Optional<RiskRuleView> updateWithdrawRuleState(String ruleId, long expectedVersion, String state) {
+        int updated = mapper.updateWithdrawRuleState(ruleId, expectedVersion, state);
         return updated == 0 ? Optional.empty() : findWithdrawRule(ruleId);
     }
 
     @Override
-    public Optional<RiskRuleView> updateWithdrawRuleCondition(String ruleId, String conditionText) {
-        int updated = mapper.updateWithdrawRuleCondition(ruleId, conditionText);
+    public Optional<RiskRuleView> updateWithdrawRuleConfiguration(
+            String ruleId, long expectedVersion, String conditionText, String action, int priority) {
+        int updated = mapper.updateWithdrawRuleConfiguration(ruleId, expectedVersion, conditionText, action, priority);
         return updated == 0 ? Optional.empty() : findWithdrawRule(ruleId);
     }
 
@@ -214,15 +426,24 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
-    public Optional<RiskArbitrageParamView> updateArbitrageParam(String key, String value) {
-        int updated = mapper.updateArbitrageParam(key, value);
+    public Optional<RiskArbitrageParamView> updateArbitrageParam(String key, long expectedVersion, String value) {
+        int updated = mapper.updateArbitrageParam(key, expectedVersion, value);
         if (updated == 0) {
+            if (mapper.findArbitrageParam(key) != null || expectedVersion != 0L) return Optional.empty();
             RiskArbitrageParamView definition = RHYTHM_ARBITRAGE_PARAMS.stream()
                     .filter(row -> row.key().equals(key))
                     .findFirst()
                     .orElse(null);
             if (definition == null) return Optional.empty();
-            mapper.insertArbitrageParam(key, definition.name(), value, definition.sub(), definition.note());
+            int restored = mapper.restoreArbitrageParam(
+                    key, definition.name(), value, definition.sub(), definition.note(), expectedVersion);
+            if (restored == 0) {
+                try {
+                    mapper.insertArbitrageParam(key, definition.name(), value, definition.sub(), definition.note(), 1L);
+                } catch (RuntimeException duplicateOrRace) {
+                    return Optional.empty();
+                }
+            }
         }
         return Optional.ofNullable(mapper.findArbitrageParam(key));
     }
@@ -238,14 +459,76 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
-    public Optional<RiskArbitrageRowView> updateArbitrageDisposition(String rowId, String disposition) {
-        int updated = mapper.updateArbitrageDisposition(rowId, disposition);
+    public Optional<RiskArbitrageRowView> updateArbitrageDisposition(String rowId, long expectedVersion, String disposition) {
+        int updated = mapper.updateArbitrageDisposition(rowId, expectedVersion, disposition);
         return updated == 0 ? Optional.empty() : findArbitrageRow(rowId);
     }
 
     @Override
     public List<RiskScoreDimensionView> scoringDimensions() {
         return mapper.scoreDimensions();
+    }
+
+    @Override
+    public Optional<RiskScoreModelView> activeScoringModel() {
+        return Optional.ofNullable(mapper.activeScoreModel()).map(this::toScoreModel);
+    }
+
+    @Override
+    public Optional<RiskScoreModelView> draftScoringModel() {
+        return Optional.ofNullable(mapper.draftScoreModel()).map(this::toScoreModel);
+    }
+
+    @Override
+    public List<RiskScoreModelView> scoringModels() {
+        return mapper.scoreModels().stream().map(this::toScoreModel).toList();
+    }
+
+    @Override
+    public Optional<RiskScoreModelView> scoringModel(long modelVersion) {
+        return Optional.ofNullable(mapper.scoreModel(modelVersion)).map(this::toScoreModel);
+    }
+
+    @Override
+    public Optional<RiskScoreModelView> saveScoringModelDraft(
+            long expectedVersion, RiskScoringModelDraftRequest request, String operator) {
+        mapper.lockActiveScoreModel();
+        mapper.lockDraftScoreModel();
+        Optional<RiskScoreModelView> active = activeScoringModel();
+        Optional<RiskScoreModelView> draft = draftScoringModel();
+        if (active.isEmpty()) return Optional.empty();
+        if (draft.isPresent()) {
+            if (!java.util.Objects.equals(draft.get().rowVersion(), expectedVersion)) return Optional.empty();
+            int updated = mapper.updateScoreModelDraft(
+                    expectedVersion, json(request.weightPercentages()), json(request.inputSources()),
+                    json(request.scoreMappings()),
+                    request.lowMax(), request.highMin(), request.autoEscalateScore(),
+                    request.reason().trim(), operator);
+            return updated == 0 ? Optional.empty() : draftScoringModel();
+        }
+        if (!java.util.Objects.equals(active.get().rowVersion(), expectedVersion)) return Optional.empty();
+        mapper.insertScoreModelDraft(
+                active.get().version() + 1, json(request.weightPercentages()), json(request.inputSources()),
+                json(request.scoreMappings()),
+                request.lowMax(), request.highMin(), request.autoEscalateScore(),
+                request.reason().trim(), operator);
+        return draftScoringModel();
+    }
+
+    @Override
+    public Optional<RiskScoreModelView> publishScoringModel(
+            long expectedVersion, String reason, String operator) {
+        mapper.lockActiveScoreModel();
+        mapper.lockDraftScoreModel();
+        Optional<RiskScoreModelView> draft = draftScoringModel();
+        if (draft.isEmpty() || !java.util.Objects.equals(draft.get().rowVersion(), expectedVersion)) {
+            return Optional.empty();
+        }
+        if (mapper.activateScoreModelDraft(expectedVersion, operator, reason.trim()) == 0) return Optional.empty();
+        mapper.archiveActiveScoreModel(draft.get().version());
+        RiskScoreModelView active = activeScoringModel().orElseThrow();
+        projectActiveModel(active);
+        return Optional.of(active);
     }
 
     @Override
@@ -267,22 +550,23 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public RiskScoreConfigView updateScoringConfig(String key, String value) {
-        mapper.updateScoreConfig(key, value);
+        mapper.upsertScoreConfig(key, value);
         return scoringConfig();
     }
 
     @Override
     public List<RiskScoreDistributionView> scoringDistribution() {
-        long total = mapper.sumScoreDistribution();
-        return mapper.scoreDistributionRows().stream()
-                .map(row -> new RiskScoreDistributionView(
-                        row.band(),
-                        row.rangeText(),
-                        row.count(),
-                        total == 0 ? 0.0 : Math.round((row.count() * 1000.0) / total) / 10.0,
-                        row.color(),
-                        row.tone()))
-                .toList();
+        RiskScoreConfigView config = scoringConfig();
+        RiskOpsMapper.ScoreDistributionCountRecord row = mapper.scoreDistributionCounts(
+                config.bandLowMax(), config.bandHighMin());
+        long low = row == null || row.lowCount() == null ? 0L : row.lowCount();
+        long mid = row == null || row.midCount() == null ? 0L : row.midCount();
+        long high = row == null || row.highCount() == null ? 0L : row.highCount();
+        long total = low + mid + high;
+        return List.of(
+                distribution("低风险", "< " + config.bandLowMax(), low, total, "var(--success)", "ok"),
+                distribution("中风险", config.bandLowMax() + "-" + (config.bandHighMin() - 1), mid, total, "var(--warning)", "warn"),
+                distribution("高风险", ">= " + config.bandHighMin(), high, total, "var(--danger)", "bad"));
     }
 
     @Override
@@ -318,10 +602,25 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 scoreBandLabel(effectiveScore, config),
                 scoreBandTone(effectiveScore, config),
                 row.modelVersion(),
+                row.rowVersion(),
+                row.asOf(),
                 row.updatedText(),
                 mapper.scoreContributions(row.userNo()).stream()
-                        .map(c -> new RiskScoreContributionView(c.name(), c.evidence(), c.points()))
-                        .toList()));
+                        .map(c -> new RiskScoreContributionView(
+                                c.dimKey(), c.name(), c.hit(), c.evidence(),
+                                c.subScore(), c.weightPct(), c.points()))
+                        .toList(),
+                List.of()));
+    }
+
+    @Override
+    public List<RiskScoreHistoryView> scoreHistory(String userNo, int limit) {
+        return mapper.scoreHistory(userNo, Math.max(1, Math.min(limit, 100))).stream()
+                .map(row -> new RiskScoreHistoryView(
+                        row.modelVersion(), row.modelScore(), row.effectiveScore(), row.scoreState(),
+                        parseMap(row.contributionsJson(), new TypeReference<List<RiskScoreContributionView>>() {}, List.of()),
+                        row.reason(), row.operator(), row.createdAt()))
+                .toList();
     }
 
     @Override
@@ -371,17 +670,102 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public Optional<RiskScoreOverrideView> overrideScore(
+            String userNo, long expectedVersion, int score, String reason, String operator) {
+        Optional<RiskScoreUserView> user = findScoreUser(userNo);
+        if (user.isEmpty() || mapper.bumpScoreUserVersion(userNo, expectedVersion) == 0) {
+            return Optional.empty();
+        }
+        mapper.deactivateScoreOverrides(userNo);
+        mapper.insertScoreOverride(
+                userNo, user.get().modelScore(), score, reason, operator,
+                java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")), true);
+        long modelVersion = activeScoringModel().map(RiskScoreModelView::version).orElse(0L);
+        mapper.insertScoreHistory(
+                userNo, modelVersion, user.get().modelScore(), score, "manually-overridden",
+                json(user.get().contributions()), reason, operator);
+        return Optional.ofNullable(mapper.activeScoreOverride(userNo));
+    }
+
+    @Override
     public Optional<RiskScoreUserView> recomputeScore(String userNo) {
         mapper.deactivateScoreOverrides(userNo);
         return findScoreUser(userNo);
     }
 
     @Override
+    public Optional<RiskScoreRawInput> scoringInput(String userNo) {
+        return Optional.ofNullable(mapper.scoreRawInput(userNo)).map(row -> new RiskScoreRawInput(
+                row.userNo(), row.multiAccountClusterSize(), row.multiAccountFraud(),
+                row.arbitrageSignals(), row.severeArbitrage(), row.kycStatus(),
+                row.withdrawalCount24h(), row.withdrawalAmount24h(),
+                row.withdrawalCount7d(), row.withdrawalAmount7d(),
+                row.withdrawalBaselineDailyCount(), row.withdrawalBaselineDailyAmount(), row.maxWithdrawal24h(),
+                row.accountAgeDays(),
+                row.anomalySignals(), row.tamperDetected()));
+    }
+
+    @Override
+    public Optional<RiskScoreUserView> recomputeScore(
+            String userNo, long expectedVersion, RiskScoreModelView model, int modelScore,
+            List<RiskScoreContributionView> contributions) {
+        if (mapper.updateScoreUserModelIfVersion(
+                userNo, expectedVersion, modelScore, "k4-v" + model.version()) == 0) {
+            return Optional.empty();
+        }
+        mapper.deactivateScoreOverrides(userNo);
+        mapper.retireScoreContributions(userNo);
+        for (int index = 0; index < contributions.size(); index++) {
+            RiskScoreContributionView contribution = contributions.get(index);
+            mapper.insertCanonicalScoreContribution(
+                    userNo, model.version(), contribution.dimKey(), contribution.name(), Boolean.TRUE.equals(contribution.hit()),
+                    contribution.evidence(), contribution.subScore(), contribution.weightPct(), contribution.points(), index);
+        }
+        mapper.insertScoreHistory(
+                userNo, model.version(), modelScore, modelScore, "model-scored",
+                json(contributions), "模型重算", "system:k4");
+        return findScoreUser(userNo);
+    }
+
+    @Override
+    public List<String> scoreUserNos() {
+        return mapper.scoreUserNos();
+    }
+
+    @Override
+    public List<String> scoreUserNosNeedingProjection(long modelVersion, int limit) {
+        return mapper.scoreUserNosNeedingProjection(modelVersion, Math.max(1, Math.min(limit, 1000)));
+    }
+
+    @Override
+    public long countScoreUsersNeedingProjection(long modelVersion) {
+        return mapper.countScoreUsersNeedingProjection(modelVersion);
+    }
+
+    @Override
+    public int synchronizeScoringUsers() {
+        mapper.deactivateOrphanScoreOverrides();
+        mapper.retireOrphanScoreContributions();
+        mapper.retireOrphanScoreUsers();
+        return mapper.ensureAllActiveUsersHaveScoreRows();
+    }
+
+    @Override
     public Map<String, Object> multiAccountOverview(Integer clusterPageNum, Integer clusterPageSize, String clusterLayer,
+                                                     Integer whitelistPageNum, Integer whitelistPageSize) {
+        return multiAccountOverview(clusterPageNum, clusterPageSize, clusterLayer, null, "strength_desc",
+                whitelistPageNum, whitelistPageSize);
+    }
+
+    @Override
+    public Map<String, Object> multiAccountOverview(Integer clusterPageNum, Integer clusterPageSize, String clusterLayer,
+                                                     String clusterStatus, String clusterSort,
                                                      Integer whitelistPageNum, Integer whitelistPageSize) {
         int normalizedClusterPageNum = normalizePageNum(clusterPageNum);
         int normalizedClusterPageSize = normalizePageSize(clusterPageSize, 5, 50);
         String normalizedLayer = StringUtils.hasText(clusterLayer) ? clusterLayer.trim().toLowerCase(Locale.ROOT) : null;
+        String normalizedStatus = StringUtils.hasText(clusterStatus) ? clusterStatus.trim().toLowerCase(Locale.ROOT) : null;
+        String normalizedSort = "account_desc".equals(clusterSort) ? "account_desc" : "strength_desc";
         int normalizedWhitelistPageNum = normalizePageNum(whitelistPageNum);
         int normalizedWhitelistPageSize = normalizePageSize(whitelistPageSize, 5, 50);
 
@@ -389,8 +773,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         long activeClusters = allClusters.stream()
                 .filter(c -> !"cleared".equalsIgnoreCase(c.status()) && !"released".equalsIgnoreCase(c.status()))
                 .count();
+        double suggestThreshold = multiAccountConfigValues().entrySet().stream()
+                .filter(entry -> "clusterFreezeSuggestThreshold".equals(entry.getKey()))
+                .map(Map.Entry::getValue).mapToDouble(value -> parseDouble(value, 0.7d)).findFirst().orElse(0.7d);
         long highClusters = allClusters.stream()
-                .filter(c -> c.strength() != null && c.strength() >= 0.7 && !"frozen".equalsIgnoreCase(c.status()))
+                .filter(c -> c.strength() != null && c.strength() >= suggestThreshold)
+                .filter(c -> "detected".equalsIgnoreCase(c.status()) || "flagged".equalsIgnoreCase(c.status()))
                 .count();
         long frozenClusters = allClusters.stream().filter(c -> "frozen".equalsIgnoreCase(c.status())).count();
         long frozenAccounts = allClusters.stream()
@@ -401,9 +789,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 .filter(c -> !"cleared".equalsIgnoreCase(c.status()) && !"released".equalsIgnoreCase(c.status()))
                 .mapToLong(c -> c.n() == null ? 0 : c.n())
                 .sum();
-        long clusterTotal = mapper.countMultiAccountClustersByLayer(normalizedLayer);
-        List<RiskOpsMapper.MultiAccountClusterRecord> clusters = mapper.pageMultiAccountClusters(
-                normalizedLayer,
+        long clusterTotal = mapper.countMultiAccountClustersByFilter(normalizedLayer, normalizedStatus);
+        List<RiskOpsMapper.MultiAccountClusterRecord> clusters = mapper.pageMultiAccountClustersByFilter(
+                normalizedLayer, normalizedStatus, normalizedSort,
                 (normalizedClusterPageNum - 1) * normalizedClusterPageSize,
                 normalizedClusterPageSize);
         long whitelistTotal = mapper.countActiveIpWhitelist();
@@ -429,19 +817,51 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         response.put("params", mapper.riskParams("k1"));
         response.put("clusters", new PageResult<>(clusterTotal, normalizedClusterPageNum, normalizedClusterPageSize, clusters));
         response.put("whitelist", new PageResult<>(whitelistTotal, normalizedWhitelistPageNum, normalizedWhitelistPageSize, whitelist));
-        response.put("sources", List.of("nx_admin_risk_multi_account_cluster", "nx_admin_risk_ip_whitelist", "nx_admin_risk_param:k1"));
+        response.put("sources", List.of("nx_risk_decision:device_fingerprint", "nx_admin_risk_multi_account_cluster", "nx_admin_risk_ip_whitelist", "nx_admin_risk_param:k1"));
         return response;
     }
 
     @Override
     public Map<String, Object> updateMultiAccountParam(String key, String value) {
-        mapper.updateRiskParam("k1", key, value);
+        if (mapper.updateRiskParam("k1", key, value) == 0) {
+            throw new IllegalStateException("K1_PARAM_NOT_FOUND");
+        }
         return multiAccountOverview(1, 5, null, 1, 5);
+    }
+
+    @Override
+    public Optional<String> multiAccountParamValue(String key) {
+        return Optional.ofNullable(mapper.riskParamValue("k1", key));
     }
 
     @Override
     public boolean updateMultiAccountClusterStatus(String clusterId, String status, String reason, String operator) {
         return mapper.updateMultiAccountClusterStatus(clusterId, status, reason, operator) > 0;
+    }
+
+    @Override
+    public Optional<MultiAccountClusterState> multiAccountClusterState(String clusterId) {
+        RiskOpsMapper.MultiAccountClusterStateRecord row = mapper.multiAccountCluster(clusterId);
+        if (row == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new MultiAccountClusterState(
+                row.id(), row.status(), row.layer(), row.strength() == null ? 0d : row.strength(),
+                nodeUserNos(row.nodesJson()), row.version() == null ? 0L : row.version(), row.evidenceFingerprint(),
+                Boolean.TRUE.equals(row.thresholdHit())));
+    }
+
+    @Override
+    public boolean updateMultiAccountClusterStatus(
+            String clusterId, String expectedStatus, long expectedVersion,
+            String status, String reason, String operator) {
+        return mapper.updateMultiAccountClusterStatusIfVersion(
+                clusterId, expectedStatus, expectedVersion, status, reason, operator) == 1;
+    }
+
+    @Override
+    public boolean updateMultiAccountClusterReviewNote(String clusterId, long expectedVersion, String reason, String operator) {
+        return mapper.updateMultiAccountClusterReviewNoteIfVersion(clusterId, expectedVersion, reason, operator) == 1;
     }
 
     @Override
@@ -455,6 +875,94 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public Optional<IpWhitelistState> ipWhitelistState(String cidr) {
+        RiskOpsMapper.IpWhitelistRecord row = mapper.ipWhitelistState(cidr);
+        if (row == null) return Optional.empty();
+        return Optional.of(new IpWhitelistState(
+                row.cidr(), row.note(), row.operator(), row.expireText(), Boolean.TRUE.equals(row.active())));
+    }
+
+    @Override
+    public List<MultiAccountSignalFact> multiAccountSignalFacts() {
+        return mapper.multiAccountSignalFacts().stream().map(row -> new MultiAccountSignalFact(
+                row.userId(), row.userNo(), row.joinedAt(), row.sponsorUserId(), row.gotWelcomeGift(),
+                row.depositCumulativeUsdt(), row.accountStatus(), row.layer(), row.rawKey(), row.maskedKey())).toList();
+    }
+
+    @Override
+    public Set<String> activeIpWhitelistCidrs() {
+        return mapper.activeIpWhitelistCidrs();
+    }
+
+    @Override
+    public Map<String, String> multiAccountConfigValues() {
+        return mapper.riskParams("k1").stream().collect(Collectors.toMap(
+                RiskOpsMapper.RiskParamRecord::key,
+                RiskOpsMapper.RiskParamRecord::value,
+                (first, ignored) -> first,
+                LinkedHashMap::new));
+    }
+
+    @Override
+    public void upsertMultiAccountProjections(List<MultiAccountClusterProjection> projections) {
+        if (projections == null) {
+            return;
+        }
+        for (MultiAccountClusterProjection projection : projections) {
+            mapper.upsertMultiAccountClusterProjection(
+                    projection.clusterId(), projection.maskedKey(), projection.layer(), projection.layerLabel(),
+                    projection.accountCount(), projection.strength(), projection.spanText(), projection.note(),
+                    projection.evidenceFingerprint(), projection.thresholdHit(),
+                    json(projection.giftDuplicates()), json(projection.nodes()), json(projection.edges()));
+        }
+    }
+
+    @Override
+    public void retireMissingDetectedClusters(Set<String> activeClusterIds) {
+        mapper.retireMissingDetectedClusters(activeClusterIds == null ? Set.of() : activeClusterIds);
+    }
+
+    @Override
+    public void clearWhitelistedDetectedClusters(Set<String> clusterIds) {
+        mapper.clearWhitelistedDetectedClusters(clusterIds == null ? Set.of() : clusterIds);
+    }
+
+    private List<String> nodeUserNos(String nodesJson) {
+        if (!StringUtils.hasText(nodesJson)) {
+            return List.of();
+        }
+        try {
+            JsonNode root = JSON.readTree(nodesJson);
+            List<String> result = new ArrayList<>();
+            if (root.isArray()) {
+                for (JsonNode node : root) {
+                    String userNo = node.path("userNo").asText("");
+                    if (!userNo.isBlank()) result.add(userNo);
+                }
+            }
+            return List.copyOf(result);
+        } catch (JsonProcessingException ex) {
+            return List.of();
+        }
+    }
+
+    private String json(Object value) {
+        try {
+            return JSON.writeValueAsString(value);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("K1_PROJECTION_SERIALIZE_FAILED", ex);
+        }
+    }
+
+    private double parseDouble(String value, double fallback) {
+        try {
+            return Double.parseDouble(value);
+        } catch (RuntimeException ex) {
+            return fallback;
+        }
+    }
+
+    @Override
     public Map<String, Object> kycReviewOverview(Integer ticketPageNum, Integer ticketPageSize, String ticketFilter) {
         int pageNum = normalizePageNum(ticketPageNum);
         int pageSize = normalizePageSize(ticketPageSize, 5, 50);
@@ -462,41 +970,132 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         long ticketTotal = mapper.countKycTicketsByFilter(ticketFilter);
         List<RiskOpsMapper.KycReviewTicketRecord> tickets = mapper.pageKycReviewTickets(ticketFilter, offset, pageSize);
         long openTickets = mapper.countKycOpenTickets();
-        long overdue = mapper.countKycTicketsByStatus("overdue");
+        long overdue = mapper.countOverdueKycTickets();
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("reviewOpenBase", null);
+        stats.put("reviewOpenBase", openTickets);
         stats.put("openTickets", openTickets);
         stats.put("reviewOverdue", overdue);
-        stats.put("reviewDecidedMonth", null);
-        stats.put("reviewDecidedPass", null);
-        stats.put("reviewFrozenUsd", null);
+        stats.put("reviewDecidedMonth", mapper.countKycDecidedThisMonth());
+        stats.put("reviewDecidedPass", mapper.countKycPassedThisMonth());
+        stats.put("reviewFrozenUsd", mapper.sumFrozenWithdrawalUsdt());
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", stats);
         response.put("params", mapper.riskParams("k5"));
         response.put("tickets", new PageResult<>(ticketTotal, pageNum, pageSize, tickets));
-        response.put("alerts", mapper.kycAlerts());
+        response.put("alerts", List.of());
         response.put("sources", List.of("nx_admin_risk_kyc_review_ticket", "nx_admin_risk_kyc_alert", "nx_admin_risk_param:k5"));
         return response;
     }
 
     @Override
-    public Map<String, Object> updateKycReviewParam(String key, String value) {
-        if (mapper.updateRiskParam("k5", key, value) == 0) {
-            insertK5Param(key, value);
+    public Optional<Map<String, Object>> updateKycReviewParam(String key, String value, long expectedVersion) {
+        if (mapper.updateK5RiskParam(key, value, expectedVersion) == 0) return Optional.empty();
+        int recomputedTickets = 0;
+        if ("reviewSlaDays".equals(key)) {
+            recomputedTickets = mapper.recomputeOpenKycDueAt(Integer.parseInt(value));
         }
-        return kycReviewOverview();
+        Map<String, Object> overview = new LinkedHashMap<>(kycReviewOverview());
+        overview.put("slaRecomputedTickets", recomputedTickets);
+        return Optional.of(overview);
     }
 
     @Override
-    public boolean updateKycReviewTicketStatus(String ticketId, String status, String reason, String operator) {
-        return mapper.updateKycReviewTicketStatus(ticketId, status, reason, operator) > 0;
+    public boolean updateKycReviewTicketStatus(String ticketId, String status, long expectedVersion,
+                                               String reasonCode, String reason, String operator) {
+        return mapper.updateKycReviewTicketStatus(ticketId, status, expectedVersion, reasonCode, reason, operator) > 0;
     }
 
     @Override
     public Optional<KycReviewTicketContext> findKycReviewTicket(String ticketId) {
         return Optional.ofNullable(mapper.findKycReviewTicket(ticketId))
-                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson()));
+                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson(), row.version()));
+    }
+
+    @Override
+    public Optional<KycReviewTicketContext> findOpenKycReviewTicketByUser(String userNo) {
+        return Optional.ofNullable(mapper.findOpenKycReviewTicketByUser(userNo))
+                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson(), row.version()));
+    }
+
+    @Override
+    public boolean mergeOpenKycReviewTicket(String ticketId, long expectedVersion, String reason, String operator) {
+        boolean merged = mapper.mergeOpenKycReviewTicket(ticketId, expectedVersion, reason, operator) > 0;
+        if (merged) {
+            mapper.insertKycAlert("threshold-hit:" + ticketId + ":" + (expectedVersion + 1), "warn",
+                    "KYC 复审追加触发 · " + ticketId, reason, "刚刚");
+        }
+        return merged;
+    }
+
+    @Override
+    public void linkKycReviewSource(String ticketId, String sourceDomain, String sourceNo) {
+        if (!StringUtils.hasText(ticketId) || !StringUtils.hasText(sourceDomain) || !StringUtils.hasText(sourceNo)) {
+            throw new IllegalArgumentException("K5_REVIEW_SOURCE_REQUIRED");
+        }
+        mapper.insertKycReviewSource(ticketId.trim(), sourceDomain.trim().toUpperCase(Locale.ROOT), sourceNo.trim());
+    }
+
+    @Override
+    public List<RiskOpsRepository.KycReviewSource> kycReviewSources(String ticketId) {
+        if (!StringUtils.hasText(ticketId)) return List.of();
+        return mapper.kycReviewSources(ticketId.trim()).stream()
+                .map(row -> new RiskOpsRepository.KycReviewSource(row.sourceDomain(), row.sourceNo()))
+                .toList();
+    }
+
+    @Override
+    public Map<String, Object> kycAlertSubscription(String operator) {
+        RiskOpsMapper.KycAlertSubscriptionRecord row = mapper.findKycAlertSubscription(operator);
+        return row == null ? defaultSubscription(operator) : subscription(row);
+    }
+
+    @Override
+    public List<Map<String, Object>> kycAlerts(List<String> alertTypes) {
+        return mapper.kycAlerts(alertTypes).stream().map(row -> {
+            Map<String, Object> alert = new LinkedHashMap<>();
+            alert.put("eventKey", row.eventKey());
+            alert.put("tone", row.tone());
+            alert.put("title", row.title());
+            alert.put("body", row.body());
+            alert.put("timeText", row.timeText());
+            return alert;
+        }).toList();
+    }
+
+    @Override
+    public Optional<Map<String, Object>> updateKycAlertSubscription(
+            String operator, List<String> alertTypes, List<String> channels, long expectedVersion) {
+        String alertTypesJson = json(alertTypes);
+        String channelsJson = json(channels);
+        RiskOpsMapper.KycAlertSubscriptionRecord current = mapper.findKycAlertSubscription(operator);
+        if (current == null) {
+            if (expectedVersion != 0) return Optional.empty();
+            try {
+                mapper.insertKycAlertSubscription(operator, alertTypesJson, channelsJson);
+                RiskOpsMapper.KycAlertSubscriptionRecord created = mapper.findKycAlertSubscription(operator);
+                if (created == null) throw new IllegalStateException("K5_ALERT_SUBSCRIPTION_WRITE_NOT_VISIBLE");
+                return Optional.of(subscription(created));
+            } catch (org.springframework.dao.DuplicateKeyException race) {
+                return Optional.empty();
+            }
+        }
+        if (mapper.updateKycAlertSubscription(operator, alertTypesJson, channelsJson, expectedVersion) == 0) {
+            return Optional.empty();
+        }
+        RiskOpsMapper.KycAlertSubscriptionRecord updated = mapper.findKycAlertSubscription(operator);
+        if (updated == null) throw new IllegalStateException("K5_ALERT_SUBSCRIPTION_WRITE_NOT_VISIBLE");
+        return Optional.of(subscription(updated));
+    }
+
+    @Override
+    public int generateOverdueKycAlerts() {
+        return mapper.insertOverdueKycAlerts();
+    }
+
+    @Override
+    public int generateLargeWithdrawalBurstKycAlerts() {
+        return mapper.insertLargeWithdrawalBurstKycAlert();
     }
 
     @Override
@@ -506,13 +1105,16 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 "手动触发",
                 userNo,
                 "—",
+                null,
                 "—",
                 "待确认(手动补触发)",
-                "triggered",
+                "in-review",
                 0.02,
                 "剩 7 天",
                 "[[\"触发原因\",\"手动补触发:" + escapeJson(reason) + "\"],[\"触发方式\",\"风控人工 · 后续裁决仍需操作确认\"],[\"实名材料\",\"待调取\"]]",
-                "[[\"刚刚\",\"手动补触发 · 进入队列\",\"\"]]");
+                "[[\"刚刚\",\"手动补触发 · 进入队列\",\"\"]]",
+                kycDueAt());
+        thresholdAlert(ticketId, userNo, "手动触发");
     }
 
     @Override
@@ -527,7 +1129,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public int kycLargeExchangeReviewUsdt() {
-        return kycParamInt("largeExchangeReviewUsdt", kycLargeWithdrawReviewUsdt());
+        return kycLargeWithdrawReviewUsdt();
+    }
+
+    @Override
+    public int kycReviewSlaDays() {
+        return kycParamInt("reviewSlaDays", 7);
     }
 
     @Override
@@ -557,13 +1164,16 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 "风险分触发",
                 userNo,
                 "—",
+                null,
                 "—",
                 "待确认(风险分过线)",
-                "triggered",
+                "in-review",
                 0.02,
                 "剩 7 天",
                 "[[\"触发原因\",\"K4有效风险分 " + score + " >= " + threshold + "\"],[\"触发方式\",\"K4风险分人工覆盖\"],[\"覆盖理由\",\"" + escapeJson(reason) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"]]",
-                "[[\"刚刚\",\"K4风险分过线 · 自动进入复审队列\",\"\"]]");
+                "[[\"刚刚\",\"K4风险分过线 · 自动进入复审队列\",\"\"]]",
+                kycDueAt());
+        thresholdAlert(ticketId, userNo, "K4 风险分过线");
     }
 
     @Override
@@ -575,9 +1185,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 "大额提现",
                 userNo,
                 money(amountUsdt),
+                amountUsdt,
                 "—",
                 kycText(kycStatus),
-                "triggered",
+                "in-review",
                 0.02,
                 "剩 7 天",
                 "[[\"触发原因\",\"单笔提现 " + money(amountUsdt) + " >= $" + threshold + "\"],"
@@ -585,7 +1196,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                         + "[\"sourceDomain\",\"D2\"],[\"sourceNo\",\"" + escapeJson(withdrawalNo) + "\"],"
                         + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
                         + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
-                "[[\"刚刚\",\"D2 大额提现触发 K5 复审\",\"warn\"]]");
+                "[[\"刚刚\",\"D2 大额提现触发 K5 复审\",\"warn\"]]",
+                kycDueAt());
+        linkKycReviewSource(ticketId, "D2", withdrawalNo);
+        thresholdAlert(ticketId, userNo, "D2 大额提现");
     }
 
     @Override
@@ -597,9 +1211,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 "大额兑换",
                 userNo,
                 money(amountUsdt),
+                amountUsdt,
                 "—",
                 kycText(kycStatus),
-                "triggered",
+                "in-review",
                 0.02,
                 "剩 7 天",
                 "[[\"触发原因\",\"单笔兑换 " + money(amountUsdt) + " >= $" + threshold + "\"],"
@@ -607,7 +1222,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                         + "[\"sourceDomain\",\"G2\"],[\"sourceNo\",\"" + escapeJson(exchangeNo) + "\"],"
                         + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
                         + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
-                "[[\"刚刚\",\"G2 大额兑换触发 K5 复审\",\"warn\"]]");
+                "[[\"刚刚\",\"G2 大额兑换触发 K5 复审\",\"warn\"]]",
+                kycDueAt());
+        linkKycReviewSource(ticketId, "G2", exchangeNo);
+        thresholdAlert(ticketId, userNo, "G2 大额兑换");
     }
 
     private int normalizePageNum(Integer pageNum) {
@@ -638,7 +1256,63 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .toList();
-        return new RiskArbitrageRowView(row.rowId(), row.viewKey(), row.clusterId(), cells, row.level(), actions, row.disposition());
+        return new RiskArbitrageRowView(
+                row.rowId(), row.viewKey(), row.clusterId(), cells, row.level(), actions,
+                row.disposition(), row.version(), row.clusterStatus(), row.clusterVersion());
+    }
+
+    private RiskScoreModelView toScoreModel(RiskOpsMapper.ScoreModelRecord row) {
+        return new RiskScoreModelView(
+                row.modelVersion(), row.rowVersion(), row.state(),
+                parseMap(row.weightsJson(), new TypeReference<Map<String, Integer>>() {}, K4_DEFAULT_WEIGHTS),
+                parseMap(row.inputSourcesJson(), new TypeReference<Map<String, Boolean>>() {}, K4_DEFAULT_SOURCES),
+                parseMap(row.scoreMappingJson(), new TypeReference<Map<String, Integer>>() {}, K4RiskScorer.DEFAULT_MAPPINGS),
+                row.bandLowMax(), row.bandHighMin(), row.autoEscalateScore(), row.reason(),
+                row.createdBy(), row.publishedBy(), row.createdAt(), row.publishedAt());
+    }
+
+    private <T> T parseMap(String value, TypeReference<T> type, T fallback) {
+        if (!StringUtils.hasText(value)) return fallback;
+        try {
+            return JSON.readValue(value, type);
+        } catch (JsonProcessingException ex) {
+            return fallback;
+        }
+    }
+
+    private void projectActiveModel(RiskScoreModelView model) {
+        List<String[]> metadata = List.of(
+                new String[]{"multiAccount", "多账户", "K1 多账户簇"},
+                new String[]{"arbitrage", "套利与刷量", "K2 套利信号"},
+                new String[]{"kycStatus", "KYC 状态", "C4 KYC 权威状态"},
+                new String[]{"withdrawVelocity", "提现速度", "24 小时提现事实"},
+                new String[]{"accountAge", "账户年龄", "用户注册时间"},
+                new String[]{"anomalyBehavior", "异常行为", "行为与篡改事件"});
+        for (int index = 0; index < metadata.size(); index++) {
+            String[] item = metadata.get(index);
+            mapper.upsertScoreDimension(item[0], item[1], item[2], model.weights().get(item[0]), index);
+        }
+        mapper.retireNonCanonicalScoreDimensions(Set.copyOf(K4_DIMENSION_KEYS));
+        mapper.upsertScoreConfig("inputSource", inputSourceLabel(model.inputSources()));
+        mapper.upsertScoreConfig("bandLowMax", String.valueOf(model.bandLowMax()));
+        mapper.upsertScoreConfig("bandHighMin", String.valueOf(model.bandHighMin()));
+        mapper.upsertScoreConfig("autoEscalateScore", String.valueOf(model.autoEscalateScore()));
+        mapper.upsertScoreConfig("modelVersion", String.valueOf(model.version()));
+        mapper.upsertScoreConfig("modelRowVersion", String.valueOf(model.rowVersion()));
+        mapper.upsertScoreConfig("modelState", model.state());
+    }
+
+    private String inputSourceLabel(Map<String, Boolean> sources) {
+        List<String> disabled = K4_DIMENSION_KEYS.stream()
+                .filter(key -> !sources.getOrDefault(key, false))
+                .toList();
+        return disabled.isEmpty() ? "全部启用" : "停用 " + String.join("、", disabled);
+    }
+
+    private RiskScoreDistributionView distribution(
+            String band, String range, long count, long total, String color, String tone) {
+        double percentage = total == 0 ? 0.0 : Math.round((count * 1000.0) / total) / 10.0;
+        return new RiskScoreDistributionView(band, range, count, percentage, color, tone);
     }
 
     private String scoreBandLabel(int score, RiskScoreConfigView config) {
@@ -692,17 +1366,45 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         return fallback;
     }
 
-    private void insertK5Param(String key, String value) {
-        switch (key) {
-            case "reviewTriggerScore" -> mapper.insertRiskParam("k5", key, "风险分复审线", value, null,
-                    "K4 有效风险分达到该值时进入 KYC 复审", "基础风控配置；来自 nx_admin_risk_param", 0);
-            case "largeWithdrawReviewUsdt" -> mapper.insertRiskParam("k5", key, "大额提现复审线", value, null,
-                    "命中 -> 生成复审工单 + 提现单冻结", "范围 $100-$50,000。与 K3/D2 是独立参数", 1);
-            case "largeExchangeReviewUsdt" -> mapper.insertRiskParam("k5", key, "大额兑换复审线", value, null,
-                    "命中 -> 生成复审工单 + 兑换单人工处理", "范围 $100-$50,000。由 G2 兑换读取", 2);
-            default -> {
-            }
+    private java.time.LocalDateTime kycDueAt() {
+        return KycBusinessDayDeadline.addWorkingDays(java.time.LocalDateTime.now(), kycReviewSlaDays());
+    }
+
+    private void thresholdAlert(String ticketId, String userNo, String source) {
+        mapper.insertKycAlert("threshold-hit:" + ticketId, "warn", "KYC 复审已触发 · " + ticketId,
+                userNo + " · " + source, "刚刚");
+    }
+
+    private void ensureK5Params() {
+        mapper.upsertK5RiskParam("reviewTriggerScore", "风险分复审线", ">= 85", "分",
+                "K4 有效风险分达到该值时进入 KYC 复审", "可调范围 70-100", 0);
+        mapper.upsertK5RiskParam("largeWithdrawReviewUsdt", "大额提现复审线", ">= $1,000", "USDT",
+                "单笔提现达到该值时生成复审工单", "可调范围 100-50000", 1);
+        mapper.upsertK5RiskParam("cumulativeKycThresholdUsdt", "累计交易 KYC 线", "$100", "USDT",
+                "累计交易达到该值时检查 KYC", "可调范围 50-1000", 2);
+        mapper.upsertK5RiskParam("reviewSlaDays", "复审 SLA", "7", "天",
+                "复审工单截止时间", "可调范围 1-15 个工作日", 3);
+        mapper.deactivateLegacyK5RiskParam();
+    }
+
+    private Map<String, Object> subscription(RiskOpsMapper.KycAlertSubscriptionRecord row) {
+        if (row == null) {
+            return Map.of("alertTypes", List.of(), "channels", List.of(), "version", 0L);
         }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("alertTypes", parseMap(row.alertTypesJson(), new TypeReference<List<String>>() {}, List.of()));
+        result.put("channels", parseMap(row.channelsJson(), new TypeReference<List<String>>() {}, List.of()));
+        result.put("version", row.version() == null ? 0L : row.version());
+        return result;
+    }
+
+    private Map<String, Object> defaultSubscription(String operator) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("operator", operator);
+        result.put("alertTypes", List.of("sla-breach"));
+        result.put("channels", List.of("in-app"));
+        result.put("version", 0L);
+        return result;
     }
 
     private String money(BigDecimal amount) {

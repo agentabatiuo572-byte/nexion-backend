@@ -12,6 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -61,6 +63,15 @@ public class AuditLogService {
         auditLogMapper.insertAuditLog(buildWrite(request));
     }
 
+    /**
+     * Persists the failure of a high-risk mutation after its business transaction has failed.
+     * The separate transaction prevents the failure audit from being rolled back with business data.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordRequiredInNewTransaction(AuditLogWriteRequest request) {
+        recordRequired(request);
+    }
+
     public List<AuditLogRecord> list(AuditLogQueryRequest request) {
         AuditLogQueryRequest query = request == null ? new AuditLogQueryRequest() : request;
         return auditLogMapper.list(
@@ -75,6 +86,14 @@ public class AuditLogService {
                 textOrNull(query.getResult()),
                 textOrNull(query.getRiskLevel()),
                 normalizeLimit(query.getLimit()));
+    }
+
+    public long countByActionAndResourceType(String action, String resourceType) {
+        if (!StringUtils.hasText(action) || !StringUtils.hasText(resourceType)) {
+            return 0L;
+        }
+        return auditLogMapper.countByActionAndResourceType(
+                normalizeCode(action, "UNKNOWN"), normalizeCode(resourceType, "UNKNOWN"));
     }
 
     public AuditStatsSummaryResponse summary(AuditStatsQueryRequest request) {
@@ -230,12 +249,10 @@ public class AuditLogService {
         if (request == null) {
             return null;
         }
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (StringUtils.hasText(forwarded)) {
-            return forwarded.split(",")[0].trim();
-        }
-        String realIp = request.getHeader("X-Real-IP");
-        return StringUtils.hasText(realIp) ? realIp.trim() : request.getRemoteAddr();
+        // Tomcat's RemoteIpValve has already applied the configured internal-proxy trust
+        // boundary when forward-headers-strategy=native. Reading raw forwarding headers
+        // here would let a direct caller forge the evidence IP in a high-risk audit row.
+        return request.getRemoteAddr();
     }
 
     private String firstText(String... values) {

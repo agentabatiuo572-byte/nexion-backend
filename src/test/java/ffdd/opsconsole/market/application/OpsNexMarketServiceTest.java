@@ -14,6 +14,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.domain.GenesisNodeView;
 import ffdd.opsconsole.market.domain.GenesisPolicyView;
@@ -70,6 +71,7 @@ class OpsNexMarketServiceTest {
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeNexMarketRepository marketRepository = new FakeNexMarketRepository();
     private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
+    private final OpsKillSwitchService killSwitchService = mock(OpsKillSwitchService.class);
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
     private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
@@ -88,6 +90,7 @@ class OpsNexMarketServiceTest {
                 coverageFacade,
                 marketRepository,
                 emergencyRepository,
+                killSwitchService,
                 ledgerPostingFacade,
                 riskKycReviewFacade,
                 auditLogService,
@@ -116,6 +119,9 @@ class OpsNexMarketServiceTest {
                 "finprod_g4_airdrop_pct_write", "finprod_g4_emission_curve_write",
                 "finprod_g4_airdrop_lock_days_write",
                 "finprod_g7_apy_write", "finprod_g7_nurture_write", "finprod_g7_write"));
+        when(killSwitchService.changeFromLinkedDomain(
+                anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(ApiResult.ok(Map.of()));
     }
 
     @AfterEach
@@ -201,6 +207,19 @@ class OpsNexMarketServiceTest {
         assertThat((List<?>) result.getData().get("queue")).hasSize(1);
         assertThat(detailMap(result.getData().get("swap"))).containsEntry("enabled", false);
         assertThat((List<?>) result.getData().get("geoBlocked")).isNotEmpty();
+    }
+
+    @Test
+    void missingJ1RowsKeepTheRealG1G2G4SurfacesEnabledLikeTheJ1DisplayDefault() {
+        emergencyRepository.settings.clear();
+
+        ApiResult<Map<String, Object>> staking = service.stakingOverview();
+        ApiResult<Map<String, Object>> exchange = service.exchangeOverview();
+        ApiResult<Map<String, Object>> genesis = service.genesisOverview();
+
+        assertThat(detailMap(staking.getData().get("gate"))).containsEntry("enabled", true);
+        assertThat(detailMap(exchange.getData().get("swap"))).containsEntry("enabled", true);
+        assertThat(detailMap(genesis.getData().get("market"))).containsEntry("enabled", true);
     }
 
     @Test
@@ -381,6 +400,23 @@ class OpsNexMarketServiceTest {
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("idempotencyKey", "idem-g2-k5")
                 .containsEntry("toStatus", "KYC_REQUIRED");
+    }
+
+    @Test
+    void triggerLargeExchangeKycReviewUsesAuthenticatedActorInsteadOfBodyOperator() {
+        var authentication = UsernamePasswordAuthenticationToken.authenticated(
+                "authenticated-market-admin", "n/a", List.of());
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        marketRepository.orders = List.of(exchange("EX-ACTOR-1", "QUEUED", new BigDecimal("8200.00")));
+
+        service.triggerExchangeKycReview(
+                "idem-g2-k5-actor", "EX-ACTOR-1",
+                new ExchangeKycReviewRequest("large exchange actor boundary", "forged-body-operator"));
+
+        assertThat(riskKycReviewFacade.lastOperator).isEqualTo("admin:authenticated-market-admin");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("admin:authenticated-market-admin");
     }
 
     @Test
@@ -1034,6 +1070,21 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void globalJ1StakingGateBlocksOpeningAPoolSale() {
+        emergencyRepository.settings.put("killswitch.staking", "disabled");
+        configFacade.values.put("G.staking.enabled.usdt365d", "false");
+
+        ApiResult<Map<String, Object>> result = service.updateStakingPoolSaleStatus(
+                "idem-g1-global-gate",
+                "usdt365d",
+                new NexMarketValueUpdateRequest("true", "J1 关闭时不得重开质押销售", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("G1_STAKING_GATE_DISABLED");
+        assertThat(configFacade.values).containsEntry("G.staking.enabled.usdt365d", "false");
+    }
+
+    @Test
     void killingStakingTierWritesConfigAndAudits() {
         ApiResult<Map<String, Object>> result = service.updateStakingPoolKillStatus(
                 "idem-g1-kill",
@@ -1333,8 +1384,14 @@ class OpsNexMarketServiceTest {
         }
 
         @Override
-        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
-                                            List<Map<String, Object>> rollbackActions) {
+        public boolean claimExecutionRollback(String executionId) {
+            return false;
+        }
+
+        @Override
+        public boolean completeExecutionRollback(String executionId, LocalDateTime rollbackAt, String reason,
+                                                 List<Map<String, Object>> rollbackActions) {
+            return false;
         }
     }
 
@@ -1383,6 +1440,7 @@ class OpsNexMarketServiceTest {
         private String lastWithdrawalNo;
         private String lastExchangeNo;
         private BigDecimal lastAmountUsdt;
+        private String lastOperator;
         private boolean alreadyOpen;
 
         @Override
@@ -1408,6 +1466,7 @@ class OpsNexMarketServiceTest {
                 String reason) {
             lastExchangeNo = exchangeNo;
             lastAmountUsdt = amountUsdt;
+            lastOperator = operator;
             if (alreadyOpen) {
                 return new KycReviewTriggerResult(true, false, null, "K5_REVIEW_ALREADY_OPEN");
             }

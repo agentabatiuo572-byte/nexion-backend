@@ -66,6 +66,16 @@ class OpsEventCenterServiceTest {
                 .doesNotContain("premium", "points", "nexv2");
         assertThat(overview.recentLogs()).hasSize(1);
         assertThat(overview.topActions()).hasSize(1);
+        EventCenterOverview.EventDomainExtensionBatch jSchema = overview.domainExtensions().stream()
+                .filter(batch -> "j-schema".equals(batch.id()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(jSchema.state()).isEqualTo("inprogress");
+        assertThat(jSchema.newDomains())
+                .filteredOn(item -> "risk.tamper_detected".equals(item.name()))
+                .singleElement()
+                .extracting(EventCenterOverview.EventDomainItem::n)
+                .isEqualTo(true);
     }
 
     @Test

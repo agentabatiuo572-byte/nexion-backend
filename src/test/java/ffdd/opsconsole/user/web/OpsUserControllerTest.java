@@ -40,6 +40,18 @@ class OpsUserControllerTest {
     private final OpsUserController controller = new OpsUserController(userService, user360Service);
 
     @Test
+    void impersonationStartUsesItsDedicatedHighRiskPermission() {
+        var method = java.util.Arrays.stream(OpsUserController.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals("startImpersonation"))
+                .findFirst()
+                .orElseThrow();
+        String expression = method.getAnnotation(
+                org.springframework.security.access.prepost.PreAuthorize.class).value();
+
+        assertThat(expression).isEqualTo("hasAuthority('user_c2_impersonate_start')");
+    }
+
+    @Test
     void overviewDelegatesToService() {
         when(userService.overview()).thenReturn(ApiResult.ok(Map.of("domain", "C")));
 
@@ -178,6 +190,13 @@ class OpsUserControllerTest {
         controller.accountActionOverview();
 
         verify(userService).accountActionOverview();
+    }
+
+    @Test
+    void accountActionAccountDelegatesExactLookupToService() {
+        controller.accountActionAccount("U00000051");
+
+        verify(userService).accountActionAccount("U00000051");
     }
 
     @Test

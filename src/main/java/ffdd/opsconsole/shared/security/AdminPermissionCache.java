@@ -59,22 +59,14 @@ public class AdminPermissionCache {
         if (adminId == null) {
             return;
         }
-        try {
-            redisTemplate.delete(KEY_PREFIX + adminId);
-        } catch (RuntimeException ignored) {
-            // 删除失败靠 TTL 兜底
-        }
+        redisTemplate.delete(KEY_PREFIX + adminId);
     }
 
     /** 失效全部账号权限缓存（角色权限批量变更兜底）。 */
     public void evictAll() {
-        try {
-            Set<String> keys = redisTemplate.keys(KEY_PREFIX + "*");
-            if (keys != null && !keys.isEmpty()) {
-                redisTemplate.delete(keys);
-            }
-        } catch (RuntimeException ignored) {
-            // 删除失败靠 TTL 兜底
+        Set<String> keys = redisTemplate.keys(KEY_PREFIX + "*");
+        if (keys != null && !keys.isEmpty()) {
+            redisTemplate.delete(keys);
         }
     }
 

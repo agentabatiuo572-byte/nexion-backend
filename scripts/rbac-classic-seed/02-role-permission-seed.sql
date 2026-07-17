@@ -13,6 +13,12 @@ SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='AUDITOR' AND p.perm_type='READ' AND p.status=1 AND p.is_deleted=0;
 
 -- A 域(platform_)：config 延伸→仅超管(上面已给)+审计读(上面已给)。运营账号治理高敏不放开。
+-- 风控仅补 A2 读和“按自身业务权限创建提案”；业务指令仍由 AuditReplayBusinessPermissionGuard 二次校验。
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='RISK'
+  AND p.permission_code IN ('platform_a2_read', 'platform_a2_proposal_create')
+  AND p.status=1 AND p.is_deleted=0;
 -- B 域(overview_)：全角色（看板）
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'overview_%'
@@ -49,14 +55,32 @@ WHERE r.role_code='CONTENT' AND p.status=1 AND p.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code='content_i3_critical_send'
 WHERE r.role_code='RISK' AND p.status=1 AND p.is_deleted=0;
--- J 域(emergency_)：风控（止血）
+-- J 域(emergency_)：风控负责止血，但 J1 恢复/参数配置、J2 边缘源、J3 告警配置仅超管。
+-- J1 单闸熔断另授财务；查看矩阵授财务。边界以 PRD v4 §J1⑥ 为准。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'emergency_%'
-WHERE r.role_code='RISK' AND p.status=1 AND p.is_deleted=0;
--- K 域(risk_)：风控
+WHERE r.role_code='RISK'
+  AND p.permission_code NOT IN ('emergency_j1_write', 'emergency_j1_gate_resume', 'emergency_j2_edge_source_manage', 'emergency_j3_alert_config')
+  AND p.status=1 AND p.is_deleted=0;
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='FINANCE'
+  AND p.permission_code IN ('emergency_j1_read', 'emergency_j1_gate_kill')
+  AND p.status=1 AND p.is_deleted=0;
+-- K 域(risk_)：风控。K4 尚无可持久识别的 lead/member 层级，模型起草和人工覆盖先仅超管。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'risk_%'
-WHERE r.role_code='RISK' AND p.status=1 AND p.is_deleted=0;
+WHERE r.role_code='RISK'
+  AND p.permission_code NOT IN ('risk_k4_write','risk_k4_user_override')
+  AND p.status=1 AND p.is_deleted=0;
+-- SUPPORT 仅可查看 K5 工单、统计与告警，不授予任何 K5 写权限。
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code='risk_k5_read'
+WHERE r.role_code='SUPPORT' AND p.status=1 AND p.is_deleted=0;
+DELETE rp FROM nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='RISK'
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+WHERE p.permission_code IN ('risk_k4_write','risk_k4_user_override');
 -- L 域(bi_)：全角色（看板，导出类高敏仍按 amplifies 在业务层校验）
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'bi_%'

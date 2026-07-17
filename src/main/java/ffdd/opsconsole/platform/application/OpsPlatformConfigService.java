@@ -98,11 +98,11 @@ public class OpsPlatformConfigService {
         if (!StringUtils.hasText(request.operator())) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "OPERATOR_REQUIRED");
         }
-
-        ConfigCommand command = commandFor(request);
-        if ("gate".equals(command.kind())) {
+        if ("gate".equals(trimToLower(request.kind()))) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "J1_KILLSWITCH_MOVED_TO_EMERGENCY_CONTROL_SETTING");
         }
+
+        ConfigCommand command = commandFor(request);
         if (isSunsetCapabilityKey(command.configKey())) {
             return fail(OpsErrorCode.PHASE_PARAM_READONLY, "SUNSET_CAPABILITY_READONLY");
         }
@@ -292,10 +292,15 @@ public class OpsPlatformConfigService {
         return switch (kind) {
             case "flag" -> new ConfigCommand(kind, "feature." + normalizeSuffix(request.flagKey(), "flagKey"),
                     normalizeTextValue(request.value()), GROUP_FLAG, remarkFor(request), "ADMIN_FEATURE_FLAG_CHANGED");
-            case "gate" -> new ConfigCommand(kind, "killswitch." + normalizeSuffix(request.gateKey(), "gateKey"),
-                    normalizeGateValue(request.value()), GROUP_GATE, remarkFor(request), "ADMIN_KILL_SWITCH_CHANGED");
+            case "gate" -> gateCommand(kind, request);
             default -> throw new IllegalArgumentException("Unsupported A3 config kind: " + request.kind());
         };
+    }
+
+    private ConfigCommand gateCommand(String kind, PlatformConfigUpdateRequest request) {
+        String gateKey = normalizeSuffix(request.gateKey(), "gateKey");
+        return new ConfigCommand(kind, "killswitch." + gateKey,
+                normalizeGateValue(request.value()), GROUP_GATE, remarkFor(request), "ADMIN_KILL_SWITCH_CHANGED");
     }
 
     private String normalizeGateValue(String value) {

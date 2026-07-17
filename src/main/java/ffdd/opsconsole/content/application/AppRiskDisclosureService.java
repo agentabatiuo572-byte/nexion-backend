@@ -10,6 +10,7 @@ import ffdd.opsconsole.content.dto.AppRiskDisclosureAckRequest;
 import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.content.infrastructure.DisclosureAckStatusEntity;
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
+import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -39,6 +40,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
     private final Clock clock;
     private final RiskDisclosureAckProperties ackProperties;
     private final AuditLogService auditLogService;
+    private final TamperDetectionPublisher tamperDetectionPublisher;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public ApiResult<AppRiskDisclosureView> current(Long userId) {
@@ -67,12 +69,18 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         if (!StringUtils.hasText(request.jurisdiction()) || !StringUtils.hasText(request.version())
                 || !disclosure.jurisdiction().equalsIgnoreCase(request.jurisdiction().trim())
                 || !disclosure.version().equals(request.version().trim())) {
+            tamperDetectionPublisher.publish(userId, "risk_disclosure_ack",
+                    "客户端提交的风险披露法域或版本与服务器当前状态不一致，服务器未修改确认状态",
+                    "/api/legal/risk-disclosure/acknowledgment");
             return ApiResult.fail(409, "RISK_DISCLOSURE_VERSION_CHANGED");
         }
         String tokenHash = hashToken(request.acknowledgmentToken().trim());
         LocalDateTime consumedAt = now();
         if (ackMapper.consumeReadToken(tokenHash, userId, disclosure.jurisdiction(), disclosure.version(),
                 consumedAt, consumedAt.minusSeconds(ackProperties.boundedMinReadSeconds())) != 1) {
+            tamperDetectionPublisher.publish(userId, "risk_disclosure_ack",
+                    "客户端提交的风险披露阅读凭证无效或已使用，服务器未修改确认状态",
+                    "/api/legal/risk-disclosure/acknowledgment");
             return ApiResult.fail(409, "RISK_DISCLOSURE_READ_TOKEN_INVALID");
         }
         ackMapper.acknowledge(userId, disclosure.jurisdiction(), disclosure.version(), now());

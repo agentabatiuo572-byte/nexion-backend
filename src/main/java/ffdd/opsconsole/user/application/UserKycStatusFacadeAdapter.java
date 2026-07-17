@@ -5,6 +5,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.facade.UserKycStatusFacade;
 import java.util.Map;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -38,6 +39,27 @@ public class UserKycStatusFacadeAdapter implements UserKycStatusFacade {
                 .detail(Map.of("userNo", userNo.trim(), "kycStatus", kycStatus.trim().toUpperCase(), "reason", text(reason, "")))
                 .build());
         return true;
+    }
+
+    @Override
+    public boolean userExists(String userNo) {
+        return StringUtils.hasText(userNo) && userRepository.findUserIdByLookupKey(userNo.trim()).isPresent();
+    }
+
+    @Override
+    public List<Map<String, Object>> reviewCandidates(String keyword, int limit) {
+        String normalizedKeyword = StringUtils.hasText(keyword) ? keyword.trim() : null;
+        return userRepository.search(normalizedKeyword, "ACTIVE", null, Math.max(1, Math.min(limit, 50))).stream()
+                .map(user -> {
+                    Map<String, Object> row = new java.util.LinkedHashMap<>();
+                    row.put("userNo", user.userNo());
+                    row.put("label", StringUtils.hasText(user.nickname())
+                            ? user.nickname() + " (" + user.userNo() + ")" : user.userNo());
+                    row.put("sub", StringUtils.hasText(user.phoneMasked()) ? user.phoneMasked() : user.countryCode());
+                    row.put("kycStatus", user.kycStatus());
+                    return row;
+                })
+                .toList();
     }
 
     private String actor(String operator) {

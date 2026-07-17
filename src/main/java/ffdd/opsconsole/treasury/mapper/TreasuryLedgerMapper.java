@@ -127,6 +127,15 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     BigDecimal sumActiveWithdrawalQueueUsdt();
 
     @Select("""
+            SELECT COALESCE(SUM(amount), 0)
+              FROM nx_withdrawal_order
+             WHERE is_deleted = 0
+               AND asset = 'USDT'
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            """)
+    BigDecimal sumWithdrawalRequested24hUsdt();
+
+    @Select("""
             SELECT COUNT(*)
               FROM nx_withdrawal_order
              WHERE is_deleted = 0
@@ -168,6 +177,38 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             </script>
             """)
     BigDecimal sumNetUsdtFlowBetween(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT COALESCE(SUM(ABS(COALESCE(w.usdt_available, 0) - COALESCE(latest.balance_after, 0))), 0)
+              FROM (
+                    SELECT user_id
+                      FROM nx_user_wallet
+                     WHERE is_deleted = 0
+                    UNION
+                    SELECT user_id
+                      FROM nx_wallet_ledger
+                     WHERE is_deleted = 0
+                       AND asset = 'USDT'
+                       AND status = 'SUCCESS'
+              ) users
+              LEFT JOIN nx_user_wallet w
+                ON w.user_id = users.user_id
+               AND w.is_deleted = 0
+              LEFT JOIN (
+                    SELECT l.user_id, l.balance_after
+                      FROM nx_wallet_ledger l
+                      JOIN (
+                            SELECT user_id, MAX(id) AS latest_id
+                              FROM nx_wallet_ledger
+                             WHERE is_deleted = 0
+                               AND asset = 'USDT'
+                               AND status = 'SUCCESS'
+                             GROUP BY user_id
+                      ) ids ON ids.latest_id = l.id
+                     WHERE l.is_deleted = 0
+              ) latest ON latest.user_id = users.user_id
+            """)
+    BigDecimal walletLedgerReconciliationGapUsdt();
 
     @Select("""
             SELECT day,

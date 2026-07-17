@@ -90,6 +90,11 @@ class OpsAuditCenterServiceTest {
         when(auditLogService.summary(any(AuditStatsQueryRequest.class))).thenReturn(summary);
         when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of());
         when(auditLogService.topActions(any(AuditStatsQueryRequest.class))).thenReturn(List.of());
+        when(replayBusinessPermissionGuard.validateProposal(
+                org.mockito.ArgumentMatchers.nullable(AuditReplayCommand.class)))
+                .thenReturn(ApiResult.ok());
+        when(replayBusinessPermissionGuard.validateProposalContext(any(AuditOperationProposalRequest.class)))
+                .thenReturn(ApiResult.ok(null));
 
         when(ticketMapper.selectCount(any())).thenAnswer(invocation -> ticketRows.values().stream().filter(OpsAuditCenterServiceTest::active).count());
         when(ticketMapper.insert(any(AuditOperationTicketEntity.class))).thenAnswer(invocation -> {
@@ -209,6 +214,23 @@ class OpsAuditCenterServiceTest {
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("operationId", "WO-8852")
                 .containsEntry("idempotencyKey", "idem-a2-1");
+    }
+
+    @Test
+    void approveRechecksBusinessPermissionBeforeReplay() {
+        putTicket("WO-PERMISSION-REVOKED", "J1 恢复提现闸", "pending", "emergency", true, false);
+        AuditReplayCommand command = new AuditReplayCommand("D", "d2_withdraw_approve", Map.of());
+        doReturn(ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:finance_d2_large_approve"))
+                .when(replayBusinessPermissionGuard).validateProposal(command);
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve(
+                "idem-revoked", "WO-PERMISSION-REVOKED",
+                new AuditOperationDecisionRequest("permission changed after proposal", "treasury.approver"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(ticketRows.get("WO-PERMISSION-REVOKED").getStatus()).isEqualTo("pending");
+        verify(replayDispatcher, never()).dispatch(any(), any());
+        verify(ticketMapper, never()).updateById(ticketRows.get("WO-PERMISSION-REVOKED"));
     }
 
     @Test
@@ -351,6 +373,77 @@ class OpsAuditCenterServiceTest {
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).contains("content_i4_trust_section_manage");
         verify(ticketMapper, never()).insert(any(AuditOperationTicketEntity.class));
+    }
+
+    @Test
+    void delegatedProposalRejectsMissingCommandBeforeCreatingTicketOrObjectLock() {
+        doReturn(ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED"))
+                .when(replayBusinessPermissionGuard).validateProposal(null);
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "冻结账户", "U00000052", "正常", "冻结", "risk-user", "风控", "acct",
+                false, false, "风控 / 超管", "高风险账户处置验证原因", "C2", null,
+                new ffdd.opsconsole.platform.domain.AuditLockTarget("C", "ACCOUNT", "U00000052"), null);
+
+        var result = service.createProposal("idem-null-command", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("A2_BUSINESS_COMMAND_REQUIRED");
+        verify(ticketMapper, never()).insert(any(AuditOperationTicketEntity.class));
+        verify(lockMapper, never()).insert(any(ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity.class));
+    }
+
+    @Test
+    void delegatedProposalPersistsCanonicalServerDescriptionInsteadOfClientCopy() {
+        AuditReplayCommand command = new AuditReplayCommand(
+                "K", "k1_cluster_release", Map.of("clusterId", "CL-ACTIVE"));
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "批准安全操作", "CL-ACTIVE", "正常", "保持正常", "risk-user", "client-role", "param",
+                false, true, "client-gate", "解除误判并恢复账户正常使用", "K1", command,
+                new ffdd.opsconsole.platform.domain.AuditLockTarget("K", "cluster", "CL-ACTIVE"), null);
+        var descriptor = new AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor(
+                "解除误判 · CL-ACTIVE", "CL-ACTIVE", "以服务器执行时状态为准", "released",
+                "K1", "acct", true,
+                new ffdd.opsconsole.platform.domain.AuditLockTarget("K", "cluster", "CL-ACTIVE"));
+        doReturn(ApiResult.ok(descriptor)).when(replayBusinessPermissionGuard).validateProposalContext(request);
+        doReturn(true).when(replayBusinessPermissionGuard).delegatedProposal();
+
+        var result = service.createProposal("idem-canonical-context", request);
+        AuditOperationTicketEntity stored = ticketRows.get(result.getData().id());
+
+        assertThat(result.getCode()).isZero();
+        assertThat(stored.getAction()).isEqualTo("解除误判 · CL-ACTIVE");
+        assertThat(stored.getObjectText()).isEqualTo("CL-ACTIVE");
+        assertThat(stored.getBeforeValue()).isEqualTo("以服务器执行时状态为准");
+        assertThat(stored.getAfterValue()).isEqualTo("released");
+        assertThat(stored.getOperationType()).isEqualTo("acct");
+        assertThat(stored.getAmplifies()).isEqualTo(1);
+        assertThat(stored.getSos()).isZero();
+        assertThat(stored.getOperatorRole()).isEqualTo("风控");
+        assertThat(stored.getRoleGate()).isEqualTo("门槛者");
+    }
+
+    @Test
+    void fullWriterCanonicalProposalKeepsAuthenticatedOperatorRole() {
+        AuditReplayCommand command = new AuditReplayCommand(
+                "C", "c2_account_freeze", Map.of("userId", "52", "status", "frozen"));
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "冻结账户", "52", "正常", "冻结", "superadmin", "超管", "acct",
+                true, false, "超管", "命中高风险规则", "C2", command,
+                new ffdd.opsconsole.platform.domain.AuditLockTarget("C", "ACCOUNT", "52"), null);
+        var descriptor = new AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor(
+                "冻结账户 · 52", "52", "以服务器执行时状态为准", "frozen",
+                "C2", "acct", true,
+                new ffdd.opsconsole.platform.domain.AuditLockTarget("C", "ACCOUNT", "52"));
+        doReturn(ApiResult.ok(descriptor)).when(replayBusinessPermissionGuard).validateProposalContext(request);
+        doReturn(false).when(replayBusinessPermissionGuard).delegatedProposal();
+
+        var result = service.createProposal("idem-full-writer-role", request);
+        AuditOperationTicketEntity stored = ticketRows.get(result.getData().id());
+
+        assertThat(result.getCode()).isZero();
+        assertThat(stored.getOperatorRole()).isEqualTo("超管");
+        assertThat(stored.getAction()).isEqualTo("冻结账户 · 52");
+        assertThat(stored.getObjectText()).isEqualTo("52");
     }
 
     @Test

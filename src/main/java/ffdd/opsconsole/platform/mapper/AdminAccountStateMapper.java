@@ -14,6 +14,8 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
               id BIGINT AUTO_INCREMENT PRIMARY KEY,
               admin_id BIGINT NOT NULL,
               tfa_required TINYINT NOT NULL DEFAULT 1,
+              tfa_secret_encrypted VARCHAR(1024) NULL,
+              tfa_bound_at DATETIME NULL,
               last_login_at DATETIME NULL,
               tfa_reset_at DATETIME NULL,
               sessions_revoked_at DATETIME NULL,
@@ -71,6 +73,24 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
 
     @Insert("""
             INSERT INTO nx_admin_account_state (
+              admin_id, tfa_required, tfa_secret_encrypted, tfa_bound_at, credential_delivery_status, is_deleted
+            ) VALUES (
+              #{adminId}, 1, #{encryptedSecret}, #{boundAt}, 'ACTIVE', 0
+            )
+            ON DUPLICATE KEY UPDATE
+              tfa_required = 1,
+              tfa_secret_encrypted = VALUES(tfa_secret_encrypted),
+              tfa_bound_at = VALUES(tfa_bound_at),
+              updated_at = NOW(),
+              is_deleted = 0
+            """)
+    int upsertMfaBinding(
+            @Param("adminId") Long adminId,
+            @Param("encryptedSecret") String encryptedSecret,
+            @Param("boundAt") LocalDateTime boundAt);
+
+    @Insert("""
+            INSERT INTO nx_admin_account_state (
               admin_id, tfa_required, tfa_reset_at, credential_delivery_status, is_deleted
             ) VALUES (
               #{adminId}, 1, #{resetAt}, 'ACTIVE', 0
@@ -78,6 +98,8 @@ public interface AdminAccountStateMapper extends BaseMapper<AdminAccountStateEnt
             ON DUPLICATE KEY UPDATE
               tfa_reset_at = VALUES(tfa_reset_at),
               tfa_required = 1,
+              tfa_secret_encrypted = NULL,
+              tfa_bound_at = NULL,
               updated_at = NOW(),
               is_deleted = 0
             """)

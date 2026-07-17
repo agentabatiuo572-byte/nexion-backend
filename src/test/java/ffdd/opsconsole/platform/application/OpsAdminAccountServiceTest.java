@@ -113,6 +113,14 @@ class OpsAdminAccountServiceTest {
         roleRelations.put(2L, "SUPER_ADMIN");
         roleRelations.put(3L, "SUPER_ADMIN");
         roleRelations.put(4L, "RISK");
+        for (long adminId : List.of(1L, 2L, 3L)) {
+            upsertAccountState(adminId, state -> {
+                state.setTfaRequired(1);
+                state.setTfaSecretEncrypted("encrypted-test-secret");
+                state.setTfaBoundAt(LocalDateTime.now());
+                state.setCredentialDeliveryStatus("ACTIVE");
+            });
+        }
 
         when(roleMapper.selectList(any())).thenReturn(testRoleRows());
         when(roleRelationMapper.activeRoleCode(any(Long.class)))
@@ -142,6 +150,8 @@ class OpsAdminAccountServiceTest {
             upsertAccountState(invocation.getArgument(0), state -> {
                 state.setTfaRequired(1);
                 state.setTfaResetAt(invocation.getArgument(1));
+                state.setTfaSecretEncrypted(null);
+                state.setTfaBoundAt(null);
             });
             return 1;
         });
@@ -269,6 +279,20 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
+    void overviewIncludesAuditableRoleHistoryBaseline() {
+        ApiResult<AdminAccountOverview> result = service.overview();
+
+        AdminAccountOverview.OperatorRecord superadmin = result.getData().operators().stream()
+                .filter(operator -> "1".equals(operator.id()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(superadmin.roleHistory()).singleElement().satisfies(history -> {
+            assertThat(history.toRole()).isEqualTo("super");
+            assertThat(history.source()).isEqualTo("CURRENT_ASSIGNMENT");
+        });
+    }
+
+    @Test
     void overviewDoesNotInventA1RoleRbacOrSecurityConfigWhenDbHasNoConfigRows() {
         repository.clear();
         rbacActionRows.clear();
@@ -335,7 +359,7 @@ class OpsAdminAccountServiceTest {
                 null,
                 "new employee onboarding",
                 "superadmin",
-                "12345678");
+                "RiskNew@12345678");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-1", request);
 
@@ -358,8 +382,8 @@ class OpsAdminAccountServiceTest {
                 .filter(admin -> "risk.new".equals(admin.getUsername()))
                 .findFirst()
                 .orElseThrow();
-        assertThat(passwordEncoder.matches("12345678", created.getPasswordHash())).isTrue();
-        assertThat(result.getData().toString()).doesNotContain("12345678");
+        assertThat(passwordEncoder.matches("RiskNew@12345678", created.getPasswordHash())).isTrue();
+        assertThat(result.getData().toString()).doesNotContain("RiskNew@12345678");
         verify(roleRelationMapper).ensurePrimaryRole(5L, "RISK");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -425,48 +449,74 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void deleteAccountSoftDeletesAdminAndRevokesSessions() {
+    void deleteAccountIsDisabledAndLeavesAdminUntouched() {
         AdminAccountActionRequest request = new AdminAccountActionRequest("operator left company", "superadmin");
 
         ApiResult<AdminAccountOverview.OperatorRecord> result =
                 service.deleteAccount("idem-delete-1", "4", request);
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().id()).isEqualTo("4");
+        assertThat(result.getCode()).isEqualTo(405);
+        assertThat(result.getMessage()).isEqualTo("ACCOUNT_DELETE_DISABLED_USE_DISABLE");
         AdminEntity target = admins.stream()
                 .filter(admin -> admin.getId().equals(4L))
                 .findFirst()
                 .orElseThrow();
-        assertThat(target.getStatus()).isZero();
-        assertThat(target.getIsDeleted()).isEqualTo(1);
-        verify(adminSessionRegistry).revokeSessions(4L);
-        assertThat(accountStates.get(4L).getSessionsRevokedAt()).isNotNull();
-        assertThat(repository.items).doesNotContainKey("a1.account.4.deleted");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("A1_OPERATOR_DELETED");
+        assertThat(target.getStatus()).isEqualTo(1);
+        assertThat(target.getIsDeleted()).isZero();
+        verify(adminSessionRegistry, never()).revokeSessions(4L);
     }
 
     @Test
-    void deleteAccountRejectsSelfAndMinimumSuperBoundary() {
+    void deleteAccountIsDisabledForSelfAndSuperTargetsToo() {
         AdminAccountActionRequest request = new AdminAccountActionRequest("bad delete", "superadmin");
 
         ApiResult<AdminAccountOverview.OperatorRecord> selfResult =
                 service.deleteAccount("idem-delete-self", "1", request);
 
-        assertThat(selfResult.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
-        assertThat(selfResult.getMessage()).isEqualTo("ACCOUNT_DELETE_SELF_FORBIDDEN");
+        assertThat(selfResult.getCode()).isEqualTo(405);
+        assertThat(selfResult.getMessage()).isEqualTo("ACCOUNT_DELETE_DISABLED_USE_DISABLE");
 
         admins.get(2).setStatus(0);
         ApiResult<AdminAccountOverview.OperatorRecord> minSuperResult =
                 service.deleteAccount("idem-delete-min-super", "2", request);
 
-        assertThat(minSuperResult.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
-        assertThat(minSuperResult.getMessage()).isEqualTo("MIN_EFFECTIVE_SUPER_REQUIRED");
+        assertThat(minSuperResult.getCode()).isEqualTo(405);
+        assertThat(minSuperResult.getMessage()).isEqualTo("ACCOUNT_DELETE_DISABLED_USE_DISABLE");
         assertThat(admins.get(1).getIsDeleted()).isZero();
         verify(adminSessionRegistry, never()).revokeSessions(1L);
         verify(adminSessionRegistry, never()).revokeSessions(2L);
+    }
+
+    @Test
+    void reset2faRejectsEffectiveSuperFloor() {
+        admins.get(2).setStatus(0);
+        AdminAccountActionRequest request = new AdminAccountActionRequest("security recovery", "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result =
+                service.reset2fa("idem-reset-super-floor", "1", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("MIN_EFFECTIVE_SUPER_REQUIRED");
+        verify(accountStateMapper, never()).upsertTfaResetAt(eq(1L), any(LocalDateTime.class));
+        verify(adminSessionRegistry, never()).revokeSessions(1L);
+    }
+
+    @Test
+    void reset2faRevokesExistingSessionsAndClearsBinding() {
+        upsertAccountState(4L, state -> {
+            state.setTfaRequired(1);
+            state.setTfaSecretEncrypted("encrypted-risk-secret");
+            state.setTfaBoundAt(LocalDateTime.now());
+        });
+        AdminAccountActionRequest request = new AdminAccountActionRequest("verified recovery", "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result =
+                service.reset2fa("idem-reset-risk", "4", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().tfa()).isFalse();
+        verify(adminSessionRegistry).revokeSessions(4L);
+        verify(accountStateMapper).upsertSessionsRevokedAt(eq(4L), any(LocalDateTime.class));
     }
 
     @Test
@@ -669,8 +719,8 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().account().id()).isEqualTo("4");
         assertThat(result.getData().temporaryPassword())
-                .hasSize(8)
-                .matches("[23456789abcdefghjkmnpqrstuvwxyz]{8}");
+                .hasSize(20)
+                .matches("Aa1![23456789abcdefghjkmnpqrstuvwxyz]{16}");
         AdminEntity target = admins.stream()
                 .filter(admin -> admin.getId().equals(4L))
                 .findFirst()
@@ -819,7 +869,7 @@ class OpsAdminAccountServiceTest {
                 "username", "risk.replay",
                 "displayName", "回放风控",
                 "role", "risk",
-                "initialPassword", "ReplayRisk@123"));
+                "initialPassword", "ReplayRisk@12345"));
         AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay create risk operator", "idem-replay-create");
 
         ApiResult<?> result = service.replay(cmd, ctx);

@@ -19,6 +19,8 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AdminIdempotencyService {
     private static final Duration DEFAULT_TTL = Duration.ofHours(24);
+    /** Must stay aligned with nx_admin_idempotency_record.idempotency_key VARCHAR(128). */
+    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_SUCCEEDED = "SUCCEEDED";
     private static final String STATUS_FAILED = "FAILED";
@@ -29,7 +31,7 @@ public class AdminIdempotencyService {
 
     public <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
         String normalizedScope = normalizeScope(scope);
-        String normalizedKey = normalizeRequired(idempotencyKey, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
 
         AdminIdempotencyRecordEntity existing = recordMapper.selectActive(normalizedScope, normalizedKey);
@@ -37,21 +39,30 @@ public class AdminIdempotencyService {
             return replay(existing, normalizedHash, responseType);
         }
 
-        AdminIdempotencyRecordEntity record = new AdminIdempotencyRecordEntity();
-        record.setScope(normalizedScope);
-        record.setIdempotencyKey(normalizedKey);
-        record.setRequestHash(normalizedHash);
-        record.setStatus(STATUS_PROCESSING);
-        record.setExpiresAt(LocalDateTime.now(clock).plus(DEFAULT_TTL));
-        record.setIsDeleted(0);
-        try {
-            recordMapper.insert(record);
-        } catch (DuplicateKeyException ex) {
-            AdminIdempotencyRecordEntity duplicate = recordMapper.selectActive(normalizedScope, normalizedKey);
-            if (duplicate != null) {
-                return replay(duplicate, normalizedHash, responseType);
+        LocalDateTime expiresAt = LocalDateTime.now(clock).plus(DEFAULT_TTL);
+        AdminIdempotencyRecordEntity record;
+        if (recordMapper.resetExpired(normalizedScope, normalizedKey, normalizedHash, expiresAt) == 1) {
+            record = recordMapper.selectActive(normalizedScope, normalizedKey);
+            if (record == null) {
+                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_RECLAIM_CONFLICT");
             }
-            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_KEY_CONFLICT");
+        } else {
+            record = new AdminIdempotencyRecordEntity();
+            record.setScope(normalizedScope);
+            record.setIdempotencyKey(normalizedKey);
+            record.setRequestHash(normalizedHash);
+            record.setStatus(STATUS_PROCESSING);
+            record.setExpiresAt(expiresAt);
+            record.setIsDeleted(0);
+            try {
+                recordMapper.insert(record);
+            } catch (DuplicateKeyException ex) {
+                AdminIdempotencyRecordEntity duplicate = recordMapper.selectActive(normalizedScope, normalizedKey);
+                if (duplicate != null) {
+                    return replay(duplicate, normalizedHash, responseType);
+                }
+                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_KEY_CONFLICT");
+            }
         }
 
         try {
@@ -80,6 +91,14 @@ public class AdminIdempotencyService {
                 .replaceAll("[^A-Z0-9_.:-]", "_");
         if (normalized.length() > 96) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IDEMPOTENCY_SCOPE_TOO_LONG");
+        }
+        return normalized;
+    }
+
+    private String normalizeIdempotencyKey(String value) {
+        String normalized = normalizeRequired(value, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        if (normalized.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IDEMPOTENCY_KEY_INVALID");
         }
         return normalized;
     }

@@ -1784,17 +1784,9 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private boolean trialKillSwitchEnabled() {
-        return controlValue(TRIAL_KILLSWITCH_KEY)
-                .or(() -> controlValue(TRIAL_LEGACY_KILLSWITCH_KEY))
-                .map(value -> {
-                    String normalized = value.trim().toLowerCase(Locale.ROOT);
-                    return "enabled".equals(normalized)
-                            || "enable".equals(normalized)
-                            || "on".equals(normalized)
-                            || "true".equals(normalized)
-                            || "1".equals(normalized);
-                })
-                .orElse(true);
+        return ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+                controlValue(TRIAL_KILLSWITCH_KEY),
+                controlValue(TRIAL_LEGACY_KILLSWITCH_KEY));
     }
 
     private ApiResult<Map<String, Object>> requireTrialGateForH4Mutation() {

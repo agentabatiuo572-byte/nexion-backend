@@ -185,6 +185,7 @@ public class OpsDashboardService {
                 "gates", gates,
                 "activeGateCount", longValue(killSwitchMatrix.get("activeGateCount")),
                 "coverage", killSwitchMatrix.getOrDefault("coverage", Map.of()),
+                "autoConfirmations", killSwitchMatrix.getOrDefault("autoConfirmations", List.of()),
                 "executionModel", stringValue(killSwitchMatrix.get("executionModel")));
     }
 
@@ -284,6 +285,20 @@ public class OpsDashboardService {
                     "level", "high",
                     "title", "Kill-switch disabled gates " + disabled,
                     "hint", "Recovery prechecks B1 coverage"));
+        }
+        List<Map<String, Object>> autoConfirmations = list(killSwitch.get("autoConfirmations"));
+        long overdueConfirmations = autoConfirmations.stream()
+                .filter(row -> Boolean.TRUE.equals(row.get("overdue")))
+                .count();
+        if (!autoConfirmations.isEmpty()) {
+            alerts.add(linked(
+                    "id", "J1-AUTO-CONFIRM",
+                    "domain", "J",
+                    "level", overdueConfirmations > 0 ? "high" : "mid",
+                    "title", "J1 自动关停待补录 " + autoConfirmations.size(),
+                    "hint", overdueConfirmations > 0
+                            ? "已有 " + overdueConfirmations + " 项逾期，请立即前往 J1 补录"
+                            : "请在截止时间前前往 J1 补录处置结论"));
         }
         return alerts;
     }

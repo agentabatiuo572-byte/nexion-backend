@@ -18,6 +18,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.MDC;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 class AuditLogServiceTest {
     private final AuditLogMapper auditLogMapper = org.mockito.Mockito.mock(AuditLogMapper.class);
@@ -36,6 +39,26 @@ class AuditLogServiceTest {
     @AfterEach
     void tearDown() {
         MDC.clear();
+        RequestContextHolder.resetRequestAttributes();
+    }
+
+    @Test
+    void auditClientIpIgnoresCallerControlledForwardingHeaders() {
+        MockHttpServletRequest servletRequest = new MockHttpServletRequest("POST", "/api/admin/emergency/geo-block/countries/AQ");
+        servletRequest.setRemoteAddr("10.0.0.8");
+        servletRequest.addHeader("X-Forwarded-For", "203.0.113.77");
+        servletRequest.addHeader("X-Real-IP", "203.0.113.78");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(servletRequest));
+
+        service.record(AuditLogWriteRequest.builder()
+                .action("J2_GEO_COUNTRY_STATUS_CHANGED")
+                .resourceType("GEO_COUNTRY")
+                .resourceId("AQ")
+                .build());
+
+        ArgumentCaptor<AuditLogMapper.AuditLogWrite> params = ArgumentCaptor.forClass(AuditLogMapper.AuditLogWrite.class);
+        verify(auditLogMapper).insertAuditLog(params.capture());
+        assertThat(params.getValue().clientIp()).isEqualTo("10.0.0.8");
     }
 
     @Test

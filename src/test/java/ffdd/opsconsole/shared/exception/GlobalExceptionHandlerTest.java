@@ -13,6 +13,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 class GlobalExceptionHandlerTest {
@@ -70,10 +71,21 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void unexpectedExceptionReturns500() {
-        ApiResult<Void> result = handler.handleException(new RuntimeException("database unavailable"));
+    void unexpectedExceptionReturnsStableSanitized500() {
+        ApiResult<Void> result = handler.handleException(new RuntimeException(
+                "MysqlDataTruncation: nx_admin_idempotency_record AdminIdempotencyRecordMapper INSERT ..."));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INTERNAL_ERROR.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("database unavailable");
+        assertThat(result.getMessage()).isEqualTo("INTERNAL_SERVER_ERROR");
+        assertThat(result.getMessage()).doesNotContain("Mysql", "Mapper", "INSERT");
+    }
+
+    @Test
+    void malformedRequestBodyReturnsStable400WithoutParserDetails() {
+        ApiResult<Void> result = handler.handleUnreadableMessage(
+                new HttpMessageNotReadableException("JSON parse error: Long from string"));
+
+        assertThat(result.getCode()).isEqualTo(400);
+        assertThat(result.getMessage()).isEqualTo("REQUEST_BODY_INVALID");
     }
 }

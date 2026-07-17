@@ -12,6 +12,8 @@ import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -21,6 +23,7 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
     private final AuditLogService auditLogService;
 
     @Override
+    @Transactional
     public KycReviewTriggerResult triggerLargeWithdrawalReview(
             String userNo,
             BigDecimal amountUsdt,
@@ -32,16 +35,23 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
         if (!requiresReview(userNo, amountUsdt, threshold)) {
             return KycReviewTriggerResult.notRequired();
         }
-        if (riskRepository.hasOpenKycReviewTicket(userNo)) {
-            return new KycReviewTriggerResult(true, false, null, "K5_REVIEW_ALREADY_OPEN");
+        var open = riskRepository.findOpenKycReviewTicketByUser(userNo).orElse(null);
+        if (open != null) {
+            return merge(open, userNo, "D2", withdrawalNo, amountUsdt, threshold, operator, reason);
         }
         String ticketId = "KR-D2-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
-        riskRepository.createLargeWithdrawalKycReviewTicket(ticketId, userNo, amountUsdt, withdrawalNo, kycStatus, reason, actor(operator));
+        try {
+            riskRepository.createLargeWithdrawalKycReviewTicket(ticketId, userNo, amountUsdt, withdrawalNo, kycStatus, reason, actor(operator));
+        } catch (DuplicateKeyException race) {
+            var winner = riskRepository.findOpenKycReviewTicketByUser(userNo).orElseThrow(() -> race);
+            return merge(winner, userNo, "D2", withdrawalNo, amountUsdt, threshold, operator, reason);
+        }
         audit("K5_KYC_REVIEW_TRIGGERED_BY_D2", ticketId, userNo, "D2", withdrawalNo, amountUsdt, threshold, operator, reason);
         return new KycReviewTriggerResult(true, true, ticketId, "K5_LARGE_WITHDRAWAL_REVIEW_REQUIRED");
     }
 
     @Override
+    @Transactional
     public KycReviewTriggerResult triggerLargeExchangeReview(
             String userNo,
             BigDecimal amountUsdt,
@@ -53,11 +63,17 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
         if (!requiresReview(userNo, amountUsdt, threshold)) {
             return KycReviewTriggerResult.notRequired();
         }
-        if (riskRepository.hasOpenKycReviewTicket(userNo)) {
-            return new KycReviewTriggerResult(true, false, null, "K5_REVIEW_ALREADY_OPEN");
+        var open = riskRepository.findOpenKycReviewTicketByUser(userNo).orElse(null);
+        if (open != null) {
+            return merge(open, userNo, "G2", exchangeNo, amountUsdt, threshold, operator, reason);
         }
         String ticketId = "KR-G2-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
-        riskRepository.createLargeExchangeKycReviewTicket(ticketId, userNo, amountUsdt, exchangeNo, kycStatus, reason, actor(operator));
+        try {
+            riskRepository.createLargeExchangeKycReviewTicket(ticketId, userNo, amountUsdt, exchangeNo, kycStatus, reason, actor(operator));
+        } catch (DuplicateKeyException race) {
+            var winner = riskRepository.findOpenKycReviewTicketByUser(userNo).orElseThrow(() -> race);
+            return merge(winner, userNo, "G2", exchangeNo, amountUsdt, threshold, operator, reason);
+        }
         audit("K5_KYC_REVIEW_TRIGGERED_BY_G2", ticketId, userNo, "G2", exchangeNo, amountUsdt, threshold, operator, reason);
         return new KycReviewTriggerResult(true, true, ticketId, "K5_LARGE_EXCHANGE_REVIEW_REQUIRED");
     }
@@ -72,6 +88,19 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
         return amountUsdt.compareTo(BigDecimal.valueOf(threshold)) >= 0;
     }
 
+    private KycReviewTriggerResult merge(
+            ffdd.opsconsole.risk.domain.KycReviewTicketContext open, String userNo, String sourceDomain,
+            String sourceNo, BigDecimal amountUsdt, int threshold, String operator, String reason) {
+        String mergeReason = sourceDomain + ":" + sourceNo + " · " + reason;
+        if (!riskRepository.mergeOpenKycReviewTicket(open.ticketId(), open.version(), mergeReason, actor(operator))) {
+            throw new IllegalStateException("K5_REVIEW_MERGE_CONFLICT");
+        }
+        riskRepository.linkKycReviewSource(open.ticketId(), sourceDomain, sourceNo);
+        audit("K5_KYC_REVIEW_TRIGGER_MERGED_" + sourceDomain, open.ticketId(), userNo,
+                sourceDomain, sourceNo, amountUsdt, threshold, operator, reason);
+        return new KycReviewTriggerResult(true, false, open.ticketId(), "K5_REVIEW_TRIGGER_MERGED");
+    }
+
     private void audit(String action, String ticketId, String userNo, String sourceDomain, String sourceNo,
                        BigDecimal amountUsdt, int threshold, String operator, String reason) {
         Map<String, Object> detail = new LinkedHashMap<>();
@@ -82,7 +111,7 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
         detail.put("amountUsdt", amountUsdt);
         detail.put("thresholdUsdt", threshold);
         detail.put("reason", reason);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("RISK_KYC_REVIEW_TICKET")
                 .resourceId(ticketId)

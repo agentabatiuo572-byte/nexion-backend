@@ -74,6 +74,7 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -675,6 +676,19 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(loadAccountActionOverview());
     }
 
+    public ApiResult<UserAccountView> accountActionAccount(String userKey) {
+        String lookupKey = userKey == null ? "" : userKey.trim();
+        if (lookupKey.isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_KEY_REQUIRED");
+        }
+        Long userId = userRepository.findUserIdByLookupKey(lookupKey).orElse(null);
+        if (userId == null) {
+            return ApiResult.fail(404, "USER_NOT_FOUND");
+        }
+        UserAccountView account = userRepository.findById(userId).orElse(null);
+        return account == null ? ApiResult.fail(404, "USER_NOT_FOUND") : ApiResult.ok(account);
+    }
+
     private UserAccountActionOverview loadAccountActionOverview() {
         Map<String, Object> baseOverview = userRepository.overview();
         List<UserAccountView> accounts = userRepository.search(null, null, null, 50);
@@ -707,6 +721,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     public ApiResult<UserAccountListEntryView> upsertAccountList(String idempotencyKey, UserAccountListUpsertRequest request) {
+        Long targetUserId = request == null ? null : request.userId();
+        ApiResult<UserAccountListEntryView> approvalGuard = delegatedDirectExecutionGuard(
+                "c2_blocklist_upsert", "USER_ACCOUNT_LIST", String.valueOf(targetUserId), targetUserId);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
         ApiResult<UserAccountListEntryView> guard = requireUserCommand(
                 request == null ? null : request.userId(),
                 idempotencyKey,
@@ -811,6 +831,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             String sessionNo,
             String idempotencyKey,
             UserImpersonationTerminateRequest request) {
+        ApiResult<UserImpersonationSessionView> approvalGuard = delegatedDirectExecutionGuard(
+                "c2_impersonate_terminate", "USER_IMPERSONATION", sessionNo, null);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
         ApiResult<UserImpersonationSessionView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -863,6 +888,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     public ApiResult<Map<String, Object>> revokeUserSessions(Long userId, String idempotencyKey, UserSessionRevokeAllRequest request) {
+        ApiResult<Map<String, Object>> approvalGuard = delegatedDirectExecutionGuard(
+                "c2_session_revoke_all", "USER_SESSION", String.valueOf(userId), userId);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
         ApiResult<Map<String, Object>> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1126,6 +1156,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     public ApiResult<UserAccountView> updateStatus(Long userId, String idempotencyKey, UserStatusUpdateRequest request) {
+        String operation = request != null && "ACTIVE".equalsIgnoreCase(request.status())
+                ? "c2_account_unfreeze" : "c2_account_freeze";
+        ApiResult<UserAccountView> approvalGuard = delegatedDirectExecutionGuard(
+                operation, "USER_ACCOUNT", String.valueOf(userId), userId);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
         ApiResult<UserAccountView> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1206,6 +1243,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     public ApiResult<Map<String, Object>> startImpersonation(Long userId, String idempotencyKey, UserImpersonationRequest request) {
+        ApiResult<Map<String, Object>> approvalGuard = delegatedDirectExecutionGuard(
+                "c2_impersonate_start", "USER_IMPERSONATION", String.valueOf(userId), userId);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
         ApiResult<Map<String, Object>> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1218,7 +1260,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         int ttlMinutes = request.ttlMinutes() == null ? 15 : request.ttlMinutes();
-        if (ttlMinutes < 5 || ttlMinutes > 60) {
+        if (ttlMinutes < 5 || ttlMinutes > 30) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IMPERSONATION_TTL_OUT_OF_RANGE");
         }
         String sessionNo = "IMP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
@@ -1472,13 +1514,52 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         String value = expiresAt.trim();
         try {
-            if (value.matches("\\d{4}-\\d{2}-\\d{2}")) {
-                return LocalDate.parse(value).atTime(23, 59, 59);
+            LocalDateTime parsed = value.matches("\\d{4}-\\d{2}-\\d{2}")
+                    ? LocalDate.parse(value).atTime(23, 59, 59)
+                    : LocalDateTime.parse(value);
+            if (!parsed.isAfter(LocalDateTime.now())) {
+                throw new IllegalArgumentException("ACCOUNT_LIST_EXPIRES_AT_NOT_FUTURE");
             }
-            return LocalDateTime.parse(value);
+            return parsed;
         } catch (DateTimeParseException ex) {
             throw new IllegalArgumentException("ACCOUNT_LIST_EXPIRES_AT_INVALID", ex);
         }
+    }
+
+    private <T> ApiResult<T> delegatedDirectExecutionGuard(
+            String operation, String resourceType, String resourceId, Long userId) {
+        if (A2ReplayContext.isReplaying()) {
+            return null;
+        }
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return null;
+        }
+        Set<String> authorities = authentication.getAuthorities().stream()
+                .map(authority -> authority.getAuthority())
+                .collect(java.util.stream.Collectors.toSet());
+        if (!authorities.contains("platform_a2_proposal_create")
+                || authorities.contains("platform_a2_operation_approve")) {
+            return null;
+        }
+        String safeResourceId = resourceId == null ? "" : resourceId;
+        auditLogService.record(AuditLogWriteRequest.builder()
+                .action("A2_DIRECT_EXECUTION_REJECTED")
+                .resourceType(resourceType)
+                .resourceId(safeResourceId)
+                .bizNo(safeResourceId)
+                .userId(userId)
+                .actorType("ADMIN")
+                .actorUsername(String.valueOf(authentication.getName()))
+                .result("REJECTED")
+                .riskLevel("HIGH")
+                .detail(Map.of(
+                        "operation", operation,
+                        "target", safeResourceId,
+                        "reason", "A2_PROPOSAL_REQUIRED",
+                        "businessDataChanged", false))
+                .build());
+        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_PROPOSAL_REQUIRED");
     }
 
     private String normalizeUserStatus(String status) {
@@ -2067,7 +2148,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 return unlockSecurity(longVal(p, "userId"), idem, req);
             }
             case "c2_account_freeze", "c2_account_unfreeze" -> {
-                UserStatusUpdateRequest req = new UserStatusUpdateRequest(str(p, "status"), reason, operator);
+                String status = "c2_account_freeze".equals(cmd.op()) ? "FROZEN" : "ACTIVE";
+                UserStatusUpdateRequest req = new UserStatusUpdateRequest(status, reason, operator);
                 return updateStatus(longVal(p, "userId"), idem, req);
             }
             case "c2_session_revoke_all" -> {

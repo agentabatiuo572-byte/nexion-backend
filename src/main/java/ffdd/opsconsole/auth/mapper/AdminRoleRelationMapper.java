@@ -12,6 +12,14 @@ import org.apache.ibatis.annotations.Update;
 public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEntity> {
     @Update("""
             UPDATE nx_admin_role_relation
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE admin_id = #{adminId}
+               AND is_deleted = 0
+            """)
+    int disableAllPrimaryRoles(@Param("adminId") Long adminId);
+
+    @Update("""
+            UPDATE nx_admin_role_relation
             SET is_deleted = 1, updated_at = NOW()
             WHERE admin_id = #{adminId}
               AND role_id NOT IN (

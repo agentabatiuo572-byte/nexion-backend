@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest;
+import ffdd.opsconsole.emergency.dto.AutoTriggerConfirmationRequest;
 import ffdd.opsconsole.emergency.dto.EmergencyDisableRequest;
 import ffdd.opsconsole.emergency.dto.KillSwitchToggleRequest;
 import java.util.Map;
@@ -32,8 +33,14 @@ public class OpsKillSwitchController {
         return killSwitchService.matrix();
     }
 
+    @GetMapping("/alerts")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResult<Map<String, Object>> alerts() {
+        return killSwitchService.alerts();
+    }
+
     @PutMapping("/{key}")
-    @PreAuthorize("hasAnyAuthority('emergency_j1_gate_kill','emergency_j1_gate_resume')")
+    @PreAuthorize("@opsKillSwitchAuthorization.canToggle(#request)")
     public ApiResult<Map<String, Object>> toggle(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -47,6 +54,15 @@ public class OpsKillSwitchController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody EmergencyDisableRequest request) {
         return killSwitchService.emergencyDisable(idempotencyKey, request);
+    }
+
+    @PostMapping("/auto-confirmations/{key}")
+    @PreAuthorize("hasAuthority('emergency_j1_gate_kill')")
+    public ApiResult<Map<String, Object>> confirmAutoTrigger(
+            @PathVariable String key,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody AutoTriggerConfirmationRequest request) {
+        return killSwitchService.confirmAutoTrigger(key, idempotencyKey, request);
     }
 
     @PatchMapping("/emergency-sla/{paramKey}")

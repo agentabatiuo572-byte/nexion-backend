@@ -12,6 +12,7 @@ public record SopPlaybookUpdateRequest(
         String notifyTemplate,
         String rollback,
         Boolean drillRequired,
+        String version,
         String reason,
         String operator) {
 }

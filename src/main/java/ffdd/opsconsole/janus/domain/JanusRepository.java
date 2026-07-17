@@ -15,10 +15,12 @@ public interface JanusRepository {
 
     void upsertDeviceReport(long userId, String sid, JanusDeviceReportRequest request);
 
-    boolean insertEvaluation(String sid, String reportId, String sessionId, String strategyId,
+    boolean insertEvaluation(String sid, String reportId, String requestHash, String sessionId, String strategyId,
                              Integer strategyVersion, String inputSnapshotJson, String ruleResultsJson,
                              String action, String recommendedStatus, String errorCode, int elapsedMs,
                              String engineVersion);
+
+    Optional<String> findEvaluationRequestHash(String sid, String reportId);
 
     boolean reserveDailyEvaluation(String strategyId, String action, int cap);
 

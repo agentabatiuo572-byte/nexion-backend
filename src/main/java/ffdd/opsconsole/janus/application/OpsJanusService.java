@@ -64,8 +64,26 @@ public class OpsJanusService {
             "walletViewed", "maturityScore", "inviteCode", "channel", "environmentRiskScore", "isHeadless",
             "automationSignalCount", "fpBlocklistHit", "screenAnomaly", "timezoneMismatch", "activated", "status");
     private static final Set<String> REMOTE_TARGETS = Set.of("default", "backup", "promo");
+    private static final Set<String> CHANNELS = Set.of("official", "ad", "invite", "test", "internal");
     private static final Set<String> COMMAND_ACTIONS = Set.of("REVERSAL_IMMEDIATE", "REVERSAL_SESSION_EDGE",
             "ENV_FILTER", "MANUAL_HOLD", "BLOCK");
+    private static final Set<String> RULE_MODES = Set.of("ALL", "ANY", "N_OF_M", "NOT", "WEIGHTED_SCORE");
+    private static final Set<String> RULE_OPERATORS = Set.of("=", "!=", ">", ">=", "<", "<=", "in",
+            "notIn", "between", "contains");
+    private static final Set<String> NUMERIC_RULE_FIELDS = Set.of("installDays", "appOpenCount", "sessionCount",
+            "foregroundDurationSeconds", "repeatStreakDays", "maturityScore", "recommendationScore",
+            "environmentRiskScore", "automationSignalCount");
+    private static final Set<String> BOOLEAN_RULE_FIELDS = Set.of("benchmarkViewed", "optimizeDone", "marketViewed",
+            "walletViewed", "isHeadless", "fpBlocklistHit", "screenAnomaly", "timezoneMismatch", "activated");
+    private static final Set<String> STRING_RULE_FIELDS = Set.of("inviteCode", "channel", "status");
+    private static final Set<String> SCOPE_FIELDS = Set.of("channels", "inviteCodes", "cohortIds");
+    private static final Set<String> SAFEGUARD_FIELDS = Set.of("maxDailyRecommendations", "maxDailyHits",
+            "requireFreshReportMinutes", "minDecisionIntervalHours");
+    private static final Set<String> ROLLOUT_FIELDS = Set.of("percent", "cohortIds", "startedAt", "endsAt");
+    private static final Set<String> HEALTH_FIELDS = Set.of("maxHitRate", "maxFilterRate", "minActivationRate");
+    private static final Set<String> REASON_CATEGORIES = Set.of(
+            "等待更多行为数据", "复核环境信号", "已知合作 / 内部设备", "疑似审核 / 自动化环境",
+            "高风险设备排除", "客诉 / 线索跟进", "现场演示需要", "其他(在详细原因说明)");
 
     private final JanusRepository repository;
     private final JanusRuleEvaluator ruleEvaluator;
@@ -103,28 +121,39 @@ public class OpsJanusService {
         String sid = deviceSid(userId, request.deviceId());
         long startedAt = System.nanoTime();
         JanusDeviceReportRequest telemetry = normalizedReport(request);
-        boolean overrideExpired = repository.expireDeviceOverride(userId, sid, System.currentTimeMillis());
+        String requestHash = hash(telemetry);
+        repository.expireDeviceOverride(userId, sid, System.currentTimeMillis());
         JanusDeviceView prior = repository.findDevice(sid).orElse(null);
+        Optional<String> existingRequestHash = repository.findEvaluationRequestHash(sid, telemetry.reportId());
+        if (existingRequestHash.isPresent()) return reportReplay(sid, requestHash, existingRequestHash);
+        if (prior != null && prior.lastSeenAt() != null && telemetry.reportedAt() < prior.lastSeenAt()) {
+            int elapsedMs = (int) Math.min(Integer.MAX_VALUE, (System.nanoTime() - startedAt) / 1_000_000L);
+            boolean accepted = repository.insertEvaluation(sid, telemetry.reportId(), requestHash,
+                    sessionId(telemetry), null, null,
+                    json(reportInput(telemetry)),
+                    json(Map.of("passed", false, "trace", List.of("OUT_OF_ORDER_REPORT"))),
+                    "BENIGN", prior.status(), "OUT_OF_ORDER_REPORT", elapsedMs, "janus-server-v1");
+            if (!accepted) return reportReplay(sid, requestHash,
+                    repository.findEvaluationRequestHash(sid, telemetry.reportId()));
+            return ApiResult.ok(prior);
+        }
         ReportEvaluation evaluation = evaluateReport(sid, telemetry, prior);
         JanusDeviceReportRequest authoritative = authoritativeReport(telemetry, evaluation);
         int elapsedMs = (int) Math.min(Integer.MAX_VALUE, (System.nanoTime() - startedAt) / 1_000_000L);
-        boolean accepted = repository.insertEvaluation(sid, authoritative.reportId(), sessionId(authoritative),
-                evaluation.strategyId(), evaluation.strategyVersion(), json(reportInput(authoritative)),
+        boolean accepted = repository.insertEvaluation(sid, authoritative.reportId(), requestHash,
+                sessionId(authoritative), evaluation.strategyId(), evaluation.strategyVersion(), json(reportInput(authoritative)),
                 json(evaluation.ruleResults()), evaluation.action(), evaluation.status(), null, elapsedMs,
                 "janus-server-v1");
         if (!accepted) {
             if (evaluation.quotaReserved()) {
                 repository.releaseDailyEvaluation(evaluation.strategyId(), evaluation.action());
             }
-            if (overrideExpired) {
-                repository.upsertDeviceReport(userId, sid, authoritative);
-            }
-            return repository.findDevice(sid).map(ApiResult::ok)
-                    .orElseGet(() -> ApiResult.fail(409, "JANUS_REPORT_REPLAY_CONFLICT"));
+            return reportReplay(sid, requestHash,
+                    repository.findEvaluationRequestHash(sid, authoritative.reportId()));
         }
         repository.upsertDeviceReport(userId, sid, authoritative);
         JanusDeviceView persisted = repository.findDevice(sid).orElse(null);
-        if (persisted == null) return ApiResult.fail(500, "JANUS_REPORT_NOT_PERSISTED");
+        if (persisted == null) throw new IllegalStateException("JANUS_REPORT_NOT_PERSISTED");
         boolean recovery = prior != null && "strategy".equals(prior.statusSource())
                 && (!evaluation.status().equals(prior.status())
                 || !java.util.Objects.equals(evaluation.remoteUrlKey(), prior.remoteUrlKey()));
@@ -134,13 +163,25 @@ public class OpsJanusService {
             command.put("reportId", authoritative.reportId());
             command.put("action", evaluation.action());
             if (evaluation.strategyId() != null) command.put("strategyId", evaluation.strategyId());
-            if (repository.publishStrategyCommand(sid, persisted.version(), evaluation.status(),
-                    evaluation.remoteUrlKey(), command.toString())) {
+            boolean published = repository.publishStrategyCommand(sid, persisted.version(), evaluation.status(),
+                    evaluation.remoteUrlKey(), command.toString());
+            if (published) {
                 outboxService.publish("JANUS_DEVICE", sid, "JANUS_STRATEGY_COMMAND_PUBLISHED", command);
                 persisted = repository.findDevice(sid).orElse(persisted);
+            } else if (evaluation.quotaReserved() && COMMAND_ACTIONS.contains(evaluation.action())) {
+                repository.releaseDailyEvaluation(evaluation.strategyId(), evaluation.action());
             }
         }
         return ApiResult.ok(persisted);
+    }
+
+    private ApiResult<JanusDeviceView> reportReplay(String sid, String requestHash,
+                                                     Optional<String> existingRequestHash) {
+        if (existingRequestHash.isEmpty() || !requestHash.equals(existingRequestHash.get())) {
+            return ApiResult.fail(409, "JANUS_REPORT_REPLAY_CONFLICT");
+        }
+        return repository.findDevice(sid).map(ApiResult::ok)
+                .orElseGet(() -> ApiResult.fail(409, "JANUS_REPORT_REPLAY_STATE_MISSING"));
     }
 
     public ApiResult<Map<String, Object>> pendingCommand(Long userId, String deviceId) {
@@ -160,11 +201,13 @@ public class OpsJanusService {
     public ApiResult<Map<String, Object>> acknowledgeCommand(Long userId, JanusCommandAckRequest request) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         if (request == null || !validText(request.deviceId(), 128) || request.revision() == null
-                || request.revision() <= 0 || request.success() == null) {
+                || request.revision() <= 0 || request.success() == null
+                || request.message() != null && request.message().length() > 500) {
             return ApiResult.fail(422, "JANUS_ACK_INVALID");
         }
         String applied = request.appliedStatus() == null ? null : request.appliedStatus().trim().toUpperCase(Locale.ROOT);
-        if (Boolean.TRUE.equals(request.success()) && !STATUSES.contains(applied)) {
+        if (applied != null && !STATUSES.contains(applied)
+                || Boolean.TRUE.equals(request.success()) && applied == null) {
             return ApiResult.fail(422, "APPLIED_STATUS_INVALID");
         }
         String sid = deviceSid(userId, request.deviceId());
@@ -175,7 +218,17 @@ public class OpsJanusService {
             return ApiResult.fail(409, "JANUS_ACK_CONFLICT");
         }
         String state = request.success() ? "ACKED" : "FAILED";
-        if (updated) repository.updateDeviceCommandRecord(sid, state);
+        if (updated) {
+            repository.updateDeviceCommandRecord(sid, state);
+            ObjectNode event = objectMapper.createObjectNode();
+            event.put("sid", sid);
+            event.put("revision", request.revision());
+            event.put("state", state);
+            event.put("success", request.success());
+            if (applied != null) event.put("appliedStatus", applied);
+            if (StringUtils.hasText(request.message())) event.put("message", request.message().trim());
+            outboxService.publish("JANUS_DEVICE", sid, "JANUS_DEVICE_COMMAND_" + state, event);
+        }
         return ApiResult.ok(Map.of("sid", sid, "revision", request.revision(), "state", state));
     }
 
@@ -218,6 +271,10 @@ public class OpsJanusService {
         if (request == null || !StringUtils.hasText(request.targetStatus())) return ApiResult.fail(422, "TARGET_STATUS_REQUIRED");
         if (!StringUtils.hasText(request.reasonCategory()) || !StringUtils.hasText(request.reasonText())
                 || request.reasonText().trim().length() < 8) return ApiResult.fail(422, "REASON_REQUIRED");
+        if (!REASON_CATEGORIES.contains(request.reasonCategory().trim())) {
+            return ApiResult.fail(422, "REASON_CATEGORY_INVALID");
+        }
+        if (request.reasonText().trim().length() > 500) return ApiResult.fail(422, "REASON_TOO_LONG");
         if (request.expectedDeviceVersion() == null) return ApiResult.fail(422, "EXPECTED_VERSION_REQUIRED");
         JanusDeviceView before = repository.findDevice(sid).orElse(null);
         if (before == null) return ApiResult.fail(404, "JANUS_DEVICE_NOT_FOUND");
@@ -281,7 +338,8 @@ public class OpsJanusService {
                 .orElseGet(() -> ApiResult.fail(409, "IDEMPOTENCY_RESULT_MISSING"));
         JanusStrategyView created = repository.createStrategy(strategyId, request);
         repository.completeCommand(idempotencyKey.trim(), "ACKED", json(created));
-        requiredAudit("K6_STRATEGY_CREATED", "JANUS_STRATEGY", strategyId, request.reason(), Map.of("after", created));
+        requiredAudit("K6_STRATEGY_CREATED", "JANUS_STRATEGY", strategyId, request.reason(),
+                Map.of("before", Map.of(), "after", created));
         return ApiResult.ok(created);
     }
 
@@ -480,12 +538,19 @@ public class OpsJanusService {
             repository.releaseCommandReservation(idempotencyKey.trim());
             return ApiResult.fail(404, "JANUS_STRATEGY_NOT_FOUND");
         }
+        if (!"draft".equals(before.status())) {
+            repository.releaseCommandReservation(idempotencyKey.trim());
+            return ApiResult.fail(409, "ONLY_DRAFT_DELETABLE");
+        }
         if (!repository.deleteStrategy(strategyId, request.expectedVersion())) {
             repository.releaseCommandReservation(idempotencyKey.trim());
             return ApiResult.fail(409, "STRATEGY_DELETE_FORBIDDEN");
         }
         repository.completeCommand(idempotencyKey.trim(), "ACKED", json(request));
-        requiredAudit("K6_STRATEGY_DELETED", "JANUS_STRATEGY", strategyId, reason, Map.of("before", before));
+        outboxService.publish("JANUS_STRATEGY", strategyId, "JANUS_STRATEGY_DRAFT_DELETED",
+                Map.of("strategyId", strategyId, "expectedVersion", request.expectedVersion()));
+        requiredAudit("K6_STRATEGY_DELETED", "JANUS_STRATEGY", strategyId, reason,
+                Map.of("before", before, "after", Map.of()));
         return ApiResult.ok();
     }
 
@@ -570,12 +635,13 @@ public class OpsJanusService {
 
     private String validateStrategy(JanusStrategyUpsertRequest request) {
         if (request == null) return "STRATEGY_REQUIRED";
-        if (!StringUtils.hasText(request.name()) || request.name().trim().length() < 2) return "STRATEGY_NAME_REQUIRED";
-        if (!StringUtils.hasText(request.owner())) return "STRATEGY_OWNER_REQUIRED";
+        if (!validText(request.name(), 160) || request.name().trim().length() < 2) return "STRATEGY_NAME_REQUIRED";
+        if (request.description() != null && request.description().length() > 1_000) return "STRATEGY_DESCRIPTION_INVALID";
+        if (!validText(request.owner(), 96)) return "STRATEGY_OWNER_REQUIRED";
         if (request.priority() == null || request.priority() < 0 || request.priority() > 1000) return "STRATEGY_PRIORITY_INVALID";
-        if (request.ruleTree() == null || !request.ruleTree().has("rules") || !request.ruleTree().path("rules").isArray()) return "INVALID_RULE_TREE";
-        if (!validRuleFields(request.ruleTree())) return "INVALID_RULE_FIELD";
-        if (request.action() == null || !ACTIONS.contains(request.action().path("type").asText())) return "STRATEGY_ACTION_INVALID";
+        if (!validRuleTree(request.ruleTree())) return "INVALID_RULE_TREE";
+        if (!validObject(request.action(), Set.of("type", "remoteUrlKey"))
+                || !ACTIONS.contains(request.action().path("type").asText())) return "STRATEGY_ACTION_INVALID";
         String actionType = request.action().path("type").asText();
         boolean needsRemote = actionType.startsWith("REVERSAL_");
         if (needsRemote && !StringUtils.hasText(request.action().path("remoteUrlKey").asText())) return "REMOTE_TARGET_REQUIRED";
@@ -584,7 +650,13 @@ public class OpsJanusService {
                 && (!remoteUrlKey.equals(remoteUrlKey.trim()) || !REMOTE_TARGETS.contains(remoteUrlKey))) {
             return "REMOTE_TARGET_INVALID";
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 4) return "REASON_REQUIRED";
+        if (!needsRemote && StringUtils.hasText(remoteUrlKey)) return "REMOTE_TARGET_NOT_ALLOWED";
+        if (!validScope(request.scope())) return "STRATEGY_SCOPE_INVALID";
+        if (!validSafeguards(request.safeguards())) return "STRATEGY_SAFEGUARD_INVALID";
+        if (!validRollout(request.rollout())) return "STRATEGY_ROLLOUT_INVALID";
+        if (!validHealthConfig(request.healthConfig())) return "STRATEGY_HEALTH_CONFIG_INVALID";
+        if (request.templateKey() != null && !validText(request.templateKey(), 64)) return "TEMPLATE_KEY_INVALID";
+        if (!validText(request.reason(), 500) || request.reason().trim().length() < 4) return "REASON_REQUIRED";
         return null;
     }
 
@@ -603,6 +675,8 @@ public class OpsJanusService {
         if (request.firstSeenAt() != null && (request.firstSeenAt() <= 0 || request.firstSeenAt() > request.reportedAt())) {
             return "FIRST_SEEN_AT_INVALID";
         }
+        if (request.channel() != null && (!request.channel().equals(request.channel().trim())
+                || !CHANNELS.contains(request.channel()))) return "CHANNEL_INVALID";
         if (!jsonShape(request.maturity(), false) || !jsonShape(request.environment(), false)
                 || !jsonShape(request.latestDecision(), false) || !jsonShape(request.latestSession(), false)
                 || !jsonShape(request.tags(), true)) return "REPORT_JSON_INVALID";
@@ -769,13 +843,24 @@ public class OpsJanusService {
     }
 
     private boolean validTelemetry(JsonNode maturity, JsonNode environment) {
-        return validMetrics(maturity, Map.of(
+        Set<String> maturityFields = Set.of("appOpenCount", "sessionCount", "foregroundDurationSeconds",
+                "repeatStreakDays", "benchmarkViewed", "optimizeDone", "marketViewed", "walletViewed");
+        Set<String> environmentFields = Set.of("isHeadless", "automationSignalCount", "fpBlocklistHit",
+                "screenAnomaly", "timezoneMismatch", "languageMismatch");
+        return validRequiredObject(maturity, maturityFields) && validRequiredObject(environment, environmentFields)
+                && validMetrics(maturity, Map.of(
                 "appOpenCount", 1_000_000, "sessionCount", 1_000_000,
                 "foregroundDurationSeconds", 31_536_000, "repeatStreakDays", 3_650))
                 && validFlags(maturity, List.of("benchmarkViewed", "optimizeDone", "marketViewed", "walletViewed"))
                 && validMetrics(environment, Map.of("automationSignalCount", 1_000_000))
                 && validFlags(environment, List.of("isHeadless", "fpBlocklistHit", "screenAnomaly",
                 "timezoneMismatch", "languageMismatch"));
+    }
+
+    private boolean validRequiredObject(JsonNode node, Set<String> requiredFields) {
+        if (node == null || !node.isObject() || node.size() != requiredFields.size()) return false;
+        for (String field : requiredFields) if (!node.has(field) || node.get(field).isNull()) return false;
+        return true;
     }
 
     private boolean validMetrics(JsonNode node, Map<String, Integer> limits) {
@@ -869,13 +954,189 @@ public class OpsJanusService {
         return normalized.length() <= max ? normalized : normalized.substring(0, max);
     }
 
-    private boolean validRuleFields(JsonNode node) {
-        if (node == null) return false;
+    private boolean validRuleTree(JsonNode root) {
+        int[] leaves = {0};
+        return validRuleNode(root, 0, leaves) && leaves[0] > 0 && leaves[0] <= 100;
+    }
+
+    private boolean validRuleNode(JsonNode node, int depth, int[] leaves) {
+        if (node == null || !node.isObject() || depth > 8 || !jsonShape(node, false)) return false;
         if (node.has("rules")) {
-            for (JsonNode child : node.path("rules")) if (!validRuleFields(child)) return false;
+            if (!validObject(node, Set.of("mode", "required", "threshold", "rules", "weight"))) return false;
+            String mode = node.path("mode").asText();
+            JsonNode rules = node.get("rules");
+            if (!RULE_MODES.contains(mode) || rules == null || !rules.isArray()
+                    || rules.isEmpty() || rules.size() > 100) return false;
+            if ("NOT".equals(mode) && rules.size() != 1) return false;
+            if ("N_OF_M".equals(mode)) {
+                JsonNode required = node.get("required");
+                if (required == null || !required.isIntegralNumber()
+                        || required.asInt() < 1 || required.asInt() > rules.size()) return false;
+            } else if (node.has("required")) {
+                return false;
+            }
+            if ("WEIGHTED_SCORE".equals(mode)) {
+                JsonNode threshold = node.get("threshold");
+                if (!positiveFiniteNumber(threshold, 1_000_000)) return false;
+            } else if (node.has("threshold")) {
+                return false;
+            }
+            for (JsonNode child : rules) {
+                if ("WEIGHTED_SCORE".equals(mode)
+                        && !positiveFiniteNumber(child == null ? null : child.get("weight"), 1_000_000)) return false;
+                if (!validRuleNode(child, depth + 1, leaves)) return false;
+            }
             return true;
         }
-        return RULE_FIELDS.contains(node.path("field").asText());
+        if (!validObject(node, Set.of("field", "op", "value", "weight", "label"))) return false;
+        String field = node.path("field").asText();
+        String op = node.path("op").asText();
+        if (!RULE_FIELDS.contains(field) || !RULE_OPERATORS.contains(op)) return false;
+        if (node.has("weight") && !positiveFiniteNumber(node.get("weight"), 1_000_000)) return false;
+        if (!validText(node.path("label").asText(null), 160)) return false;
+        if (!validRuleValue(field, op, node.get("value"))) return false;
+        leaves[0]++;
+        return leaves[0] <= 100;
+    }
+
+    private boolean validRuleValue(String field, String op, JsonNode value) {
+        if (value == null || value.isNull()) return false;
+        if (NUMERIC_RULE_FIELDS.contains(field)) {
+            if ("contains".equals(op)) return false;
+            if ("between".equals(op)) {
+                return value.isArray() && value.size() == 2 && finiteNumber(value.get(0), 1_000_000_000_000D)
+                        && finiteNumber(value.get(1), 1_000_000_000_000D)
+                        && value.get(0).asDouble() <= value.get(1).asDouble();
+            }
+            if ("in".equals(op) || "notIn".equals(op)) return validNumberArray(value);
+            return finiteNumber(value, 1_000_000_000_000D);
+        }
+        if (BOOLEAN_RULE_FIELDS.contains(field)) {
+            if ("in".equals(op) || "notIn".equals(op)) return validBooleanArray(value);
+            return ("=".equals(op) || "!=".equals(op)) && value.isBoolean();
+        }
+        if (STRING_RULE_FIELDS.contains(field)) {
+            if (!(Set.of("=", "!=", "in", "notIn", "contains").contains(op))) return false;
+            if ("status".equals(field)) return validEnumRuleValue(op, value, Set.copyOf(STATUSES));
+            if ("channel".equals(field)) return validEnumRuleValue(op, value, CHANNELS);
+            if ("in".equals(op) || "notIn".equals(op)) return validStringArray(value);
+            return value.isTextual() && validText(value.asText(), 256);
+        }
+        return false;
+    }
+
+    private boolean validScope(JsonNode scope) {
+        if (!validOptionalObject(scope, SCOPE_FIELDS)) return false;
+        if (scope == null || scope.isNull()) return true;
+        return validOptionalEnumArray(scope.get("channels"), CHANNELS, 64)
+                && validOptionalStringArray(scope.get("inviteCodes"), 100, 96)
+                && validOptionalStringArray(scope.get("cohortIds"), 100, 96);
+    }
+
+    private boolean validSafeguards(JsonNode safeguards) {
+        if (!validOptionalObject(safeguards, SAFEGUARD_FIELDS)) return false;
+        if (safeguards == null || safeguards.isNull()) return true;
+        return validOptionalNonNegativeInteger(safeguards.get("maxDailyRecommendations"), 100_000_000)
+                && validOptionalNonNegativeInteger(safeguards.get("maxDailyHits"), 100_000_000)
+                && validOptionalNonNegativeInteger(safeguards.get("requireFreshReportMinutes"), 525_600)
+                && validOptionalNonNegativeInteger(safeguards.get("minDecisionIntervalHours"), 87_600);
+    }
+
+    private boolean validRollout(JsonNode rollout) {
+        if (!validOptionalObject(rollout, ROLLOUT_FIELDS)) return false;
+        if (rollout == null || rollout.isNull()) return true;
+        JsonNode percent = rollout.get("percent");
+        if (percent != null && (!percent.isIntegralNumber() || percent.asInt() < 0 || percent.asInt() > 100)) return false;
+        if (!validOptionalStringArray(rollout.get("cohortIds"), 100, 96)) return false;
+        JsonNode startedAt = rollout.get("startedAt");
+        JsonNode endsAt = rollout.get("endsAt");
+        if (!validOptionalPositiveLong(startedAt) || !validOptionalPositiveLong(endsAt)) return false;
+        return startedAt == null || endsAt == null || startedAt.asLong() < endsAt.asLong();
+    }
+
+    private boolean validHealthConfig(JsonNode health) {
+        if (!validOptionalObject(health, HEALTH_FIELDS)) return false;
+        if (health == null || health.isNull()) return true;
+        for (String field : HEALTH_FIELDS) {
+            JsonNode value = health.get(field);
+            if (value != null && (!finiteNumber(value, 100) || value.asDouble() < 0)) return false;
+        }
+        return true;
+    }
+
+    private boolean validObject(JsonNode node, Set<String> allowedFields) {
+        if (node == null || !node.isObject() || !jsonShape(node, false)) return false;
+        var fields = node.fieldNames();
+        while (fields.hasNext()) if (!allowedFields.contains(fields.next())) return false;
+        return true;
+    }
+
+    private boolean validOptionalObject(JsonNode node, Set<String> allowedFields) {
+        return node == null || node.isNull() || validObject(node, allowedFields);
+    }
+
+    private boolean validOptionalNonNegativeInteger(JsonNode value, long max) {
+        return value == null || value.isNull()
+                || value.isIntegralNumber() && value.asLong() >= 0 && value.asLong() <= max;
+    }
+
+    private boolean validOptionalPositiveLong(JsonNode value) {
+        return value == null || value.isNull() || value.isIntegralNumber() && value.asLong() > 0;
+    }
+
+    private boolean validOptionalStringArray(JsonNode value, int maxItems, int maxLength) {
+        if (value == null || value.isNull()) return true;
+        if (!value.isArray() || value.size() > maxItems) return false;
+        for (JsonNode item : value) if (!item.isTextual() || !validText(item.asText(), maxLength)) return false;
+        return true;
+    }
+
+    private boolean validStringArray(JsonNode value) {
+        return validStringArray(value, 100, 256);
+    }
+
+    private boolean validStringArray(JsonNode value, int maxItems, int maxLength) {
+        if (value == null || !value.isArray() || value.isEmpty() || value.size() > maxItems) return false;
+        for (JsonNode item : value) if (!item.isTextual() || !validText(item.asText(), maxLength)) return false;
+        return true;
+    }
+
+    private boolean validOptionalEnumArray(JsonNode value, Set<String> allowed, int maxItems) {
+        if (value == null || value.isNull()) return true;
+        if (!value.isArray() || value.size() > maxItems) return false;
+        for (JsonNode item : value) if (!item.isTextual() || !allowed.contains(item.asText())) return false;
+        return true;
+    }
+
+    private boolean validEnumRuleValue(String op, JsonNode value, Set<String> allowed) {
+        if (!(Set.of("=", "!=", "in", "notIn").contains(op))) return false;
+        if ("in".equals(op) || "notIn".equals(op)) {
+            if (value == null || !value.isArray() || value.isEmpty() || value.size() > allowed.size()) return false;
+            for (JsonNode item : value) if (!item.isTextual() || !allowed.contains(item.asText())) return false;
+            return true;
+        }
+        return value != null && value.isTextual() && allowed.contains(value.asText());
+    }
+
+    private boolean validNumberArray(JsonNode value) {
+        if (value == null || !value.isArray() || value.isEmpty() || value.size() > 100) return false;
+        for (JsonNode item : value) if (!finiteNumber(item, 1_000_000_000_000D)) return false;
+        return true;
+    }
+
+    private boolean validBooleanArray(JsonNode value) {
+        if (value == null || !value.isArray() || value.isEmpty() || value.size() > 2) return false;
+        for (JsonNode item : value) if (!item.isBoolean()) return false;
+        return true;
+    }
+
+    private boolean positiveFiniteNumber(JsonNode value, double max) {
+        return finiteNumber(value, max) && value.asDouble() > 0;
+    }
+
+    private boolean finiteNumber(JsonNode value, double maxAbs) {
+        return value != null && value.isNumber() && Double.isFinite(value.asDouble())
+                && Math.abs(value.asDouble()) <= maxAbs;
     }
 
     private boolean inScope(JsonNode scope, JanusDeviceView device) {
@@ -1024,7 +1285,10 @@ public class OpsJanusService {
         JsonNode detail = parse(record.getDetailJson());
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("auditId", String.valueOf(record.getId()));
-        view.put("actorId", first(record.getActorUsername(), String.valueOf(record.getActorId())));
+        String actor = StringUtils.hasText(record.getActorUsername())
+                ? record.getActorUsername()
+                : record.getActorId() == null ? "system" : String.valueOf(record.getActorId());
+        view.put("actorId", actor);
         view.put("action", record.getAction());
         view.put("targetType", "JANUS_STRATEGY".equals(record.getResourceType()) ? "strategy" : "JANUS_DEVICE".equals(record.getResourceType()) ? "device" : "config");
         view.put("targetId", record.getResourceId());
@@ -1032,7 +1296,8 @@ public class OpsJanusService {
         view.put("afterSnapshot", detail.path("after"));
         view.put("reasonCategory", detail.path("reasonCategory").asText(""));
         view.put("reasonText", detail.path("reason").asText(""));
-        view.put("sourceContext", detail);
+        view.put("sourceContext", StringUtils.hasText(record.getTraceId())
+                ? Map.of("requestId", record.getTraceId()) : Map.of());
         view.put("createdAt", epoch(record.getCreatedAt()));
         view.put("requestId", record.getTraceId());
         return view;
@@ -1040,31 +1305,300 @@ public class OpsJanusService {
 
     private CommandGuard commandGuard(String key, String type, String target, String requestHash) {
         if (!StringUtils.hasText(key)) return new CommandGuard(false, ApiResult.fail(422, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name()));
-        if (repository.reserveCommand(key.trim(), type, target, requestHash, currentActor())) {
+        String normalized = key.trim();
+        if (normalized.length() > 128) return new CommandGuard(false, ApiResult.fail(422, "IDEMPOTENCY_KEY_INVALID"));
+        String actor = currentActor();
+        if (repository.reserveCommand(normalized, type, target, requestHash, actor)) {
             return new CommandGuard(false, null);
         }
-        Optional<Map<String, Object>> existing = repository.findCommand(key.trim());
+        Optional<Map<String, Object>> existing = repository.findCommand(normalized);
         if (existing.isEmpty()) return new CommandGuard(false, ApiResult.fail(409, "IDEMPOTENCY_RESERVATION_FAILED"));
         Map<String, Object> command = existing.get();
         boolean same = type.equals(String.valueOf(command.get("commandType")))
                 && target.equals(String.valueOf(command.get("targetId")))
-                && requestHash.equals(String.valueOf(command.get("requestHash")));
-        return same ? new CommandGuard(true, null) : new CommandGuard(false, ApiResult.fail(409, "IDEMPOTENCY_CONFLICT"));
+                && requestHash.equals(String.valueOf(command.get("requestHash")))
+                && actor.equals(String.valueOf(command.get("actorId")));
+        if (!same) return new CommandGuard(false, ApiResult.fail(409, "IDEMPOTENCY_CONFLICT"));
+        if ("PROCESSING".equals(String.valueOf(command.get("state")))) {
+            return new CommandGuard(false, ApiResult.fail(409, "IDEMPOTENCY_IN_PROGRESS"));
+        }
+        return new CommandGuard(true, null);
     }
 
     private void requiredAudit(String action, String resourceType, String resourceId, String reason, Object detail) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("reason", reason);
+        payload.put("reason", compactText(reason, 500));
+        payload.put("before", Map.of());
+        payload.put("after", Map.of());
         if (detail instanceof Map<?, ?> detailMap) {
-            detailMap.forEach((key, value) -> payload.put(String.valueOf(key), value));
+            detailMap.forEach((key, value) -> {
+                String name = String.valueOf(key);
+                if (!forbiddenAuditKey(name)) payload.put(name, compactAuditValue(value, 0));
+            });
         } else {
-            payload.put("detail", detail);
+            payload.put("detail", compactAuditValue(detail, 0));
         }
+        Map<String, Object> safePayload = fitAuditBudget(payload);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action).resourceType(resourceType).resourceId(resourceId)
                 .actorType("ADMIN").actorUsername(currentActor()).method("ADMIN_COMMAND")
                 .path("/api/admin/janus").result("SUCCESS").riskLevel("HIGH")
-                .detail(payload).build());
+                .detail(safePayload).build());
+    }
+
+    private Map<String, Object> fitAuditBudget(Map<String, Object> payload) {
+        if (serializedLength(payload) <= 3_800) return payload;
+        Map<String, Object> reduced = new LinkedHashMap<>();
+        reduced.put("reason", payload.getOrDefault("reason", ""));
+        reduced.put("before", reducedAuditSnapshot(payload.get("before"), false));
+        reduced.put("after", reducedAuditSnapshot(payload.get("after"), false));
+        copyAuditScalar(payload, reduced, "reasonCategory", 120);
+        copyAuditScalar(payload, reduced, "targetVersion", 40);
+        copyAuditScalar(payload, reduced, "idempotencyKey", 128);
+        if (serializedLength(reduced) <= 3_800) return reduced;
+        reduced.put("before", reducedAuditSnapshot(payload.get("before"), true));
+        reduced.put("after", reducedAuditSnapshot(payload.get("after"), true));
+        reduced.remove("idempotencyKey");
+        if (serializedLength(reduced) <= 3_800) return reduced;
+        Map<String, Object> emergency = new LinkedHashMap<>();
+        emergency.put("reason", budgetText(String.valueOf(payload.getOrDefault("reason", "")), 1_800));
+        emergency.put("before", identityAuditSnapshot(payload.get("before")));
+        emergency.put("after", identityAuditSnapshot(payload.get("after")));
+        Object reasonCategory = payload.get("reasonCategory");
+        if (reasonCategory != null) emergency.put("reasonCategory", budgetText(String.valueOf(reasonCategory), 240));
+        if (serializedLength(emergency) <= 3_800) return emergency;
+        emergency.put("reason", budgetText(String.valueOf(payload.getOrDefault("reason", "")), 900));
+        emergency.remove("reasonCategory");
+        return emergency;
+    }
+
+    private Map<String, Object> identityAuditSnapshot(Object snapshot) {
+        if (!(snapshot instanceof Map<?, ?> source) || source.isEmpty()) return Map.of();
+        Map<String, Object> identity = new LinkedHashMap<>();
+        for (String key : List.of("strategyId", "sid", "deviceId", "name", "status", "version")) {
+            Object value = source.get(key);
+            if (value == null) continue;
+            identity.put(key, value instanceof Number || value instanceof Boolean
+                    ? value : budgetText(String.valueOf(value), 96));
+        }
+        return identity;
+    }
+
+    private String budgetText(String value, int maxSerializedLength) {
+        if (value == null || value.isEmpty()) return "";
+        StringBuilder result = new StringBuilder();
+        var codePoints = value.codePoints().iterator();
+        while (codePoints.hasNext()) {
+            int codePoint = codePoints.nextInt();
+            int previousLength = result.length();
+            result.appendCodePoint(codePoint);
+            if (serializedLength(result.toString()) > maxSerializedLength) {
+                result.setLength(previousLength);
+                break;
+            }
+        }
+        return result.toString();
+    }
+
+    private Map<String, Object> reducedAuditSnapshot(Object snapshot, boolean minimal) {
+        if (!(snapshot instanceof Map<?, ?> source) || source.isEmpty()) return Map.of();
+        Map<String, Object> reduced = new LinkedHashMap<>();
+        for (String key : List.of("strategyId", "sid", "deviceId", "name", "status", "version")) {
+            copyAuditScalar(source, reduced, key, minimal ? 32 : 96);
+        }
+        for (String key : List.of("priority", "owner", "lockVersion", "desiredStatus", "commandState",
+                "statusSource", "activated", "remoteUrlKey", "hitStrategy", "hitStrategyVersion",
+                "lastOperatorId", "lastOperationReason")) {
+            copyAuditScalar(source, reduced, key, minimal ? 32 : 96);
+        }
+        int nestedTextLimit = minimal ? 24 : 64;
+        copyAuditMap(source, reduced, "ruleTreeSummary",
+                Set.of("mode", "ruleCount", "groupCount", "maxDepth"), nestedTextLimit);
+        copyAuditMap(source, reduced, "action", Set.of("type", "remoteUrlKey"), nestedTextLimit);
+        copyAuditMap(source, reduced, "scope",
+                Set.of("channelsCount", "inviteCodesCount", "cohortIdsCount"), nestedTextLimit);
+        copyAuditMap(source, reduced, "safeguards", SAFEGUARD_FIELDS, nestedTextLimit);
+        copyAuditMap(source, reduced, "rollout",
+                Set.of("percent", "cohortIdsCount", "startedAt", "endsAt"), nestedTextLimit);
+        return reduced;
+    }
+
+    private void copyAuditMap(Map<?, ?> source, Map<String, Object> target, String key, Set<String> fields,
+                              int maxTextLength) {
+        Object nested = source.get(key);
+        if (!(nested instanceof Map<?, ?> nestedMap)) return;
+        Map<String, Object> compact = new LinkedHashMap<>();
+        for (String field : fields) copyAuditScalar(nestedMap, compact, field, maxTextLength);
+        if (!compact.isEmpty()) target.put(key, compact);
+    }
+
+    private void copyAuditScalar(Map<?, ?> source, Map<String, Object> target, String key, int maxTextLength) {
+        Object value = source.get(key);
+        if (value == null || value instanceof Map<?, ?> || value instanceof Iterable<?>) return;
+        target.put(key, value instanceof Number || value instanceof Boolean
+                ? value : compactText(String.valueOf(value), maxTextLength));
+    }
+
+    private int serializedLength(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value).length();
+        } catch (JsonProcessingException ex) {
+            return Integer.MAX_VALUE;
+        }
+    }
+
+    private Object compactAuditValue(Object value, int depth) {
+        if (value == null) return null;
+        if (value instanceof JanusStrategyView strategy) return compactStrategyAudit(strategy);
+        if (value instanceof JanusDeviceView device) return compactDeviceAudit(device);
+        if (value instanceof JsonNode node) return compactJson(node, depth);
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> compact = new LinkedHashMap<>();
+            int count = 0;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                if (forbiddenAuditKey(key) || count++ >= 16) continue;
+                compact.put(key, depth >= 3 ? compactText(String.valueOf(entry.getValue()), 160)
+                        : compactAuditValue(entry.getValue(), depth + 1));
+            }
+            return compact;
+        }
+        if (value instanceof Iterable<?> iterable) {
+            List<Object> compact = new ArrayList<>();
+            int count = 0;
+            for (Object item : iterable) {
+                if (count++ >= 8) break;
+                compact.add(depth >= 3 ? compactText(String.valueOf(item), 160)
+                        : compactAuditValue(item, depth + 1));
+            }
+            return compact;
+        }
+        if (value instanceof Number || value instanceof Boolean) return value;
+        return compactText(String.valueOf(value), 500);
+    }
+
+    private Map<String, Object> compactStrategyAudit(JanusStrategyView strategy) {
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("strategyId", compactText(strategy.strategyId(), 100));
+        compact.put("name", compactText(strategy.name(), 160));
+        compact.put("status", compactText(strategy.status(), 32));
+        compact.put("version", strategy.version());
+        compact.put("priority", strategy.priority());
+        compact.put("owner", compactText(strategy.owner(), 120));
+        compact.put("scope", compactFields(strategy.scope(), SCOPE_FIELDS));
+        compact.put("ruleTreeSummary", ruleTreeSummary(strategy.ruleTree()));
+        compact.put("action", compactFields(strategy.action(), Set.of("type", "remoteUrlKey")));
+        compact.put("safeguards", compactFields(strategy.safeguards(), SAFEGUARD_FIELDS));
+        compact.put("rollout", compactFields(strategy.rollout(), ROLLOUT_FIELDS));
+        compact.put("lockVersion", strategy.lockVersion());
+        return compact;
+    }
+
+    private Map<String, Object> compactDeviceAudit(JanusDeviceView device) {
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("sid", compactText(device.sid(), 100));
+        compact.put("deviceId", compactText(device.deviceId(), 100));
+        compact.put("status", compactText(device.status(), 40));
+        compact.put("desiredStatus", compactText(device.desiredStatus(), 40));
+        compact.put("commandState", compactText(device.commandState(), 40));
+        compact.put("statusSource", compactText(device.statusSource(), 40));
+        compact.put("activated", device.activated());
+        compact.put("remoteUrlKey", compactText(device.remoteUrlKey(), 100));
+        compact.put("hitStrategy", compactText(device.hitStrategy(), 100));
+        compact.put("hitStrategyVersion", device.hitStrategyVersion());
+        compact.put("lastOperatorId", compactText(device.lastOperatorId(), 100));
+        compact.put("lastOperationReason", compactText(device.lastOperationReason(), 240));
+        compact.put("version", device.version());
+        return compact;
+    }
+
+    private Map<String, Object> compactFields(JsonNode node, Set<String> allowedFields) {
+        Map<String, Object> compact = new LinkedHashMap<>();
+        if (node == null || !node.isObject()) return compact;
+        for (String field : allowedFields) {
+            JsonNode value = node.get(field);
+            if (value == null || value.isNull()) continue;
+            if (value.isArray()) {
+                List<Object> sample = new ArrayList<>();
+                for (int i = 0; i < Math.min(value.size(), 2); i++) {
+                    JsonNode item = value.get(i);
+                    sample.add(item.isTextual() ? compactText(item.asText(), 32) : compactJson(item, 2));
+                }
+                compact.put(field, sample);
+                compact.put(field + "Count", value.size());
+            } else {
+                compact.put(field, value.isTextual() ? compactText(value.asText(), 96) : compactJson(value, 1));
+            }
+        }
+        return compact;
+    }
+
+    private Map<String, Object> ruleTreeSummary(JsonNode ruleTree) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        if (ruleTree == null || !ruleTree.isObject()) {
+            summary.put("ruleCount", 0);
+            summary.put("groupCount", 0);
+            summary.put("maxDepth", 0);
+            return summary;
+        }
+        if (ruleTree.hasNonNull("mode")) summary.put("mode", compactText(ruleTree.path("mode").asText(), 40));
+        int[] metrics = new int[3];
+        summarizeRules(ruleTree, 1, metrics);
+        summary.put("ruleCount", metrics[0]);
+        summary.put("groupCount", metrics[1]);
+        summary.put("maxDepth", metrics[2]);
+        return summary;
+    }
+
+    private void summarizeRules(JsonNode node, int depth, int[] metrics) {
+        if (node == null || !node.isObject()) return;
+        JsonNode rules = node.get("rules");
+        if (rules != null && rules.isArray()) {
+            metrics[1]++;
+            metrics[2] = Math.max(metrics[2], depth);
+            for (JsonNode child : rules) {
+                if (child.has("rules")) summarizeRules(child, depth + 1, metrics);
+                else metrics[0]++;
+            }
+        }
+    }
+
+    private Object compactJson(JsonNode node, int depth) {
+        if (node == null || node.isNull()) return null;
+        if (node.isTextual()) return compactText(node.asText(), 240);
+        if (node.isBoolean()) return node.booleanValue();
+        if (node.isNumber()) return node.numberValue();
+        if (node.isArray()) {
+            List<Object> values = new ArrayList<>();
+            int limit = Math.min(node.size(), 8);
+            for (int i = 0; i < limit; i++) values.add(compactJson(node.get(i), depth + 1));
+            return values;
+        }
+        if (node.isObject() && depth < 3) {
+            Map<String, Object> values = new LinkedHashMap<>();
+            var fields = node.fields();
+            int count = 0;
+            while (fields.hasNext() && count < 16) {
+                var field = fields.next();
+                if (forbiddenAuditKey(field.getKey())) continue;
+                values.put(field.getKey(), compactJson(field.getValue(), depth + 1));
+                count++;
+            }
+            return values;
+        }
+        return compactText(node.toString(), 240);
+    }
+
+    private boolean forbiddenAuditKey(String key) {
+        if (key == null) return false;
+        String normalized = key.replace("_", "").toLowerCase(Locale.ROOT);
+        return Set.of("versions", "sourcecontext", "hash", "confighash").contains(normalized);
+    }
+
+    private String compactText(String value, int maxLength) {
+        if (value == null) return "";
+        String normalized = value.strip();
+        return normalized.length() <= maxLength ? normalized : normalized.substring(0, maxLength);
     }
 
     private JanusRole currentRole() {
@@ -1076,13 +1610,19 @@ public class OpsJanusService {
                 && "superadmin".equalsIgnoreCase(String.valueOf(details.get("username")))) return JanusRole.ADMIN;
         List<String> authorities = authentication.getAuthorities().stream().map(GrantedAuthority::getAuthority).toList();
         if (authorities.stream().anyMatch(a -> a.equals("ROLE_SUPER_ADMIN") || a.equals("risk_k6_admin"))) return JanusRole.ADMIN;
-        if (authorities.contains("risk_k6_write")) return JanusRole.SENIOR_OPERATOR;
+        if (authorities.contains("risk_k6_senior")) return JanusRole.SENIOR_OPERATOR;
+        if (authorities.contains("risk_k6_write")) return JanusRole.OPERATOR;
         return authorities.contains("risk_k6_read") ? JanusRole.VIEWER : JanusRole.VIEWER;
     }
 
     private String currentActor() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        return authentication == null || !StringUtils.hasText(authentication.getName()) ? "system" : authentication.getName();
+        if (authentication == null) return "system";
+        if (authentication.getDetails() instanceof Map<?, ?> details) {
+            Object username = details.get("username");
+            if (username != null && StringUtils.hasText(String.valueOf(username))) return String.valueOf(username);
+        }
+        return !StringUtils.hasText(authentication.getName()) ? "system" : authentication.getName();
     }
 
     private ObjectNode snapshot(JanusStrategyView strategy) {

@@ -25,6 +25,15 @@ class OpsKillSwitchControllerTest {
     }
 
     @Test
+    void alertsDelegatesToTheAllOperatorSnapshot() {
+        when(killSwitchService.alerts()).thenReturn(ApiResult.ok(Map.of("activeGateCount", 5)));
+
+        assertThat(controller.alerts().getData()).containsEntry("activeGateCount", 5);
+
+        verify(killSwitchService).alerts();
+    }
+
+    @Test
     void toggleDelegatesWithIdempotencyHeader() {
         KillSwitchToggleRequest request = new KillSwitchToggleRequest("disabled", "incident", "risk-lead");
         when(killSwitchService.toggle("withdraw", "idem-j1", request)).thenReturn(ApiResult.ok(Map.of("ok", true)));

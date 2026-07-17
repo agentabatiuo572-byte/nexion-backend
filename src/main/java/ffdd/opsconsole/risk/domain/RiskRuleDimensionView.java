@@ -9,6 +9,8 @@ public record RiskRuleDimensionView(
         String why,
         String action,
         String note,
-        String icon
+        String icon,
+        Integer priority,
+        Long version
 ) {
 }

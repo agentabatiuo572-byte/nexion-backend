@@ -398,6 +398,35 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
 
     @Update("""
             UPDATE nx_withdrawal_order
+               SET status = #{status},
+                   failure_reason = #{failureReason},
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE withdrawal_no = #{withdrawalNo}
+               AND status = 'FROZEN'
+               AND failure_reason = CONCAT('K5_REVIEW:', #{ticketId})
+               AND is_deleted = 0
+            """)
+    int transitionK5FrozenStatus(
+            @Param("withdrawalNo") String withdrawalNo,
+            @Param("ticketId") String ticketId,
+            @Param("status") String status,
+            @Param("failureReason") String failureReason);
+
+    @Update("""
+            UPDATE nx_withdrawal_order
+               SET status = 'FROZEN',
+                   failure_reason = CONCAT('K5_REVIEW:', #{ticketId}),
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE withdrawal_no = #{withdrawalNo}
+               AND status = #{expectedStatus}
+               AND is_deleted = 0
+            """)
+    int freezeForK5Review(@Param("withdrawalNo") String withdrawalNo,
+                          @Param("expectedStatus") String expectedStatus,
+                          @Param("ticketId") String ticketId);
+
+    @Update("""
+            UPDATE nx_withdrawal_order
                SET status = 'FROZEN',
                    failure_reason = #{reason},
                    updated_at = CURRENT_TIMESTAMP

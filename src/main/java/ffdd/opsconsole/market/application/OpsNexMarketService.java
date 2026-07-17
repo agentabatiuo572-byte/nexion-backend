@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.domain.GenesisNodeView;
 import ffdd.opsconsole.market.domain.GenesisPolicyView;
@@ -36,6 +37,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
 import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -148,6 +150,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final TreasuryCoverageFacade coverageFacade;
     private final NexMarketRepository marketRepository;
     private final EmergencyControlRepository emergencyRepository;
+    private final OpsKillSwitchService killSwitchService;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final RiskKycReviewFacade riskKycReviewFacade;
     private final AuditLogService auditLogService;
@@ -284,19 +287,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return redline;
             }
         }
-        emergencyRepository.upsertSetting(
-                EXCHANGE_KILLSWITCH_KEY,
-                after ? "enabled" : "disabled",
-                "STRING",
-                "admin_killswitch",
-                "G2 exchange surface linked to J1 kill switch",
-                request.operator());
-        audit("G2_EXCHANGE_SWAP_STATUS_CHANGED", "KILL_SWITCH", "exchange", request.operator(), map(
-                "before", before,
-                "after", after,
-                "reason", request.reason().trim(),
-                "linkedDomain", "J1",
-                "idempotencyKey", idempotencyKey.trim()));
+        ApiResult<Map<String, Object>> gateChange = killSwitchService.changeFromLinkedDomain(
+                "exchange", after, request.operator(), request.reason(), "G2", idempotencyKey);
+        if (gateChange.getCode() != 0) {
+            return gateChange;
+        }
         Map<String, Object> response = exchangeOverview().getData();
         response.put("updated", map("key", "exchange", "before", before, "after", after));
         return ApiResult.ok(response);
@@ -365,12 +360,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (exchangeGeoBlocked(order)) {
             return validation("G2_GEO_BLOCKED");
         }
+        String authenticatedActor = AdminActorResolver.resolve(request.operator());
         KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeExchangeReview(
                 order.userNo(),
                 order.amountUsdt(),
                 exchangeKycStatus(order),
                 order.exchangeNo(),
-                request.operator(),
+                authenticatedActor,
                 request.reason().trim());
         if (!k5Review.requiresReview()) {
             return validation("EXCHANGE_K5_REVIEW_NOT_REQUIRED");
@@ -387,7 +383,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        auditExchangeK5ReviewRequired(order, updated, idempotencyKey, request, k5Review);
+        auditExchangeK5ReviewRequired(order, updated, idempotencyKey, request, k5Review, authenticatedActor);
         Map<String, Object> response = exchangeOverview().getData();
         response.put("updated", map(
                 "exchangeNo", order.exchangeNo(),
@@ -570,6 +566,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (enabled && !before) {
             if (disclosureGateActive("staking")) {
                 return validation("G1_DISCLOSURE_GATE_REACK_REQUIRED");
+            }
+            if (!stakingGateOn()) {
+                return ApiResult.fail(
+                        OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                        "G1_STAKING_GATE_DISABLED");
             }
             ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
             if (redline != null) {
@@ -933,18 +934,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return redline;
             }
         }
-        configFacade.upsertAdminValue(
-                GENESIS_KILLSWITCH_KEY,
-                enabled ? "on" : "off",
-                "STRING",
-                "admin_killswitch",
-                "G4 Genesis market switch linked to J1 kill switch matrix");
-        audit("G4_GENESIS_MARKET_STATUS_CHANGED", "KILL_SWITCH", "genesis", request.operator(), map(
-                "before", before,
-                "after", enabled,
-                "reason", request.reason().trim(),
-                "linkedDomain", "J1",
-                "idempotencyKey", idempotencyKey.trim()));
+        ApiResult<Map<String, Object>> gateChange = killSwitchService.changeFromLinkedDomain(
+                "genesis", enabled, request.operator(), request.reason(), "G4", idempotencyKey);
+        if (gateChange.getCode() != 0) {
+            return gateChange;
+        }
         Map<String, Object> response = genesisOverview().getData();
         response.put("updated", map("key", "marketStatus", "before", before, "after", enabled));
         return ApiResult.ok(response);
@@ -1793,10 +1787,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private boolean stakingGateOn() {
-        return !disclosureGateActive("staking") && controlValue(STAKING_KILLSWITCH_KEY)
-                .or(() -> controlValue(STAKING_LEGACY_KILLSWITCH_KEY))
-                .map(this::parseSwitchEnabled)
-                .orElse(true);
+        return !disclosureGateActive("staking") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+                controlValue(STAKING_KILLSWITCH_KEY),
+                controlValue(STAKING_LEGACY_KILLSWITCH_KEY));
     }
 
     private boolean stakingPoolEnabled(StakingPoolDef pool) {
@@ -2443,10 +2436,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private boolean genesisMarketOn() {
-        return !disclosureGateActive("genesis") && controlValue(GENESIS_KILLSWITCH_KEY)
-                .or(() -> controlValue(GENESIS_LEGACY_KILLSWITCH_KEY))
-                .map(this::parseSwitchEnabled)
-                .orElse(true);
+        return !disclosureGateActive("genesis") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+                controlValue(GENESIS_KILLSWITCH_KEY),
+                controlValue(GENESIS_LEGACY_KILLSWITCH_KEY));
     }
 
     private boolean genesisEmissionGateOpen() {
@@ -2665,10 +2657,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private boolean exchangeSwapEnabled() {
-        return !disclosureGateActive("exchange") && controlValue(EXCHANGE_KILLSWITCH_KEY)
-                .or(() -> controlValue(EXCHANGE_LEGACY_KILLSWITCH_KEY))
-                .map(this::parseSwitchEnabled)
-                .orElse(true);
+        return !disclosureGateActive("exchange") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+                controlValue(EXCHANGE_KILLSWITCH_KEY),
+                controlValue(EXCHANGE_LEGACY_KILLSWITCH_KEY));
     }
 
     private boolean disclosureGateActive(String domain) {
@@ -2855,14 +2846,15 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             boolean updated,
             String idempotencyKey,
             ExchangeKycReviewRequest request,
-            KycReviewTriggerResult k5Review) {
+            KycReviewTriggerResult k5Review,
+            String authenticatedActor) {
         auditLogService.record(AuditLogWriteRequest.builder()
                 .action("G2_EXCHANGE_K5_REVIEW_REQUIRED")
                 .resourceType("EXCHANGE_ORDER")
                 .resourceId(order.exchangeNo())
                 .bizNo(order.exchangeNo())
                 .actorType("ADMIN")
-                .actorUsername(operator(request.operator()))
+                .actorUsername(operator(authenticatedActor))
                 .result(updated ? "BLOCKED" : "SKIPPED")
                 .riskLevel("HIGH")
                 .detail(map(

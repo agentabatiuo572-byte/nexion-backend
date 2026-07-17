@@ -11,6 +11,16 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_audit_log
+             WHERE is_deleted = 0
+               AND action = #{action}
+               AND resource_type = #{resourceType}
+            """)
+    long countByActionAndResourceType(@Param("action") String action,
+                                      @Param("resourceType") String resourceType);
+
     @Insert("""
             INSERT INTO nx_audit_log (
               trace_id, service_name, action, resource_type, resource_id, biz_no,

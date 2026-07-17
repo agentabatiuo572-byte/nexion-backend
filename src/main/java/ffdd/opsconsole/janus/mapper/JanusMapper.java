@@ -334,13 +334,14 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Insert("""
             INSERT IGNORE INTO nx_janus_evaluation(
-              report_id,sid,session_id,strategy_id,strategy_version,input_snapshot_json,rule_results_json,
+              report_id,sid,request_hash,session_id,strategy_id,strategy_version,input_snapshot_json,rule_results_json,
               action,recommended_status,error_code,elapsed_ms,engine_version)
-            VALUES(#{reportId},#{sid},#{sessionId},#{strategyId},#{strategyVersion},
+            VALUES(#{reportId},#{sid},#{requestHash},#{sessionId},#{strategyId},#{strategyVersion},
               CAST(#{inputSnapshotJson} AS JSON),CAST(#{ruleResultsJson} AS JSON),#{action},
               #{recommendedStatus},#{errorCode},#{elapsedMs},#{engineVersion})
             """)
     int insertEvaluation(@Param("sid") String sid, @Param("reportId") String reportId,
+                         @Param("requestHash") String requestHash,
                          @Param("sessionId") String sessionId, @Param("strategyId") String strategyId,
                          @Param("strategyVersion") Integer strategyVersion,
                          @Param("inputSnapshotJson") String inputSnapshotJson,
@@ -348,6 +349,9 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
                          @Param("recommendedStatus") String recommendedStatus,
                          @Param("errorCode") String errorCode, @Param("elapsedMs") int elapsedMs,
                          @Param("engineVersion") String engineVersion);
+
+    @Select("SELECT request_hash FROM nx_janus_evaluation WHERE sid=#{sid} AND report_id=#{reportId}")
+    String findEvaluationRequestHash(@Param("sid") String sid, @Param("reportId") String reportId);
 
     @Insert("""
             INSERT INTO nx_janus_daily_quota(strategy_id,quota_day,action,used_count)
@@ -510,6 +514,7 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
               safeguards_json=JSON_EXTRACT(CAST(#{snapshotJson} AS JSON),'$.safeguards'),
               rollout_json=JSON_EXTRACT(CAST(#{snapshotJson} AS JSON),'$.rollout'),
               health_config_json=JSON_EXTRACT(CAST(#{snapshotJson} AS JSON),'$.healthConfig'),
+              template_key=JSON_UNQUOTE(JSON_EXTRACT(CAST(#{snapshotJson} AS JSON),'$.templateKey')),
               status=#{status},version=#{version},lock_version=lock_version+1
             WHERE strategy_id=#{strategyId} AND lock_version=#{expectedVersion}
             """)
@@ -517,7 +522,7 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
                                     @Param("version") int version, @Param("status") String status,
                                     @Param("snapshotJson") String snapshotJson);
 
-    @Delete("DELETE FROM nx_janus_strategy WHERE strategy_id=#{strategyId} AND lock_version=#{expectedVersion} AND status IN ('draft','archived')")
+    @Delete("DELETE FROM nx_janus_strategy WHERE strategy_id=#{strategyId} AND lock_version=#{expectedVersion} AND status='draft'")
     int deleteStrategy(@Param("strategyId") String strategyId, @Param("expectedVersion") long expectedVersion);
 
     @Insert("INSERT INTO nx_janus_strategy_version(strategy_id,version,note,actor_id,snapshot_json,config_hash) VALUES(#{strategyId},#{version},#{note},#{actorId},CAST(#{snapshotJson} AS JSON),#{configHash})")
@@ -540,7 +545,7 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
     @Select("SELECT dry_run_id AS dryRunId,strategy_id AS strategyId,expected_version AS expectedVersion,config_hash AS configHash,CAST(result_json AS CHAR) AS resultJson,actor_id AS actorId,CAST(UNIX_TIMESTAMP(expires_at)*1000 AS UNSIGNED) AS expiresAt FROM nx_janus_dry_run WHERE dry_run_id=#{dryRunId}")
     Map<String, Object> findDryRun(@Param("dryRunId") String dryRunId);
 
-    @Select("SELECT idempotency_key AS idempotencyKey,command_type AS commandType,target_id AS targetId,request_hash AS requestHash,state,CAST(payload_json AS CHAR) AS payloadJson FROM nx_janus_command WHERE idempotency_key=#{idempotencyKey} AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP(3))")
+    @Select("SELECT idempotency_key AS idempotencyKey,command_type AS commandType,target_id AS targetId,request_hash AS requestHash,actor_id AS actorId,state,CAST(payload_json AS CHAR) AS payloadJson FROM nx_janus_command WHERE idempotency_key=#{idempotencyKey} AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP(3))")
     Map<String, Object> findCommand(@Param("idempotencyKey") String idempotencyKey);
 
     @Delete("DELETE FROM nx_janus_command WHERE idempotency_key=#{idempotencyKey} AND expires_at<=CURRENT_TIMESTAMP(3)")

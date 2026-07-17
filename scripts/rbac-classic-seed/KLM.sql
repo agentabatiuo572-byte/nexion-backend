@@ -3,7 +3,7 @@
 -- 幂等：ON DUPLICATE KEY UPDATE。手动执行（schema.sql 不自动跑，见 schema-manual-init 记忆）：
 --   mysql -uroot -p nexion < scripts/rbac-classic-seed/KLM.sql
 -- 前置：00-permission-alter.sql（perm_type/amplifies 字段）
--- amplifies=1 共 21 个（K 高敏 16 + L 敏感导出/监管 5）；M 客服全 write=0；K/L read/write=0
+-- amplifies=1 共 18 个（K 高敏 13 + L 敏感导出/监管 5）；M 客服全 write=0；K/L read/write=0
 -- 不含 role_permission（后续统一处理）；不含 menu_id（后续 A8 字典挂菜单时回填）
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
@@ -21,9 +21,9 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('risk_k2_read',                 '套利刷量检测-读(命中列表/阈值参数)',                  'API', '/risk/abuse',             'READ',  0, 1, 0),
   ('risk_k2_write',                '套利刷量检测-常规写(3阈值·试用/新人礼/刷榜)',         'API', '/risk/abuse',             'WRITE', 0, 1, 0),
   ('risk_k2_row_freeze',           '联动K1冻结(高敏·止血·复用冻结链路)',                  'API', '/risk/abuse',             'HIGH',  1, 1, 0),
-  ('risk_k2_row_flag',             '标记套利账户(高敏·风控处置·进评分)',                  'API', '/risk/abuse',             'HIGH',  1, 1, 0),
-  ('risk_k2_row_blockgift',        '拦截新人礼(高敏·止血·预防性阻断)',                    'API', '/risk/abuse',             'HIGH',  1, 1, 0),
-  ('risk_k2_row_boardflag',        '标记刷榜账户(高敏·风控处置·产信号)',                  'API', '/risk/abuse',             'HIGH',  1, 1, 0),
+  ('risk_k2_row_flag',             '标记套利账户(直接预防性处置·进评分)',                 'API', '/risk/abuse',             'WRITE', 0, 1, 0),
+  ('risk_k2_row_blockgift',        '拦截新人礼(直接预防性阻断)',                          'API', '/risk/abuse',             'WRITE', 0, 1, 0),
+  ('risk_k2_row_boardflag',        '标记刷榜账户(直接预防性处置·产信号)',                 'API', '/risk/abuse',             'WRITE', 0, 1, 0),
 
   -- K3 提现风控规则引擎（5 点）
   ('risk_k3_read',                 '提现风控规则-读(维度/规则总表/路由/命中日志)',         'API', '/risk/withdrawal-rules',  'READ',  0, 1, 0),
@@ -35,8 +35,8 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   -- K4 风险评分模型（4 点）
   ('risk_k4_read',                 '风险评分模型-读(概览/维度权重/分档/查询/覆盖记录)',    'API', '/risk/scoring',           'READ',  0, 1, 0),
   ('risk_k4_write',                '风险评分模型-常规写(6维权重/分档线低高/升级线/维度开关)', 'API', '/risk/scoring',         'WRITE', 0, 1, 0),
-  ('risk_k4_user_override',        '单用户人工覆盖评分(高敏·强制理由·影响提现路由)',      'API', '/risk/scoring',           'HIGH',  1, 1, 0),
-  ('risk_k4_user_recompute',       '重算回模型分(高敏·丢弃覆盖值·还原模型)',              'API', '/risk/scoring',           'HIGH',  1, 1, 0),
+  ('risk_k4_user_override',        '单用户人工覆盖评分(非高敏·强制理由·影响提现路由)',    'API', '/risk/scoring',           'WRITE', 0, 1, 0),
+  ('risk_k4_user_recompute',       '重算回模型分(直接留痕·丢弃覆盖值·还原模型)',           'API', '/risk/scoring',           'WRITE', 0, 1, 0),
 
   -- K5 大额 KYC 复审 & 告警（5 点）
   ('risk_k5_read',                 '大额KYC复审-读(队列/触发线/工单详情/告警)',           'API', '/risk/kyc-review',        'READ',  0, 1, 0),

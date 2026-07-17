@@ -21,6 +21,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
@@ -29,6 +30,7 @@ import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
+import ffdd.opsconsole.treasury.dto.BankRunThresholdRequest;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -44,6 +46,8 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsTreasuryServiceTest {
     private static final Clock CLOCK =
@@ -54,6 +58,7 @@ class OpsTreasuryServiceTest {
     private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final RiskTamperSignalFacade riskTamperSignalFacade = mock(RiskTamperSignalFacade.class);
     private final Map<String, String> idempotencyHashes = new LinkedHashMap<>();
     private final Map<String, ApiResult<Map<String, Object>>> idempotencyResponses = new LinkedHashMap<>();
     private final OpsTreasuryService service = service();
@@ -67,12 +72,15 @@ class OpsTreasuryServiceTest {
                 ledgerRepository,
                 configFacade,
                 emergencyRepository,
+                riskTamperSignalFacade,
                 auditLogService,
                 idempotencyService,
                 CLOCK,
                 new TreasuryDualLedgerProperties(),
                 new ObjectMapper(),
                 seedPolicy);
+        when(riskTamperSignalFacade.tamperRadarSnapshot(any()))
+                .thenReturn(RiskTamperSignalFacade.TamperRadarSnapshot.empty());
         return service;
     }
 
@@ -119,14 +127,19 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void disabledReadTimeSeedsDoNotExposeB5SeededRiskGates() {
+    void missingKillSwitchRowsStillExposeTheFiveCanonicalDefaultOnlineGates() {
         OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
 
         ApiResult<Map<String, Object>> result = realOnlyService.bDomainDashboard();
 
         assertThat(result.getCode()).isZero();
         Map<String, Object> riskRadar = (Map<String, Object>) result.getData().get("riskRadar");
-        assertThat((List<Map<String, Object>>) riskRadar.get("gates")).isEmpty();
+        assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
+                .hasSize(5)
+                .allSatisfy(gate -> {
+                    assertThat(gate).containsEntry("on", true);
+                    assertThat(gate).containsEntry("state", "default_on");
+                });
         assertThat(riskRadar).containsEntry("trippedGateCount", 0L);
     }
 
@@ -251,7 +264,7 @@ class OpsTreasuryServiceTest {
                 });
         assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
                 .extracting(gate -> gate.get("dom"))
-                .doesNotContain("staking");
+                .containsExactly("withdraw", "exchange", "staking", "genesis", "trial");
         assertThat(riskRadar).containsEntry("trippedGateCount", 2L);
     }
 
@@ -444,6 +457,107 @@ class OpsTreasuryServiceTest {
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("B1_DUAL_LEDGER_THRESHOLDS_CHANGED");
         assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
+    }
+
+    @Test
+    void b5BankRunThresholdUpdateBecomesTheJ1R1Authority() {
+        BankRunThresholdRequest request = new BankRunThresholdRequest(
+                "25", "55", "调整挤兑分层阈值并同步自动止血线", "risk-lead");
+
+        ApiResult<Map<String, Object>> result = service.updateBankRunThresholds(
+                "idem-bankrun-threshold", request);
+        ApiResult<Map<String, Object>> replay = service.updateBankRunThresholds(
+                "idem-bankrun-threshold", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(replay.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("risk.bankrun-yellow-pct", "25")
+                .containsEntry("risk.bankrun-red-pct", "55");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> riskRadar = (Map<String, Object>) result.getData().get("riskRadar");
+        assertThat(riskRadar)
+                .containsEntry("bankRunYellowPct", new BigDecimal("25"))
+                .containsEntry("bankRunRedlinePct", new BigDecimal("55"));
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("B5_BANKRUN_THRESHOLDS_CHANGED");
+    }
+
+    @Test
+    void b5BankRunThresholdAuditUsesAuthenticatedActorInsteadOfRequestSpoof() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken(77L, null, List.of());
+        authentication.setDetails(Map.of("username", "real-risk-admin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            ApiResult<Map<String, Object>> result = service.updateBankRunThresholds(
+                    "idem-bankrun-authenticated-actor",
+                    new BankRunThresholdRequest(
+                            "24", "52", "调整分层阈值并验证真实审计操作者", "spoofed-operator"));
+
+            assertThat(result.getCode()).isZero();
+            ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+            verify(auditLogService).record(captor.capture());
+            assertThat(captor.getValue().getActorUsername()).isEqualTo("real-risk-admin");
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void b5RiskLightAndFeedUseTheSameRequestedAmountRatioAndConfiguredBandsAsJ1R1() {
+        ledgerRepository.reserveUsd = new BigDecimal("1000");
+        ledgerRepository.withdrawalRequested24h = new BigDecimal("300");
+        ledgerRepository.withdrawalQueue = new BigDecimal("600");
+        configFacade.values.put("risk.bankrun-yellow-pct", "25");
+        configFacade.values.put("risk.bankrun-red-pct", "55");
+
+        Map<String, Object> riskRadar = (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+        List<Map<String, Object>> feed = (List<Map<String, Object>>) riskRadar.get("feed");
+
+        assertThat((BigDecimal) riskRadar.get("bankRunRatio")).isEqualByComparingTo("30");
+        assertThat(riskRadar)
+                .containsEntry("bankRunYellowPct", new BigDecimal("25"))
+                .containsEntry("bankRunRedlinePct", new BigDecimal("55"));
+        assertThat(feed.get(0))
+                .containsEntry("sev", "p1")
+                .satisfies(row -> assertThat(row.get("t").toString()).contains("挤兑比率 30%"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void b5RiskRadarReadsTheActualSharedTamperSignalProjection() {
+        when(riskTamperSignalFacade.tamperRadarSnapshot(any()))
+                .thenReturn(new RiskTamperSignalFacade.TamperRadarSnapshot(
+                        4, 2, "2026-06-17T07:55:00"));
+
+        Map<String, Object> riskRadar =
+                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+        List<Map<String, Object>> feed = (List<Map<String, Object>>) riskRadar.get("feed");
+
+        assertThat(feed).anySatisfy(row -> assertThat(row)
+                .containsEntry("sev", "p1")
+                .containsEntry("href", "/emergency/tamper")
+                .satisfies(item -> assertThat(item.get("t").toString())
+                        .contains("篡改拦截 4 起", "涉及 2 个账户")));
+        assertThat((List<String>) riskRadar.get("sources"))
+                .contains("nx_risk_signal:TAMPER_DETECTED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void b5RiskRadarFallsBackToTheSameSafeBandsAsJ1WhenStoredValuesAreAbnormal() {
+        configFacade.values.put("risk.bankrun-yellow-pct", "50");
+        configFacade.values.put("risk.bankrun-red-pct", "45");
+
+        Map<String, Object> riskRadar =
+                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+
+        assertThat(riskRadar)
+                .containsEntry("bankRunYellowPct", new BigDecimal("20"))
+                .containsEntry("bankRunRedlinePct", new BigDecimal("40"));
     }
 
     @Test
@@ -730,8 +844,14 @@ class OpsTreasuryServiceTest {
         }
 
         @Override
-        public void markExecutionRolledBack(String executionId, LocalDateTime rollbackAt, String reason,
-                                            List<Map<String, Object>> rollbackActions) {
+        public boolean claimExecutionRollback(String executionId) {
+            return false;
+        }
+
+        @Override
+        public boolean completeExecutionRollback(String executionId, LocalDateTime rollbackAt, String reason,
+                                                 List<Map<String, Object>> rollbackActions) {
+            return false;
         }
     }
 
@@ -746,6 +866,7 @@ class OpsTreasuryServiceTest {
         private BigDecimal nexLocked = BigDecimal.ZERO;
         private BigDecimal nexReward = BigDecimal.ZERO;
         private BigDecimal withdrawalQueue = BigDecimal.ZERO;
+        private BigDecimal withdrawalRequested24h = BigDecimal.ZERO;
         private BigDecimal avgRiskScore = BigDecimal.ZERO;
         private BigDecimal pendingCommission = BigDecimal.ZERO;
         private BigDecimal netFlow = BigDecimal.ZERO;
@@ -816,6 +937,11 @@ class OpsTreasuryServiceTest {
         @Override
         public BigDecimal sumActiveWithdrawalQueueUsdt() {
             return withdrawalQueue;
+        }
+
+        @Override
+        public BigDecimal sumWithdrawalRequested24hUsdt() {
+            return withdrawalRequested24h;
         }
 
         @Override

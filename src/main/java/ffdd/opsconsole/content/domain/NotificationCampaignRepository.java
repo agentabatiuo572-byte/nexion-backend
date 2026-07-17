@@ -25,6 +25,10 @@ public interface NotificationCampaignRepository {
 
     int dispatchCampaignNotification(String campaignNo, String bizNo, String currentPhase, String trigger, String operator, LocalDateTime now);
 
+    default int countNotificationsByBizNo(String bizNo) {
+        return 0;
+    }
+
     List<String> listDueScheduledCampaignNos(LocalDateTime now, int limit);
 
     boolean claimScheduled(String campaignNo, LocalDateTime now);

@@ -1,9 +1,9 @@
--- 域 I+J · 内容+应急 · 38 权限点
+-- 域 I+J · 内容+应急 · 39 权限点
 -- 源：docs/superpowers/specs/rbac-classic/IJ.md（收敛自 rbac-matrix/IJ.md 92 按钮级）
 -- 幂等：ON DUPLICATE KEY UPDATE。手动执行（schema.sql 不自动跑，见 schema-manual-init 记忆）：
 --   mysql -uroot -p nexion < scripts/rbac-classic-seed/IJ.sql
 -- 前置：00-permission-alter.sql（perm_type/amplifies 字段）
--- amplifies=1 共 8 个（I4 受限范围/I6 课程奖励/J1 熔断·恢复·批量/J2 三态·应急封锁/J4 执行）
+-- amplifies=1 共 8 个（I5 受限范围/I7 课程奖励/J1 熔断·恢复·批量/J2 三态·应急封锁/J4 执行）
 -- 不含 role_permission（后续统一处理）；不含 menu_id（后续 A8 字典挂菜单时回填）
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
@@ -55,15 +55,16 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('emergency_j1_gate_resume',        '单闸恢复(高敏·止血·放大流出闸前置B1备付金)', 'API', '/emergency/kill-switch', 'HIGH', 1, 1, 0),
   ('emergency_j1_batch_kill',         '应急批量熔断(高敏·emergency=true·监管点名)', 'API', '/emergency/kill-switch', 'HIGH', 1, 1, 0),
 
-  -- J2 Geo-block（4 点）
+  -- J2 Geo-block（5 点）
   ('emergency_j2_read',               'Geo-block-读',                  'API', '/emergency/geo-block',   'READ',  0, 1, 0),
-  ('emergency_j2_write',              'Geo-block-写(endpoint屏蔽编辑/边缘IP判定源切换·配置类)', 'API', '/emergency/geo-block', 'WRITE', 0, 1, 0),
+  ('emergency_j2_write',              'Geo-block-写(endpoint屏蔽编辑·配置类)', 'API', '/emergency/geo-block', 'WRITE', 0, 1, 0),
+  ('emergency_j2_edge_source_manage', '边缘IP判定源切换(仅超管)',      'API', '/emergency/geo-block', 'HIGH', 0, 1, 0),
   ('emergency_j2_country_manage',     '三态名单操作(高敏·黑名单/受限加入·解封·涉资金冻结)', 'API', '/emergency/geo-block', 'HIGH', 1, 1, 0),
   ('emergency_j2_emergency_block',    '应急即时封锁(高敏·批量·emergency=true·仅加不减)', 'API', '/emergency/geo-block', 'HIGH', 1, 1, 0),
 
   -- J3 篡改防御监控（3 点）
   ('emergency_j3_read',               '篡改防御监控-读',               'API', '/emergency/tamper',      'READ',  0, 1, 0),
-  ('emergency_j3_write',              '篡改防御监控-写(导出报表·脱敏只读·无操作确认)', 'API', '/emergency/tamper', 'WRITE', 0, 1, 0),
+  ('emergency_j3_export',             '篡改防御监控-脱敏导出',         'API', '/emergency/tamper',      'READ',  0, 1, 0),
   ('emergency_j3_alert_config',       '篡改告警阈值配置(高敏·操作确认·影响K4风险评分)', 'API', '/emergency/tamper', 'HIGH', 0, 1, 0),
 
   -- J4 监管点名应急 SOP（3 点）
@@ -81,14 +82,14 @@ ON DUPLICATE KEY UPDATE
   is_deleted      = 0;
 
 -- ===== 统计 =====
--- 38 点 = 11 READ + 12 WRITE + 15 HIGH
+-- 39 点 = 12 READ + 11 WRITE + 16 HIGH
 -- I 域 23 点（7 页）：7 READ + 8 WRITE + 8 HIGH
--- J 域 15 点（4 页）：4 READ + 4 WRITE + 7 HIGH
+-- J 域 16 点（4 页）：5 READ + 3 WRITE + 8 HIGH
 -- amplifies=1 共 8 个：
---   I 域 2：content_i5_gate_adjust / content_i6_course_reward_adjust
+--   I 域 2：content_i5_gate_adjust / content_i7_course_reward_adjust
 --   J 域 6：emergency_j1_gate_kill / _gate_resume / _batch_kill /
 --           emergency_j2_country_manage / _emergency_block /
 --           emergency_j4_playbook_execute
--- amplifies=0 高敏 7 个：content_i1_experiment_manage / content_i3_cap_adjust / content_i3_critical_send /
+-- amplifies=0 高敏 8 个：content_i1_experiment_manage / content_i3_cap_adjust / content_i3_critical_send /
 --                        content_i4_publish_standard / content_i4_trust_section_manage /
---                        content_i5_disclosure_publish / emergency_j3_alert_config
+--                        content_i5_disclosure_publish / emergency_j2_edge_source_manage / emergency_j3_alert_config

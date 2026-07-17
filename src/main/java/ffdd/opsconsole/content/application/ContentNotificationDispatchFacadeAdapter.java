@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -24,6 +26,36 @@ public class ContentNotificationDispatchFacadeAdapter implements ContentNotifica
     private final PlatformConfigFacade configFacade;
 
     @Override
+    public Optional<NotificationEmergencyDispatchResult> inspectEmergencyCampaign(String campaignNo) {
+        if (!StringUtils.hasText(campaignNo)) {
+            return Optional.empty();
+        }
+        return campaignRepository.findCampaign(campaignNo.trim())
+                .filter(campaign -> "scheduled".equalsIgnoreCase(campaign.status()))
+                .map(campaign -> new NotificationEmergencyDispatchResult(
+                        campaign.id(), campaign.name(), campaign.tier(), campaign.audience(), campaign.status(), 0));
+    }
+
+    @Override
+    public Optional<NotificationEmergencyDispatchResult> findEmergencyDispatch(
+            String campaignNo, String executionId) {
+        if (!StringUtils.hasText(campaignNo) || !StringUtils.hasText(executionId)) {
+            return Optional.empty();
+        }
+        String normalizedCampaignNo = campaignNo.trim();
+        String bizNo = "j4:" + executionId.trim() + ":notify:" + normalizedCampaignNo;
+        int notificationCount = campaignRepository.countNotificationsByBizNo(bizNo);
+        if (notificationCount <= 0) {
+            return Optional.empty();
+        }
+        return campaignRepository.findCampaign(normalizedCampaignNo)
+                .map(campaign -> new NotificationEmergencyDispatchResult(
+                        campaign.id(), campaign.name(), campaign.tier(), campaign.audience(),
+                        campaign.status(), notificationCount));
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<NotificationEmergencyDispatchResult> dispatchEmergencyCampaign(
             String campaignNo,
             String playbookCode,
@@ -34,21 +66,36 @@ public class ContentNotificationDispatchFacadeAdapter implements ContentNotifica
             return Optional.empty();
         }
         NotificationCampaignRow current = campaignRepository.findCampaign(campaignNo.trim()).orElse(null);
-        if (current == null || "cancelled".equalsIgnoreCase(current.status())) {
+        if (current == null || !"scheduled".equalsIgnoreCase(current.status())) {
+            return Optional.empty();
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        if (!campaignRepository.claimScheduled(current.id(), now)) {
             return Optional.empty();
         }
         String bizNo = "j4:" + executionId.trim() + ":notify:" + current.id();
         String trigger = "J4 " + text(playbookCode, "SOP") + " emergency dispatch";
+        String phase = configFacade.activeValue("growth.phase.current").orElse("");
+        long audience = campaignRepository.estimateAudience(current.audienceTarget(), phase, now);
+        if (audience <= 0) {
+            campaignRepository.completeDispatch(current.id(), "FAILED", 0, "受众为空，未下发", operator, now);
+            return Optional.empty();
+        }
         int notificationCount = campaignRepository.dispatchCampaignNotification(
                 current.id(),
                 bizNo,
-                configFacade.activeValue("growth.phase.current").orElse(""),
+                phase,
                 trigger,
                 operator,
-                LocalDateTime.now(clock));
-        campaignRepository.completeDispatch(current.id(), "SENT", notificationCount, "应急下发", operator, LocalDateTime.now(clock));
+                now);
+        if (notificationCount <= 0) {
+            campaignRepository.completeDispatch(current.id(), "FAILED", 0, "受众为空，未下发", operator, now);
+            return Optional.empty();
+        }
+        campaignRepository.applyRetention(now);
+        campaignRepository.completeDispatch(current.id(), "SENT", notificationCount, "应急下发", operator, now);
         NotificationCampaignRow updated = campaignRepository.findCampaign(current.id()).orElse(current);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("I3_NOTIFICATION_CAMPAIGN_DISPATCHED_BY_J4")
                 .resourceType("NOTIFICATION_CAMPAIGN")
                 .resourceId(current.id())

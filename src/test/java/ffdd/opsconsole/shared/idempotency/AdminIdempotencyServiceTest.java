@@ -16,6 +16,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.time.LocalDateTime;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -88,6 +89,46 @@ class AdminIdempotencyServiceTest {
                 .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH")
                 .extracting("code")
                 .isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void reclaimsAnExpiredKeyInsteadOfLeavingItPermanentlyConflicted() {
+        AdminIdempotencyRecordEntity reclaimed = existing("hash-new", "PROCESSING", null);
+        when(recordMapper.selectActive("ADMIN_MEDIA_UPLOAD", "idem-1"))
+                .thenReturn(null, reclaimed);
+        when(recordMapper.resetExpired(
+                eq("ADMIN_MEDIA_UPLOAD"), eq("idem-1"), eq("hash-new"), any(LocalDateTime.class)))
+                .thenReturn(1);
+
+        Map<?, ?> result = service.execute(
+                "ADMIN_MEDIA_UPLOAD",
+                "idem-1",
+                "hash-new",
+                Map.class,
+                () -> Map.of("assetId", "asset-new"));
+
+        assertThat(result.get("assetId")).isEqualTo("asset-new");
+        verify(recordMapper, never()).insert(any(AdminIdempotencyRecordEntity.class));
+        verify(recordMapper).markSucceeded(eq(9L), org.mockito.ArgumentMatchers.contains("asset-new"));
+    }
+
+    @Test
+    void rejectsKeyLongerThanDatabaseLimitBeforeTouchingTheMapper() {
+        String oversizedKey = "k".repeat(129);
+
+        assertThatThrownBy(() -> service.execute(
+                "ADMIN_MEDIA_UPLOAD",
+                oversizedKey,
+                "hash-a",
+                Map.class,
+                () -> Map.of("assetId", "asset-1")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("IDEMPOTENCY_KEY_INVALID")
+                .extracting("code")
+                .isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+
+        verify(recordMapper, never()).selectActive(any(), any());
+        verify(recordMapper, never()).insert(any(AdminIdempotencyRecordEntity.class));
     }
 
     private AdminIdempotencyRecordEntity existing(String requestHash, String status, String responseJson) {

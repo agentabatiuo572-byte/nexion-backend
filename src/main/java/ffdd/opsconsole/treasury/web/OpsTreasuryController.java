@@ -13,6 +13,7 @@ import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
+import ffdd.opsconsole.treasury.dto.BankRunThresholdRequest;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -56,6 +57,14 @@ public class OpsTreasuryController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) TreasuryAlertAckRequest request) {
         return treasuryService.acknowledgeBDomainAlert(alertId, idempotencyKey, request);
+    }
+
+    @PatchMapping("/b-domain/bankrun-thresholds")
+    @PreAuthorize("hasAnyAuthority('overview_b1_write','overview_b1_runrisk_write')")
+    public ApiResult<Map<String, Object>> updateBankRunThresholds(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) BankRunThresholdRequest request) {
+        return treasuryService.updateBankRunThresholds(idempotencyKey, request);
     }
 
     @PostMapping("/injections")

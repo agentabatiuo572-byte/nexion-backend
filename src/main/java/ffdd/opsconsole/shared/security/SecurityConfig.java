@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
@@ -15,6 +16,7 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.MediaType;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -41,10 +43,16 @@ public class SecurityConfig {
         return http.csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .exceptionHandling(errors -> errors
+                        .authenticationEntryPoint((request, response, exception) ->
+                                writeJsonError(response, HttpServletResponse.SC_UNAUTHORIZED, "AUTH_REQUIRED"))
+                        .accessDeniedHandler((request, response, exception) ->
+                                writeJsonError(response, HttpServletResponse.SC_FORBIDDEN, "ACCESS_DENIED")))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.GET, "/api/content/trust/sections/current").permitAll()
                         .requestMatchers(
                                 "/api/admin/auth/login",
+                                "/api/admin/auth/mfa/verify",
                                 "/auth/login",
                                 "/auth/register",
                                 "/auth/users/login",
@@ -66,6 +74,13 @@ public class SecurityConfig {
                 .addFilterBefore(new SseTokenShimFilter(), JwtAuthenticationFilter.class)
                 .addFilterAfter(adminRbacAuthorizationFilter, JwtAuthenticationFilter.class)
                 .build();
+    }
+
+    static void writeJsonError(HttpServletResponse response, int status, String message) throws IOException {
+        response.setStatus(status);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.getWriter().write("{\"code\":" + status + ",\"message\":\"" + message + "\",\"data\":null}");
     }
 
     @Bean

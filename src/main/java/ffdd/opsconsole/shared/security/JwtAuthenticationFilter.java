@@ -42,16 +42,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                             claims.getSubject(), null, authorities);
                     String username = claims.get("username", String.class);
+                    String sessionId = claims.get("sessionId", String.class);
                     Map<String, String> details = new LinkedHashMap<>();
                     details.put("subjectType", String.valueOf(claims.getOrDefault("subjectType", "USER")));
                     if (StringUtils.hasText(username)) {
                         details.put("username", username.trim());
+                    }
+                    if (StringUtils.hasText(sessionId)) {
+                        details.put("sessionId", sessionId.trim());
                     }
                     authentication.setDetails(Map.copyOf(details));
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 } else {
                     SecurityContextHolder.clearContext();
                 }
+            } catch (SessionStoreUnavailableException ex) {
+                SecurityContextHolder.clearContext();
+                writeSessionStoreUnavailable(response);
+                return;
             } catch (Exception ignored) {
                 SecurityContextHolder.clearContext();
             }
@@ -63,6 +71,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private void authenticateFromGatewayHeaders(HttpServletRequest request) {
+        if (!gatewayProperties.isHeaderAuthenticationEnabled()
+                || !gatewayProperties.isTrustedProxy(request.getRemoteAddr())) {
+            return;
+        }
         String requestSecret = request.getHeader(AuthHeaders.GATEWAY_SECRET);
         if (!StringUtils.hasText(requestSecret) || !requestSecret.equals(gatewayProperties.getInternalSecret())) {
             return;
@@ -116,7 +128,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 return adminSessionRegistry.isSessionActive(Long.valueOf(claims.getSubject()), sessionId);
             } catch (RuntimeException ex) {
-                return false;
+                throw new SessionStoreUnavailableException(ex);
             }
         }
         if (!"USER".equals(subjectType)) {
@@ -130,7 +142,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             int activeCount = authSessionMapper.countActiveUserSession(sessionId, Long.valueOf(claims.getSubject()));
             return activeCount > 0;
         } catch (RuntimeException ex) {
-            return false;
+            throw new SessionStoreUnavailableException(ex);
+        }
+    }
+
+    private void writeSessionStoreUnavailable(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+        response.setCharacterEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
+        response.setContentType("application/json");
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        response.getWriter().write(
+                "{\"code\":503,\"message\":\"ADMIN_SESSION_STORE_UNAVAILABLE\",\"data\":null}");
+    }
+
+    private static final class SessionStoreUnavailableException extends RuntimeException {
+        private SessionStoreUnavailableException(RuntimeException cause) {
+            super(cause);
         }
     }
 

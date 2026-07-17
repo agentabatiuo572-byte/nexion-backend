@@ -153,6 +153,12 @@ public class OpsUserController {
         return userService.accountActionOverview();
     }
 
+    @GetMapping("/account-actions/accounts/{userKey}")
+    @PreAuthorize("hasAuthority('user_c2_read')")
+    public ApiResult<UserAccountView> accountActionAccount(@PathVariable String userKey) {
+        return userService.accountActionAccount(userKey);
+    }
+
     @PostMapping("/account-lists")
     @PreAuthorize("hasAuthority('user_c2_write')")
     public ApiResult<UserAccountListEntryView> upsertAccountList(
@@ -203,7 +209,7 @@ public class OpsUserController {
     }
 
     @PostMapping("/profiles/{userId}/impersonations")
-    @PreAuthorize("hasAuthority('user_c2_impersonate_terminate')")
+    @PreAuthorize("hasAuthority('user_c2_impersonate_start')")
     public ApiResult<Map<String, Object>> startImpersonation(
             @PathVariable Long userId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

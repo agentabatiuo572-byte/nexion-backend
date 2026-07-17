@@ -2443,7 +2443,7 @@ CREATE TABLE IF NOT EXISTS nx_earning_milestone (
   threshold_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   reward_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
   status VARCHAR(32) NOT NULL,
-  event_no VARCHAR(96) NULL,
+  event_no VARCHAR(96) NOT NULL,
   achieved_at DATETIME NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -4273,7 +4273,9 @@ CREATE TABLE IF NOT EXISTS nx_emergency_tamper_event (
   path_name VARCHAR(128) NOT NULL,
   description VARCHAR(500) NULL,
   cluster_code VARCHAR(64) NULL,
+  k4_accepted TINYINT NOT NULL DEFAULT 0,
   k4_delta INT NOT NULL DEFAULT 0,
+  b5_accepted TINYINT NOT NULL DEFAULT 0,
   event_count INT NOT NULL DEFAULT 1,
   occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -4281,7 +4283,23 @@ CREATE TABLE IF NOT EXISTS nx_emergency_tamper_event (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   KEY idx_tamper_event_path_time (path_key, occurred_at),
   KEY idx_tamper_event_user_time (user_id, user_no, occurred_at),
-  KEY idx_tamper_event_cluster (cluster_code, occurred_at)
+  KEY idx_tamper_event_cluster (cluster_code, occurred_at),
+  UNIQUE KEY uk_emergency_tamper_event_no (event_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_otp_challenge (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  challenge_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  code_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  consumed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_otp_challenge_no (challenge_no),
+  KEY idx_user_otp_active (user_id, expires_at, consumed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_emergency_tamper_report (
@@ -5023,4 +5041,84 @@ CREATE TABLE IF NOT EXISTS nx_audit_object_lock (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_target (target_domain, target_type, target_id),
   KEY idx_lock_ticket (ticket_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- K5 KYC review workflow tables (authoritative shape; migration: 20260717_k5_kyc_review_closure.sql).
+CREATE TABLE IF NOT EXISTS nx_admin_risk_param (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  section_key VARCHAR(32) NOT NULL,
+  param_key VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  value_text VARCHAR(128) NOT NULL,
+  unit_text VARCHAR(64) DEFAULT NULL,
+  sub_text VARCHAR(255) NOT NULL,
+  note_text VARCHAR(1000) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_risk_param (section_key,param_key),
+  KEY idx_admin_risk_param_section (section_key,is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_review_ticket (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  ticket_id VARCHAR(64) NOT NULL,
+  ticket_type VARCHAR(64) NOT NULL,
+  user_no VARCHAR(64) NOT NULL,
+  amount_text VARCHAR(64) NOT NULL,
+  amount_usdt DECIMAL(20,8) DEFAULT NULL,
+  cumulative_text VARCHAR(64) NOT NULL,
+  kyc_text VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  sla_pct DECIMAL(6,4) NOT NULL DEFAULT 0,
+  sla_text VARCHAR(64) NOT NULL,
+  info_json TEXT DEFAULT NULL,
+  history_json TEXT DEFAULT NULL,
+  decision_reason VARCHAR(1000) DEFAULT NULL,
+  reviewed_by VARCHAR(64) DEFAULT NULL,
+  reviewed_at DATETIME DEFAULT NULL,
+  due_at DATETIME DEFAULT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  open_user_key VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN status IN ('triggered','in-review') AND is_deleted=0 THEN user_no ELSE NULL END) STORED,
+  UNIQUE KEY uk_admin_risk_kyc_ticket (ticket_id),
+  UNIQUE KEY uk_admin_risk_kyc_open_user (open_user_key),
+  KEY idx_admin_risk_kyc_status (status,is_deleted),
+  KEY idx_admin_risk_kyc_user (user_no,is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_review_source (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  ticket_id VARCHAR(64) NOT NULL,
+  source_domain VARCHAR(16) NOT NULL,
+  source_no VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_risk_kyc_review_source (ticket_id,source_domain,source_no),
+  KEY idx_admin_risk_kyc_review_source_time (source_domain,created_at,is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_alert (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  event_key VARCHAR(128) DEFAULT NULL,
+  tone VARCHAR(32) NOT NULL,
+  title VARCHAR(128) NOT NULL,
+  body VARCHAR(1000) NOT NULL,
+  time_text VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_risk_kyc_alert_event (event_key),
+  KEY idx_admin_risk_kyc_alert_tone (tone,is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_alert_subscription (
+  operator_name VARCHAR(64) PRIMARY KEY,
+  alert_types_json TEXT NOT NULL,
+  channels_json TEXT NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

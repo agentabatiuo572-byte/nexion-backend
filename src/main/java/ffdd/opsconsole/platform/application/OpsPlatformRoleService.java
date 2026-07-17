@@ -279,11 +279,7 @@ public class OpsPlatformRoleService {
             return;
         }
         for (Long adminId : adminIds) {
-            try {
-                permissionCache.evict(adminId);
-            } catch (RuntimeException ignored) {
-                // Redis 抖动靠 30min TTL 兜底，不阻断事务
-            }
+            permissionCache.evict(adminId);
         }
     }
 

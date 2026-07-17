@@ -15,7 +15,6 @@ import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -72,15 +71,6 @@ public class OpsAdminAccountController {
         return accountService.updateStatus(idempotencyKey, accountId, request);
     }
 
-    @DeleteMapping("/accounts/{accountId}")
-    @PreAuthorize("hasAuthority('platform_a1_account_delete')")
-    public ApiResult<AdminAccountOverview.OperatorRecord> deleteAccount(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @PathVariable String accountId,
-            @RequestBody(required = false) AdminAccountActionRequest request) {
-        return accountService.deleteAccount(idempotencyKey, accountId, request);
-    }
-
     @PostMapping("/accounts/{accountId}/reset-2fa")
     @PreAuthorize("hasAuthority('platform_a1_account_2fa_reset')")
     public ApiResult<AdminAccountOverview.OperatorRecord> reset2fa(
@@ -106,6 +96,16 @@ public class OpsAdminAccountController {
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountActionRequest request) {
         return accountService.revokeSessions(idempotencyKey, accountId, request);
+    }
+
+    @PostMapping("/accounts/{accountId}/sessions/{sessionId}/revoke")
+    @PreAuthorize("hasAuthority('platform_a1_account_sessions_revoke')")
+    public ApiResult<AdminAccountOverview.OperatorRecord> revokeSession(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String accountId,
+            @PathVariable String sessionId,
+            @RequestBody(required = false) AdminAccountActionRequest request) {
+        return accountService.revokeSession(idempotencyKey, accountId, sessionId, request);
     }
 
     @PatchMapping("/accounts/security-baselines/{baselineKey}")

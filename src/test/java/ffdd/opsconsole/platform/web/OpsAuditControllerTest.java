@@ -14,6 +14,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.application.OpsAuditCenterService;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
@@ -35,7 +36,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 class OpsAuditControllerTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
-    private final OpsAuditController controller = new OpsAuditController(auditLogService, auditCenterService);
+    private final AdminOperatorRoleResolver operatorRoleResolver = mock(AdminOperatorRoleResolver.class);
+    private final OpsAuditController controller =
+            new OpsAuditController(auditLogService, auditCenterService, operatorRoleResolver);
 
     @AfterEach
     void clearSecurityContext() {
@@ -151,6 +154,7 @@ class OpsAuditControllerTest {
                 new UsernamePasswordAuthenticationToken("41", null, List.of());
         authentication.setDetails(Map.of("subjectType", "ADMIN", "username", "alice.admin"));
         SecurityContextHolder.getContext().setAuthentication(authentication);
+        when(operatorRoleResolver.resolve()).thenReturn("超管");
         AuditOperationDecisionRequest spoofedDecision = new AuditOperationDecisionRequest("verified", "mallory");
         AuditOperationProposalRequest spoofedProposal = new AuditOperationProposalRequest(
                 "A6 grant", "role:9", "read", "write", "mallory", "ADMIN", "HIGH",
@@ -168,6 +172,7 @@ class OpsAuditControllerTest {
                 ArgumentCaptor.forClass(AuditOperationProposalRequest.class);
         verify(auditCenterService).createProposal(org.mockito.ArgumentMatchers.eq("idem-create"), proposal.capture());
         assertThat(proposal.getValue().operator()).isEqualTo("alice.admin");
+        assertThat(proposal.getValue().operatorRole()).isEqualTo("超管");
     }
 
     @Test

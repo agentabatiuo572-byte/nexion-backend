@@ -21,6 +21,10 @@ public interface WithdrawalOrderRepository {
 
     void updateStatus(String withdrawalNo, String status, String failureReason);
 
+    boolean transitionK5FrozenStatus(String withdrawalNo, String ticketId, String status, String failureReason);
+
+    boolean freezeForK5Review(String withdrawalNo, String expectedStatus, String ticketId);
+
     int freezePendingByUserId(Long userId, String reason);
 
     long countD2ActionableWithdrawals();

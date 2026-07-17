@@ -5,5 +5,6 @@ public record KycReviewTicketContext(
         String ticketType,
         String userNo,
         String status,
-        String infoJson) {
+        String infoJson,
+        long version) {
 }

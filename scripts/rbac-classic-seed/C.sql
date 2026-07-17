@@ -29,12 +29,13 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('user_c1hub_earning_reverse',         'C1HUB 收益红冲(⚡资金放大)',       'API', '/users/search/[id]',  'HIGH',  1, 1, 0),
   ('user_c1hub_compensation_grant',      'C1HUB 客服补偿发放(⚡资金放大)',   'API', '/users/search/[id]',  'HIGH',  1, 1, 0),
 
-  -- ===== C2 账户操作 /users/actions (7) =====
+  -- ===== C2 账户操作 /users/actions (8) =====
   ('user_c2_read',                       'C2 账户操作-页面读',               'API', '/users/actions',      'READ',  0, 1, 0),
   ('user_c2_write',                      'C2 账户操作-常规写',               'API', '/users/actions',      'WRITE', 0, 1, 0),
   ('user_c2_account_freeze',             'C2 冻结',                          'API', '/users/actions',      'HIGH',  0, 1, 0),
   ('user_c2_account_unfreeze',           'C2 恢复',                          'API', '/users/actions',      'HIGH',  0, 1, 0),
   ('user_c2_session_revoke_all',         'C2 强制登出',                      'API', '/users/actions',      'HIGH',  0, 1, 0),
+  ('user_c2_impersonate_start',          'C2 发起只读模拟登录',              'API', '/users/actions',      'HIGH',  0, 1, 0),
   ('user_c2_impersonate_terminate',      'C2 终止模拟会话',                  'API', '/users/actions',      'HIGH',  0, 1, 0),
   ('user_c2_blocklist_add',              'C2 加入禁入名单',                  'API', '/users/actions',      'HIGH',  0, 1, 0),
 
@@ -68,6 +69,6 @@ ON DUPLICATE KEY UPDATE
   amplifies = VALUES(amplifies),
   status = 1, is_deleted = 0;
 
--- 统计：READ 7 · WRITE 7 · HIGH 25 = 39 权限点
+-- 统计：READ 7 · WRITE 7 · HIGH 26 = 40 权限点
 -- amplifies=1 计 6 个（⚡资金放大）：user_c1hub_earning_grant / user_c1hub_earning_reverse / user_c1hub_compensation_grant
 --   user_c3_adjust_create / user_c3_adjust_approve / user_c3_adjust_reverse

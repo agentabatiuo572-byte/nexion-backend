@@ -158,6 +158,11 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
+    public int countNotificationsByBizNo(String bizNo) {
+        return campaignMapper.countNotificationsByBizNo(bizNo);
+    }
+
+    @Override
     public List<String> listDueScheduledCampaignNos(LocalDateTime now, int limit) {
         return campaignMapper.selectDueScheduledCampaignNos(now, Math.max(1, Math.min(limit, 200)));
     }

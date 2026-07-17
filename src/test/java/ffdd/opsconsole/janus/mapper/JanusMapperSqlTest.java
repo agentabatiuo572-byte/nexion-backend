@@ -19,7 +19,7 @@ class JanusMapperSqlTest {
     @Test
     void reportEvaluationIsDeduplicatedByTheBusinessReportId() throws Exception {
         String sql = annotationSql("insertEvaluation", Insert.class);
-        assertThat(sql).contains("INSERT IGNORE INTO nx_janus_evaluation").contains("report_id");
+        assertThat(sql).contains("INSERT IGNORE INTO nx_janus_evaluation").contains("report_id", "request_hash");
     }
 
     @Test
@@ -59,6 +59,12 @@ class JanusMapperSqlTest {
     void oldAckReplayIsANoOpAfterANewerRevisionExists() throws Exception {
         String sql = annotationSql("countDeviceCommandAckReplay", Select.class);
         assertThat(sql).contains("acked_revision>=#{revision}").contains("desired_revision>#{revision}");
+    }
+
+    @Test
+    void rollbackRestoresEveryFieldFromTheImmutableStrategySnapshot() throws Exception {
+        String sql = annotationSql("replaceStrategyFromSnapshot", Update.class);
+        assertThat(sql).contains("template_key=JSON_UNQUOTE", "'$.templateKey'");
     }
 
     private <A extends java.lang.annotation.Annotation> String annotationSql(String methodName, Class<A> type)

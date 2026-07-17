@@ -34,6 +34,7 @@ import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -415,7 +416,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (order == null) {
             return ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND");
         }
+        if ("FROZEN".equalsIgnoreCase(order.status())
+                && StringUtils.hasText(order.failureReason())
+                && order.failureReason().trim().startsWith("K5_REVIEW:")) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_K5_REVIEW_REQUIRED");
+        }
         String action = request.action().trim().toUpperCase(Locale.ROOT);
+        String authenticatedOperator = AdminActorResolver.resolve(request.operator());
         String newStatus = nextReviewStatus(order.status(), action);
         if (newStatus == null) {
             return ApiResult.fail(
@@ -439,14 +446,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     order.amount(),
                     order.kycStatus(),
                     order.withdrawalNo(),
-                    request.operator(),
+                    authenticatedOperator,
                     request.reason().trim());
             if (k5Review.requiresReview()) {
-                String holdReason = StringUtils.hasText(k5Review.ticketId())
-                        ? "K5_REVIEW:" + k5Review.ticketId()
-                        : k5Review.reason();
-                withdrawalRepository.updateStatus(order.withdrawalNo(), "FROZEN", holdReason);
-                auditWithdrawalReviewBlockedByK5(order, dailyLimitCount, idempotencyKey, request, k5Review);
+                if (!StringUtils.hasText(k5Review.ticketId()) || !withdrawalRepository.freezeForK5Review(
+                        order.withdrawalNo(), order.status(), k5Review.ticketId())) {
+                    throw new IllegalStateException("D2_K5_HOLD_CONCURRENT_UPDATE");
+                }
+                auditWithdrawalReviewBlockedByK5(
+                        order, dailyLimitCount, idempotencyKey, request, k5Review, authenticatedOperator);
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_K5_REVIEW_REQUIRED");
             }
             String blockedReason = approvalBlockReason(order, dailyLimitCount);
@@ -870,10 +878,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private boolean withdrawGateEnabled() {
-        return controlValue(WITHDRAW_KILLSWITCH_KEY)
-                .or(() -> controlValue(WITHDRAW_LEGACY_KILLSWITCH_KEY))
-                .map(this::parseSwitchEnabled)
-                .orElse(true);
+        return ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+                controlValue(WITHDRAW_KILLSWITCH_KEY),
+                controlValue(WITHDRAW_LEGACY_KILLSWITCH_KEY));
     }
 
     private boolean withdrawDisclosureGateActive() {
@@ -940,7 +947,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             int dailyLimitCount,
             String idempotencyKey,
             WithdrawalReviewRequest request,
-            KycReviewTriggerResult review) {
+            KycReviewTriggerResult review,
+            String authenticatedOperator) {
         Map<String, Object> detail = withdrawalReviewAuditDetail(
                 order, "FROZEN", dailyLimitCount, request.reason().trim(), idempotencyKey.trim());
         detail.put("requestedAction", "APPROVE");
@@ -948,7 +956,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         detail.put("k5TicketId", review.ticketId());
         detail.put("k5Created", review.created());
         detail.put("k5Reason", review.reason());
-        audit("D2_WITHDRAWAL_K5_REVIEW_REQUIRED", "WITHDRAWAL", order.withdrawalNo(), request.operator(), "BLOCKED", detail);
+        audit("D2_WITHDRAWAL_K5_REVIEW_REQUIRED", "WITHDRAWAL", order.withdrawalNo(), authenticatedOperator, "BLOCKED", detail);
     }
 
     private Map<String, Object> withdrawalReviewAuditDetail(

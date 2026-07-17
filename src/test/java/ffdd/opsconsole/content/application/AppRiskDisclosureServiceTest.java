@@ -19,6 +19,7 @@ import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.dto.AppRiskDisclosureAckRequest;
 import ffdd.opsconsole.content.infrastructure.DisclosureAckStatusEntity;
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
+import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import java.time.Clock;
 import java.time.Instant;
@@ -35,8 +36,9 @@ class AppRiskDisclosureServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-07-12T03:00:00Z"), ZoneOffset.UTC);
     private final RiskDisclosureAckProperties ackProperties = new RiskDisclosureAckProperties();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final TamperDetectionPublisher tamperDetectionPublisher = mock(TamperDetectionPublisher.class);
     private final AppRiskDisclosureService service = new AppRiskDisclosureService(
-            repository, ackMapper, clock, ackProperties, auditLogService);
+            repository, ackMapper, clock, ackProperties, auditLogService, tamperDetectionPublisher);
 
     @BeforeEach
     void setUpPublishedVietnamDisclosure() {
@@ -127,6 +129,8 @@ class AppRiskDisclosureServiceTest {
         var stale = service.acknowledge(42L, new AppRiskDisclosureAckRequest("SBV", "v12", "token", true));
         assertThat(stale.getCode()).isEqualTo(409);
         assertThat(stale.getMessage()).isEqualTo("RISK_DISCLOSURE_VERSION_CHANGED");
+        verify(tamperDetectionPublisher).publish(
+                eq(42L), eq("risk_disclosure_ack"), anyString(), eq("/api/legal/risk-disclosure/acknowledgment"));
 
         when(ackMapper.consumeReadToken(anyString(), eq(42L), eq("SBV"), eq("v13"),
                 any(LocalDateTime.class), any(LocalDateTime.class)))
@@ -151,6 +155,8 @@ class AppRiskDisclosureServiceTest {
         var replay = service.acknowledge(42L, new AppRiskDisclosureAckRequest("SBV", "v13", "token", true));
         assertThat(replay.getCode()).isEqualTo(409);
         assertThat(replay.getMessage()).isEqualTo("RISK_DISCLOSURE_READ_TOKEN_INVALID");
+        verify(tamperDetectionPublisher, times(2)).publish(
+                eq(42L), eq("risk_disclosure_ack"), anyString(), eq("/api/legal/risk-disclosure/acknowledgment"));
     }
 
     @Test

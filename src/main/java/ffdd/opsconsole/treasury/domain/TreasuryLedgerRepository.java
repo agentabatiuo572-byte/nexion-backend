@@ -31,6 +31,10 @@ public interface TreasuryLedgerRepository {
 
     BigDecimal sumActiveWithdrawalQueueUsdt();
 
+    default BigDecimal sumWithdrawalRequested24hUsdt() {
+        return sumActiveWithdrawalQueueUsdt();
+    }
+
     long countActiveWithdrawalQueue();
 
     BigDecimal avgActiveWithdrawalQueueRiskScore();
@@ -50,6 +54,10 @@ public interface TreasuryLedgerRepository {
     List<Map<String, Object>> riskVolumeBuckets(LocalDateTime since);
 
     BigDecimal currentReserveUsd();
+
+    default BigDecimal walletLedgerReconciliationGapUsdt() {
+        return BigDecimal.ZERO;
+    }
 
     Optional<BigDecimal> latestNexUsdtPrice();
 

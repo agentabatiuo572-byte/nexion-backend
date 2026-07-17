@@ -6,7 +6,7 @@
 -- 不含 role_permission 绑定（后续 BaselineInitializer 按域级规则统一处理）
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
-  -- ===== A1 运营账号 & RBAC /platform/rbac (9) =====
+  -- ===== A1 运营账号 & RBAC /platform/rbac (8) =====
   ('platform_a1_read',                   'A1 运营账号&RBAC-页面读',           'API', '/platform/rbac',             'READ',  0, 1, 0),
   ('platform_a1_write',                  'A1 运营账号&RBAC-页面常规写',       'API', '/platform/rbac',             'WRITE', 0, 1, 0),
   ('platform_a1_account_role_change',    'A1 改角色',                         'API', '/platform/rbac',             'HIGH',  0, 1, 0),
@@ -14,12 +14,12 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('platform_a1_account_password_reset', 'A1 重置密码',                       'API', '/platform/rbac',             'HIGH',  0, 1, 0),
   ('platform_a1_account_sessions_revoke','A1 强制登出',                       'API', '/platform/rbac',             'HIGH',  0, 1, 0),
   ('platform_a1_account_disable',        'A1 禁用账号',                       'API', '/platform/rbac',             'HIGH',  0, 1, 0),
-  ('platform_a1_account_delete',         'A1 删除账号',                       'API', '/platform/rbac',             'HIGH',  0, 1, 0),
   ('platform_a1_rbac_grants_update',     'A1 改授权(RBAC)',                   'API', '/platform/rbac',             'HIGH',  0, 1, 0),
 
-  -- ===== A2 审计 & 操作确认 /platform/audit (3) =====
+  -- ===== A2 审计 & 操作确认 /platform/audit (4) =====
   ('platform_a2_read',                   'A2 审计&操作确认-页面读',           'API', '/platform/audit',            'READ',  0, 1, 0),
   ('platform_a2_write',                  'A2 审计&操作确认-页面常规写',       'API', '/platform/audit',            'WRITE', 0, 1, 0),
+  ('platform_a2_proposal_create',        'A2 按业务权限创建待确认操作',       'API', '/platform/audit',            'WRITE', 0, 1, 0),
   ('platform_a2_operation_approve',      'A2 执行/放行(高敏工单)',            'API', '/platform/audit',            'HIGH',  1, 1, 0),
 
   -- ===== A3 系统配置 /platform/config (2) =====
@@ -70,5 +70,5 @@ ON DUPLICATE KEY UPDATE
   amplifies = VALUES(amplifies),
   status = 1, is_deleted = 0;
 
--- 统计：READ 13 · WRITE 7 · HIGH 12 = 32 权限点
+-- 统计：READ 13 · WRITE 8 · HIGH 11 = 32 权限点
 -- amplifies=1 计 3 个：platform_a2_operation_approve / overview_b1_redline_write / overview_b1_runrisk_write

@@ -1,5 +1,6 @@
 -- K6 Janus C2 authoritative business tables.
 -- No demo rows are inserted: devices/evaluations are written by the Janus reporting pipeline.
+SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS nx_janus_device (
   sid VARCHAR(96) PRIMARY KEY,
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS nx_janus_evaluation (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   report_id VARCHAR(128) NOT NULL,
   sid VARCHAR(96) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
   session_id VARCHAR(128) DEFAULT NULL,
   strategy_id VARCHAR(96) DEFAULT NULL,
   strategy_version INT DEFAULT NULL,
@@ -116,6 +118,15 @@ CREATE TABLE IF NOT EXISTS nx_janus_evaluation (
   KEY idx_janus_evaluation_strategy (strategy_id, strategy_version, evaluated_at),
   KEY idx_janus_evaluation_time (evaluated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @janus_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_evaluation' AND COLUMN_NAME='request_hash')=0,
+  'ALTER TABLE nx_janus_evaluation ADD COLUMN request_hash CHAR(64) DEFAULT NULL AFTER sid', 'SELECT 1');
+PREPARE janus_stmt FROM @janus_sql; EXECUTE janus_stmt; DEALLOCATE PREPARE janus_stmt;
+UPDATE nx_janus_evaluation
+SET request_hash=SHA2(CONCAT(sid,':',report_id,':',CAST(input_snapshot_json AS CHAR)),256)
+WHERE request_hash IS NULL;
+ALTER TABLE nx_janus_evaluation MODIFY COLUMN request_hash CHAR(64) NOT NULL;
 
 CREATE TABLE IF NOT EXISTS nx_janus_daily_quota (
   strategy_id VARCHAR(96) NOT NULL,
@@ -273,6 +284,10 @@ VALUES
   ('risk_k6_read','Janus C2 控制台-读','API','/risk/janus-c2',
    @k6_menu_id,'READ',0,1,0),
   ('risk_k6_write','Janus C2 控制台-写','API','/risk/janus-c2',
+   @k6_menu_id,'HIGH',1,1,0),
+  ('risk_k6_senior','Janus C2 控制台-高级操作','API','/risk/janus-c2',
+   @k6_menu_id,'HIGH',1,1,0),
+  ('risk_k6_admin','Janus C2 控制台-发布与回滚','API','/risk/janus-c2',
    @k6_menu_id,'HIGH',1,1,0)
 ON DUPLICATE KEY UPDATE permission_name=VALUES(permission_name),resource_type=VALUES(resource_type),
   resource_path=VALUES(resource_path),menu_id=VALUES(menu_id),perm_type=VALUES(perm_type),
@@ -283,6 +298,20 @@ SELECT role.id,permission.id,NOW(),NOW(),0
 FROM nx_admin_role role JOIN nx_admin_permission permission
   ON permission.permission_code IN ('risk_k6_read','risk_k6_write') AND permission.is_deleted=0
 WHERE role.role_code IN ('SUPER_ADMIN','RISK') AND role.is_deleted=0
+ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();
+
+INSERT INTO nx_admin_role_permission(role_id,permission_id,created_at,updated_at,is_deleted)
+SELECT role.id,permission.id,NOW(),NOW(),0
+FROM nx_admin_role role JOIN nx_admin_permission permission
+  ON permission.permission_code='risk_k6_senior' AND permission.is_deleted=0
+WHERE role.role_code IN ('SUPER_ADMIN','RISK') AND role.is_deleted=0
+ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();
+
+INSERT INTO nx_admin_role_permission(role_id,permission_id,created_at,updated_at,is_deleted)
+SELECT role.id,permission.id,NOW(),NOW(),0
+FROM nx_admin_role role JOIN nx_admin_permission permission
+  ON permission.permission_code='risk_k6_admin' AND permission.is_deleted=0
+WHERE role.role_code='SUPER_ADMIN' AND role.is_deleted=0
 ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();
 
 INSERT INTO nx_admin_role_permission(role_id,permission_id,created_at,updated_at,is_deleted)

@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.AdminLoginRequest;
+import ffdd.opsconsole.auth.dto.AdminMfaVerifyRequest;
 import ffdd.opsconsole.auth.dto.AdminPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AdminLoginResponse;
 import ffdd.opsconsole.auth.infrastructure.AdminEntity;
@@ -18,9 +19,12 @@ import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -29,6 +33,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
+@Slf4j
 public class OpsAdminAuthService {
     private static final String SUBJECT_TYPE_ADMIN = "ADMIN";
     private static final String PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
@@ -46,40 +51,150 @@ public class OpsAdminAuthService {
     private final JwtTokenProvider tokenProvider;
     private final AdminPermissionCache permissionCache;
     private final AdminSessionRegistry adminSessionRegistry;
+    private final AdminTotpService totpService;
+    private final AdminMfaCipher mfaCipher;
+    private final AdminMfaChallengeRegistry mfaChallenges;
+    private final AdminMfaProperties mfaProperties;
+    private final AdminLoginGuard loginGuard;
 
     public ApiResult<AdminLoginResponse> login(AdminLoginRequest request) {
+        return login(request, "unknown", "unknown");
+    }
+
+    public ApiResult<AdminLoginResponse> login(
+            AdminLoginRequest request, String ipAddress, String userAgent) {
         if (request == null
                 || !StringUtils.hasText(request.username())
                 || !StringUtils.hasText(request.password())) {
             return invalidCredential();
         }
-        AdminEntity admin = findByUsername(request.username());
+        String normalizedUsername = request.username().trim().toLowerCase(Locale.ROOT);
+        if (loginLocked(normalizedUsername)) {
+            return invalidCredential();
+        }
+        AdminEntity admin = findByUsername(normalizedUsername);
         if (admin == null || !activeRecord(admin)) {
+            recordLoginFailure(normalizedUsername);
             return invalidCredential();
         }
         if (!passwordEncoder.matches(request.password(), admin.getPasswordHash())) {
+            recordLoginFailure(normalizedUsername);
             return invalidCredential();
         }
         if (!enabled(admin)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_DISABLED");
         }
 
-        // A fresh login is an explicit authorization refresh boundary. This also
-        // closes the cache gap after SQL migrations or out-of-band RBAC changes.
-        permissionCache.evict(admin.getId());
-        boolean mustChangePassword = passwordChangeRequired(admin.getId());
-        List<String> authorities = mustChangePassword ? List.of() : effectiveAuthorities(admin);
-        String sessionId;
-        try {
-            sessionId = adminSessionRegistry.createSession(admin.getId(), admin.getUsername());
-        } catch (RuntimeException ex) {
-            return ApiResult.fail(503, "ADMIN_SESSION_STORE_UNAVAILABLE");
+        if (mfaProperties.isTemporarySuperadminBypassEnabled()
+                && superAdmin(admin)
+                && "superadmin".equals(normalizedUsername)) {
+            log.warn("Temporary super-admin MFA bypass used for adminId={}", admin.getId());
+            return issueAuthenticatedSession(
+                    admin,
+                    normalizedUsername,
+                    ipAddress,
+                    userAgent,
+                    "ADMIN_AUTH_UNAVAILABLE");
         }
-        String token = tokenProvider.createToken(admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), List.of(), sessionId);
+
+        AdminAccountStateEntity state = accountStateMapper.selectActiveByAdminId(admin.getId());
+        boolean enrollment = state == null
+                || !StringUtils.hasText(state.getTfaSecretEncrypted())
+                || state.getTfaBoundAt() == null;
+        String secret;
+        String encryptedSecret;
+        String challengeId;
+        try {
+            secret = enrollment ? totpService.generateSecret() : mfaCipher.decrypt(state.getTfaSecretEncrypted());
+            encryptedSecret = mfaCipher.encrypt(secret);
+            challengeId = mfaChallenges.create(
+                    admin.getId(), admin.getUsername(), encryptedSecret, enrollment);
+        } catch (RuntimeException ex) {
+            log.warn("Admin MFA challenge creation unavailable for adminId={}: {}",
+                    admin.getId(), ex.getClass().getSimpleName(), ex);
+            return ApiResult.fail(503, "ADMIN_MFA_UNAVAILABLE");
+        }
         return ApiResult.ok(new AdminLoginResponse(
-                token,
-                "Bearer",
-                session(admin, authorities, mustChangePassword)));
+                null,
+                null,
+                null,
+                new AdminLoginResponse.MfaChallenge(
+                        challengeId,
+                        enrollment ? "ENROLL" : "VERIFY",
+                        Math.max(60, mfaProperties.getChallengeTtlSeconds()),
+                        enrollment ? totpService.provisioningUri(mfaProperties.getIssuer(), admin.getUsername(), secret) : null,
+                        enrollment ? secret : null)));
+    }
+
+    @Transactional
+    public ApiResult<AdminLoginResponse> verifyMfa(AdminMfaVerifyRequest request) {
+        return verifyMfa(request, "unknown", "unknown");
+    }
+
+    @Transactional
+    public ApiResult<AdminLoginResponse> verifyMfa(
+            AdminMfaVerifyRequest request, String ipAddress, String userAgent) {
+        if (request == null || !StringUtils.hasText(request.challengeId()) || !StringUtils.hasText(request.code())) {
+            return ApiResult.fail(422, "ADMIN_MFA_CODE_REQUIRED");
+        }
+        AdminMfaChallengeRegistry.Challenge challenge;
+        try {
+            challenge = mfaChallenges.read(request.challengeId());
+        } catch (RuntimeException ex) {
+            return ApiResult.fail(503, "ADMIN_MFA_UNAVAILABLE");
+        }
+        if (challenge == null || loginLocked(challenge.username())) {
+            return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), "ADMIN_MFA_CHALLENGE_INVALID");
+        }
+        String secret;
+        try {
+            secret = mfaCipher.decrypt(challenge.encryptedSecret());
+        } catch (RuntimeException ex) {
+            return ApiResult.fail(503, "ADMIN_MFA_UNAVAILABLE");
+        }
+        Long totpCounter = totpService.matchingCounter(secret, request.code().trim());
+        if (totpCounter == null) {
+            try {
+                recordLoginFailure(challenge.username());
+                mfaChallenges.recordFailure(request.challengeId());
+            } catch (RuntimeException ex) {
+                return ApiResult.fail(503, "ADMIN_MFA_UNAVAILABLE");
+            }
+            return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), "ADMIN_MFA_CODE_INVALID");
+        }
+        try {
+            challenge = mfaChallenges.consume(request.challengeId());
+            if (challenge == null) {
+                return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), "ADMIN_MFA_CHALLENGE_INVALID");
+            }
+            if (!mfaChallenges.claimTotpCounter(challenge.adminId(), totpCounter)) {
+                return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), "ADMIN_MFA_CODE_REPLAYED");
+            }
+        } catch (RuntimeException ex) {
+            return ApiResult.fail(503, "ADMIN_MFA_UNAVAILABLE");
+        }
+        AdminEntity admin = adminMapper.selectById(challenge.adminId());
+        if (admin == null || !activeRecord(admin) || !enabled(admin)) {
+            return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), "ADMIN_MFA_CHALLENGE_INVALID");
+        }
+        if (challenge.enrollment()) {
+            accountStateMapper.upsertMfaBinding(admin.getId(), challenge.encryptedSecret(), LocalDateTime.now());
+        }
+        return issueAuthenticatedSession(
+                admin,
+                challenge.username(),
+                ipAddress,
+                userAgent,
+                "ADMIN_MFA_UNAVAILABLE");
+    }
+
+    public ApiResult<Void> logout(Authentication authentication) {
+        Long adminId = authentication == null ? null : parseAdminId(authentication.getPrincipal());
+        String sessionId = sessionId(authentication);
+        if (adminId != null && StringUtils.hasText(sessionId)) {
+            adminSessionRegistry.revokeSession(adminId, sessionId);
+        }
+        return ApiResult.ok(null);
     }
 
     public ApiResult<AdminLoginResponse.AdminSession> current(Authentication authentication) {
@@ -104,8 +219,16 @@ public class OpsAdminAuthService {
         return ApiResult.ok(session(admin, authorities));
     }
 
-    @Transactional
     public ApiResult<AdminLoginResponse> changePassword(Authentication authentication, AdminPasswordChangeRequest request) {
+        return changePassword(authentication, request, "unknown", "unknown");
+    }
+
+    @Transactional
+    public ApiResult<AdminLoginResponse> changePassword(
+            Authentication authentication,
+            AdminPasswordChangeRequest request,
+            String ipAddress,
+            String userAgent) {
         if (authentication == null || !authentication.isAuthenticated()) {
             return ApiResult.fail(OpsErrorCode.UNAUTHORIZED.httpStatus(), OpsErrorCode.UNAUTHORIZED.name());
         }
@@ -139,7 +262,7 @@ public class OpsAdminAuthService {
         List<String> authorities = effectiveAuthorities(admin);
         String sessionId;
         try {
-            sessionId = adminSessionRegistry.createSession(admin.getId(), admin.getUsername());
+            sessionId = adminSessionRegistry.createSession(admin.getId(), admin.getUsername(), ipAddress, userAgent);
         } catch (RuntimeException ex) {
             return ApiResult.fail(503, "ADMIN_SESSION_STORE_UNAVAILABLE");
         }
@@ -218,7 +341,7 @@ public class OpsAdminAuthService {
         }
         String roleCode = roleRelationMapper.activeRoleCode(admin.getId());
         if (!StringUtils.hasText(roleCode)) {
-            return "AUDITOR";
+            return "UNASSIGNED";
         }
         return roleCode.trim().toUpperCase(Locale.ROOT);
     }
@@ -266,7 +389,64 @@ public class OpsAdminAuthService {
 
     private boolean strongAdminPassword(String password) {
         String normalized = StringUtils.hasText(password) ? password.trim() : "";
-        return normalized.length() >= 8;
+        return normalized.length() >= 16
+                && Pattern.compile("[a-z]").matcher(normalized).find()
+                && Pattern.compile("[A-Z]").matcher(normalized).find()
+                && Pattern.compile("\\d").matcher(normalized).find()
+                && Pattern.compile("[^A-Za-z0-9]").matcher(normalized).find();
+    }
+
+    private ApiResult<AdminLoginResponse> issueAuthenticatedSession(
+            AdminEntity admin,
+            String normalizedUsername,
+            String ipAddress,
+            String userAgent,
+            String successRecordingFailureCode) {
+        permissionCache.evict(admin.getId());
+        boolean mustChangePassword = passwordChangeRequired(admin.getId());
+        List<String> authorities = mustChangePassword ? List.of() : effectiveAuthorities(admin);
+        String sessionId;
+        try {
+            sessionId = adminSessionRegistry.createSession(admin.getId(), admin.getUsername(), ipAddress, userAgent);
+        } catch (RuntimeException ex) {
+            return ApiResult.fail(503, "ADMIN_SESSION_STORE_UNAVAILABLE");
+        }
+        try {
+            loginGuard.recordSuccess(normalizedUsername);
+        } catch (RuntimeException ex) {
+            adminSessionRegistry.revokeSession(admin.getId(), sessionId);
+            return ApiResult.fail(503, successRecordingFailureCode);
+        }
+        String token = tokenProvider.createToken(
+                admin.getId(), SUBJECT_TYPE_ADMIN, admin.getUsername(), List.of(), sessionId);
+        return ApiResult.ok(new AdminLoginResponse(
+                token,
+                "Bearer",
+                session(admin, authorities, mustChangePassword)));
+    }
+
+    private boolean loginLocked(String username) {
+        try {
+            return loginGuard.locked(username);
+        } catch (RuntimeException ex) {
+            return true;
+        }
+    }
+
+    private void recordLoginFailure(String username) {
+        try {
+            loginGuard.recordFailure(username);
+        } catch (RuntimeException ignored) {
+            // Authentication fails closed even when the Redis-backed counter is unavailable.
+        }
+    }
+
+    private String sessionId(Authentication authentication) {
+        if (authentication == null || !(authentication.getDetails() instanceof Map<?, ?> details)) {
+            return null;
+        }
+        Object value = details.get("sessionId");
+        return value == null ? null : String.valueOf(value);
     }
 
     private Long parseAdminId(Object principal) {
