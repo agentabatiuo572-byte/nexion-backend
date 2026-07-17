@@ -3628,6 +3628,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
 
     private static final class J4RollbackRejectedException extends RuntimeException {
         private final ApiResult<Map<String, Object>> rejection;
+        @SuppressWarnings("ArchitectureConfigField")
         private final boolean claimConflict;
 
         private J4RollbackRejectedException(
