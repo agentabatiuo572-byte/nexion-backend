@@ -15,6 +15,8 @@ import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 class OpsI18nLearningControllerTest {
     private final OpsI18nLearningService service = mock(OpsI18nLearningService.class);
@@ -31,7 +33,9 @@ class OpsI18nLearningControllerTest {
         when(service.publishLocalizedMessage("milestones.earnCross", "idem-i6-pub", copy)).thenReturn(ApiResult.ok(null));
         when(service.fixIntegrity("missing-zh", "idem-i6-fix", fix)).thenReturn(ApiResult.ok(null));
 
-        assertThat(controller.overview().getCode()).isZero();
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.getAuthorities()).thenAnswer(ignored -> java.util.List.of(new SimpleGrantedAuthority("content_i6_read")));
+        assertThat(controller.overview(authentication).getCode()).isZero();
         assertThat(controller.rescan("idem-i6-scan", action).getCode()).isZero();
         assertThat(controller.saveLocalizedDraft("milestones.earnCross", "idem-i6-draft", copy).getCode()).isZero();
         assertThat(controller.publishLocalizedMessage("milestones.earnCross", "idem-i6-pub", copy).getCode()).isZero();

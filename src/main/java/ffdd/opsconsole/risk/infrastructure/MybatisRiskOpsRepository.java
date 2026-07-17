@@ -61,9 +61,6 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             "multiAccount", true, "arbitrage", true, "kycStatus", true,
             "withdrawVelocity", true, "accountAge", true, "anomalyBehavior", true);
     private static final List<RiskArbitrageParamView> RHYTHM_ARBITRAGE_PARAMS = List.of(
-            new RiskArbitrageParamView("rewardRisk.lockMode", "新人礼发放模式", "risk_bucket", "配置持久化；待发奖服务消费", "当前不改变实际入账"),
-            new RiskArbitrageParamView("rewardRisk.usdtAmount", "新人礼 USDT 金额", "5", "配置持久化；待发奖服务消费", "当前不改变实际入账"),
-            new RiskArbitrageParamView("rewardRisk.nexAmount", "新人礼 NEX 金额", "20", "配置持久化；待发奖服务消费", "当前不改变实际入账"),
             new RiskArbitrageParamView("otpGate.resendSeconds", "验证码重发冷却", "60", "同一手机号两次发送的最小间隔", "单位:秒"),
             new RiskArbitrageParamView("otpGate.captchaAfterSends", "滑块验证触发次数", "2", "24h 发送达到阈值后要求滑块", "单位:次/24h"),
             new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "验证码签发后的有效时长", "单位:秒"),
@@ -421,7 +418,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     public List<RiskArbitrageParamView> arbitrageParams() {
         Map<String, RiskArbitrageParamView> merged = new LinkedHashMap<>();
         RHYTHM_ARBITRAGE_PARAMS.forEach(row -> merged.put(row.key(), row));
-        mapper.arbitrageParams().forEach(row -> merged.put(row.key(), row));
+        mapper.arbitrageParams().stream()
+                .filter(row -> !row.key().startsWith("rewardRisk."))
+                .forEach(row -> merged.put(row.key(), row));
         return new ArrayList<>(merged.values());
     }
 

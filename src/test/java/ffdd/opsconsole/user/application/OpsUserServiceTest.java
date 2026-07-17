@@ -769,8 +769,10 @@ class OpsUserServiceTest {
                 .contains("otpTtl", "otpCooldown", "otpMax24h", "lockShort", "lockLong");
         assertThat(result.getData().params()).filteredOn(param -> "otpMax24h".equals(param.key()))
                 .singleElement()
-                .extracting(UserRegistrationRiskParamView::value)
-                .isEqualTo("4 次");
+                .satisfies(param -> {
+                    assertThat(param.value()).isEqualTo("4 次");
+                    assertThat(param.readOnly()).isTrue();
+                });
         assertThat(configFacade.values).containsEntry("auth.risk.otp_max_24h", "4");
         assertThat(result.getData().k1RejectCode()).isEqualTo("MULTI_ACCOUNT_PARAM_BELONGS_TO_K1");
         assertThat(result.getData().sources()).contains("nx_config_item:auth.risk.*");
@@ -803,6 +805,18 @@ class OpsUserServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("C6_REGISTRATION_RISK_PARAM_UPDATED");
+    }
+
+    @Test
+    void registrationRiskRejectsOtpWritesBecauseK2IsCanonicalOwner() {
+        ApiResult<UserRegistrationRiskParamView> result = service.updateRegistrationRiskParam(
+                "otpCooldown",
+                "idem-c6-otp",
+                new UserRegistrationRiskParamUpdateRequest("90 秒", "wrong page should be rejected", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("OTP_CONFIG_BELONGS_TO_K2");
+        assertThat(configFacade.values).doesNotContainKey("auth.risk.otp_cooldown_seconds");
     }
 
     @Test

@@ -16,11 +16,21 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
     @Override
     public TreasuryCoverageSnapshot snapshot() {
         Map<String, Object> dualLedger = treasuryService.dualLedger().getData();
+        if (dualLedger == null) {
+            return new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false);
+        }
         Object snapshot = dualLedger.get("snapshot");
         if (!(snapshot instanceof Map<?, ?> values)) {
-            return new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO);
+            return new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false);
         }
-        return new TreasuryCoverageSnapshot(decimal(values.get("coverageRatio")), decimal(values.get("redlinePct")));
+        BigDecimal coverageRatio = decimal(values.get("coverageRatio"));
+        BigDecimal redlinePct = decimal(values.get("redlinePct"));
+        boolean reliable = coverageRatio != null && redlinePct != null
+                && Boolean.TRUE.equals(values.get("valuationReliable"));
+        return new TreasuryCoverageSnapshot(
+                coverageRatio == null ? BigDecimal.ZERO : coverageRatio,
+                redlinePct == null ? BigDecimal.ZERO : redlinePct,
+                reliable);
     }
 
     private BigDecimal decimal(Object value) {
@@ -28,12 +38,12 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
             return decimal;
         }
         if (value == null) {
-            return BigDecimal.ZERO;
+            return null;
         }
         try {
             return new BigDecimal(String.valueOf(value));
         } catch (NumberFormatException ex) {
-            return BigDecimal.ZERO;
+            return null;
         }
     }
 }

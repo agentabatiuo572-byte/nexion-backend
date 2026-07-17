@@ -41,10 +41,10 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('content_i6_read',  'i18n文案-读',        'API', '/content/i18n', 'READ',  0, 1, 0),
   ('content_i6_write', 'i18n文案-写(词条CRUD/多语种/完整性修复/重扫/marketing多版)', 'API', '/content/i18n', 'WRITE', 0, 1, 0),
 
-  -- I7 教程中心（3 点）
-  ('content_i7_read',                 '教程中心-读',                                   'API', '/content/learn', 'READ',  0, 1, 0),
-  ('content_i7_write',                '教程中心-写(课程发布/下架/新建/推荐课/章节CRUD)', 'API', '/content/learn', 'WRITE', 0, 1, 0),
-  ('content_i7_course_reward_adjust', '课程奖励调整(高敏·amplifies·B1兑付覆盖率红线)',  'API', '/content/learn', 'HIGH', 1, 1, 0),
+  -- I7 教程能力已并入 I6 页面（权限码保留，兼容既有角色授权）
+  ('content_i7_read',                 'I6合并页-教程能力读',                            'API', '/content/i18n', 'READ',  0, 1, 0),
+  ('content_i7_write',                'I6合并页-教程能力写(课程发布/下架/新建/推荐课/章节CRUD)', 'API', '/content/i18n', 'WRITE', 0, 1, 0),
+  ('content_i7_course_reward_adjust', 'I6合并页-课程奖励调整(高敏·amplifies·B1兑付覆盖率红线)', 'API', '/content/i18n', 'HIGH', 1, 1, 0),
 
   -- ===== J 域 · 紧急与合规控制（slug=emergency）4 页 16 点 =====
 

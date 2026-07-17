@@ -104,7 +104,7 @@ JOIN (SELECT 'G1' code,'Staking 池配置' name,'/finance-products/staking' path
       SELECT 'G7','复投激励','/finance-products/repurchase',5) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
--- H 域 (6 页，H6 里程碑已下线)
+-- H 域 (7 页，H6 里程碑已下线)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'H' d) x ON p.menu_code='H'
@@ -113,10 +113,11 @@ JOIN (SELECT 'H1' code,'Phase 调度器' name,'/growth/phase' path,1 sort UNION 
       SELECT 'H3','Quest 引擎','/growth/quest',3 UNION ALL
       SELECT 'H4','活动中心 CMS','/growth/events',4 UNION ALL
       SELECT 'H5','签到 & NEX','/growth/daily',5 UNION ALL
-      SELECT 'H7','代金券','/growth/vouchers',6) v
+      SELECT 'H7','代金券','/growth/vouchers',6 UNION ALL
+      SELECT 'H8','新人礼与邀请奖励','/growth/referral-rewards',7) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
--- I 域 (7 页)
+-- I 域 (6 页，教程中心并入 I6)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'I' d) x ON p.menu_code='I'
@@ -125,10 +126,22 @@ JOIN (SELECT 'I1' code,'转化文案 A/B' name,'/content/copy-ab' path,1 sort UN
       SELECT 'I3','通知 Campaign','/content/notifications',3 UNION ALL
       SELECT 'I4','信任中心 CMS','/content/trust',4 UNION ALL
       SELECT 'I5','风险披露版本','/content/disclosures',5 UNION ALL
-      SELECT 'I6','i18n 文案管理','/content/i18n',6 UNION ALL
-      SELECT 'I7','教程中心','/content/learn',7) v
+      SELECT 'I6','i18n 文案与教程','/content/i18n',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
+UPDATE nx_admin_menu SET status=0, is_deleted=1 WHERE menu_code='I7';
+
+-- I7 页面并入 I6：保留原课程权限码，并把既有自定义角色的 I7 菜单授权迁到 I6。
+INSERT INTO nx_admin_role_menu (role_id, menu_id, is_deleted)
+SELECT legacy.role_id, i6.id, 0
+  FROM nx_admin_role_menu legacy
+  JOIN nx_admin_menu i7 ON i7.id = legacy.menu_id AND i7.menu_code = 'I7'
+  JOIN nx_admin_menu i6 ON i6.menu_code = 'I6' AND i6.is_deleted = 0
+ WHERE legacy.is_deleted = 0
+ON DUPLICATE KEY UPDATE is_deleted = 0, updated_at = NOW();
+UPDATE nx_admin_role_menu legacy
+JOIN nx_admin_menu i7 ON i7.id = legacy.menu_id AND i7.menu_code = 'I7'
+SET legacy.is_deleted = 1, legacy.updated_at = NOW();
 -- J 域 (4)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
@@ -178,6 +191,9 @@ ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_pat
 -- 回填 permission.menu_id（按 resource_path 匹配页级菜单）
 UPDATE nx_admin_permission p JOIN nx_admin_menu m ON m.route_path = p.resource_path
 SET p.menu_id = m.id WHERE p.menu_id IS NULL;
+UPDATE nx_admin_permission p JOIN nx_admin_menu m ON m.menu_code = 'I6' AND m.is_deleted = 0
+SET p.menu_id = m.id
+WHERE p.permission_code IN ('content_i7_read','content_i7_write','content_i7_course_reward_adjust');
 
 -- ===== 3. role_menu 绑定（角色×菜单可见性）=====
 -- 规则（高保真域 roles + 业务）：superadmin/审计 全可见；各域主操作角色见该域；B/L 全角色；

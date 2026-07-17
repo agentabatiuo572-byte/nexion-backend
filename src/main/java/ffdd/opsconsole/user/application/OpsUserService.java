@@ -103,6 +103,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             "maxSignupPerIp24h",
             "maxAccountsPerDevice",
             "maxAccountsPerPaymentInstrument");
+    private static final Set<String> K2_OTP_PARAM_KEYS = Set.of("otpTtl", "otpCooldown", "otpMax24h");
     private static final List<CredentialParamDefinition> CREDENTIAL_PARAM_DEFINITIONS = List.of(
             new CredentialParamDefinition(
                     "accessTtl",
@@ -1040,6 +1041,9 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (K1_REGISTRATION_RISK_PARAM_KEYS.contains(normalizedKey)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), K1_REJECT_CODE);
         }
+        if (K2_OTP_PARAM_KEYS.contains(normalizedKey)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OTP_CONFIG_BELONGS_TO_K2");
+        }
         if ("captchaOff".equals(normalizedKey)) {
             return updateCaptchaOffWindow(idempotencyKey, request);
         }
@@ -1913,7 +1917,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 definition.composite() ? definition.unit() + "/" + definition.secondaryUnit() : definition.unit(),
                 definition.min(),
                 definition.max(),
-                false,
+                "otp".equals(definition.group()),
                 definition.note(),
                 definition.composite()
                         ? definition.configKey() + "," + definition.secondaryConfigKey()

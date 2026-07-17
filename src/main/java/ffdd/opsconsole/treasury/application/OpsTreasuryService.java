@@ -135,10 +135,11 @@ public class OpsTreasuryService {
         BigDecimal pendingWithdrawUsd = safe(ledgerRepository.sumPendingWithdraw());
         BigDecimal stakingPrincipalUsd = safe(ledgerRepository.sumActiveStakingPrincipalUsdt());
         BigDecimal stakingInterestUsd = safe(ledgerRepository.sumActiveStakingInterestUsdt());
-        BigDecimal nexLiabilityUsd = safe(ledgerRepository.sumNexAvailable())
+        BigDecimal nexLiabilityUnits = safe(ledgerRepository.sumNexAvailable())
                 .add(safe(ledgerRepository.sumActiveNexLocked()))
-                .add(safe(ledgerRepository.sumActiveNexReward()))
-                .multiply(nexUsdRate);
+                .add(safe(ledgerRepository.sumActiveNexReward()));
+        BigDecimal nexLiabilityUsd = nexLiabilityUnits.multiply(nexUsdRate);
+        boolean valuationReliable = nexLiabilityUnits.signum() == 0 || nexUsdRate.signum() > 0;
         BigDecimal commissionCoolingUsd = safe(ledgerRepository.sumPendingCommissionUsdt());
 
         List<Map<String, Object>> accounts = List.of(
@@ -175,6 +176,8 @@ public class OpsTreasuryService {
         response.put("snapshot", section(
                 "reserveUsd", money(reserveUsd),
                 "liabilitiesUsd", money(liabilitiesUsd),
+                "nexUsdRate", nexUsdRate,
+                "valuationReliable", valuationReliable,
                 "coverageRatio", pctScale(coverageRatio),
                 "redlinePct", pctScale(redlinePct),
                 "healthyPct", pctScale(healthyPct),

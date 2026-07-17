@@ -898,6 +898,12 @@ CREATE TABLE IF NOT EXISTS nx_wallet_bank_card (
   country_code VARCHAR(8) NULL,
   status VARCHAR(32) NOT NULL,
   is_default TINYINT NOT NULL DEFAULT 0,
+  psp_revoke_status VARCHAR(24) NULL,
+  unbound_reason VARCHAR(500) NULL,
+  unbound_by VARCHAR(96) NULL,
+  unbound_at DATETIME NULL,
+  last_rebind_notified_at DATETIME NULL,
+  version BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -1943,6 +1949,7 @@ CREATE TABLE IF NOT EXISTS nx_trial_claim (
   client_request_no VARCHAR(96) NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'CLAIMED',
   user_device_id BIGINT NULL,
+  payment_method_id BIGINT NULL,
   device_name VARCHAR(128) NOT NULL,
   duration_days INT NOT NULL DEFAULT 3,
   daily_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
@@ -1959,8 +1966,62 @@ CREATE TABLE IF NOT EXISTS nx_trial_claim (
   UNIQUE KEY uk_trial_claim_user_once (user_id),
   UNIQUE KEY uk_trial_claim_no (claim_no),
   KEY idx_trial_claim_user (user_id, status, created_at),
-  KEY idx_trial_claim_device (user_device_id)
+  KEY idx_trial_claim_device (user_device_id),
+  KEY idx_trial_claim_payment_method (payment_method_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_trial_claim' AND COLUMN_NAME = 'payment_method_id') = 0,
+  'ALTER TABLE nx_trial_claim ADD COLUMN payment_method_id BIGINT NULL AFTER user_device_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_trial_claim' AND INDEX_NAME = 'idx_trial_claim_payment_method') = 0,
+  'ALTER TABLE nx_trial_claim ADD INDEX idx_trial_claim_payment_method (payment_method_id, status)', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Existing active trials are conservatively attached to the default bound card.
+-- If older data has no explicit relation, only that default card is guarded.
+UPDATE nx_trial_claim trial
+LEFT JOIN nx_wallet_bank_card linked_card
+  ON linked_card.id = trial.payment_method_id
+ AND linked_card.user_id = trial.user_id
+ AND linked_card.status IN ('BOUND','ACTIVE')
+ AND linked_card.is_deleted = 0
+SET trial.payment_method_id = NULL, trial.updated_at = NOW()
+WHERE trial.payment_method_id IS NOT NULL AND linked_card.id IS NULL
+  AND trial.is_deleted = 0
+  AND UPPER(trial.status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED');
+
+UPDATE nx_trial_claim trial
+JOIN nx_wallet_bank_card card ON card.id = (
+  SELECT candidate.id FROM nx_wallet_bank_card candidate
+   WHERE candidate.user_id = trial.user_id
+     AND candidate.status IN ('BOUND','ACTIVE') AND candidate.is_deleted = 0
+   ORDER BY candidate.is_default DESC, candidate.created_at ASC, candidate.id ASC
+   LIMIT 1
+)
+SET trial.payment_method_id = card.id, trial.updated_at = NOW()
+WHERE trial.payment_method_id IS NULL AND trial.is_deleted = 0
+  AND UPPER(trial.status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED');
+
+-- Writers outside this module may create trial claims directly. Capture the exact
+-- card chosen at claim time in the database boundary instead of recomputing it later.
+DROP TRIGGER IF EXISTS trg_trial_claim_bind_payment_method;
+CREATE TRIGGER trg_trial_claim_bind_payment_method
+BEFORE INSERT ON nx_trial_claim
+FOR EACH ROW
+SET NEW.payment_method_id = COALESCE((
+  SELECT explicit_card.id FROM nx_wallet_bank_card explicit_card
+   WHERE explicit_card.id = NEW.payment_method_id
+     AND explicit_card.user_id = NEW.user_id
+     AND explicit_card.status IN ('BOUND','ACTIVE')
+     AND explicit_card.is_deleted = 0
+   LIMIT 1
+), (
+  SELECT card.id FROM nx_wallet_bank_card card
+   WHERE card.user_id = NEW.user_id
+     AND card.status IN ('BOUND','ACTIVE') AND card.is_deleted = 0
+   ORDER BY card.is_default DESC, card.created_at ASC, card.id ASC
+   LIMIT 1
+));
 
 CREATE TABLE IF NOT EXISTS nx_growth_trial_policy (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -4285,6 +4346,91 @@ CREATE TABLE IF NOT EXISTS nx_emergency_tamper_event (
   KEY idx_tamper_event_user_time (user_id, user_no, occurred_at),
   KEY idx_tamper_event_cluster (cluster_code, occurred_at),
   UNIQUE KEY uk_emergency_tamper_event_no (event_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_bank_card' AND COLUMN_NAME = 'psp_revoke_status') = 0,
+  'ALTER TABLE nx_wallet_bank_card ADD COLUMN psp_revoke_status VARCHAR(24) NULL AFTER is_default', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_bank_card' AND COLUMN_NAME = 'unbound_reason') = 0,
+  'ALTER TABLE nx_wallet_bank_card ADD COLUMN unbound_reason VARCHAR(500) NULL AFTER psp_revoke_status', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_bank_card' AND COLUMN_NAME = 'unbound_by') = 0,
+  'ALTER TABLE nx_wallet_bank_card ADD COLUMN unbound_by VARCHAR(96) NULL AFTER unbound_reason', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_bank_card' AND COLUMN_NAME = 'unbound_at') = 0,
+  'ALTER TABLE nx_wallet_bank_card ADD COLUMN unbound_at DATETIME NULL AFTER unbound_by', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_bank_card' AND COLUMN_NAME = 'last_rebind_notified_at') = 0,
+  'ALTER TABLE nx_wallet_bank_card ADD COLUMN last_rebind_notified_at DATETIME NULL AFTER unbound_at', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_bank_card' AND COLUMN_NAME = 'version') = 0,
+  'ALTER TABLE nx_wallet_bank_card ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER last_rebind_notified_at', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- H8 settlement is sourced from nx_user.sponsor_user_id and is idempotent per invited user.
+CREATE TABLE IF NOT EXISTS nx_referral_reward_settlement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  settlement_no VARCHAR(96) NOT NULL,
+  invited_user_id BIGINT NOT NULL,
+  inviter_user_id BIGINT NOT NULL,
+  newcomer_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  newcomer_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  inviter_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  lock_mode VARCHAR(24) NOT NULL DEFAULT 'risk_bucket',
+  config_snapshot VARCHAR(500) NOT NULL DEFAULT '',
+  operator VARCHAR(96) NOT NULL DEFAULT 'system',
+  reason VARCHAR(500) NOT NULL DEFAULT 'legacy settlement',
+  idempotency_key VARCHAR(160) NOT NULL DEFAULT '',
+  status VARCHAR(24) NOT NULL DEFAULT 'SETTLED',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_referral_reward_invited (invited_user_id),
+  UNIQUE KEY uk_referral_reward_no (settlement_no),
+  KEY idx_referral_reward_inviter (inviter_user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_referral_reward_settlement' AND COLUMN_NAME = 'lock_mode') = 0,
+  'ALTER TABLE nx_referral_reward_settlement ADD COLUMN lock_mode VARCHAR(24) NOT NULL DEFAULT ''risk_bucket'' AFTER inviter_nex', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_referral_reward_settlement' AND COLUMN_NAME = 'config_snapshot') = 0,
+  'ALTER TABLE nx_referral_reward_settlement ADD COLUMN config_snapshot VARCHAR(500) NOT NULL DEFAULT '''' AFTER lock_mode', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_referral_reward_settlement' AND COLUMN_NAME = 'operator') = 0,
+  'ALTER TABLE nx_referral_reward_settlement ADD COLUMN operator VARCHAR(96) NOT NULL DEFAULT ''system'' AFTER config_snapshot', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_referral_reward_settlement' AND COLUMN_NAME = 'reason') = 0,
+  'ALTER TABLE nx_referral_reward_settlement ADD COLUMN reason VARCHAR(500) NOT NULL DEFAULT ''legacy settlement'' AFTER operator', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_referral_reward_settlement' AND COLUMN_NAME = 'idempotency_key') = 0,
+  'ALTER TABLE nx_referral_reward_settlement ADD COLUMN idempotency_key VARCHAR(160) NOT NULL DEFAULT '''' AFTER reason', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- G4 local simulations are admin-only and are excluded from real wallets, ledgers and market statistics.
+CREATE TABLE IF NOT EXISTS nx_admin_operation_mutex (
+  lock_key VARCHAR(64) PRIMARY KEY,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES ('G4_CONFIG'), ('H8_REWARD');
+
+CREATE TABLE IF NOT EXISTS nx_genesis_admin_simulation (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  simulation_no VARCHAR(96) NOT NULL,
+  side VARCHAR(8) NOT NULL,
+  quantity DECIMAL(18,6) NOT NULL,
+  unit_price DECIMAL(18,6) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  operator VARCHAR(96) NOT NULL,
+  record_type VARCHAR(24) NOT NULL DEFAULT 'SIMULATED',
+  status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_genesis_admin_simulation_no (simulation_no),
+  KEY idx_genesis_admin_simulation_time (created_at, status),
+  CONSTRAINT chk_genesis_admin_simulation_side CHECK (side IN ('BUY','SELL')),
+  CONSTRAINT chk_genesis_admin_simulation_positive CHECK (quantity > 0 AND unit_price > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_user_otp_challenge (

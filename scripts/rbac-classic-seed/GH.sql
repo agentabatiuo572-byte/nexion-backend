@@ -1,5 +1,5 @@
--- 域 G+H · 金融+增长 · 48 权限点
--- 收敛自 docs/superpowers/specs/rbac-classic/GH.md（11 READ + 11 WRITE + 26 HIGH）
+-- 域 G+H · 金融+增长 · 54 权限点
+-- 收敛自 docs/superpowers/specs/rbac-classic/GH.md（12 READ + 12 WRITE + 30 HIGH）
 -- 幂等 INSERT：重复执行只更新不报错。不含 role_permission（后续统一处理）。
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
@@ -78,7 +78,12 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
 
   -- H7 代金券 /growth/vouchers（2 点）
   ('growth_h7_read',                 'H7 代金券页面读',              'API', '/growth/vouchers',              'READ',  0, 1, 0),
-  ('growth_h7_write',               'H7 代金券常规写(新增/编辑/投放暂停/删除)', 'API', '/growth/vouchers',              'WRITE', 0, 1, 0)
+  ('growth_h7_write',               'H7 代金券常规写(新增/编辑/投放暂停/删除)', 'API', '/growth/vouchers',              'WRITE', 0, 1, 0),
+
+  -- H8 新人礼与邀请人奖励 /growth/referral-rewards（3 点）
+  ('growth_h8_read',                 'H8 邀请奖励页面读',            'API', '/growth/referral-rewards',       'READ',  0, 1, 0),
+  ('growth_h8_write',                'H8 邀请奖励参数写',            'API', '/growth/referral-rewards',       'WRITE', 0, 1, 0),
+  ('growth_h8_settle',               'H8 真实钱包与资金台账发奖',    'API', '/growth/referral-rewards',       'HIGH',  1, 1, 0)
 
 ON DUPLICATE KEY UPDATE
   permission_name = VALUES(permission_name),

@@ -46,7 +46,12 @@ WHERE r.role_code IN ('FINANCE','GROWTH') AND p.status=1 AND p.is_deleted=0;
 -- H 域(growth_)：增长
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'growth_%'
-WHERE r.role_code='GROWTH' AND p.status=1 AND p.is_deleted=0;
+WHERE r.role_code='GROWTH' AND p.permission_code <> 'growth_h8_settle'
+  AND p.status=1 AND p.is_deleted=0;
+DELETE rp FROM nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='GROWTH'
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+WHERE p.permission_code='growth_h8_settle';
 -- I 域(content_)：内容
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'content_%'

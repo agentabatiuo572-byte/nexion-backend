@@ -157,6 +157,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             "otpGate.otpTtlSeconds", "auth.risk.otp_ttl_minutes",
             "otpGate.maxVerifyAttempts", "auth.risk.otp_max_verify_attempts",
             "otpGate.captchaTicketTtlSeconds", "auth.risk.captcha_ticket_ttl_seconds");
+    private static final Set<String> RETIRED_K2_PARAM_KEYS = Set.of(
+            "rewardRisk.lockMode", "rewardRisk.usdtAmount", "rewardRisk.nexAmount");
     private static final Map<String, K2ActionSpec> K2_ACTIONS = Map.of(
             "mark", new K2ActionSpec("flag", "已标记套利", "K2_ARBITRAGE_MARKED", "risk_k2_row_flag"),
             "block-gift", new K2ActionSpec("blockgift", "新人礼已拦截", "K2_WELCOME_GIFT_BLOCKED", "risk_k2_row_blockgift"),
@@ -905,6 +907,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         Map<String, Object> response = new LinkedHashMap<>();
         List<RiskArbitrageParamView> params = riskRepository.arbitrageParams().stream()
                 .filter(param -> !"minHoldingMonths".equals(param.key()))
+                .filter(param -> !RETIRED_K2_PARAM_KEYS.contains(param.key()))
                 .map(this::withCanonicalOtpValue)
                 .toList();
         response.put("stats", riskRepository.arbitrageStats());
@@ -2219,9 +2222,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             case "trialCycleThreshold" -> normalizeTrialCycleThreshold(value);
             case "welcomeGiftAnomalyThreshold" -> normalizeWelcomeGiftThreshold(value);
             case "leaderboardVelocityMultiplier" -> normalizeLeaderboardThreshold(value);
-            case "rewardRisk.lockMode" -> Set.of("risk_bucket", "direct").contains(value) ? value : "";
-            case "rewardRisk.usdtAmount" -> normalizeBoundedInteger(value, 0, 10_000);
-            case "rewardRisk.nexAmount" -> normalizeBoundedInteger(value, 0, 1_000_000);
             case "otpGate.resendSeconds" -> normalizeBoundedInteger(value, 30, 300);
             case "otpGate.captchaAfterSends" -> normalizeBoundedInteger(value, 1, 10);
             case "otpGate.otpTtlSeconds" -> normalizeOtpTtlSeconds(value);
