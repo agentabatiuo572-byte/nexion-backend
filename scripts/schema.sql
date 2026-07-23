@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS nx_user (
   user_level VARCHAR(16) NOT NULL DEFAULT 'L1',
   v_rank VARCHAR(16) NOT NULL DEFAULT 'V0',
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  c2_freeze_source VARCHAR(64) NULL,
+  c2_freeze_source_ref VARCHAR(128) NULL,
+  c2_freeze_reason VARCHAR(500) NULL,
+  c2_freeze_operator VARCHAR(128) NULL,
+  c2_frozen_at DATETIME NULL,
   language VARCHAR(16) NOT NULL DEFAULT 'en-US',
   region VARCHAR(32) NULL,
   bio VARCHAR(512) NULL,
@@ -186,11 +191,13 @@ CREATE TABLE IF NOT EXISTS nx_janus_command (
 
 CREATE TABLE IF NOT EXISTS nx_user_login_guard (
   login_key CHAR(64) PRIMARY KEY,
+  user_id BIGINT NULL,
   failed_count INT NOT NULL DEFAULT 0,
   window_started_at DATETIME(3) NOT NULL,
   locked_until DATETIME(3) DEFAULT NULL,
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY idx_user_login_guard_lock (locked_until),
+  KEY idx_user_login_guard_user (user_id),
   KEY idx_user_login_guard_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -435,6 +442,8 @@ CREATE TABLE IF NOT EXISTS nx_user_security (
   user_id BIGINT NOT NULL,
   two_factor_enabled TINYINT NOT NULL DEFAULT 0,
   login_fail_count INT NOT NULL DEFAULT 0,
+  password_reset_required TINYINT NOT NULL DEFAULT 0,
+  password_changed_at DATETIME NULL,
   last_login_at DATETIME NULL,
   last_login_ip VARCHAR(64) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -447,15 +456,20 @@ CREATE TABLE IF NOT EXISTS nx_user_session (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
   refresh_token_id VARCHAR(96) NOT NULL,
+  session_chain_id VARCHAR(64) NULL,
+  rotated_to_id VARCHAR(96) NULL,
+  rotation_redeemed_at DATETIME NULL,
   device_name VARCHAR(128) NULL,
   client_ip VARCHAR(64) NULL,
   expires_at DATETIME NOT NULL,
   revoked_at DATETIME NULL,
+  last_active_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_session_token (refresh_token_id),
   KEY idx_user_session_user (user_id, expires_at)
+  ,KEY idx_user_session_chain (session_chain_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_user_impersonation_session (
@@ -743,6 +757,7 @@ CREATE TABLE IF NOT EXISTS nx_user_wallet (
   nex_available DECIMAL(18,6) NOT NULL DEFAULT 0,
   pending_withdraw DECIMAL(18,6) NOT NULL DEFAULT 0,
   lifetime_earned DECIMAL(18,6) NOT NULL DEFAULT 0,
+  cumulative_deposit_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   version BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -753,6 +768,7 @@ CREATE TABLE IF NOT EXISTS nx_user_wallet (
     AND nex_available >= 0
     AND pending_withdraw >= 0
     AND lifetime_earned >= 0
+    AND cumulative_deposit_usdt >= 0
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -787,7 +803,12 @@ CREATE TABLE IF NOT EXISTS nx_wallet_ledger (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_wallet_ledger_biz (biz_no, asset, direction),
   KEY idx_wallet_ledger_user_time (user_id, created_at),
-  CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0)
+  CONSTRAINT chk_wallet_ledger_positive_amount CHECK (
+    amount > 0 OR (
+      amount = 0 AND biz_type = 'TRADE_IN_PURCHASE'
+      AND asset = 'USDT' AND direction = 'OUT' AND status = 'SUCCESS'
+    )
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_learning_progress (
@@ -861,8 +882,12 @@ CREATE TABLE IF NOT EXISTS nx_wallet_asset_adjustment (
   asset VARCHAR(16) NOT NULL,
   direction VARCHAR(16) NOT NULL,
   amount DECIMAL(18,6) NOT NULL,
+  amount_usd DECIMAL(24,8) NOT NULL,
   reason_code VARCHAR(64) NOT NULL,
   reason VARCHAR(255) NOT NULL,
+  evidence_ref VARCHAR(255) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  reversal_of VARCHAR(64) NULL,
   maker VARCHAR(64) NOT NULL,
   checker VARCHAR(64) NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
@@ -873,6 +898,8 @@ CREATE TABLE IF NOT EXISTS nx_wallet_asset_adjustment (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_wallet_asset_adjustment_no (adjustment_no),
+  UNIQUE KEY uk_wallet_asset_adjustment_idempotency (idempotency_key),
+  UNIQUE KEY uk_wallet_asset_adjustment_reversal (reversal_of),
   KEY idx_wallet_asset_adjustment_user_time (user_id, created_at),
   KEY idx_wallet_asset_adjustment_status_time (status, created_at),
   CONSTRAINT chk_wallet_asset_adjustment_amount CHECK (amount > 0)
@@ -883,8 +910,16 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
+                WHERE CONSTRAINT_SCHEMA = DATABASE()
+                  AND CONSTRAINT_NAME = 'chk_wallet_ledger_positive_amount'
+                  AND LOCATE('TRADE_IN_PURCHASE', UPPER(CHECK_CLAUSE)) = 0) > 0,
+  'ALTER TABLE nx_wallet_ledger DROP CHECK chk_wallet_ledger_positive_amount',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_wallet_ledger_positive_amount') = 0,
-  'ALTER TABLE nx_wallet_ledger ADD CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0)',
+  'ALTER TABLE nx_wallet_ledger ADD CONSTRAINT chk_wallet_ledger_positive_amount CHECK (amount > 0 OR (amount = 0 AND biz_type = ''TRADE_IN_PURCHASE'' AND asset = ''USDT'' AND direction = ''OUT'' AND status = ''SUCCESS''))',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -1023,7 +1058,9 @@ CREATE TABLE IF NOT EXISTS nx_deposit_order (
 CREATE TABLE IF NOT EXISTS nx_deposit_reconciliation_writeoff (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   channel_code VARCHAR(64) NOT NULL,
-  reconcile_date DATE NOT NULL,
+              reconcile_date DATE NOT NULL,
+  method VARCHAR(32) NOT NULL DEFAULT 'CONFIRM_EXCEPTION',
+  evidence_ref VARCHAR(128) NOT NULL DEFAULT 'LEGACY',
   operator VARCHAR(64) NOT NULL,
   reason VARCHAR(255) NOT NULL,
   idempotency_key VARCHAR(128) NOT NULL,
@@ -1067,6 +1104,8 @@ CREATE TABLE IF NOT EXISTS nx_withdrawal_order (
   completed_at DATETIME NULL,
   failed_at DATETIME NULL,
   failure_reason VARCHAR(255) NULL,
+  c2_previous_status VARCHAR(32) NULL,
+  c2_frozen_by_user_status TINYINT NOT NULL DEFAULT 0,
   chain_broadcast_attempts INT NOT NULL DEFAULT 0,
   next_broadcast_at DATETIME NULL,
   last_broadcast_error VARCHAR(512) NULL,
@@ -1386,6 +1425,12 @@ CREATE TABLE IF NOT EXISTS nx_payment_record (
   expires_at DATETIME NULL,
   callback_event_id VARCHAR(128) NULL,
   signature_status VARCHAR(32) NULL,
+  card_bin VARCHAR(16) NULL,
+  client_ip VARCHAR(64) NULL,
+  device_fingerprint VARCHAR(128) NULL,
+  fee_amount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  fee_rate_pct DECIMAL(9,6) NOT NULL DEFAULT 0,
+  wallet_ledger_id BIGINT NULL,
   raw_callback TEXT NULL,
   paid_at DATETIME NULL,
   failed_at DATETIME NULL,
@@ -1404,6 +1449,7 @@ CREATE TABLE IF NOT EXISTS nx_payment_record (
   KEY idx_payment_user_status (user_id, payment_status, created_at),
   KEY idx_payment_status_time (payment_status, created_at),
   KEY idx_payment_reconcile_due (payment_status, next_reconcile_at, created_at),
+  KEY idx_payment_wallet_ledger (wallet_ledger_id),
   CONSTRAINT chk_payment_record_positive_amount CHECK (amount_usdt > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -1536,6 +1582,10 @@ CREATE TABLE IF NOT EXISTS nx_genesis_order (
   amount_usdt DECIMAL(18,6) NOT NULL,
   payment_asset VARCHAR(16) NOT NULL DEFAULT 'USDT',
   status VARCHAR(32) NOT NULL,
+  order_type VARCHAR(16) NOT NULL DEFAULT 'PRIMARY',
+  seller_user_id BIGINT NULL,
+  holding_no VARCHAR(128) NULL,
+  royalty_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   risk_decision_id BIGINT NULL,
   wallet_ledger_id BIGINT NULL,
   failure_reason VARCHAR(255) NULL,
@@ -1559,6 +1609,8 @@ CREATE TABLE IF NOT EXISTS nx_genesis_holding (
   series_code VARCHAR(64) NOT NULL,
   acquired_price_usdt DECIMAL(18,6) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  listing_price_usdt DECIMAL(18,6) NULL,
+  listed_at DATETIME NULL,
   acquired_at DATETIME NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1731,12 +1783,65 @@ CREATE TABLE IF NOT EXISTS nx_trade_in_order (
   KEY idx_trade_in_user_time (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_behavior_page_catalog (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  route VARCHAR(160) NOT NULL,
+  title_zh VARCHAR(80) NOT NULL,
+  page_level TINYINT NOT NULL,
+  parent_l1 VARCHAR(160) NOT NULL,
+  parent_l2 VARCHAR(160) NOT NULL,
+  tracked TINYINT NOT NULL DEFAULT 1,
+  source_revision VARCHAR(32) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_behavior_page_route(route),
+  KEY idx_behavior_page_level(page_level,tracked,is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_behavior_event_fact (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  event_id VARCHAR(64) NOT NULL,
+  dedupe_key CHAR(64) NOT NULL,
+  event_name VARCHAR(64) NOT NULL,
+  session_hash CHAR(64) NOT NULL,
+  actor_hash CHAR(64) NOT NULL,
+  route VARCHAR(160) NOT NULL,
+  page_level TINYINT NOT NULL,
+  parent_l1 VARCHAR(160) NOT NULL,
+  parent_l2 VARCHAR(160) NOT NULL,
+  dwell_ms BIGINT NULL,
+  x_norm DECIMAL(6,4) NULL,
+  y_norm DECIMAL(6,4) NULL,
+  zone VARCHAR(16) NULL,
+  element_id VARCHAR(64) NULL,
+  device_type VARCHAR(16) NOT NULL,
+  locale VARCHAR(16) NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_behavior_event_id(event_id),
+  UNIQUE KEY uk_behavior_event_dedupe(dedupe_key),
+  KEY idx_behavior_event_window(event_name,occurred_at,device_type,locale),
+  KEY idx_behavior_event_route(route,occurred_at),
+  KEY idx_behavior_event_session(session_hash,occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_event_outbox (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   event_id VARCHAR(64) NOT NULL,
   aggregate_type VARCHAR(64) NOT NULL,
   aggregate_id VARCHAR(128) NOT NULL,
   event_type VARCHAR(96) NOT NULL,
+  event_name VARCHAR(128) NULL,
+  family_key VARCHAR(32) NULL,
+  event_ts DATETIME(3) NULL,
+  phase VARCHAR(32) NULL,
+  account_age_months INT NOT NULL DEFAULT 0,
+  cohort VARCHAR(16) NULL,
+  is_server_authoritative TINYINT NOT NULL DEFAULT 0,
+  schema_revision INT NULL,
+  schema_registered TINYINT NOT NULL DEFAULT 0,
+  analytics_event TINYINT NOT NULL DEFAULT 0,
   payload JSON NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   retry_count INT NOT NULL DEFAULT 0,
@@ -1749,7 +1854,362 @@ CREATE TABLE IF NOT EXISTS nx_event_outbox (
   UNIQUE KEY uk_event_outbox_event_id (event_id),
   KEY idx_event_outbox_status_next (status, next_retry_at, id),
   KEY idx_event_outbox_aggregate (aggregate_type, aggregate_id),
-  KEY idx_event_outbox_type_time (event_type, created_at)
+  KEY idx_event_outbox_type_time (event_type, created_at),
+  KEY idx_event_outbox_a4_time (analytics_event, schema_registered, event_ts),
+  KEY idx_event_outbox_a4_family (family_key, event_ts),
+  KEY idx_event_outbox_a4_name (event_name, event_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_genesis_emission_batch (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  batch_no VARCHAR(64) NOT NULL,
+  snapshot_at DATETIME NOT NULL,
+  daily_rate_pct DECIMAL(10,6) NOT NULL,
+  holder_count INT NOT NULL DEFAULT 0,
+  total_amount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  status VARCHAR(24) NOT NULL DEFAULT 'PROCESSING',
+  operator VARCHAR(96) NOT NULL,
+  reason VARCHAR(200) NOT NULL,
+  decision_ref VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_genesis_emission_batch (batch_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_genesis_emission_item (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  batch_no VARCHAR(64) NOT NULL,
+  holding_no VARCHAR(128) NOT NULL,
+  user_id BIGINT NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  wallet_ledger_id BIGINT NULL,
+  paid_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_genesis_emission_item (batch_no,holding_no),
+  KEY idx_genesis_emission_user (user_id,created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_treasury_legacy_lock_liability (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  liability_no VARCHAR(64) NOT NULL,
+  source_ref VARCHAR(128) NOT NULL,
+  principal_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,
+  accrued_interest_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,
+  maturity_at DATETIME NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  source_note VARCHAR(512) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_d3_legacy_lock_liability_no (liability_no),
+  UNIQUE KEY uk_d3_legacy_lock_source_ref (source_ref),
+  KEY idx_d3_legacy_lock_status_maturity (status, maturity_at, is_deleted),
+  CONSTRAINT chk_d3_legacy_lock_amount CHECK (principal_usdt >= 0 AND accrued_interest_usdt >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- D1 使用支付商独立流水与平台钱包账本对账；不得再从同一订单表同时派生两侧金额。
+CREATE TABLE IF NOT EXISTS nx_topup_provider_statement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ingestion_event_id VARCHAR(128) NULL,
+  payload_hash CHAR(64) NULL,
+  statement_no VARCHAR(96) NOT NULL,
+  provider VARCHAR(32) NOT NULL,
+  channel_code VARCHAR(64) NOT NULL,
+  provider_reference VARCHAR(128) NOT NULL,
+  user_id BIGINT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  statement_status VARCHAR(32) NOT NULL,
+  evidence_ref VARCHAR(128) NULL,
+  observed_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_provider_statement_no (statement_no),
+  UNIQUE KEY uk_topup_provider_reference (provider, provider_reference),
+  UNIQUE KEY uk_topup_provider_ingestion_event (ingestion_event_id),
+  KEY idx_topup_provider_channel_time (channel_code, observed_at),
+  CONSTRAINT chk_topup_provider_amount CHECK (amount_usdt > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_topup_card_admission (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  admission_event_id VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  card_bin VARCHAR(16) NOT NULL,
+  client_ip VARCHAR(64) NOT NULL,
+  device_fingerprint VARCHAR(128) NOT NULL,
+  provider VARCHAR(32) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  fee_amount_usdt DECIMAL(18,6) NOT NULL,
+  fee_rate_pct DECIMAL(9,6) NOT NULL,
+  three_ds_status VARCHAR(16) NOT NULL,
+  decision VARCHAR(16) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  settlement_event_id VARCHAR(128) NULL,
+  failure_event_id VARCHAR(128) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_card_admission_event (admission_event_id),
+  UNIQUE KEY uk_topup_card_admission_order (order_no),
+  UNIQUE KEY uk_topup_card_admission_settlement (settlement_event_id),
+  UNIQUE KEY uk_topup_card_admission_failure (failure_event_id),
+  KEY idx_topup_card_admission_order (order_no, user_id, decision, expires_at),
+  CONSTRAINT chk_topup_card_admission_decision CHECK (decision IN ('ALLOWED','DENIED')),
+  CONSTRAINT chk_topup_card_admission_amounts CHECK (
+    amount_usdt > 0 AND fee_amount_usdt >= 0 AND fee_rate_pct >= 0),
+  CONSTRAINT chk_topup_card_admission_3ds CHECK (three_ds_status IN ('AUTHENTICATED','EXEMPTED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_topup_card_settlement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  settlement_event_id VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  admission_event_id VARCHAR(128) NOT NULL,
+  payment_no VARCHAR(96) NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  provider VARCHAR(32) NOT NULL,
+  provider_payment_id VARCHAR(128) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  fee_amount_usdt DECIMAL(18,6) NOT NULL,
+  fee_rate_pct DECIMAL(9,6) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  wallet_balance_after DECIMAL(18,6) NULL,
+  cumulative_deposit_after DECIMAL(18,6) NULL,
+  fee_buffer_balance_after DECIMAL(18,6) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_card_settlement_event (settlement_event_id),
+  UNIQUE KEY uk_topup_card_settlement_payment (payment_no),
+  UNIQUE KEY uk_topup_card_settlement_order (order_no),
+  UNIQUE KEY uk_topup_card_settlement_provider (provider, provider_payment_id),
+  KEY idx_topup_card_settlement_order (order_no, user_id, status),
+  CONSTRAINT chk_topup_card_settlement_amounts CHECK (
+    amount_usdt > 0 AND fee_amount_usdt >= 0 AND fee_rate_pct >= 0),
+  CONSTRAINT chk_topup_card_settlement_status CHECK (status IN ('PROCESSING','SETTLED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_topup_card_failure_event (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  failure_event_id VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  admission_event_id VARCHAR(128) NOT NULL,
+  payment_no VARCHAR(96) NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  provider VARCHAR(32) NOT NULL,
+  provider_payment_id VARCHAR(128) NOT NULL,
+  failure_status VARCHAR(16) NOT NULL,
+  failure_reason VARCHAR(255) NOT NULL,
+  occurred_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_card_failure_event (failure_event_id),
+  UNIQUE KEY uk_topup_card_failure_payment (payment_no),
+  UNIQUE KEY uk_topup_card_failure_order (order_no),
+  UNIQUE KEY uk_topup_card_failure_provider (provider, provider_payment_id),
+  KEY idx_topup_card_failure_risk (failure_status, occurred_at),
+  CONSTRAINT chk_topup_card_failure_status CHECK (failure_status IN ('FAILED','DECLINED','EXPIRED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_topup_card_chargeback_event (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  chargeback_event_id VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  payment_no VARCHAR(96) NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  provider VARCHAR(32) NOT NULL,
+  provider_payment_id VARCHAR(128) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  chargeback_status VARCHAR(32) NOT NULL,
+  chargeback_reason VARCHAR(255) NOT NULL,
+  evidence_ref VARCHAR(128) NOT NULL,
+  occurred_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_chargeback_event (chargeback_event_id),
+  KEY idx_topup_chargeback_payment (payment_no, occurred_at),
+  KEY idx_topup_chargeback_provider (provider, provider_payment_id, occurred_at),
+  CONSTRAINT chk_topup_chargeback_event_amount CHECK (amount_usdt > 0),
+  CONSTRAINT chk_topup_chargeback_event_status CHECK (
+    chargeback_status IN ('CHARGEBACK','DISPUTED','CHARGEBACK_REVIEW'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_topup_fee_buffer_account (
+  id TINYINT PRIMARY KEY,
+  balance_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT chk_topup_fee_buffer_balance CHECK (balance_usdt >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT INTO nx_topup_fee_buffer_account(id, balance_usdt, version)
+VALUES (1, 0, 0) ON DUPLICATE KEY UPDATE id=VALUES(id);
+
+CREATE TABLE IF NOT EXISTS nx_topup_fee_buffer_ledger (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  entry_no VARCHAR(96) NOT NULL,
+  biz_no VARCHAR(96) NOT NULL,
+  direction VARCHAR(8) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  balance_after_usdt DECIMAL(18,6) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  operator VARCHAR(96) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_fee_buffer_entry (entry_no),
+  UNIQUE KEY uk_topup_fee_buffer_idem (idempotency_key),
+  KEY idx_topup_fee_buffer_biz (biz_no, created_at),
+  CONSTRAINT chk_topup_fee_buffer_amount CHECK (amount_usdt > 0 AND balance_after_usdt >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_topup_chargeback_recovery (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  recovery_no VARCHAR(96) NOT NULL,
+  case_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  recovered_usdt DECIMAL(18,6) NOT NULL,
+  wallet_shortfall_usdt DECIMAL(18,6) NOT NULL,
+  fee_buffer_required_usdt DECIMAL(18,6) NOT NULL,
+  fee_buffer_deducted_usdt DECIMAL(18,6) NOT NULL,
+  fee_buffer_shortfall_usdt DECIMAL(18,6) NOT NULL,
+  cumulative_before_usdt DECIMAL(18,6) NOT NULL,
+  cumulative_after_usdt DECIMAL(18,6) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  evidence_ref VARCHAR(128) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  operator VARCHAR(96) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  ledger_biz_no VARCHAR(96) NULL,
+  risk_signal_no VARCHAR(96) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_chargeback_recovery_no (recovery_no),
+  UNIQUE KEY uk_topup_chargeback_case (case_no),
+  UNIQUE KEY uk_topup_chargeback_idem (idempotency_key),
+  KEY idx_topup_chargeback_user_time (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_topup_risk_lock (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  target_type VARCHAR(16) NOT NULL,
+  target_value VARCHAR(128) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  source VARCHAR(16) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  locked_until DATETIME NOT NULL,
+  created_by VARCHAR(96) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_topup_risk_target (target_type, target_value),
+  KEY idx_topup_risk_active (status, locked_until),
+  CONSTRAINT chk_topup_risk_target_type CHECK (target_type IN ('BIN','IP','DEVICE'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- C5 会话撤销及短锁/长锁使用独立权限；客服只获得会话撤销和短锁处置能力。
+INSERT INTO nx_admin_permission
+  (permission_code,permission_name,resource_type,resource_path,perm_type,amplifies,status,is_deleted)
+VALUES
+  ('user_c5_session_revoke_one','C5 踢线(单会话)','API','/users/security','HIGH',0,1,0),
+  ('user_c5_session_revoke_all','C5 全部踢线','API','/users/security','HIGH',0,1,0),
+  ('user_c5_unlock_short','C5 解除短锁','API','/users/security','HIGH',0,1,0),
+  ('user_c5_unlock_long','C5 解除长锁','API','/users/security','HIGH',0,1,0)
+ON DUPLICATE KEY UPDATE permission_name=VALUES(permission_name),resource_path=VALUES(resource_path),
+  perm_type=VALUES(perm_type),amplifies=VALUES(amplifies),status=1,is_deleted=0;
+
+INSERT IGNORE INTO nx_admin_role_permission (role_id,permission_id)
+SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
+ WHERE r.role_code IN ('SUPER_ADMIN','RISK','SUPPORT')
+   AND p.permission_code IN ('user_c5_session_revoke_one','user_c5_session_revoke_all')
+   AND r.status=1 AND r.is_deleted=0 AND p.status=1 AND p.is_deleted=0;
+
+INSERT IGNORE INTO nx_admin_role_permission (role_id,permission_id)
+SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
+ WHERE r.role_code IN ('SUPER_ADMIN','RISK','SUPPORT')
+   AND p.permission_code='user_c5_unlock_short'
+   AND r.status=1 AND r.is_deleted=0 AND p.status=1 AND p.is_deleted=0;
+
+INSERT IGNORE INTO nx_admin_role_permission (role_id,permission_id)
+SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
+ WHERE r.role_code IN ('SUPER_ADMIN','RISK')
+   AND p.permission_code='user_c5_unlock_long'
+   AND r.status=1 AND r.is_deleted=0 AND p.status=1 AND p.is_deleted=0;
+
+CREATE TABLE IF NOT EXISTS nx_event_schema_revision (
+  id TINYINT PRIMARY KEY,
+  current_revision INT NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_event_schema_registry (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  event_name VARCHAR(128) NOT NULL,
+  owner_domain VARCHAR(32) NOT NULL,
+  family_key VARCHAR(32) NOT NULL,
+  producer VARCHAR(32) NOT NULL,
+  consumers VARCHAR(255) NOT NULL DEFAULT '',
+  is_server_authoritative TINYINT NOT NULL,
+  sampling_policy VARCHAR(96) NOT NULL,
+  current_revision INT NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  created_by VARCHAR(128) NOT NULL,
+  updated_by VARCHAR(128) NULL,
+  reason VARCHAR(200) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_event_schema_name (event_name),
+  KEY idx_event_schema_domain_status (owner_domain, status, is_deleted),
+  KEY idx_event_schema_family_status (family_key, status, is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_event_schema_property (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  schema_id BIGINT NOT NULL,
+  property_name VARCHAR(64) NOT NULL,
+  property_type VARCHAR(32) NOT NULL,
+  pii TINYINT NOT NULL DEFAULT 0,
+  required_field TINYINT NOT NULL DEFAULT 1,
+  registry_revision INT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_event_schema_property (schema_id, property_name),
+  KEY idx_event_schema_property_revision (registry_revision),
+  CONSTRAINT fk_event_schema_property_schema FOREIGN KEY (schema_id) REFERENCES nx_event_schema_registry(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_event_domain_extension (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  domain_name VARCHAR(32) NOT NULL,
+  event_name VARCHAR(128) NOT NULL,
+  producer VARCHAR(128) NOT NULL,
+  consumer VARCHAR(255) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'REGISTERED',
+  created_by VARCHAR(128) NOT NULL,
+  reason VARCHAR(200) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_event_domain_extension (domain_name, event_name),
+  KEY idx_event_domain_extension_status (status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_event_consumer_delivery (
@@ -1845,12 +2305,14 @@ CREATE TABLE IF NOT EXISTS nx_audit_operation_ticket (
   decision_reason VARCHAR(512) NULL,
   decided_at DATETIME NULL,
   command_json TEXT NULL COMMENT '结构化回放指令 {domain,op,params}',
+  source_domain VARCHAR(8) NOT NULL DEFAULT 'A' COMMENT 'A2 row-level visibility domain',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_audit_operation_ticket_no (operation_id),
   KEY idx_audit_operation_ticket_status (status, created_at),
-  KEY idx_audit_operation_ticket_type (operation_type, status)
+  KEY idx_audit_operation_ticket_type (operation_type, status),
+  KEY idx_audit_operation_ticket_domain (source_domain, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_audit_operation_history (
@@ -2255,6 +2717,8 @@ CREATE TABLE IF NOT EXISTS nx_compute_datacenter (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   dc_location VARCHAR(128) NOT NULL,
   region_label VARCHAR(128) NOT NULL,
+  location VARCHAR(128) NOT NULL DEFAULT '',
+  display_name VARCHAR(128) NOT NULL DEFAULT '',
   status VARCHAR(24) NOT NULL DEFAULT 'active',
   sort_order INT NOT NULL DEFAULT 100,
   updated_by VARCHAR(96) NULL,
@@ -2823,7 +3287,7 @@ CREATE TABLE IF NOT EXISTS nx_commission_event (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_commission_event' AND INDEX_NAME = 'uk_commission_order_user_layer') = 0,
-  'ALTER TABLE nx_commission_event ADD UNIQUE KEY uk_commission_order_user_layer (commission_type, order_no, user_id, layer_no)',
+  'ALTER TABLE nx_commission_event ADD UNIQUE KEY uk_commission_order_user_layer (commission_type, order_no, user_id, layer_no, currency)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -3299,6 +3763,11 @@ CREATE TABLE IF NOT EXISTS nx_kyc_profile (
   reject_reason VARCHAR(255) NULL,
   expires_at DATETIME NULL,
   risk_notes VARCHAR(512) NULL,
+  paired_address VARCHAR(255) NULL,
+  network VARCHAR(32) NULL,
+  paired_at DATETIME NULL,
+  trigger_source VARCHAR(64) NOT NULL DEFAULT 'LEGACY_MIGRATION',
+  version BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -3348,10 +3817,72 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'paired_address') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN paired_address VARCHAR(255) NULL AFTER risk_notes',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'network') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN network VARCHAR(32) NULL AFTER paired_address',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'paired_at') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN paired_at DATETIME NULL AFTER network',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'trigger_source') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN trigger_source VARCHAR(64) NOT NULL DEFAULT ''LEGACY_MIGRATION'' AFTER paired_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'version') = 0,
+  'ALTER TABLE nx_kyc_profile ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER trigger_source',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND INDEX_NAME = 'idx_kyc_expiry') = 0,
   'ALTER TABLE nx_kyc_profile ADD INDEX idx_kyc_expiry (status, expires_at, id)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_kyc_status_history (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  before_status VARCHAR(32) NULL,
+  after_status VARCHAR(32) NOT NULL,
+  reason_code VARCHAR(64) NOT NULL,
+  reason VARCHAR(200) NOT NULL,
+  evidence_ref VARCHAR(255) NOT NULL,
+  source VARCHAR(64) NOT NULL,
+  operator VARCHAR(64) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  ticket_id VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_kyc_history_idempotency (idempotency_key),
+  KEY idx_kyc_history_user_time (user_id, created_at),
+  KEY idx_kyc_history_ticket (ticket_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'location') = 0,
+  'ALTER TABLE nx_compute_datacenter ADD COLUMN location VARCHAR(128) NOT NULL DEFAULT '''' AFTER region_label', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'display_name') = 0,
+  'ALTER TABLE nx_compute_datacenter ADD COLUMN display_name VARCHAR(128) NOT NULL DEFAULT '''' AFTER location', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+UPDATE nx_compute_datacenter SET location=region_label WHERE location='' OR location IS NULL;
+UPDATE nx_compute_datacenter SET display_name=region_label WHERE display_name='' OR display_name IS NULL;
+
+DROP TRIGGER IF EXISTS trg_nx_user_kyc_profile;
+CREATE TRIGGER trg_nx_user_kyc_profile
+AFTER INSERT ON nx_user
+FOR EACH ROW
+INSERT INTO nx_kyc_profile
+  (user_id,kyc_no,status,country,trigger_source,version,is_deleted)
+VALUES
+  (NEW.id,CONCAT('KYC-',IF(NEW.id < 100000000,LPAD(NEW.id,8,'0'),CAST(NEW.id AS CHAR))),UPPER(COALESCE(NULLIF(NEW.kyc_status,''),'NONE')),
+   NEW.country_code,'REGISTRATION',0,0);
 
 CREATE TABLE IF NOT EXISTS nx_risk_decision (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -3703,6 +4234,9 @@ CREATE TABLE IF NOT EXISTS nx_admin_fourth_batch_report (
   masking_policy VARCHAR(32) NOT NULL,
   status VARCHAR(32) NOT NULL,
   note VARCHAR(255) DEFAULT NULL,
+  snapshot_csv LONGTEXT DEFAULT NULL,
+  download_token_hash CHAR(64) DEFAULT NULL,
+  download_token_expires_at DATETIME DEFAULT NULL,
   last_action VARCHAR(32) DEFAULT NULL,
   last_action_at DATETIME DEFAULT NULL,
   reason VARCHAR(255) DEFAULT NULL,
@@ -3818,6 +4352,7 @@ CREATE TABLE IF NOT EXISTS nx_notification_campaign (
   budget_usd DECIMAL(18,2) NULL,
   created_by VARCHAR(64) NULL,
   last_operator VARCHAR(64) NULL,
+  revision BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -4056,12 +4591,15 @@ CREATE TABLE IF NOT EXISTS nx_support_ticket (
   message_count INT NOT NULL DEFAULT 0,
   last_message_at DATETIME NULL,
   closed_at DATETIME NULL,
+  archived TINYINT NOT NULL DEFAULT 0,
+  archived_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_support_ticket_no (ticket_no),
   KEY idx_support_ticket_user_time (user_id, last_message_at),
   KEY idx_support_ticket_ops (status, priority, last_message_at),
+  KEY idx_support_ticket_archive (archived, archived_at, status),
   KEY idx_support_ticket_assignee (assigned_admin_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -4348,6 +4886,13 @@ CREATE TABLE IF NOT EXISTS nx_emergency_tamper_event (
   UNIQUE KEY uk_emergency_tamper_event_no (event_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+INSERT INTO nx_config_item(
+  config_key,config_value,value_type,config_group,visibility,remark,status,created_at,updated_at,is_deleted)
+VALUES
+  ('auth.risk.c6.version','0','NUMBER','auth','ADMIN','C6 optimistic concurrency version',1,NOW(),NOW(),0),
+  ('auth.risk.captcha_off_window','','STRING','auth','ADMIN','C6 absolute CAPTCHA restore deadline',1,NOW(),NOW(),0)
+ON DUPLICATE KEY UPDATE is_deleted=0,status=1;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_wallet_bank_card' AND COLUMN_NAME = 'psp_revoke_status') = 0,
   'ALTER TABLE nx_wallet_bank_card ADD COLUMN psp_revoke_status VARCHAR(24) NULL AFTER is_default', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
@@ -4412,7 +4957,8 @@ CREATE TABLE IF NOT EXISTS nx_admin_operation_mutex (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES ('G4_CONFIG'), ('H8_REWARD');
+INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES
+('G4_CONFIG'), ('H1_RHYTHM'), ('H4_EVENT'), ('H4_WHEEL'), ('H5_MILESTONE'), ('H8_REWARD');
 
 CREATE TABLE IF NOT EXISTS nx_genesis_admin_simulation (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -4446,6 +4992,20 @@ CREATE TABLE IF NOT EXISTS nx_user_otp_challenge (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_otp_challenge_no (challenge_no),
   KEY idx_user_otp_active (user_id, expires_at, consumed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_c5_kyc_reverification_consumption (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ticket_id VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  action_code VARCHAR(48) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  consumed_by VARCHAR(64) NOT NULL,
+  consumed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_c5_kyc_reverification_ticket (ticket_id),
+  UNIQUE KEY uk_c5_kyc_reverification_idempotency (action_code,user_id,idempotency_key),
+  KEY idx_c5_kyc_reverification_user (user_id,action_code,consumed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_emergency_tamper_report (
@@ -5081,6 +5641,24 @@ CREATE TABLE IF NOT EXISTS nx_disclosure_gate_action (
   UNIQUE KEY uk_disclosure_gate_action (action_key),
   KEY idx_disclosure_gate_action_order (active, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_disclosure_gate_action
+  (action_key,action_name,description,status_label,tone,active,sort_order,last_operator,is_deleted)
+VALUES
+  ('staking','质押锁仓','质押锁仓前必须确认当前司法辖区生效的风险披露','ACTIVE','warn',1,40,'schema:g1-staking-disclosure',0)
+ON DUPLICATE KEY UPDATE
+  action_name=VALUES(action_name),description=VALUES(description),status_label=VALUES(status_label),
+  tone=VALUES(tone),active=VALUES(active),sort_order=VALUES(sort_order),
+  last_operator=VALUES(last_operator),is_deleted=0;
+
+INSERT INTO nx_config_item
+  (config_key,config_value,value_type,config_group,visibility,remark,status,created_at,updated_at,is_deleted)
+VALUES
+  ('disclosure.gate.staking','true','BOOLEAN','content','ADMIN',
+   'I5 per-user disclosure requirement; not a global staking stop',1,NOW(),NOW(),0)
+ON DUPLICATE KEY UPDATE
+  config_value=VALUES(config_value),value_type=VALUES(value_type),config_group=VALUES(config_group),
+  visibility=VALUES(visibility),remark=VALUES(remark),status=1,is_deleted=0;
 
 CREATE TABLE IF NOT EXISTS nx_disclosure_draft (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

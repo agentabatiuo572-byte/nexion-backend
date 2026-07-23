@@ -16,6 +16,34 @@ public class EventOutboxDispatchScheduler {
     static final String SUPPORTED_EVENT_TYPE = "ADMIN_KILLSWITCH_TOGGLED";
     static final String TAMPER_EVENT_TYPE = "RISK_TAMPER_DETECTED";
     static final String TAMPER_CONFIG_EVENT_TYPE = "ADMIN_J3_TAMPER_CONFIG_CHANGED";
+    static final String D5_WITHDRAWAL_LIMIT_CHANGED_EVENT_TYPE = "admin.withdraw_limit_changed";
+    static final String K4_WITHDRAWAL_ESCALATED_EVENT_TYPE = "risk.withdraw_escalated";
+    /** Sprint4: F1 V-Rank 晋升完成(Consumer 级联 L1 上级 re-eval)。 */
+    static final String VRANK_PROMOTION_COMPLETED_EVENT_TYPE = "VRANK_PROMOTION_COMPLETED";
+    /** H3 trusted cross-domain facts; mappings remain data-owned in nx_growth_quest_event_binding. */
+    static final List<String> H3_QUEST_FACT_EVENT_TYPES = List.of(
+            "checkout.started",
+            "H8_REFERRAL_REWARD_SETTLED",
+            "LEARNING_COURSE_COMPLETED",
+            "admin.device_activated",
+            "COMMISSION_UNLOCKED");
+    /** Sprint4 阶段2: F1 被动评估触发漏斗(用户 checkout/kyc/register → evaluate,analytics 已发 outbox)。 */
+    static final List<String> F1_PASSIVE_EVAL_EVENT_TYPES = List.of(
+            "checkout.completed",
+            "kyc.express_verified",
+            "auth.register_completed");
+    static final List<String> C2_HIGH_RISK_EVENT_TYPES = List.of(
+            "admin.user_frozen",
+            "admin.user_unfrozen",
+            "admin.user_impersonation_started",
+            "admin.user_impersonation_ended");
+    static final List<String> C5_SECURITY_EVENT_TYPES = List.of(
+            "admin.2fa_disabled",
+            "admin.password_reset_requested",
+            "admin.user_unlocked",
+            "admin.session_revoked",
+            "auth.login_locked",
+            "auth.refresh_token_reuse_detected");
 
     private final EventOutboxService outboxService;
     private final ApplicationEventPublisher eventPublisher;
@@ -27,7 +55,16 @@ public class EventOutboxDispatchScheduler {
         // Only dispatch event types that have a synchronous, durable consumer.
         // Publishing an unknown Spring event succeeds even when it has no listener;
         // selecting all event types here would therefore falsely mark them PUBLISHED.
-        for (String eventType : List.of(SUPPORTED_EVENT_TYPE, TAMPER_EVENT_TYPE, TAMPER_CONFIG_EVENT_TYPE)) {
+        List<String> supportedEventTypes = new java.util.ArrayList<>(
+                List.of(SUPPORTED_EVENT_TYPE, TAMPER_EVENT_TYPE, TAMPER_CONFIG_EVENT_TYPE,
+                        D5_WITHDRAWAL_LIMIT_CHANGED_EVENT_TYPE,
+                        K4_WITHDRAWAL_ESCALATED_EVENT_TYPE,
+                        VRANK_PROMOTION_COMPLETED_EVENT_TYPE));
+        supportedEventTypes.addAll(C2_HIGH_RISK_EVENT_TYPES);
+        supportedEventTypes.addAll(C5_SECURITY_EVENT_TYPES);
+        supportedEventTypes.addAll(H3_QUEST_FACT_EVENT_TYPES);
+        supportedEventTypes.addAll(F1_PASSIVE_EVAL_EVENT_TYPES);
+        for (String eventType : supportedEventTypes) {
             List<EventOutboxMessage> pending = outboxService.listPendingByEventType(eventType, BATCH_SIZE);
             if (pending == null || pending.isEmpty()) {
                 continue;

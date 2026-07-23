@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.team.application.LeadershipPoolService;
 import ffdd.opsconsole.team.application.OpsTeamService;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
@@ -17,7 +18,8 @@ import org.junit.jupiter.api.Test;
 
 class OpsTeamControllerTest {
     private final OpsTeamService teamService = mock(OpsTeamService.class);
-    private final OpsTeamController controller = new OpsTeamController(teamService);
+    private final LeadershipPoolService leadershipPoolService = mock(LeadershipPoolService.class);
+    private final OpsTeamController controller = new OpsTeamController(teamService, leadershipPoolService);
 
     @Test
     void overviewDelegatesToService() {

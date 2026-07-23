@@ -4,6 +4,11 @@ server:
   # getRemoteAddr remains per-client behind Nginx/Ingress without trusting direct spoofed headers.
   forward-headers-strategy: ${NEXION_FORWARD_HEADERS_STRATEGY:native}
 
+# P3 观测性:持久化日志文件,避免 mvn fork 孤子进程丢失日志(stdout 仅控制台)
+logging:
+  file:
+    name: ${NEXION_LOG_FILE:logs/nexion-backend.log}
+
 spring:
   application:
     name: nexion-backend
@@ -20,6 +25,10 @@ spring:
     url: ${NEXION_DB_URL:jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${NEXION_DB_USERNAME:root}
     password: ${NEXION_DB_PASSWORD:}
+    # D1 persists business LocalDateTime values in UTC+08. Keep every pooled
+    # session's NOW()/DATE_SUB comparisons in that same clock, independent of host timezone.
+    hikari:
+      connection-init-sql: "SET time_zone = '+08:00'"
   data:
     redis:
       host: ${NEXION_REDIS_HOST:127.0.0.1}
@@ -27,6 +36,19 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  risk:
+    k3:
+      address-reputation:
+        # Third-party/combined rules fail closed until a real provider is configured.
+        endpoint: ${NEXION_K3_ADDRESS_REPUTATION_ENDPOINT:}
+        api-key: ${NEXION_K3_ADDRESS_REPUTATION_API_KEY:}
+        api-key-header: ${NEXION_K3_ADDRESS_REPUTATION_API_KEY_HEADER:X-API-Key}
+        connect-timeout-ms: ${NEXION_K3_ADDRESS_REPUTATION_CONNECT_TIMEOUT_MS:1000}
+        read-timeout-ms: ${NEXION_K3_ADDRESS_REPUTATION_READ_TIMEOUT_MS:1500}
+  finance:
+    # Required by the payment gateway / provider-statement adapter. At least 32 bytes;
+    # empty or short secrets fail closed at the OpenAPI boundary.
+    provider-ingestion-secret: ${NEXION_PAYMENT_INGESTION_SECRET:}
   gateway:
     # Header-based subject impersonation is opt-in for trusted internal gateways only.
     # Production must inject a unique secret and enumerate the exact ingress peers.
