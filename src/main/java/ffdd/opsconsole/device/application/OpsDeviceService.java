@@ -13,6 +13,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
+import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
 import ffdd.opsconsole.device.domain.PlatformComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
@@ -1990,9 +1991,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before == null) {
                 return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
             }
+            // 跨域硬保护:仍有设备/待履约订单/SKU 引用时拒绝删除,并回具体计数。
+            DatacenterReferenceCount refs = deviceRepository.countDatacenterReferences(dc);
+            if (refs.hasAny()) {
+                return ApiResult.fail(409, "DATACENTER_HAS_REFERENCES", detail(
+                        "dcLocation", dc,
+                        "deviceCount", refs.devices(),
+                        "pendingOrderCount", refs.pendingOrders(),
+                        "skuCount", refs.skus()));
+            }
             if (!deviceRepository.softDeleteDatacenter(dc, trustedOperator, LocalDateTime.now(clock))) {
                 return ApiResult.fail(409, "DATACENTER_DELETE_CONFLICT");
             }
+            // 同步设备表 dc_location(置空防悬挂/笛儿)与运营状态行(软删)。
+            deviceRepository.syncDatacenterReferencesOnDelete(dc, trustedOperator, LocalDateTime.now(clock));
             recordE5DatacenterEvent("admin.datacenter_deleted", before, trustedOperator,
                     trusted.reason(), idempotencyKey, detail("operation", "delete"));
             return ApiResult.ok(detail("dcLocation", dc, "deleted", true));

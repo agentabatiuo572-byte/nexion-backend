@@ -26,6 +26,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
@@ -795,6 +796,66 @@ class OpsDeviceServiceTest {
                 eq("admin.datacenter_updated"), any());
         verify(outboxService).publish(eq("E5_DATACENTER"), eq("us-east-2"),
                 eq("admin.datacenter_deleted"), any());
+    }
+
+    @Test
+    void deleteDatacenterBlocksAndKeepsRowWhenDevicesReference() {
+        seedDatacenter("HK-1");
+        deviceRepository.referenceDevices = 2L;
+        DatacenterOpsRequest request = new DatacenterOpsRequest("retire blocked dc", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.deleteDatacenter("HK-1", "idem-dc-del-dev", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DATACENTER_HAS_REFERENCES");
+        assertThat(result.getData()).containsEntry("dcLocation", "HK-1");
+        assertThat(result.getData()).containsEntry("deviceCount", 2L);
+        assertThat(result.getData()).containsEntry("pendingOrderCount", 0L);
+        assertThat(result.getData()).containsEntry("skuCount", 0L);
+        // 未软删、未同步清理
+        assertThat(deviceRepository.datacenters).containsKey("HK-1");
+        assertThat(deviceRepository.detachedDc).isNull();
+        assertThat(deviceRepository.opsStateSoftDeleted).isFalse();
+        verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void deleteDatacenterBlocksWhenPendingOrdersReference() {
+        seedDatacenter("HK-1");
+        deviceRepository.referencePendingOrders = 1L;
+        deviceRepository.referenceSkus = 3L;
+        DatacenterOpsRequest request = new DatacenterOpsRequest("retire blocked dc", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.deleteDatacenter("HK-1", "idem-dc-del-ord", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DATACENTER_HAS_REFERENCES");
+        assertThat(result.getData()).containsEntry("pendingOrderCount", 1L);
+        assertThat(result.getData()).containsEntry("skuCount", 3L);
+        assertThat(deviceRepository.datacenters).containsKey("HK-1");
+    }
+
+    @Test
+    void deleteDatacenterSucceedsAndSyncsDeviceDcAndOpsStateWhenNoReferences() {
+        seedDatacenter("HK-1");
+        DatacenterOpsRequest request = new DatacenterOpsRequest("retire dc", "superadmin");
+
+        ApiResult<Map<String, Object>> result = service.deleteDatacenter("HK-1", "idem-dc-del-ok", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("deleted", true);
+        assertThat(deviceRepository.datacenters).doesNotContainKey("HK-1");
+        // 软删成功后同步清理设备表 dc_location 与运营状态行
+        assertThat(deviceRepository.detachedDc).isEqualTo("HK-1");
+        assertThat(deviceRepository.opsStateSoftDeleted).isTrue();
+    }
+
+    private void seedDatacenter(String dcLocation) {
+        DeviceDatacenterUpsertRequest seed = new DeviceDatacenterUpsertRequest(
+                dcLocation, "Hong Kong", "active", 10,
+                "seed data center", "superadmin", "Hong Kong", "Hong Kong DC");
+        deviceRepository.datacenters.put(dcLocation, FakeDeviceOpsRepository.dcView(
+                seed, LocalDateTime.now(clock), LocalDateTime.now(clock)));
     }
 
     @Test
@@ -2530,6 +2591,12 @@ class OpsDeviceServiceTest {
         private String lastConfigOperator;
         private long activeDevicesByUser;
         private Long pausedUserId;
+        // 删除数据中心跨域引用计数(默认全零,测试按需覆写)
+        private long referenceDevices;
+        private long referencePendingOrders;
+        private long referenceSkus;
+        private String detachedDc;
+        private boolean opsStateSoftDeleted;
 
         @Override
         public Map<String, Object> overviewCounters() {
@@ -2662,6 +2729,17 @@ class OpsDeviceServiceTest {
         @Override
         public boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now) {
             return datacenters.remove(dcLocation) != null;
+        }
+
+        @Override
+        public DatacenterReferenceCount countDatacenterReferences(String dcLocation) {
+            return new DatacenterReferenceCount(referenceDevices, referencePendingOrders, referenceSkus);
+        }
+
+        @Override
+        public void syncDatacenterReferencesOnDelete(String dcLocation, String operator, LocalDateTime now) {
+            detachedDc = dcLocation;
+            opsStateSoftDeleted = true;
         }
 
         @Override

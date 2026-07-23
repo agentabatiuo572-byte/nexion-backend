@@ -706,6 +706,56 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                              @Param("operator") String operator,
                              @Param("now") LocalDateTime now);
 
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_device
+             WHERE dc_location = #{dcLocation}
+               AND is_deleted = 0
+            """)
+    long countDevicesByDatacenter(@Param("dcLocation") String dcLocation);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_device_sku
+             WHERE datacenter = #{dcLocation}
+               AND is_deleted = 0
+            """)
+    long countSkusByDatacenter(@Param("dcLocation") String dcLocation);
+
+    @Select("""
+            SELECT COUNT(DISTINCT o.id)
+              FROM nx_order o
+              JOIN nx_user_device d
+                ON d.source_order_no = o.order_no
+               AND d.is_deleted = 0
+               AND d.dc_location = #{dcLocation}
+             WHERE o.is_deleted = 0
+               AND UPPER(COALESCE(o.order_status,'')) NOT IN
+                   ('COMPLETED','CANCELLED','CANCELED','REFUNDED','CHARGEBACK','DISPUTED','PAYMENT_FAILED','FAILED','EXPIRED','PROVISIONING_FAILED')
+               AND UPPER(COALESCE(o.activation_status,'')) NOT IN ('ACTIVATED','PROVISIONING_FAILED')
+            """)
+    long countPendingOrdersByDatacenter(@Param("dcLocation") String dcLocation);
+
+    @Update("""
+            UPDATE nx_user_device
+               SET dc_location = NULL,
+                   updated_at = NOW()
+             WHERE dc_location = #{dcLocation}
+            """)
+    int detachDevicesFromDatacenter(@Param("dcLocation") String dcLocation);
+
+    @Update("""
+            UPDATE nx_compute_dc_ops_state
+               SET is_deleted = 1,
+                   updated_by = #{operator},
+                   updated_at = #{now}
+             WHERE dc_location = #{dcLocation}
+               AND is_deleted = 0
+            """)
+    int softDeleteDatacenterOpsState(@Param("dcLocation") String dcLocation,
+                                 @Param("operator") String operator,
+                                 @Param("now") LocalDateTime now);
+
     @Update("""
             UPDATE nx_compute_dc_ops_state
                SET dispatch_paused = #{paused},

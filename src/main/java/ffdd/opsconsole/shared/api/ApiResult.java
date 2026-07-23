@@ -23,5 +23,9 @@ public class ApiResult<T> {
     public static <T> ApiResult<T> fail(int code, String message) {
         return new ApiResult<>(code, message, null);
     }
+
+    public static <T> ApiResult<T> fail(int code, String message, T data) {
+        return new ApiResult<>(code, message, data);
+    }
 }
 

@@ -2,6 +2,7 @@ package ffdd.opsconsole.device.infrastructure;
 
 
 import lombok.RequiredArgsConstructor;
+import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
@@ -256,6 +257,21 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     @Override
     public boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now) {
         return mapper.softDeleteDatacenter(dcLocation, operator, now) > 0;
+    }
+
+    @Override
+    public DatacenterReferenceCount countDatacenterReferences(String dcLocation) {
+        long devices = mapper.countDevicesByDatacenter(dcLocation);
+        long pendingOrders = mapper.countPendingOrdersByDatacenter(dcLocation);
+        long skus = mapper.countSkusByDatacenter(dcLocation);
+        return new DatacenterReferenceCount(devices, pendingOrders, skus);
+    }
+
+    @Override
+    public void syncDatacenterReferencesOnDelete(String dcLocation, String operator, LocalDateTime now) {
+        // 清空设备表 dc_location(防悬挂/笛儿),并软删运营状态行。
+        mapper.detachDevicesFromDatacenter(dcLocation);
+        mapper.softDeleteDatacenterOpsState(dcLocation, operator, now);
     }
 
     @Override

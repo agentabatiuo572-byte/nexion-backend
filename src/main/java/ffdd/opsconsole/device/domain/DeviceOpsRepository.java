@@ -61,6 +61,12 @@ public interface DeviceOpsRepository {
 
     boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now);
 
+    /** 跨域引用计数:设备/待履约订单/SKU,用于删除前的硬保护校验。 */
+    DatacenterReferenceCount countDatacenterReferences(String dcLocation);
+
+    /** 软数据中心软删成功后同步清理设备表 dc_location 与运营状态行,防悬挂引用。 */
+    void syncDatacenterReferencesOnDelete(String dcLocation, String operator, LocalDateTime now);
+
     void pauseDatacenter(String dcLocation, String reason, String operator, LocalDateTime now);
 
     void resumeDatacenter(String dcLocation, String operator, LocalDateTime now);
