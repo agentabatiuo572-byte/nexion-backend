@@ -35,6 +35,11 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
     }
 
     @Override
+    public Optional<PlatformConfigItem> findActiveByKeyForUpdate(String configKey) {
+        return Optional.ofNullable(mapper.selectActiveByKeyForUpdate(configKey)).map(this::toDomain);
+    }
+
+    @Override
     public List<PlatformConfigItem> findActiveByGroups(Collection<String> configGroups) {
         if (configGroups == null || configGroups.isEmpty()) {
             return List.of();

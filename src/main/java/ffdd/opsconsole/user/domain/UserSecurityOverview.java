@@ -8,6 +8,8 @@ public record UserSecurityOverview(
         List<UserCredentialParamView> credentialParams,
         UserSecurityUserRow selectedUser,
         PageResult<UserSessionView> sessions,
+        long selectedActiveSessionCount,
+        List<UserKycReverificationView> kycReverifications,
         List<UserSecurityUserRow> lockedUsers,
         List<String> sources,
         List<String> redlines) {

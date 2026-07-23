@@ -4,11 +4,14 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -53,15 +56,25 @@ public class OpsReferralRewardService {
     private final AuditLogService audit;
     private final AdminIdempotencyService idempotency;
     private final TreasuryCoverageFacade coverage;
+    private final EventOutboxService outbox;
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
     public Map<String, Object> overview() {
         Map<String, Object> params = new LinkedHashMap<>();
         PARAMS.stream().sorted().forEach(key -> params.put(key,
                 "newcomer.lockMode".equals(key) ? lockMode() : amount(key)));
+        EffectiveRewards effectiveRewards = effectiveRewards();
         LocalDateTime effectiveAt = effectiveAtOrNow();
         boolean holdRisky = "risk_bucket".equals(lockMode());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("params", params);
+        result.put("rhythmMonth", effectiveRewards.rhythmMonth());
+        result.put("newcomerMultiplier", effectiveRewards.newcomerMultiplier());
+        result.put("inviterMultiplier", effectiveRewards.inviterMultiplier());
+        result.put("effectiveRewards", Map.of(
+                "newcomer.usdt", effectiveRewards.newcomerUsdt(),
+                "newcomer.nex", effectiveRewards.newcomerNex(),
+                "inviter.nex", effectiveRewards.inviterNex()));
         result.put("pending", mapper.totalPending(effectiveAt, holdRisky));
         result.put("settled", mapper.totalSettled());
         result.put("blockedByK2", mapper.totalBlockedByK2(effectiveAt, holdRisky));
@@ -92,9 +105,13 @@ public class OpsReferralRewardService {
                     config.upsertAdminValue(STORAGE_KEYS.get(paramKey), value,
                             "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
                             "H8 邀请奖励真实发奖参数；" + reason);
-                    audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, actor(request.operator()), idempotencyKey,
+                    String operator = actor(request.operator());
+                    audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey,
                             Map.of("before", before, "after", value, "reason", reason,
                                     "coverage", coverageDetail()));
+                    outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
+                            Map.of("paramKey", paramKey, "before", before, "after", value,
+                                    "operator", operator, "reason", reason, "idempotencyKey", idempotencyKey));
                     return Map.of("key", paramKey, "value", value, "status", "UPDATED");
                 });
     }
@@ -114,12 +131,17 @@ public class OpsReferralRewardService {
     private Map<String, Object> settle(int limit, String reason, String operator, String key) {
         requireHealthyCoverage();
         LocalDateTime effectiveAt = effectiveAtRequired();
-        BigDecimal newcomerUsdt = amount("newcomer.usdt");
-        BigDecimal newcomerNex = amount("newcomer.nex");
-        BigDecimal inviterNex = amount("inviter.nex");
+        EffectiveRewards effectiveRewards = effectiveRewards();
+        BigDecimal newcomerMultiplier = effectiveRewards.newcomerMultiplier();
+        BigDecimal inviterMultiplier = effectiveRewards.inviterMultiplier();
+        BigDecimal newcomerUsdt = effectiveRewards.newcomerUsdt();
+        BigDecimal newcomerNex = effectiveRewards.newcomerNex();
+        BigDecimal inviterNex = effectiveRewards.inviterNex();
         String lockMode = lockMode();
         String configSnapshot = "usdt=" + newcomerUsdt.toPlainString() + ",newcomerNex="
-                + newcomerNex.toPlainString() + ",inviterNex=" + inviterNex.toPlainString() + ",lockMode=" + lockMode;
+                + newcomerNex.toPlainString() + ",inviterNex=" + inviterNex.toPlainString()
+                + ",newcomerMultiplier=" + newcomerMultiplier.toPlainString()
+                + ",inviterMultiplier=" + inviterMultiplier.toPlainString() + ",lockMode=" + lockMode;
         if (newcomerUsdt.signum() == 0 && newcomerNex.signum() == 0 && inviterNex.signum() == 0) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_NOT_CONFIGURED");
         }
@@ -142,6 +164,10 @@ public class OpsReferralRewardService {
                     Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
                             "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex,
                             "inviterNex", inviterNex, "lockMode", lockMode, "reason", reason));
+            outbox.publish("REFERRAL_REWARD_SETTLEMENT", settlementNo, "H8_REFERRAL_REWARD_SETTLED",
+                    Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
+                            "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex,
+                            "inviterNex", inviterNex, "lockMode", lockMode));
             settled++;
         }
         // Recompute from the wallet state written by this transaction. If the batch
@@ -151,7 +177,33 @@ public class OpsReferralRewardService {
         audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key,
                 Map.of("limit", limit, "settled", settled, "skipped", skipped, "reason", reason,
                         "lockMode", lockMode, "effectiveAt", effectiveAt, "coverage", coverageDetail()));
+        outbox.publish("REFERRAL_REWARD_SETTLEMENT", key, "H8_REFERRAL_REWARD_BATCH_COMPLETED",
+                Map.of("limit", limit, "settled", settled, "skipped", skipped,
+                        "operator", operator, "idempotencyKey", key));
         return Map.of("settled", settled, "skipped", skipped, "limit", limit);
+    }
+
+    private EffectiveRewards effectiveRewards() {
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(config, readTimeSeedPolicy);
+        BigDecimal newcomerMultiplier = rhythm.newUserBonusMultiplier();
+        BigDecimal inviterMultiplier = rhythm.inviteRewardMultiplier();
+        if (newcomerMultiplier.signum() <= 0 || inviterMultiplier.signum() <= 0) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "H1_REWARD_MULTIPLIER_UNAVAILABLE");
+        }
+        return new EffectiveRewards(
+                rhythm.currentMonth(), newcomerMultiplier, inviterMultiplier,
+                amount("newcomer.usdt").multiply(newcomerMultiplier),
+                amount("newcomer.nex").multiply(newcomerMultiplier),
+                amount("inviter.nex").multiply(inviterMultiplier));
+    }
+
+    private record EffectiveRewards(
+            int rhythmMonth,
+            BigDecimal newcomerMultiplier,
+            BigDecimal inviterMultiplier,
+            BigDecimal newcomerUsdt,
+            BigDecimal newcomerNex,
+            BigDecimal inviterNex) {
     }
 
     private void requireRewardMutex() {
@@ -269,7 +321,7 @@ public class OpsReferralRewardService {
     }
 
     private String requireReason(String reason) {
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 500) {
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 200) {
             throw new BizException(OpsErrorCode.REASON_REQUIRED.httpStatus(), "OPERATION_REASON_TOO_SHORT");
         }
         return reason.trim();

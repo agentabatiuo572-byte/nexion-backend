@@ -13,6 +13,7 @@ import ffdd.opsconsole.content.domain.CopyAbRepository;
 import ffdd.opsconsole.content.domain.CopyContentRow;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionOptionView;
+import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyVersionOptionCreateRequest;
@@ -35,6 +36,7 @@ class OpsCopyVersionOptionServiceTest {
     private final CopyAbRepository repository = mock(CopyAbRepository.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+    private final I18nLearningRepository i18nLearningRepository = mock(I18nLearningRepository.class);
     private final Map<String, Object> idempotencyResults = new LinkedHashMap<>();
     private final OpsCopyAbService service = new OpsCopyAbService(
             repository,
@@ -42,7 +44,8 @@ class OpsCopyVersionOptionServiceTest {
             Clock.fixed(Instant.parse("2026-07-12T00:00:00Z"), ZoneOffset.UTC),
             OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
             idempotency,
-            new ObjectMapper().findAndRegisterModules());
+            new ObjectMapper().findAndRegisterModules(),
+            i18nLearningRepository);
 
     @BeforeEach
     void positions() {
@@ -101,21 +104,30 @@ class OpsCopyVersionOptionServiceTest {
         CopyCreateRequest request = new CopyCreateRequest(
                 "home.newBanner", "新增横幅", "home", "home.newBanner", "v2026.1",
                 "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
-                "Marina K.", "新增文案首版");
+                "Marina K.", "新增首版三语文案");
         when(repository.findVersionOptionForUpdate("v2026.1")).thenReturn(Optional.of(
                 new CopyVersionOptionView("v2026.1", "2026 首版", "首批越南文案", "ACTIVE", 10, 1L)));
         when(repository.findCopy("home.newBanner")).thenReturn(Optional.empty());
         when(repository.listAllVersionNumbers("home.newBanner")).thenReturn(List.of());
         CopyContentRow created = mock(CopyContentRow.class);
         when(created.key()).thenReturn("home.newBanner");
+        when(created.i18nKey()).thenReturn("home.newBanner");
         when(created.version()).thenReturn("v2026.1");
         when(created.surface()).thenReturn("home");
         when(repository.createCopy(any(), any())).thenReturn(created);
+        when(repository.findVersion("home.newBanner", "v2026.1")).thenReturn(Optional.of(
+                new ffdd.opsconsole.content.domain.CopyVersionRow(
+                        "home.newBanner", "v2026.1", "published", "created", "07-12 00:00",
+                        "新增文案", "New copy", "Bản sao mới", "home.hero", "home", "全量",
+                        null, "50", "新增首版")));
 
         var result = service.createCopy("idem-copy-create", request);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v2026.1");
+        verify(i18nLearningRepository).saveMessagePair(
+                "home.newBanner", "新增文案", "New copy", "Bản sao mới", "published",
+                Instant.parse("2026-07-12T00:00:00Z").atZone(ZoneOffset.UTC).toLocalDateTime());
     }
 
     @Test
@@ -123,7 +135,7 @@ class OpsCopyVersionOptionServiceTest {
         CopyCreateRequest request = new CopyCreateRequest(
                 "home.newBanner", "新增横幅", "home", "home.newBanner", "v2026.1",
                 "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
-                "Marina K.", "新增文案首版");
+                "Marina K.", "新增首版三语文案");
         when(repository.findVersionOptionForUpdate("v2026.1")).thenReturn(Optional.of(
                 new CopyVersionOptionView("v2026.1", "2026 首版", "首批越南文案", "INACTIVE", 10, 1L)));
         assertThat(service.createCopy("idem-inactive", request).getMessage()).isEqualTo("COPY_VERSION_OPTION_INACTIVE");

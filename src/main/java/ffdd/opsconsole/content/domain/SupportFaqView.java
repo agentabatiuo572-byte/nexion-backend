@@ -9,5 +9,8 @@ public record SupportFaqView(
         String answer,
         String status,
         String surface,
+        String language,
+        Integer sortOrder,
+        Integer version,
         LocalDateTime updatedAt) {
 }

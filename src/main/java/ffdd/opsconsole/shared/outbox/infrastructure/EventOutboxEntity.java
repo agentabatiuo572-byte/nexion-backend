@@ -14,6 +14,16 @@ public class EventOutboxEntity extends BaseEntity {
     private String aggregateType;
     private String aggregateId;
     private String eventType;
+    private String eventName;
+    private String familyKey;
+    private LocalDateTime eventTs;
+    private String phase;
+    private Integer accountAgeMonths;
+    private String cohort;
+    private Boolean serverAuthoritative;
+    private Integer schemaRevision;
+    private Boolean schemaRegistered;
+    private Boolean analyticsEvent;
     private String payload;
     private String status;
     private Integer retryCount;

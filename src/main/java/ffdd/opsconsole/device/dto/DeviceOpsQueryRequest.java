@@ -5,5 +5,8 @@ public record DeviceOpsQueryRequest(
         String dcLocation,
         String keyword,
         Long pageNum,
-        Long pageSize) {
+        Long pageSize,
+        Long userId,
+        String kind,
+        String heartbeat) {
 }

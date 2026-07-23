@@ -19,6 +19,30 @@ public interface DeviceOpsRepository {
 
     Optional<DeviceOpsView> restoreDevice(Long deviceId, LocalDateTime restoredAt);
 
+    default long countActiveDevicesByUser(Long userId) {
+        return 0;
+    }
+
+    default Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
+        return Optional.empty();
+    }
+
+    default Optional<DeviceOpsView> deactivateE5Device(Long deviceId, boolean unbind, LocalDateTime now) {
+        return Optional.empty();
+    }
+
+    default List<Long> lockE5BatchCandidateIds(Long userId, boolean pause, int limit) {
+        return List.of();
+    }
+
+    default int pauseDevicesByUser(Long userId, String reason, LocalDateTime now) {
+        return 0;
+    }
+
+    default int resumeDevicesByUser(Long userId, LocalDateTime now) {
+        return 0;
+    }
+
     DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth);
 
     Optional<DeviceOpsView> executeTradeinAction(String operation, Long deviceId, String tradeInNo, LocalDateTime now);

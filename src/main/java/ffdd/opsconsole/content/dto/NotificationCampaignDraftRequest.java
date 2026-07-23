@@ -18,7 +18,8 @@ public record NotificationCampaignDraftRequest(
         String reason,
         String kind,
         String ctaLabel,
-        String ctaHref) {
+        String ctaHref,
+        Long expectedRevision) {
 
     public NotificationCampaignDraftRequest(
             String name, String titleZh, String titleVi, String titleEn,
@@ -26,7 +27,7 @@ public record NotificationCampaignDraftRequest(
             NotificationAudienceTarget audienceTarget, BigDecimal budget,
             String operator, String reason) {
         this(name, titleZh, titleVi, titleEn, bodyZh, bodyVi, bodyEn, tier,
-                audienceTarget, budget, operator, reason, "system", "", "");
+                audienceTarget, budget, operator, reason, "system", "", "", null);
     }
 
     public NotificationCampaignDraftRequest(
@@ -40,7 +41,7 @@ public record NotificationCampaignDraftRequest(
             String reason) {
         this(title, title, title, title, body, body, body, tier,
                 new NotificationAudienceTarget("P1", "P6", "all", 0),
-                budget, operator, reason, "system", "", "");
+                budget, operator, reason, "system", "", "", null);
     }
 
     public NotificationCampaignDraftRequest(
@@ -48,6 +49,15 @@ public record NotificationCampaignDraftRequest(
             String tier, NotificationAudienceTarget audienceTarget, BigDecimal budget,
             String operator, String reason) {
         this(name, titleZh, titleZh, titleEn, bodyZh, bodyZh, bodyEn,
-                tier, audienceTarget, budget, operator, reason, "system", "", "");
+                tier, audienceTarget, budget, operator, reason, "system", "", "", null);
+    }
+
+    public NotificationCampaignDraftRequest(
+            String name, String titleZh, String titleVi, String titleEn,
+            String bodyZh, String bodyVi, String bodyEn, String tier,
+            NotificationAudienceTarget audienceTarget, BigDecimal budget,
+            String operator, String reason, String kind, String ctaLabel, String ctaHref) {
+        this(name, titleZh, titleVi, titleEn, bodyZh, bodyVi, bodyEn, tier,
+                audienceTarget, budget, operator, reason, kind, ctaLabel, ctaHref, null);
     }
 }

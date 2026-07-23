@@ -13,6 +13,9 @@ import ffdd.opsconsole.user.facade.UserSecurityRiskDecision;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
 
 class UserSecurityRiskFacadeAdapterTest {
@@ -20,11 +23,13 @@ class UserSecurityRiskFacadeAdapterTest {
     private final UserOpsRepository userRepository = mock(UserOpsRepository.class);
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
     private final Map<String, String> config = new LinkedHashMap<>();
+    private final Clock clock = Clock.fixed(Instant.parse("2026-07-19T12:00:00Z"), ZoneOffset.UTC);
     private final UserSecurityRiskFacadeAdapter adapter =
             new UserSecurityRiskFacadeAdapter(
                     userRepository,
                     configFacade,
-                    OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+                    OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                    clock);
 
     @Test
     void loginDecisionReadsLatestC5C6LockThresholds() {
@@ -43,6 +48,8 @@ class UserSecurityRiskFacadeAdapterTest {
         assertThat(after.blocked()).isTrue();
         assertThat(after.action()).isEqualTo("SHORT_LOCK");
         assertThat(after.primaryThreshold()).isEqualTo(5);
+        assertThat(after.duration()).isEqualTo(15);
+        assertThat(after.durationUnit()).isEqualTo("MINUTES");
     }
 
     @Test
@@ -76,5 +83,21 @@ class UserSecurityRiskFacadeAdapterTest {
         assertThat(captcha.action()).isEqualTo("CAPTCHA_REQUIRED");
         assertThat(captcha.captchaRequired()).isTrue();
         assertThat(passed.blocked()).isFalse();
+    }
+
+    @Test
+    void captchaBypassOnlyAppliesToAValidUnexpiredServerDeadline() {
+        when(configFacade.activeValue(anyString())).thenAnswer(invocation ->
+                Optional.ofNullable(config.get(invocation.getArgument(0, String.class))));
+        config.put("auth.risk.otp_max_24h", "3");
+
+        config.put("auth.risk.captcha_off_window", "arbitrary free text");
+        assertThat(adapter.evaluateRegistrationOtp("15500000000", 3, 120, false).blocked()).isTrue();
+
+        config.put("auth.risk.captcha_off_window", "2026-07-19T11:59:59Z");
+        assertThat(adapter.evaluateRegistrationOtp("15500000000", 3, 120, false).blocked()).isTrue();
+
+        config.put("auth.risk.captcha_off_window", "2026-07-19T12:30:00Z");
+        assertThat(adapter.evaluateRegistrationOtp("15500000000", 3, 120, false).blocked()).isFalse();
     }
 }

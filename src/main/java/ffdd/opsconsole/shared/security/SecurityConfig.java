@@ -14,6 +14,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -39,7 +40,12 @@ public class SecurityConfig {
     private final AdminRbacAuthorizationFilter adminRbacAuthorizationFilter;
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            ImpersonationReadOnlyEnforcementFilter impersonationReadOnlyEnforcementFilter,
+            ObjectProvider<UserBlocklistEnforcementFilter> userBlocklistFilterProvider) throws Exception {
+        UserBlocklistEnforcementFilter userBlocklistEnforcementFilter = userBlocklistFilterProvider.getIfAvailable(
+                () -> new UserBlocklistEnforcementFilter(userId -> false));
         return http.csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -49,20 +55,37 @@ public class SecurityConfig {
                         .accessDeniedHandler((request, response, exception) ->
                                 writeJsonError(response, HttpServletResponse.SC_FORBIDDEN, "ACCESS_DENIED")))
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.GET, "/api/config/platform").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/market/nex").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/genesis/state").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/repurchase").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/content/trust/sections/current").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/content/trust/sections/*/view").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/content/i18n", "/api/content/i18n/**", "/i18n", "/i18n/**").permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                "/openapi/v1/topups/card/admission",
+                                "/openapi/v1/topups/card/settlements",
+                                "/openapi/v1/topups/card/failures",
+                                "/openapi/v1/topups/card/chargebacks",
+                                "/openapi/v1/topups/provider-statements")
+                        .permitAll()
                         .requestMatchers(
                                 "/api/admin/auth/login",
                                 "/api/admin/auth/mfa/verify",
                                 "/auth/login",
                                 "/auth/register",
                                 "/auth/users/login",
+                                "/auth/users/login/2fa",
+                                "/auth/users/refresh",
+                                "/auth/users/logout",
+                                "/auth/users/password-reset/complete",
                                 "/auth/users/referrals/**",
                                 "/auth/users/register/**",
                                 "/auth/users/register",
                                 "/commerce/app/store/**",
                                 "/commerce/app/price-index",
-                                "/commerce/app/payment-options",
-                                "/openapi/v1/**")
+                                "/commerce/app/payment-options")
                         .permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
@@ -72,8 +95,15 @@ public class SecurityConfig {
                 // 注册顺序:必须先注册 JwtAuthenticationFilter(锚点),再用它作锚点注册 shim;
                 // 执行顺序仍是 shim 头化 → JWT 校验(shim 在 JWT 之前)。仅对 stream 路径生效,不影响其它请求。
                 .addFilterBefore(new SseTokenShimFilter(), JwtAuthenticationFilter.class)
-                .addFilterAfter(adminRbacAuthorizationFilter, JwtAuthenticationFilter.class)
+                .addFilterAfter(impersonationReadOnlyEnforcementFilter, JwtAuthenticationFilter.class)
+                .addFilterAfter(userBlocklistEnforcementFilter, ImpersonationReadOnlyEnforcementFilter.class)
+                .addFilterAfter(adminRbacAuthorizationFilter, UserBlocklistEnforcementFilter.class)
                 .build();
+    }
+
+    @Bean
+    public ImpersonationReadOnlyEnforcementFilter impersonationReadOnlyEnforcementFilter() {
+        return new ImpersonationReadOnlyEnforcementFilter();
     }
 
     static void writeJsonError(HttpServletResponse response, int status, String message) throws IOException {

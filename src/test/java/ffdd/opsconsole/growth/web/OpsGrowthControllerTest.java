@@ -4,19 +4,31 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
+import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.math.BigDecimal;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 
 class OpsGrowthControllerTest {
     private final OpsGrowthService growthService = mock(OpsGrowthService.class);
-    private final OpsGrowthController controller = new OpsGrowthController(growthService);
+    private final OpsGrowthCommandBoundary commandBoundary = mock(OpsGrowthCommandBoundary.class);
+    private final OpsGrowthController controller = new OpsGrowthController(growthService, commandBoundary);
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void passCommandsThroughBoundary() {
+        when(commandBoundary.execute(anyString(), anyString(), anyString(), anyString(), any(), any()))
+                .thenAnswer(invocation -> ((java.util.function.Supplier<ApiResult<Map<String, Object>>>) invocation.getArgument(5)).get());
+    }
 
     @Test
     void phaseOverviewDelegatesToService() {

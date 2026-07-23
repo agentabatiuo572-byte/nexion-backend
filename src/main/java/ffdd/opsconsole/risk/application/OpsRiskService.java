@@ -71,6 +71,8 @@ import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
 import ffdd.opsconsole.user.facade.UserKycStatusFacade;
+import ffdd.opsconsole.user.facade.UserAccountControlFacade;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -147,8 +149,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Pattern K5_CUMULATIVE_LINE = Pattern.compile("^\\$?([\\d,]+)$");
     private static final Pattern K5_SLA_DAYS = Pattern.compile("^(\\d+)$");
     private static final Pattern K5_SCORE_LINE = Pattern.compile("^(>=|>)\\s*(\\d+)$");
-    private static final Set<String> K3_ADDRESS_REPUTATION_RULES = Set.of(
-            "黑名单 / 低信誉地址", "内部黑名单 + 链上信誉", "内部黑名单", "链上信誉", "第三方链上信誉", "内部 + 第三方信誉");
     private static final Set<String> K5_TICKET_FILTERS = Set.of(
             "all", "大额提现", "大额兑换", "累计过线", "手动触发", "风险分触发", "overdue");
     private static final Map<String, String> OTP_CANONICAL_CONFIG_KEYS = Map.of(
@@ -200,7 +200,13 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final AdminIdempotencyService idempotencyService;
     private final SuperAdminAuthorization superAdminAuthorization;
+    private final UserAccountControlFacade userAccountControlFacade;
+    private final EventOutboxService eventOutboxService;
+    private final ChainAddressReputationGateway chainAddressReputationGateway;
+    /** Single K4-to-K5 closure used by every score mutation path. */
+    private final K4KycReviewTriggerService k4KycReviewTriggerService;
     private final K4RiskScorer k4RiskScorer = new K4RiskScorer();
+    private final K3WithdrawalRuleEvaluator k3WithdrawalRuleEvaluator = new K3WithdrawalRuleEvaluator();
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(riskRepository.overview());
@@ -412,10 +418,20 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             normalizedCluster, before.status(), request.expectedVersion(), status, request.reason().trim(), actor)) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
                     }
+                    int accountsFrozen = "frozen".equals(status)
+                            ? userAccountControlFacade.freezeActiveUsersByUserNos(
+                                    before.affectedUserIds(), request.reason().trim(), actor, normalizedCluster)
+                            : 0;
+                    int accountsRestored = "released".equals(status)
+                            ? userAccountControlFacade.restoreUsersFrozenBySource(
+                                    before.affectedUserIds(), request.reason().trim(), actor, normalizedCluster)
+                            : 0;
                     auditRequired("K1_CLUSTER_STATUS_CHANGED", "RISK_MULTI_ACCOUNT_CLUSTER", normalizedCluster, actor, Map.of(
                             "clusterId", normalizedCluster,
                             "fromStatus", before.status(),
                             "status", status,
+                            "accountsFrozen", accountsFrozen,
+                            "accountsRestored", accountsRestored,
                             "reason", request.reason().trim(),
                             "idempotencyKey", idempotencyKey.trim()));
                     return multiAccountOverview(1, 5, null, 1, 5);
@@ -529,7 +545,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         PageResult<RiskRuleView> rules = riskRepository.pageWithdrawRules(rulePageNum, rulePageSize);
         List<RiskRouteCountView> routeCounts = riskRepository.withdrawRouteCounts();
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("dimensions", dimensions(allRules));
+        response.put("dimensions", dimensions(allRules.stream()
+                .filter(rule -> "active".equalsIgnoreCase(rule.state()))
+                .toList()));
         response.put("rules", rules);
         response.put("routeCounts", routeCounts);
         response.put("routeTotal", routeCounts.stream().mapToLong(r -> r.count() == null ? 0L : r.count()).sum());
@@ -777,21 +795,57 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     List<RiskRuleView> activeRules = riskRepository.withdrawRules().stream()
                             .filter(rule -> "active".equalsIgnoreCase(trimmed(rule.state())))
                             .toList();
+                    final boolean requiresThirdParty;
+                    try {
+                        requiresThirdParty = k3WithdrawalRuleEvaluator.requiresThirdParty(activeRules);
+                    } catch (RuntimeException invalidRules) {
+                        return ApiResult.fail(503, "K3_DRY_RUN_RULES_UNAVAILABLE");
+                    }
                     List<RiskWithdrawCandidateView> candidates = activeRules.isEmpty()
-                            ? List.of() : riskRepository.withdrawRuleCandidates(200);
+                            ? List.of() : riskRepository.withdrawRuleCandidates(requiresThirdParty ? 50 : 200);
                     int hitCount = 0;
                     Map<String, Integer> hitCountsByRule = new LinkedHashMap<>();
                     Map<String, Integer> routeCountMap = new LinkedHashMap<>();
                     Map<String, String> primaryRuleIds = new LinkedHashMap<>();
+                    Map<String, BigDecimal> thirdPartyScores = new LinkedHashMap<>();
+                    long providerDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
                     for (RiskWithdrawCandidateView candidate : candidates) {
-                        List<RiskRuleView> matches = activeRules.stream()
-                                .filter(rule -> withdrawRuleMatches(rule, candidate)).toList();
+                        BigDecimal thirdPartyScore = null;
+                        if (requiresThirdParty) {
+                            if (System.nanoTime() >= providerDeadline) {
+                                return ApiResult.fail(503, "K3_DRY_RUN_ADDRESS_REPUTATION_TIMEOUT");
+                            }
+                            String scoreKey = addressReputationCacheKey(
+                                    candidate.chain(), candidate.targetAddress());
+                            try {
+                                thirdPartyScore = thirdPartyScores.get(scoreKey);
+                                if (thirdPartyScore == null) {
+                                    thirdPartyScore = chainAddressReputationGateway.score(
+                                            candidate.chain(), candidate.targetAddress());
+                                    thirdPartyScores.put(scoreKey, thirdPartyScore);
+                                }
+                            } catch (RuntimeException unavailable) {
+                                return ApiResult.fail(503, "K3_DRY_RUN_ADDRESS_REPUTATION_UNAVAILABLE");
+                            }
+                        }
+                        final ffdd.opsconsole.risk.facade.WithdrawalRiskDecision decision;
+                        try {
+                            decision = k3WithdrawalRuleEvaluator.evaluate(activeRules,
+                                    new ffdd.opsconsole.risk.facade.WithdrawalRiskContext(
+                                            null, candidate.withdrawalNo(), candidate.userNo(), candidate.amount(),
+                                            candidate.withdrawalCount24h(), candidate.withdrawalSum24h(),
+                                            candidate.accountAgeDays(), candidate.addressReputation(),
+                                            candidate.chain(), candidate.targetAddress(), thirdPartyScore));
+                        } catch (RuntimeException unavailable) {
+                            return ApiResult.fail(503, "K3_DRY_RUN_ADDRESS_REPUTATION_UNAVAILABLE");
+                        }
+                        List<RiskRuleView> matches = decision.matchedRules();
                         hitCount += matches.size();
                         matches.forEach(rule -> hitCountsByRule.merge(rule.ruleId(), 1, Integer::sum));
-                        RiskRuleView primary = matches.stream().max(k3RuleStrengthComparator()).orElse(null);
-                        String route = primary == null ? "pass" : primary.action();
-                        routeCountMap.merge(route, 1, Integer::sum);
-                        if (primary != null) primaryRuleIds.put(candidate.withdrawalNo(), primary.ruleId());
+                        routeCountMap.merge(decision.action(), 1, Integer::sum);
+                        if (decision.primaryRuleId() != null) {
+                            primaryRuleIds.put(candidate.withdrawalNo(), decision.primaryRuleId());
+                        }
                     }
                     List<RiskRouteCountView> routeCounts = List.of(
                             k3DryRunRoute("pass", "通过", routeCountMap, "#22c55e"),
@@ -891,7 +945,14 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return actual.compareTo(threshold) >= 0;
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> arbitrageOverview() {
+        List<RiskArbitrageParamView> currentParams = riskRepository.arbitrageParams();
+        int[] trialBoundary = trialCycleBoundary(currentParams);
+        riskRepository.refreshE3TradeinArbitrageProjection();
+        List<RiskOpsRepository.TrialCycleDetection> trialDetections =
+                riskRepository.refreshTrialCycleArbitrageProjection(trialBoundary[0], trialBoundary[1]);
+        emitTrialCycleSignals(trialDetections, trialBoundary[1]);
         List<RiskArbitrageRowView> rows = riskRepository.arbitrageRows();
         Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
                 .collect(Collectors.groupingBy(RiskArbitrageRowView::viewKey, LinkedHashMap::new, Collectors.toList()));
@@ -905,7 +966,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         byView.getOrDefault(spec.key(), List.of())))
                 .toList();
         Map<String, Object> response = new LinkedHashMap<>();
-        List<RiskArbitrageParamView> params = riskRepository.arbitrageParams().stream()
+        List<RiskArbitrageParamView> params = currentParams.stream()
                 .filter(param -> !"minHoldingMonths".equals(param.key()))
                 .filter(param -> !RETIRED_K2_PARAM_KEYS.contains(param.key()))
                 .map(this::withCanonicalOtpValue)
@@ -1008,6 +1069,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             && lockMapper.countActiveByTarget("K", "arbitrage_row", normalizedRowId) > 0) {
                         return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
                     }
+                    List<Long> subjectUserIds = riskRepository.arbitrageSubjectUserIds(normalizedRowId);
+                    if (subjectUserIds.isEmpty()) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_SIGNAL_SUBJECT_NOT_RESOLVED");
+                    }
                     boolean linkedClusterFrozen = false;
                     if ("freeze-cluster".equals(normalizedAction)) {
                         String clusterId = trimmed(before.clusterId());
@@ -1035,11 +1100,14 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                                 request.reason().trim(), actor)) {
                             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
                         }
+                        int accountsFrozen = userAccountControlFacade.freezeActiveUsersByUserNos(
+                                clusterBefore.affectedUserIds(), request.reason().trim(), actor, clusterId);
                         linkedClusterFrozen = true;
                         auditRequired("K1_CLUSTER_STATUS_CHANGED_BY_K2", "RISK_MULTI_ACCOUNT_CLUSTER", clusterId, actor, Map.of(
                                 "clusterId", clusterId,
                                 "before", Map.of("status", clusterBefore.status(), "version", clusterBefore.version()),
                                 "after", Map.of("status", "frozen", "version", clusterBefore.version() + 1),
+                                "accountsFrozen", accountsFrozen,
                                 "sourceRowId", normalizedRowId,
                                 "reason", request.reason().trim(),
                                 "idempotencyKey", idempotencyKey.trim()));
@@ -1047,6 +1115,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     RiskArbitrageRowView updated = riskRepository.updateArbitrageDisposition(
                             normalizedRowId, request.expectedVersion(), spec.disposition()).orElse(null);
                     if (updated == null) throw new BizException(409, "K2_ROW_CONCURRENT_UPDATE");
+                    emitArbitrageActionSignal(before, normalizedAction, subjectUserIds, actor);
                     auditRequired(spec.auditAction(), "RISK_ARBITRAGE_ROW", normalizedRowId, actor, Map.of(
                             "rowId", normalizedRowId,
                             "action", normalizedAction,
@@ -1057,6 +1126,63 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(updated);
                 });
+    }
+
+    private int[] trialCycleBoundary(List<RiskArbitrageParamView> params) {
+        String configured = params.stream()
+                .filter(param -> "trialCycleThreshold".equals(param.key()))
+                .map(RiskArbitrageParamView::value)
+                .findFirst()
+                .orElse(">= 3 次 / 30 天");
+        Matcher matcher = K2_TRIAL_THRESHOLD.matcher(configured.trim());
+        if (!matcher.matches()) return new int[]{3, 30};
+        int count = Integer.parseInt(matcher.group(2));
+        if (">".equals(matcher.group(1))) count++;
+        return new int[]{Math.max(1, Math.min(count, 100)),
+                Math.max(1, Math.min(Integer.parseInt(matcher.group(3)), 365))};
+    }
+
+    private void emitTrialCycleSignals(List<RiskOpsRepository.TrialCycleDetection> detections, int windowDays) {
+        for (RiskOpsRepository.TrialCycleDetection detection : detections) {
+            String signalNo = "K2-TC-" + requestHash(String.valueOf(detection.userId())).substring(0, 40);
+            String evidence = "row=" + detection.rowId() + ";cycles=" + detection.cycleCount()
+                    + ";windowDays=" + windowDays + ";source=A4:trial.started";
+            if (!riskRepository.recordSignalIfAbsent(signalNo, detection.userId(),
+                    "risk.trial_cycle_detected", "HIGH", evidence, "K2_PROJECTION")) {
+                continue;
+            }
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("row_id", detection.rowId());
+            payload.put("cycle_count", detection.cycleCount());
+            payload.put("window_days", windowDays);
+            payload.put("severity", "HIGH");
+            payload.put("subject_user_ids", List.of(detection.userId()));
+            if (StringUtils.hasText(detection.clusterId())) payload.put("cluster_id", detection.clusterId());
+            eventOutboxService.publish("RISK_ARBITRAGE_ROW", detection.rowId(),
+                    "risk.trial_cycle_detected", payload);
+        }
+    }
+
+    private void emitArbitrageActionSignal(
+            RiskArbitrageRowView row, String action, List<Long> subjectUserIds, String actor) {
+        String signalType = "board-flag".equals(action)
+                ? "risk.leaderboard_velocity_flagged"
+                : "risk.arbitrage_suspected";
+        String severity = "freeze-cluster".equals(action) ? "CRITICAL" : "HIGH";
+        for (Long userId : subjectUserIds) {
+            String signalNo = "K2-" + requestHash(row.rowId(), action, String.valueOf(userId)).substring(0, 40);
+            riskRepository.recordSignalIfAbsent(signalNo, userId, signalType, severity,
+                    "row=" + row.rowId() + ";view=" + row.viewKey() + ";action=" + action,
+                    actor);
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("row_id", row.rowId());
+        payload.put("view_key", row.viewKey());
+        payload.put("action", action);
+        payload.put("severity", severity);
+        payload.put("subject_user_ids", subjectUserIds);
+        if (StringUtils.hasText(row.clusterId())) payload.put("cluster_id", row.clusterId());
+        eventOutboxService.publish("RISK_ARBITRAGE_ROW", row.rowId(), signalType, payload);
     }
 
     public ApiResult<Map<String, Object>> scoringOverview() {
@@ -1096,6 +1222,17 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .map(this::withK4ScoreHistory)
                 .map(ApiResult::ok)
                 .orElseGet(() -> ApiResult.fail(404, "SCORE_USER_NOT_FOUND"));
+    }
+
+    public ApiResult<RiskScoreUserView> currentScoreUser(String userNo) {
+        String normalized = trimmed(userNo);
+        if (!StringUtils.hasText(normalized)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
+        }
+        return riskRepository.findCurrentScoreUser(normalized)
+                .map(this::withK4ScoreHistory)
+                .map(ApiResult::ok)
+                .orElseGet(() -> ApiResult.fail(503, "K4_RISK_SCORE_UNAVAILABLE"));
     }
 
     public ApiResult<List<RiskScoreUserSearchView>> searchScoreUsers(String keyword, Integer limit) {
@@ -1195,8 +1332,13 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         return rejectK4Write("publish", "draft", actor, 409,
                                 "K4_MODEL_CONCURRENT_UPDATE", request.reason(), idempotencyKey);
                     }
-                    recomputeK4Scores(published, riskRepository.scoreUserNosNeedingProjection(
-                            published.version(), K4ScoreBackfillInitializer.CHUNK_SIZE));
+                    recomputeK4Scores(
+                            published,
+                            riskRepository.scoreUserNosNeedingProjection(
+                                    published.version(), K4ScoreBackfillInitializer.CHUNK_SIZE),
+                            request.reason().trim(),
+                            actor,
+                            idempotencyKey.trim());
                     auditRequired("K4_MODEL_PUBLISHED", "RISK_SCORE_MODEL", String.valueOf(published.version()), actor,
                             k4AuditDetail(before, published, request.reason(), idempotencyKey));
                     return scoringOverview();
@@ -1292,6 +1434,14 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         RiskScoreUserView updated = riskRepository.recomputeScore(
                                 userNo, current.rowVersion(), model, score.score(), score.contributions()).orElse(null);
                         if (updated == null) throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE:" + userNo);
+                        K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, current, updated);
+                        k4KycReviewTriggerService.triggerIfThresholdReached(
+                                current,
+                                updated,
+                                K4KycReviewTriggerService.SOURCE_BATCH_RECOMPUTE,
+                                request.reason().trim(),
+                                actor,
+                                idempotencyKey.trim() + ":" + userNo);
                         results.add(Map.of("userNo", userNo, "before", current.effectiveScore(),
                                 "after", updated.effectiveScore(), "modelVersion", model.version()));
                     }
@@ -1341,7 +1491,15 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     RiskScoreUserView scoreUser = riskRepository.findScoreUser(normalized).orElseThrow();
                     auditRequired("K4_SCORE_OVERRIDDEN", "RISK_SCORE_USER", normalized, actor,
                             k4AuditDetail(before, scoreUser, request.reason(), idempotencyKey), "MEDIUM");
-                    triggerKycReviewIfScoreCrossed(scoreUser, request.reason().trim(), actor, idempotencyKey.trim());
+                    K4ScoreEventPublisher.publishScoreOverridden(
+                            eventOutboxService, scoreUser, request.reason().trim(), actor);
+                    k4KycReviewTriggerService.triggerIfThresholdReached(
+                            before,
+                            scoreUser,
+                            K4KycReviewTriggerService.SOURCE_SCORE_OVERRIDE,
+                            request.reason().trim(),
+                            actor,
+                            idempotencyKey.trim());
                     return ApiResult.ok(scoreUser);
                 }));
     }
@@ -1387,6 +1545,14 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     }
                     auditRequired("K4_SCORE_RECOMPUTED", "RISK_SCORE_USER", normalized, actor,
                             k4AuditDetail(before, updated, request.reason(), idempotencyKey));
+                    K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, before, updated);
+                    k4KycReviewTriggerService.triggerIfThresholdReached(
+                            before,
+                            updated,
+                            K4KycReviewTriggerService.SOURCE_SCORE_RECOMPUTE,
+                            request.reason().trim(),
+                            actor,
+                            idempotencyKey.trim());
                     return ApiResult.ok(updated);
                 }));
     }
@@ -1439,7 +1605,12 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     Map<String, Object> updated = riskRepository
                             .updateKycReviewParam(normalizedKey, normalizedValue, request.expectedVersion()).orElse(null);
                     if (updated == null) return ApiResult.fail(409, "K5_PARAM_VERSION_CONFLICT");
+                    int scoreTriggeredTickets = "reviewTriggerScore".equals(normalizedKey)
+                            ? synchronizeK4KycReviewTriggerThreshold(
+                                    request.reason().trim(), actor, idempotencyKey.trim())
+                            : 0;
                     updated.put("subscription", riskRepository.kycAlertSubscription(actor));
+                    updated.put("scoreTriggeredTickets", scoreTriggeredTickets);
                     Map<String, Object> detail = new LinkedHashMap<>();
                     detail.put("key", normalizedKey);
                     detail.put("value", normalizedValue);
@@ -1447,9 +1618,36 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     detail.put("reason", request.reason().trim());
                     detail.put("idempotencyKey", idempotencyKey.trim());
                     detail.put("slaRecomputedTickets", updated.getOrDefault("slaRecomputedTickets", 0));
+                    detail.put("scoreTriggeredTickets", scoreTriggeredTickets);
                     auditRequired("K5_KYC_REVIEW_PARAM_CHANGED", "RISK_KYC_REVIEW_PARAM", normalizedKey, actor, detail);
                     return ApiResult.ok(updated);
                 });
+    }
+
+    private int synchronizeK4KycReviewTriggerThreshold(
+            String reason, String operator, String idempotencyKey) {
+        int threshold = riskRepository.kycReviewTriggerScore();
+        int triggered = 0;
+        while (true) {
+            List<String> userNos = riskRepository.scoreUserNosNeedingKycTriggerThresholdSync(
+                    threshold, K4ScoreBackfillInitializer.CHUNK_SIZE);
+            if (userNos.isEmpty()) {
+                return triggered;
+            }
+            for (String userNo : userNos) {
+                RiskScoreUserView current = riskRepository.findCurrentScoreUser(userNo)
+                        .orElseThrow(() -> new BizException(409, "K4_CURRENT_SCORE_REQUIRED_FOR_K5_THRESHOLD_SYNC"));
+                if (k4KycReviewTriggerService.triggerIfThresholdReached(
+                        null,
+                        current,
+                        K4KycReviewTriggerService.SOURCE_REVIEW_THRESHOLD_CHANGE,
+                        reason,
+                        operator,
+                        idempotencyKey + ":threshold:" + userNo)) {
+                    triggered++;
+                }
+            }
+        }
     }
 
     @Transactional
@@ -1503,6 +1701,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         return rejectK5Decision(normalizedTicket, actor, 409, "K5_REVIEW_TICKET_VERSION_CONFLICT",
                                 request.reason(), idempotencyKey);
                     }
+                    if (!userKycStatusFacade.userExists(ticket.userNo())) {
+                        return rejectK5Decision(normalizedTicket, actor, 404, "K5_REVIEW_USER_NOT_FOUND",
+                                request.reason(), idempotencyKey);
+                    }
                     long version = expectedVersion;
                     if (!riskRepository.updateKycReviewTicketStatus(normalizedTicket, decision, version,
                             reasonCode, request.reason().trim(), actor)) {
@@ -1548,7 +1750,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         String actor = authenticatedOperator();
         return idempotentCommand("K5_MANUAL:" + userNo, idempotencyKey,
                 requestHash(userNo, request.reason()), () -> {
-                    KycReviewTicketContext open = riskRepository.findOpenKycReviewTicketByUser(userNo).orElse(null);
+                    KycReviewTicketContext open = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElse(null);
                     String ticketId;
                     String action;
                     boolean merged;
@@ -1566,7 +1768,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             action = "K5_KYC_REVIEW_MANUAL_CREATED";
                             merged = false;
                         } catch (DuplicateKeyException race) {
-                            KycReviewTicketContext winner = riskRepository.findOpenKycReviewTicketByUser(userNo).orElse(null);
+                            KycReviewTicketContext winner = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElse(null);
                             if (winner == null || !riskRepository.mergeOpenKycReviewTicket(
                                     winner.ticketId(), winner.version(), request.reason().trim(), actor)) {
                                 return ApiResult.fail(409, "K5_REVIEW_TICKET_CONCURRENT_TRIGGER");
@@ -1620,55 +1822,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 });
     }
 
-    private void triggerKycReviewIfScoreCrossed(RiskScoreUserView user, String reason, String operator, String idempotencyKey) {
-        if (user == null || user.effectiveScore() == null) {
-            return;
-        }
-        int threshold = riskRepository.kycReviewTriggerScore();
-        if (threshold < 70 || threshold > 100 || user.effectiveScore() < threshold) {
-            return;
-        }
-        if (riskRepository.hasOpenKycReviewTicket(user.userNo())) {
-            KycReviewTicketContext open = riskRepository.findOpenKycReviewTicketByUser(user.userNo()).orElse(null);
-            if (open == null || !riskRepository.mergeOpenKycReviewTicket(
-                    open.ticketId(), open.version(), reason, operator)) {
-                throw new IllegalStateException("K5_REVIEW_SCORE_TRIGGER_MERGE_CONFLICT");
-            }
-            auditRequired("K5_KYC_REVIEW_SCORE_TRIGGER_MERGED", "RISK_KYC_REVIEW_TICKET", open.ticketId(), operator, Map.of(
-                    "ticketId", open.ticketId(), "userNo", user.userNo(), "effectiveScore", user.effectiveScore(),
-                    "threshold", threshold, "source", "K4_SCORE_OVERRIDE", "reason", reason,
-                    "idempotencyKey", idempotencyKey));
-            return;
-        }
-        String ticketId = "KR-K4-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
-        try {
-            riskRepository.createScoreTriggeredKycReviewTicket(
-                    ticketId, user.userNo(), user.effectiveScore(), threshold, reason, operator);
-            auditRequired("K5_KYC_REVIEW_TRIGGERED_BY_SCORE", "RISK_KYC_REVIEW_TICKET", ticketId, operator, Map.of(
-                    "ticketId", ticketId,
-                    "userNo", user.userNo(),
-                    "effectiveScore", user.effectiveScore(),
-                    "threshold", threshold,
-                    "source", "K4_SCORE_OVERRIDE",
-                    "reason", reason,
-                    "idempotencyKey", idempotencyKey));
-        } catch (DuplicateKeyException race) {
-            KycReviewTicketContext winner = riskRepository.findOpenKycReviewTicketByUser(user.userNo()).orElse(null);
-            if (winner == null || !riskRepository.mergeOpenKycReviewTicket(
-                    winner.ticketId(), winner.version(), reason, operator)) {
-                throw race;
-            }
-            auditRequired("K5_KYC_REVIEW_SCORE_TRIGGER_MERGED", "RISK_KYC_REVIEW_TICKET", winner.ticketId(), operator, Map.of(
-                    "ticketId", winner.ticketId(), "userNo", user.userNo(), "effectiveScore", user.effectiveScore(),
-                    "threshold", threshold, "source", "K4_SCORE_OVERRIDE", "reason", reason,
-                    "idempotencyKey", idempotencyKey));
-        }
-    }
-
     private Map<String, Object> applyKycReviewDecision(KycReviewTicketContext ticket, String decision, String reason, String operator) {
         Map<String, Object> downstream = new LinkedHashMap<>();
         String kycStatus = "passed".equals(decision) ? "APPROVED" : "REJECTED";
-        boolean c4Updated = userKycStatusFacade.updateKycStatusByUserNo(ticket.userNo(), kycStatus, reason, operator);
+        boolean c4Updated = userKycStatusFacade.updateKycStatusByUserNo(
+                ticket.userNo(), kycStatus, reason, operator, ticket.ticketId());
         if (!c4Updated) {
             throw new IllegalStateException("K5_C4_KYC_UPDATE_FAILED");
         }
@@ -1824,8 +1982,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 || request.lowMax() < 0 || request.highMin() > 100 || request.lowMax() >= request.highMin()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_BANDS_INVALID");
         }
-        if (request.autoEscalateScore() == null
-                || request.autoEscalateScore() < 70 || request.autoEscalateScore() > 100) {
+        if (!validK4EscalationThreshold(request.highMin(), request.autoEscalateScore())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K4_MODEL_ESCALATE_INVALID");
         }
         return null;
@@ -1887,8 +2044,15 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 && model.bandLowMax() != null && model.bandHighMin() != null
                 && model.bandLowMax() >= 0 && model.bandHighMin() <= 100
                 && model.bandLowMax() < model.bandHighMin()
-                && model.autoEscalateScore() != null
-                && model.autoEscalateScore() >= 70 && model.autoEscalateScore() <= 100;
+                && validK4EscalationThreshold(model.bandHighMin(), model.autoEscalateScore());
+    }
+
+    private boolean validK4EscalationThreshold(Integer bandHighMin, Integer autoEscalateScore) {
+        return bandHighMin != null
+                && autoEscalateScore != null
+                && autoEscalateScore >= 70
+                && autoEscalateScore <= 100
+                && autoEscalateScore >= bandHighMin;
     }
 
     private boolean nonDecreasing(Map<String, Integer> mappings, String... keys) {
@@ -1910,17 +2074,31 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 riskRepository.scoreHistory(user.userNo(), 20));
     }
 
-    private void recomputeK4Scores(RiskScoreModelView model, List<String> scoreUsers) {
+    private void recomputeK4Scores(
+            RiskScoreModelView model,
+            List<String> scoreUsers,
+            String reason,
+            String operator,
+            String idempotencyKey) {
         for (String userNo : scoreUsers) {
             RiskScoreUserView current = riskRepository.findScoreUser(userNo)
                     .orElseThrow(() -> new BizException(409, "K4_SCORE_USER_MISSING_DURING_PUBLISH"));
             RiskScoreRawInput input = riskRepository.scoringInput(userNo)
                     .orElseThrow(() -> new BizException(409, "K4_SCORE_INPUT_MISSING_DURING_PUBLISH"));
             K4RiskScorer.ScoreResult score = k4RiskScorer.score(input, model);
-            if (riskRepository.recomputeScore(
-                    userNo, current.rowVersion(), model, score.score(), score.contributions()).isEmpty()) {
+            RiskScoreUserView updated = riskRepository.refreshScoreProjection(
+                    userNo, current.rowVersion(), model, score.score(), score.contributions()).orElse(null);
+            if (updated == null) {
                 throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE_DURING_PUBLISH");
             }
+            K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, current, updated);
+            k4KycReviewTriggerService.triggerIfThresholdReached(
+                    current,
+                    updated,
+                    K4KycReviewTriggerService.SOURCE_MODEL_PUBLISH,
+                    reason,
+                    operator,
+                    idempotencyKey + ":" + userNo);
         }
     }
 
@@ -2119,7 +2297,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private Integer normalizeK3Priority(Integer priority) {
-        return priority != null && priority >= 1 && priority <= 1000 ? priority : null;
+        return priority != null && priority >= 1 && priority <= 100 ? priority : null;
     }
 
     private boolean k3PriorityConflicts(String excludedRuleId, String dimension, int priority) {
@@ -2337,13 +2515,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private String normalizeK3AddressReputationRule(String value) {
-        String normalized = value
-                .replace("／", "/")
-                .replace("＋", "+")
-                .replaceAll("\\s*/\\s*", " / ")
-                .replaceAll("\\s*\\+\\s*", " + ")
-                .trim();
-        return K3_ADDRESS_REPUTATION_RULES.contains(normalized) ? normalized : "";
+        return K3AddressReputationRuleConfig.parse(value)
+                .map(K3AddressReputationRuleConfig::canonicalCondition)
+                .orElse("");
     }
 
     private String normalizeK5Param(String key, String value) {
@@ -2484,6 +2658,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private String trimmed(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private String addressReputationCacheKey(String chain, String address) {
+        String normalizedChain = trimmed(chain).toUpperCase(Locale.ROOT);
+        String normalizedAddress = trimmed(address);
+        if (("USDT-ERC20".equals(normalizedChain) || "ERC20".equals(normalizedChain))
+                && normalizedAddress.matches("^0x[0-9a-fA-F]{40}$")) {
+            normalizedAddress = normalizedAddress.toLowerCase(Locale.ROOT);
+        }
+        return normalizedChain + "|" + normalizedAddress;
     }
 
     private String requireText(String value, String message) {

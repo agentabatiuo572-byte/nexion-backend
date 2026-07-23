@@ -514,6 +514,21 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         return value == null ? BigDecimal.ZERO : value;
     }
 
+    @Override
+    public Map<String, String> listPublishedMessages(String namespace, String locale) {
+        LambdaQueryWrapper<I18nMessageEntity> query = new LambdaQueryWrapper<I18nMessageEntity>()
+                .eq(I18nMessageEntity::getLocale, locale)
+                .eq(I18nMessageEntity::getStatus, 1)
+                .eq(I18nMessageEntity::getIsDeleted, 0)
+                .orderByAsc(I18nMessageEntity::getMessageKey);
+        if (StringUtils.hasText(namespace)) {
+            query.likeRight(I18nMessageEntity::getMessageKey, namespace.trim() + ".");
+        }
+        Map<String, String> result = new LinkedHashMap<>();
+        messageMapper.selectList(query).forEach(row -> result.put(row.getMessageKey(), row.getMessageValue()));
+        return result;
+    }
+
     private List<I18nMessageEntity> messageRows(String messageKey) {
         return messageMapper.selectList(new LambdaQueryWrapper<I18nMessageEntity>()
                 .eq(I18nMessageEntity::getMessageKey, messageKey)

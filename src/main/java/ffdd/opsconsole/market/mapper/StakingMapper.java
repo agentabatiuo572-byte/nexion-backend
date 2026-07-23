@@ -15,6 +15,15 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface StakingMapper extends BaseMapper<StakingProductEntity> {
+    @Update("""
+            UPDATE nx_staking_position
+               SET status='SLASHED',updated_at=NOW()
+             WHERE is_deleted=0
+               AND UPPER(status) IN ('PENDING_LOCK','ACTIVE','MATURE_UNCLAIMED')
+               AND LOWER(REPLACE(product_code,'_',''))=LOWER(REPLACE(#{tierKey},'_',''))
+            """)
+    int slashOpenPositionsByTier(@Param("tierKey") String tierKey);
+
     @Select("""
             SELECT COUNT(1)
               FROM information_schema.COLUMNS

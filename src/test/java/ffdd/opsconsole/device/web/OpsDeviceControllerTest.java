@@ -21,6 +21,7 @@ import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
+import ffdd.opsconsole.device.dto.DeviceEarlyAccessUpdateRequest;
 import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
@@ -49,7 +50,8 @@ class OpsDeviceControllerTest {
 
     @Test
     void devicesDelegatesQueryToService() {
-        DeviceOpsQueryRequest request = new DeviceOpsQueryRequest("OFFLINE", "HK-1", "NX", 1L, 20L);
+        DeviceOpsQueryRequest request = new DeviceOpsQueryRequest(
+                "OFFLINE", "HK-1", "NX", 1L, 20L, null, null, null);
         when(deviceService.devices(request)).thenReturn(ApiResult.ok(new PageResult<>(0, 1, 20, List.of())));
 
         assertThat(controller.devices(request).getData().getPageNum()).isEqualTo(1);
@@ -89,6 +91,19 @@ class OpsDeviceControllerTest {
 
         verify(deviceService).e1GenerationGates();
         verify(deviceService).updateE1GenerationGate("idem-e1-gate", request);
+    }
+
+    @Test
+    void e1EarlyAccessDelegatesWithIdempotencyHeader() {
+        DeviceEarlyAccessUpdateRequest request =
+                new DeviceEarlyAccessUpdateRequest(true, 14, "开启提前购买配置", "superadmin");
+        when(deviceService.updateE1EarlyAccess("idem-e1-early", request))
+                .thenReturn(ApiResult.ok(Map.of("enabled", true, "leadDays", 14)));
+
+        assertThat(controller.updateE1EarlyAccess("idem-e1-early", request).getData())
+                .containsEntry("enabled", true)
+                .containsEntry("leadDays", 14);
+        verify(deviceService).updateE1EarlyAccess("idem-e1-early", request);
     }
 
     @Test
@@ -190,7 +205,8 @@ class OpsDeviceControllerTest {
 
     @Test
     void taskCrudDelegatesWithIdempotencyHeader() {
-        DeviceTaskQueryRequest query = new DeviceTaskQueryRequest("active", "LLM", 1L, 20L);
+        DeviceTaskQueryRequest query = new DeviceTaskQueryRequest("active", "LLM", "LL", 1L, 20L);
+        assertThat(query.taskClass()).isEqualTo("LL");
         DeviceTaskUpsertRequest request = new DeviceTaskUpsertRequest(
                 "LLM 推理 70B",
                 new BigDecimal("0.46"),

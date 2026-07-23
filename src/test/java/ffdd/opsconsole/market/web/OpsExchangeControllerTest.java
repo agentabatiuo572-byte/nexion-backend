@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 
 class OpsExchangeControllerTest {
     private final OpsNexMarketService marketService = mock(OpsNexMarketService.class);
-    private final OpsExchangeController controller = new OpsExchangeController(marketService);
+    private final OpsExchangeController controller = new OpsExchangeController(marketService, null);
 
     @Test
     void overviewDelegatesToService() {

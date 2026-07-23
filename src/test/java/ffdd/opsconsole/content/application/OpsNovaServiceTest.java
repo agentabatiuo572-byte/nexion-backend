@@ -1,6 +1,8 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -29,15 +31,26 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsNovaServiceTest {
     private final FakeNovaRepository novaRepository = new FakeNovaRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AtomicReference<String> currentPhase = new AtomicReference<>("P3");
     private final OpsNovaService service = new OpsNovaService(
             novaRepository,
-            auditLogService);
+            auditLogService,
+            currentPhase::get);
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
 
     @Test
     void overviewReturnsEmptyWhenNoBackendConfigExists() {
@@ -64,8 +77,55 @@ class OpsNovaServiceTest {
         assertThat(result.getData().channels()).isEmpty();
         assertThat(result.getData().templates()).isEmpty();
         assertThat(result.getData().socialDistribution()).isEmpty();
-        assertThat(result.getData().eventDriven()).isEmpty();
+        assertThat(result.getData().eventDriven())
+                .extracting("name")
+                .containsExactly("risk-alert", "team_event", "staking_event", "market_event", "weekly-quest-refresh");
         assertThat(result.getData().stats().totalChannels()).isZero();
+    }
+
+    @Test
+    void commandReasonMustContainEightToTwoHundredCharacters() {
+        NovaChannelUpsertRequest seven = new NovaChannelUpsertRequest(
+                "reasonMin", "Reason minimum", "周期扫描", "15 min", "7d",
+                BigDecimal.ZERO, false, "forged", "1234567");
+        NovaChannelUpsertRequest eight = new NovaChannelUpsertRequest(
+                "reasonOk", "Reason accepted", "周期扫描", "15 min", "7d",
+                BigDecimal.ZERO, false, "forged", "12345678");
+        NovaChannelUpsertRequest twoHundredOne = new NovaChannelUpsertRequest(
+                "reasonMax", "Reason maximum", "周期扫描", "15 min", "7d",
+                BigDecimal.ZERO, false, "forged", "x".repeat(201));
+
+        assertThat(service.createChannel("idem-i2-reason-min", seven).getMessage())
+                .isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+        assertThat(service.createChannel("idem-i2-reason-ok", eight).getCode()).isZero();
+        assertThat(service.createChannel("idem-i2-reason-max", twoHundredOne).getMessage())
+                .isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+    }
+
+    @Test
+    void authenticatedAdministratorOverridesForgedRequestOperator() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("admin-subject", "n/a", List.of());
+        authentication.setDetails(Map.of("username", "superadmin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        var result = service.createChannel("idem-i2-auth-actor", channelRequest("authActor"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(novaRepository.lastOperator).isEqualTo("superadmin");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("superadmin");
+    }
+
+    @Test
+    void mutationFailsClosedWhenRequiredAuditCannotBePersisted() {
+        doThrow(new IllegalStateException("audit unavailable"))
+                .when(auditLogService).recordRequired(org.mockito.ArgumentMatchers.any(AuditLogWriteRequest.class));
+
+        assertThatThrownBy(() -> service.createChannel("idem-i2-audit-required", channelRequest("auditRequired")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
     }
 
     @Test
@@ -89,6 +149,45 @@ class OpsNovaServiceTest {
     }
 
     @Test
+    void phaseKeyedCadenceFollowsTheH1AuthoritativePhaseReadOnly() {
+        novaRepository.channels.put("tradein", new NovaChannelView(
+                "tradein", "以旧换新提醒", "资格满足", "15 min", "60 min",
+                "P1-P2 skip / P3-P4 60 min / P5-P6 24h", BigDecimal.ZERO, true));
+        novaRepository.channels.put("taskLockMonthly", new NovaChannelView(
+                "taskLockMonthly", "月度任务锁定", "任务锁定", "30 min", "30d",
+                "P1-P2 30d / P3-P4 7d / P5-P6 84h", BigDecimal.ZERO, true));
+        currentPhase.set("P5");
+
+        var result = service.overview();
+
+        assertThat(result.getData().channels()).filteredOn(channel -> "tradein".equals(channel.key()))
+                .singleElement().satisfies(channel -> {
+                    assertThat(channel.cooldown()).isEqualTo("24h");
+                    assertThat(channel.phaseKeyed()).contains("H1 当前 P5");
+                });
+        assertThat(result.getData().channels()).filteredOn(channel -> "taskLockMonthly".equals(channel.key()))
+                .singleElement().satisfies(channel -> {
+                    assertThat(channel.cooldown()).isEqualTo("84h");
+                    assertThat(channel.phaseKeyed()).contains("H1 当前 P5");
+                });
+    }
+
+    @Test
+    void phaseKeyedChannelCadenceCannotBeOverwrittenFromI2() {
+        novaRepository.channels.put("tradein", new NovaChannelView(
+                "tradein", "以旧换新提醒", "资格满足", "15 min", "60 min",
+                "P1-P2 skip / P3-P4 60 min / P5-P6 24h", BigDecimal.ZERO, true));
+        NovaChannelUpsertRequest request = new NovaChannelUpsertRequest(
+                "tradein", "以旧换新提醒", "资格满足", "10 min", "20 min",
+                BigDecimal.ZERO, true, "forged", "尝试从 I2 覆盖 H1 阶段节奏");
+
+        var result = service.updateChannel("tradein", "idem-i2-h1-readonly", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOVA_PHASE_CADENCE_H1_READ_ONLY");
+    }
+
+    @Test
     void createChannelRequiresIdempotencyKey() {
         var result = service.createChannel(null, channelRequest(null));
 
@@ -106,7 +205,7 @@ class OpsNovaServiceTest {
                 .containsExactly("Weekly recap", "每周任务完成后触发", false);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I2_NOVA_CHANNEL_CREATED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("NOVA");
     }
@@ -118,7 +217,7 @@ class OpsNovaServiceTest {
         var result = service.updateChannelStatus("welcome", "idem-i2-toggle", new NovaChannelStatusRequest(
                 false,
                 "Marina K.",
-                "重复开启通道"));
+                "重复开启通道状态验证"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -232,12 +331,12 @@ class OpsNovaServiceTest {
                 "Thị trường", "Giá thị trường là {amount}",
                 "", "",
                 "Marina K.",
-                "新增行情模板"));
+                "新增行情推送模板"));
 
         var result = service.updateTemplateStatus("market", "idem-i2-publish", new NovaTemplateStatusRequest(
                 "ARCHIVED",
                 "Marina K.",
-                "归档旧行情模板"));
+                "归档旧行情推送模板"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("ARCHIVED");
@@ -305,7 +404,7 @@ class OpsNovaServiceTest {
         assertThat(result.getData().sourceEventId()).startsWith("evt_").doesNotContain("90001");
         assertThat(result.getData().sourceTable()).isEqualTo("nx_withdrawal_order");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I2_NOVA_SOCIAL_EVENT_CREATED");
     }
 
@@ -481,6 +580,7 @@ class OpsNovaServiceTest {
         private final Map<String, NovaSocialPoolView> pools = new LinkedHashMap<>();
         private final Map<String, Object> stats = new LinkedHashMap<>();
         private final List<NovaSocialEventView> socialEvents = new ArrayList<>();
+        private String lastOperator;
         private long nextSocialEventId = 1;
         private final Map<String, List<TrustedNovaSocialEvent>> trustedEvents = new LinkedHashMap<>();
 
@@ -511,17 +611,20 @@ class OpsNovaServiceTest {
         @Override
         public void createChannel(String key, String name, String trigger, String tick, String cooldown,
                                   BigDecimal ctr, boolean enabled, int sortOrder, String operator, String reason) {
+            lastOperator = operator;
             channels.put(key, new NovaChannelView(key, name, trigger, tick, cooldown, "", ctr, enabled));
         }
 
         @Override
         public void updateChannel(String key, String name, String trigger, String tick, String cooldown,
                                   BigDecimal ctr, boolean enabled, String operator, String reason) {
+            lastOperator = operator;
             channels.put(key, new NovaChannelView(key, name, trigger, tick, cooldown, "", ctr, enabled));
         }
 
         @Override
         public void updateChannelStatus(String key, boolean enabled, String operator, String reason) {
+            lastOperator = operator;
             NovaChannelView current = channels.get(key);
             channels.put(key, new NovaChannelView(
                     current.key(), current.name(), current.trigger(), current.tick(), current.cooldown(),

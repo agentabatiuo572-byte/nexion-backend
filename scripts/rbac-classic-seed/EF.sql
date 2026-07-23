@@ -9,11 +9,11 @@ USE nexion;
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
-  -- E1 商品目录 & 代际门 /devices/pricing
-  ('device_e1_read',                          'E1 商品目录与代际门 - 读',         'API', '/devices/pricing',        'READ',  0, 1, 0),
-  ('device_e1_write',                         'E1 商品目录与代际门 - 常规写',     'API', '/devices/pricing',        'WRITE', 0, 1, 0),
-  ('device_e1_generation_gate_force_unlock',  '代际门强制提前开放',               'API', '/devices/pricing',        'HIGH',  1, 1, 0),
-  ('device_e1_generation_gate_force_lock',    '撤销代际门强制提前开放',           'API', '/devices/pricing',        'HIGH',  1, 1, 0),
+  -- E1 商品目录 & 上架门 /devices/pricing
+  ('device_e1_read',                          'E1 商品目录与上架门 - 读',         'API', '/devices/pricing',        'READ',  0, 1, 0),
+  ('device_e1_write',                         'E1 商品目录与上架门 - 常规写',     'API', '/devices/pricing',        'WRITE', 0, 1, 0),
+  ('device_e1_generation_gate_force_unlock',  '上架门强制提前开放',               'API', '/devices/pricing',        'HIGH',  1, 1, 0),
+  ('device_e1_generation_gate_force_lock',    '撤销上架门强制提前开放',           'API', '/devices/pricing',        'HIGH',  1, 1, 0),
   -- E2 收益 & 任务引擎 /devices/tasks
   ('device_e2_read',                          'E2 收益与任务引擎 - 读',           'API', '/devices/tasks',          'READ',  0, 1, 0),
   ('device_e2_write',                         'E2 收益与任务引擎 - 常规写',       'API', '/devices/tasks',          'WRITE', 0, 1, 0),
@@ -42,6 +42,9 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('network_f1_read',                         'F1 V-Rank 晋升 - 读',              'API', '/network/v-rank',         'READ',  0, 1, 0),
   ('network_f1_write',                        'F1 V-Rank 晋升 - 常规写',          'API', '/network/v-rank',         'WRITE', 0, 1, 0),
   ('network_f1_permanent_protection',         'V-Rank 不降级保护开关',            'API', '/network/v-rank',         'HIGH',  1, 1, 0),
+  ('network_f1_promote_user',                 'F1 V-Rank 评估触发 / 手动晋升回滚', 'API', '/network/v-rank',         'HIGH',  1, 1, 0),
+  ('network_f1_reward_reissue',               'F1 V-Rank 派发流水补发(F1-MD4)',   'API', '/network/v-rank',         'HIGH',  1, 1, 0),
+  ('network_f1_reward_reverse',               'F1 V-Rank 派发流水撤销红冲(F1-MD4)','API', '/network/v-rank',         'HIGH',  1, 1, 0),
   -- F2 网络版税费率 /network/royalty
   ('network_f2_read',                         'F2 网络版税费率 - 读',             'API', '/network/royalty',        'READ',  0, 1, 0),
   ('network_f2_write',                        'F2 网络版税费率 - 常规写',         'API', '/network/royalty',        'WRITE', 0, 1, 0),
@@ -72,8 +75,8 @@ ON DUPLICATE KEY UPDATE
   status          = 1,
   is_deleted      = 0;
 
--- 统计：43 行 = 11 READ + 11 WRITE + 21 HIGH
+-- 统计：46 行 = 11 READ + 11 WRITE + 24 HIGH
 --   E 域 6 页 24 点（6R + 6W + 12 高敏）
---   F 域 5 页 19 点（5R + 5W + 9 高敏）
--- amplifies=1 共 21 条（所有 HIGH 类型）；READ/WRITE 均 amplifies=0
+--   F 域 5 页 22 点（5R + 5W + 12 高敏 — Sprint5 新增 network_f1_promote_user;Sprint6 新增 network_f1_reward_reissue/reverse）
+-- amplifies=1 共 24 条（所有 HIGH 类型）；READ/WRITE 均 amplifies=0
 -- 未生成 role_permission（后续统一处理）

@@ -9,6 +9,10 @@ public record UserRegistrationRiskParamView(
         String unit,
         int min,
         int max,
+        int secondaryMin,
+        int secondaryMax,
+        String secondaryUnit,
+        long version,
         boolean readOnly,
         String note,
         String configKey) {

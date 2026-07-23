@@ -8,6 +8,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
+import ffdd.opsconsole.device.domain.DeviceOrderDetailView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
@@ -17,8 +18,13 @@ import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
+import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
+import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
+import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
+import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
+import ffdd.opsconsole.device.dto.DeviceEarlyAccessUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateArchiveRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
 import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
@@ -26,7 +32,6 @@ import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderStateRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
-import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
 import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
@@ -191,12 +196,20 @@ public class OpsDeviceController {
     }
 
     @PatchMapping("/compute-config/params/{paramKey}")
-    @PreAuthorize("hasAuthority('device_e6_write')")
+    @PreAuthorize("hasAnyAuthority('device_e6_write','device_e6_flag_toggle')")
     public ApiResult<ComputeConfigParamResponse> updateComputeConfigParam(
             @PathVariable String paramKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ComputeConfigParamUpdateRequest request) {
         return deviceService.updateComputeConfigParam(paramKey, idempotencyKey, request);
+    }
+
+    @PatchMapping("/compute-config/params")
+    @PreAuthorize("hasAuthority('device_e6_write')")
+    public ApiResult<ComputeConfigBatchResponse> updateComputeConfigBatch(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody ComputeConfigBatchUpdateRequest request) {
+        return deviceService.updateComputeConfigBatch(idempotencyKey, request);
     }
 
     @PostMapping("/tasks")
@@ -249,6 +262,12 @@ public class OpsDeviceController {
         return deviceService.orders(request);
     }
 
+    @GetMapping("/orders/{orderNo}")
+    @PreAuthorize("hasAuthority('device_e4_read')")
+    public ApiResult<DeviceOrderDetailView> order(@PathVariable String orderNo) {
+        return deviceService.order(orderNo);
+    }
+
     @PatchMapping("/orders/{orderNo}/refund")
     @PreAuthorize("hasAuthority('device_e4_order_refund')")
     public ApiResult<DeviceOrderView> refundOrder(
@@ -258,9 +277,27 @@ public class OpsDeviceController {
         return deviceService.refundOrder(orderNo, idempotencyKey, request);
     }
 
+    @PostMapping("/orders/{orderNo}/refund")
+    @PreAuthorize("hasAuthority('device_e4_order_refund')")
+    public ApiResult<DeviceOrderView> refundOrderPost(
+            @PathVariable String orderNo,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceOrderActionRequest request) {
+        return deviceService.refundOrder(orderNo, idempotencyKey, request);
+    }
+
     @PatchMapping("/orders/{orderNo}/cancel")
     @PreAuthorize("hasAuthority('device_e4_write')")
     public ApiResult<DeviceOrderView> cancelOrder(
+            @PathVariable String orderNo,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceOrderActionRequest request) {
+        return deviceService.cancelOrder(orderNo, idempotencyKey, request);
+    }
+
+    @PostMapping("/orders/{orderNo}/cancel")
+    @PreAuthorize("hasAuthority('device_e4_write')")
+    public ApiResult<DeviceOrderView> cancelOrderPost(
             @PathVariable String orderNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceOrderActionRequest request) {
@@ -308,15 +345,6 @@ public class OpsDeviceController {
         return deviceService.patchE1Phase(phaseId, idempotencyKey, request);
     }
 
-    @PatchMapping("/e1/phases/{phaseId}/current")
-    @PreAuthorize("hasAuthority('device_e1_write')")
-    public ApiResult<Map<String, Object>> setE1CurrentPhase(
-            @PathVariable String phaseId,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody DevicePhaseCurrentRequest request) {
-        return deviceService.setE1CurrentPhase(phaseId, idempotencyKey, request);
-    }
-
     @DeleteMapping("/e1/phases/{phaseId}")
     @PreAuthorize("hasAuthority('device_e1_write')")
     public ApiResult<Map<String, Object>> archiveE1Phase(
@@ -360,6 +388,14 @@ public class OpsDeviceController {
         return deviceService.archiveE1GenerationGate(skuId, idempotencyKey, request);
     }
 
+    @PatchMapping("/e1/early-access")
+    @PreAuthorize("hasAuthority('device_e1_write')")
+    public ApiResult<Map<String, Object>> updateE1EarlyAccess(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceEarlyAccessUpdateRequest request) {
+        return deviceService.updateE1EarlyAccess(idempotencyKey, request);
+    }
+
     @GetMapping("/e3/overview")
     @PreAuthorize("hasAuthority('device_e3_read')")
     public ApiResult<Map<String, Object>> e3Overview() {
@@ -396,6 +432,58 @@ public class OpsDeviceController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceRestoreRequest request) {
         return deviceService.restoreDevice(deviceId, idempotencyKey, request);
+    }
+
+    @PostMapping("/{deviceId}/activate")
+    @PreAuthorize("hasAuthority('device_e5_write')")
+    public ApiResult<DeviceOpsView> activateDevice(
+            @PathVariable Long deviceId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceE5ActionRequest request) {
+        return deviceService.activateE5Device(deviceId, false, idempotencyKey, request);
+    }
+
+    @PostMapping("/{deviceId}/force-activate")
+    @PreAuthorize("hasAuthority('device_e5_device_force_activate')")
+    public ApiResult<DeviceOpsView> forceActivateDevice(
+            @PathVariable Long deviceId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceE5ActionRequest request) {
+        return deviceService.activateE5Device(deviceId, true, idempotencyKey, request);
+    }
+
+    @PostMapping("/{deviceId}/deactivate")
+    @PreAuthorize("hasAuthority('device_e5_write')")
+    public ApiResult<DeviceOpsView> deactivateDevice(
+            @PathVariable Long deviceId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceE5ActionRequest request) {
+        return deviceService.deactivateE5Device(deviceId, false, idempotencyKey, request);
+    }
+
+    @PostMapping("/{deviceId}/unbind")
+    @PreAuthorize("hasAuthority('device_e5_device_unbind')")
+    public ApiResult<DeviceOpsView> unbindDevice(
+            @PathVariable Long deviceId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceE5ActionRequest request) {
+        return deviceService.deactivateE5Device(deviceId, true, idempotencyKey, request);
+    }
+
+    @PostMapping("/batch/pause")
+    @PreAuthorize("hasAuthority('device_e5_write')")
+    public ApiResult<Map<String, Object>> pauseDevices(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceE5BatchRequest request) {
+        return deviceService.batchE5Devices(true, idempotencyKey, request);
+    }
+
+    @PostMapping("/batch/resume")
+    @PreAuthorize("hasAuthority('device_e5_write')")
+    public ApiResult<Map<String, Object>> resumeDevices(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceE5BatchRequest request) {
+        return deviceService.batchE5Devices(false, idempotencyKey, request);
     }
 
     @GetMapping("/datacenters")

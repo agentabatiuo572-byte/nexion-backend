@@ -27,7 +27,11 @@ public class OpsPlatformPermissionDictionaryService {
             return ApiResult.ok(new PageResult<>(0, normalized.pageNum(), normalized.pageSize(), List.of()));
         }
         int limit = normalized.pageSize();
-        int offset = (int) ((normalized.pageNum() - 1L) * normalized.pageSize());
+        long requestedOffset = (normalized.pageNum() - 1L) * normalized.pageSize();
+        if (requestedOffset >= total || requestedOffset > Integer.MAX_VALUE) {
+            return ApiResult.ok(new PageResult<>(total, normalized.pageNum(), normalized.pageSize(), List.of()));
+        }
+        int offset = (int) requestedOffset;
         List<PermissionDictionaryView> records = permissionMapper.pagePermissions(
                 normalized.keyword(), normalized.domain(), normalized.permType(), limit, offset);
         return ApiResult.ok(new PageResult<>(total, normalized.pageNum(), normalized.pageSize(), records));

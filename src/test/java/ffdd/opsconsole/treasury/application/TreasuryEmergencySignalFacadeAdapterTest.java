@@ -5,20 +5,23 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import java.math.BigDecimal;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class TreasuryEmergencySignalFacadeAdapterTest {
     private final TreasuryLedgerRepository repository = mock(TreasuryLedgerRepository.class);
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
+    private final OpsTreasuryService treasuryService = mock(OpsTreasuryService.class);
     private final TreasuryEmergencySignalFacadeAdapter facade =
-            new TreasuryEmergencySignalFacadeAdapter(repository, configFacade);
+            new TreasuryEmergencySignalFacadeAdapter(repository, configFacade, treasuryService);
 
     @Test
     void snapshotUsesSliding24HourWithdrawalRequestsAndLedgerWalletReconciliationGap() {
-        when(repository.currentReserveUsd()).thenReturn(new BigDecimal("100000"));
+        when(treasuryService.reserve()).thenReturn(ApiResult.ok(Map.of("reserveTotalUsdt", new BigDecimal("100000"))));
         when(repository.sumWithdrawalRequested24hUsdt()).thenReturn(new BigDecimal("45000"));
         when(repository.sumActiveWithdrawalQueueUsdt()).thenReturn(new BigDecimal("1"));
         when(repository.walletLedgerReconciliationGapUsdt()).thenReturn(new BigDecimal("75000"));

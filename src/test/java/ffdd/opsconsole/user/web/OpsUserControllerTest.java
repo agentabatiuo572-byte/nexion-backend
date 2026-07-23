@@ -9,11 +9,13 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.user.application.OpsUser360Service;
 import ffdd.opsconsole.user.application.OpsUserService;
 import ffdd.opsconsole.user.domain.UserAccountView;
 import ffdd.opsconsole.user.domain.UserProfileExportFile;
+import ffdd.opsconsole.user.domain.UserProfileListView;
 import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.dto.UserAccountListRemoveRequest;
 import ffdd.opsconsole.user.dto.UserAccountListUpsertRequest;
@@ -30,6 +32,8 @@ import ffdd.opsconsole.user.dto.UserSessionRevokeAllRequest;
 import ffdd.opsconsole.user.dto.UserStatusUpdateRequest;
 import java.util.List;
 import java.util.Map;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -37,7 +41,8 @@ import org.springframework.http.ResponseEntity;
 class OpsUserControllerTest {
     private final OpsUserService userService = mock(OpsUserService.class);
     private final OpsUser360Service user360Service = mock(OpsUser360Service.class);
-    private final OpsUserController controller = new OpsUserController(userService, user360Service);
+    private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
+    private final OpsUserController controller = new OpsUserController(userService, user360Service, roleResolver);
 
     @Test
     void impersonationStartUsesItsDedicatedHighRiskPermission() {
@@ -49,6 +54,33 @@ class OpsUserControllerTest {
                 org.springframework.security.access.prepost.PreAuthorize.class).value();
 
         assertThat(expression).isEqualTo("hasAuthority('user_c2_impersonate_start')");
+    }
+
+    @Test
+    void accountListMutationsUseTheSameDedicatedPermissionAsC2Buttons() {
+        assertThat(preAuthorize("upsertAccountList"))
+                .isEqualTo("hasAuthority('user_c2_blocklist_add')");
+        assertThat(preAuthorize("removeAccountList"))
+                .isEqualTo("hasAuthority('user_c2_blocklist_add')");
+    }
+
+    @Test
+    void securityMutationsUseExistingC5PermissionsInsteadOfLegacyC1HubPermissions() {
+        assertThat(preAuthorize("disableTwoFactor"))
+                .isEqualTo("hasAuthority('user_c5_2fa_disable')");
+        assertThat(preAuthorize("requestPasswordReset"))
+                .isEqualTo("hasAuthority('user_c5_password_reset')");
+        assertThat(preAuthorize("unlockSecurity"))
+                .isEqualTo("hasAnyAuthority('user_c5_unlock_short','user_c5_unlock_long')");
+    }
+
+    private String preAuthorize(String methodName) {
+        return java.util.Arrays.stream(OpsUserController.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals(methodName))
+                .findFirst()
+                .orElseThrow()
+                .getAnnotation(org.springframework.security.access.prepost.PreAuthorize.class)
+                .value();
     }
 
     @Test
@@ -74,10 +106,11 @@ class OpsUserControllerTest {
 
     @Test
     void profilesReturnPageResultAndDelegateQuery() {
-        UserQueryRequest request = new UserQueryRequest("Alice", "ACTIVE", "PENDING", null, 1, 20, null);
+        when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
+        UserQueryRequest request = UserQueryRequest.basic("Alice", "ACTIVE", "PENDING", null, 1, 20, null);
         when(userService.profilePage(request)).thenReturn(ApiResult.ok(new PageResult<UserAccountView>(0, 1, 20, List.of())));
 
-        ApiResult<PageResult<UserAccountView>> result = controller.profiles(request);
+        ApiResult<PageResult<UserProfileListView>> result = controller.profiles(request);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().getPageSize()).isEqualTo(20);
@@ -85,8 +118,37 @@ class OpsUserControllerTest {
     }
 
     @Test
-    void profileExportRequiresIdempotencyKeyAndReason() {
-        UserProfileExportRequest request = new UserProfileExportRequest(
+    void supportProfileListHidesExactSecurityAndRiskFields() {
+        when(roleResolver.resolveCode()).thenReturn("SUPPORT");
+        UserQueryRequest request = UserQueryRequest.basic(null, null, null, null, 1, 50, null);
+        UserAccountView account = new UserAccountView(
+                52L, "U00000052", "Test User", "155****9999", "86", "ACTIVE", "APPROVED",
+                "L1", "V0", true, new BigDecimal("1000"), new BigDecimal("500"), 13, "低风险",
+                2L, 1L, LocalDateTime.of(2026, 7, 3, 15, 34), null);
+        when(userService.profilePage(request)).thenReturn(ApiResult.ok(new PageResult<>(1, 1, 50, List.of(account))));
+
+        UserProfileListView projected = controller.profiles(request).getData().getRecords().get(0);
+
+        assertThat(projected.twoFactorEnabled()).isNull();
+        assertThat(projected.riskScore()).isNull();
+        assertThat(projected.riskBand()).isEqualTo("低风险");
+        assertThat(projected.walletUsdt()).isEqualByComparingTo("1000");
+        assertThat(projected.deviceCount()).isEqualTo(2L);
+    }
+
+    @Test
+    void legacyUntrimmedProfileReadsAreNotExposedAsControllerRoutes() {
+        assertThat(java.util.Arrays.stream(OpsUserController.class.getDeclaredMethods())
+                .map(method -> method.getAnnotation(org.springframework.web.bind.annotation.GetMapping.class))
+                .filter(java.util.Objects::nonNull)
+                .flatMap(mapping -> java.util.Arrays.stream(mapping.value()))
+                .toList())
+                .doesNotContain("/profiles/{userId}", "/profiles/{userId}/security");
+    }
+
+    @Test
+    void profileExportRequiresOnlyIdempotencyKey() {
+        UserProfileExportRequest request = UserProfileExportRequest.basic(
                 null,
                 null,
                 null,
@@ -95,17 +157,12 @@ class OpsUserControllerTest {
                 "superadmin");
 
         ResponseEntity<?> missingKey = controller.exportProfiles(" ", request);
-        ResponseEntity<?> missingReason = controller.exportProfiles(
-                "idem-c1-export",
-                new UserProfileExportRequest(null, null, null, null, " ", "superadmin"));
-
         assertThat(missingKey.getStatusCode().value()).isEqualTo(422);
-        assertThat(missingReason.getStatusCode().value()).isEqualTo(422);
     }
 
     @Test
-    void profileExportReturnsExcelDownload() {
-        UserProfileExportRequest request = new UserProfileExportRequest(
+    void profileExportReturnsCsvDownload() {
+        UserProfileExportRequest request = UserProfileExportRequest.basic(
                 "Alice",
                 "ACTIVE",
                 null,
@@ -113,12 +170,13 @@ class OpsUserControllerTest {
                 "C1 masked user export",
                 "superadmin");
         when(userService.exportProfileExcel("idem-c1-export", request))
-                .thenReturn(new UserProfileExportFile("C1-USER-EXP-test.xls", "excel".getBytes(), 1));
+                .thenReturn(new UserProfileExportFile("C1-USER-EXP-test.csv", "csv".getBytes(), 1));
 
         ResponseEntity<?> result = controller.exportProfiles("idem-c1-export", request);
 
         assertThat(result.getStatusCode().is2xxSuccessful()).isTrue();
-        assertThat(result.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION)).contains("C1-USER-EXP-test.xls");
+        assertThat(result.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION)).contains("C1-USER-EXP-test.csv");
+        assertThat(result.getHeaders().getContentType().toString()).startsWith("text/csv");
         verify(userService).exportProfileExcel(eq("idem-c1-export"), eq(request));
     }
 
@@ -308,7 +366,8 @@ class OpsUserControllerTest {
         UserRegistrationRiskParamUpdateRequest request = new UserRegistrationRiskParamUpdateRequest(
                 "6 次 / 20 分钟",
                 "tighten login brute force guard",
-                "superadmin");
+                "superadmin",
+                0L);
 
         controller.updateRegistrationRiskParam("lockShort", "idem-c6-lock", request);
 

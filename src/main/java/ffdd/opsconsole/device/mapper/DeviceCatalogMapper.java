@@ -2,6 +2,9 @@ package ffdd.opsconsole.device.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
+import ffdd.opsconsole.device.domain.DeviceOrderFacts;
+import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
+import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
@@ -88,17 +91,46 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             updated_at AS updatedAt
             """;
 
+    String ORDER_STATE_SQL = """
+            CASE
+              WHEN UPPER(COALESCE(o.order_status,'')) = 'REFUNDED'
+                OR UPPER(COALESCE(o.payment_status,'')) = 'REFUNDED' THEN 'refunded'
+              WHEN UPPER(COALESCE(o.order_status,'')) IN ('CHARGEBACK','DISPUTED')
+                OR UPPER(COALESCE(o.payment_status,'')) IN ('CHARGEBACK','DISPUTED') THEN 'chargeback'
+              WHEN UPPER(COALESCE(o.order_status,'')) IN ('PAYMENT_FAILED','FAILED')
+                OR UPPER(COALESCE(o.payment_status,'')) IN ('PAYMENT_FAILED','FAILED') THEN 'payment_failed'
+              WHEN UPPER(COALESCE(o.order_status,'')) = 'EXPIRED'
+                OR UPPER(COALESCE(o.payment_status,'')) = 'EXPIRED' THEN 'expired'
+              WHEN UPPER(COALESCE(o.order_status,'')) = 'PROVISIONING_FAILED'
+                OR UPPER(COALESCE(o.activation_status,'')) = 'PROVISIONING_FAILED' THEN 'provisioning_failed'
+              WHEN UPPER(COALESCE(o.order_status,'')) IN ('CANCELLED','CANCELED') THEN 'cancelled'
+              WHEN UPPER(COALESCE(o.order_status,'')) = 'COMPLETED'
+                OR UPPER(COALESCE(o.activation_status,'')) = 'ACTIVATED' THEN 'activated'
+              WHEN UPPER(COALESCE(o.order_status,'')) IN ('PROVISIONING','ALLOCATING')
+                OR UPPER(COALESCE(o.activation_status,'')) IN ('PROVISIONING','ALLOCATING') THEN 'provisioning'
+              WHEN UPPER(COALESCE(o.payment_status,'')) IN ('PAID','CONFIRMED','SUCCESS')
+                OR o.paid_at IS NOT NULL THEN 'paid'
+              ELSE 'placed'
+            END
+            """;
+
     String ORDER_COLUMNS = """
-            order_no AS orderNo,
-            user_no AS userNo,
-            sku_id AS skuId,
-            sku_name AS skuName,
-            amount,
-            state,
-            dc_location AS dcLocation,
-            age_text AS ageText,
-            ordered_at AS orderedAt,
-            updated_at AS updatedAt
+            o.order_no AS orderNo,
+            CONCAT('U', o.user_id) AS userNo,
+            COALESCE((SELECT oi.product_no FROM nx_order_item oi
+                       WHERE oi.order_no=o.order_no AND oi.is_deleted=0
+                       ORDER BY oi.sort_order,oi.id LIMIT 1), p.product_no, CAST(o.product_id AS CHAR)) AS skuId,
+            COALESCE((SELECT oi.product_name FROM nx_order_item oi
+                       WHERE oi.order_no=o.order_no AND oi.is_deleted=0
+                       ORDER BY oi.sort_order,oi.id LIMIT 1), p.name, o.order_no) AS skuName,
+            o.amount_usdt AS amount,
+            """ + ORDER_STATE_SQL + """
+             AS state,
+            (SELECT ud.dc_location FROM nx_user_device ud
+              WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0 ORDER BY ud.id DESC LIMIT 1) AS dcLocation,
+            CONCAT(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),'m') AS ageText,
+            o.created_at AS orderedAt,
+            o.updated_at AS updatedAt
             """;
 
     String GENERATION_GATE_COLUMNS = """
@@ -279,10 +311,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               requirement VARCHAR(128) NOT NULL DEFAULT 'S1+',
               saturation DECIMAL(7,4) NOT NULL DEFAULT 0,
               status VARCHAR(32) NOT NULL DEFAULT 'active',
-              task_class VARCHAR(64) NOT NULL DEFAULT 'llm-inference',
+              task_class VARCHAR(64) NOT NULL DEFAULT 'LL',
               model_name VARCHAR(128) NOT NULL DEFAULT '',
-              min_reward DECIMAL(18,4) NOT NULL DEFAULT 0,
-              max_reward DECIMAL(18,4) NOT NULL DEFAULT 0,
+              min_reward DECIMAL(18,5) NOT NULL DEFAULT 0,
+              max_reward DECIMAL(18,5) NOT NULL DEFAULT 0,
               min_vram VARCHAR(64) NOT NULL DEFAULT '',
               kill_init VARCHAR(32) NOT NULL DEFAULT '派发中',
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -306,10 +338,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Update("""
             ALTER TABLE nx_admin_device_task
-              ADD COLUMN task_class VARCHAR(64) NOT NULL DEFAULT 'llm-inference' AFTER status,
+              ADD COLUMN task_class VARCHAR(64) NOT NULL DEFAULT 'LL' AFTER status,
               ADD COLUMN model_name VARCHAR(128) NOT NULL DEFAULT '' AFTER task_class,
-              ADD COLUMN min_reward DECIMAL(18,4) NOT NULL DEFAULT 0 AFTER model_name,
-              ADD COLUMN max_reward DECIMAL(18,4) NOT NULL DEFAULT 0 AFTER min_reward,
+              ADD COLUMN min_reward DECIMAL(18,5) NOT NULL DEFAULT 0 AFTER model_name,
+              ADD COLUMN max_reward DECIMAL(18,5) NOT NULL DEFAULT 0 AFTER min_reward,
               ADD COLUMN min_vram VARCHAR(64) NOT NULL DEFAULT '' AFTER max_reward,
               ADD COLUMN kill_init VARCHAR(32) NOT NULL DEFAULT '派发中' AFTER min_vram
             """)
@@ -353,6 +385,22 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createOrderTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_order_state_history (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              order_no VARCHAR(96) NOT NULL,
+              from_state VARCHAR(32) NOT NULL,
+              to_state VARCHAR(32) NOT NULL,
+              reason VARCHAR(255) NOT NULL,
+              operator VARCHAR(128) NOT NULL,
+              idempotency_key VARCHAR(128) NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_order_state_history_idempotency (order_no,idempotency_key),
+              KEY idx_order_state_history_order_time (order_no,created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createOrderStateHistoryTable();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_admin_device_generation_gate (
@@ -829,6 +877,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             SELECT COUNT(*) FROM nx_admin_device_task
              WHERE is_deleted = 0
              <if test='status != null and status != ""'>AND status = #{status}</if>
+             <if test='taskClass != null and taskClass != ""'>AND task_class = #{taskClass}</if>
              <if test='keyword != null and keyword != ""'>
                AND (task_id LIKE CONCAT('%', #{keyword}, '%')
                     OR name LIKE CONCAT('%', #{keyword}, '%')
@@ -836,7 +885,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              </if>
             </script>
             """)
-    long countTasks(@Param("status") String status, @Param("keyword") String keyword);
+    long countTasks(@Param("status") String status, @Param("keyword") String keyword,
+                    @Param("taskClass") String taskClass);
 
     @Select("""
             <script>
@@ -845,6 +895,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               FROM nx_admin_device_task
              WHERE is_deleted = 0
              <if test='status != null and status != ""'>AND status = #{status}</if>
+             <if test='taskClass != null and taskClass != ""'>AND task_class = #{taskClass}</if>
              <if test='keyword != null and keyword != ""'>
                AND (task_id LIKE CONCAT('%', #{keyword}, '%')
                     OR name LIKE CONCAT('%', #{keyword}, '%')
@@ -855,6 +906,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             </script>
             """)
     List<DeviceTaskView> pageTasks(@Param("status") String status, @Param("keyword") String keyword,
+                                   @Param("taskClass") String taskClass,
                                    @Param("limit") long limit, @Param("offset") long offset);
 
     @Select("""
@@ -922,40 +974,40 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Update("""
             UPDATE nx_admin_device_task
                SET task_class = CASE task_id
-                     WHEN 'TK-1' THEN 'llm-inference'
-                     WHEN 'TK-2' THEN 'llm-inference'
-                     WHEN 'TK-3' THEN 'image-gen'
-                     WHEN 'TK-4' THEN 'video-render'
-                     WHEN 'TK-5' THEN 'fine-tune'
-                     WHEN 'TK-6' THEN 'embedding'
+                     WHEN 'TK-1' THEN 'LL'
+                     WHEN 'TK-2' THEN 'SP'
+                     WHEN 'TK-3' THEN 'IG'
+                     WHEN 'TK-4' THEN 'VG'
+                     WHEN 'TK-5' THEN 'FT'
+                     WHEN 'TK-6' THEN 'EM'
                      ELSE task_class END,
                    model_name = CASE task_id
-                     WHEN 'TK-1' THEN 'Llama-3.1-405B'
-                     WHEN 'TK-2' THEN 'Llama-3.1-70B'
-                     WHEN 'TK-3' THEN 'SDXL'
-                     WHEN 'TK-4' THEN 'HunyuanVideo'
+                     WHEN 'TK-1' THEN 'Llama 70B,Phi-3-mini'
+                     WHEN 'TK-2' THEN 'Whisper'
+                     WHEN 'TK-3' THEN 'SDXL Turbo,Flux Schnell'
+                     WHEN 'TK-4' THEN 'Sora-class'
                      WHEN 'TK-5' THEN 'LoRA'
                      WHEN 'TK-6' THEN 'BGE-M3'
                      ELSE model_name END,
                    min_reward = CASE task_id
-                     WHEN 'TK-1' THEN 0.80
-                     WHEN 'TK-2' THEN 0.30
-                     WHEN 'TK-3' THEN 0.20
-                     WHEN 'TK-4' THEN 1.60
-                     WHEN 'TK-5' THEN 3.00
-                     WHEN 'TK-6' THEN 0.06
+                     WHEN 'TK-1' THEN 0.00005
+                     WHEN 'TK-2' THEN 0.00005
+                     WHEN 'TK-3' THEN 0.00010
+                     WHEN 'TK-4' THEN 0.45000
+                     WHEN 'TK-5' THEN 0.06000
+                     WHEN 'TK-6' THEN 0.00001
                      ELSE min_reward END,
                    max_reward = CASE task_id
-                     WHEN 'TK-1' THEN 2.40
-                     WHEN 'TK-2' THEN 0.90
-                     WHEN 'TK-3' THEN 0.70
-                     WHEN 'TK-4' THEN 4.20
-                     WHEN 'TK-5' THEN 7.50
-                     WHEN 'TK-6' THEN 0.22
+                     WHEN 'TK-1' THEN 0.8500
+                     WHEN 'TK-2' THEN 0.0720
+                     WHEN 'TK-3' THEN 0.0450
+                     WHEN 'TK-4' THEN 1.8000
+                     WHEN 'TK-5' THEN 0.4200
+                     WHEN 'TK-6' THEN 0.0900
                      ELSE max_reward END,
                    min_vram = CASE task_id
                      WHEN 'TK-1' THEN '80GB'
-                     WHEN 'TK-2' THEN '24GB'
+                     WHEN 'TK-2' THEN '8GB'
                      WHEN 'TK-3' THEN '12GB'
                      WHEN 'TK-4' THEN '48GB'
                      WHEN 'TK-5' THEN '48GB'
@@ -967,6 +1019,21 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                AND (model_name = '' OR min_reward = 0 OR max_reward = 0 OR min_vram = '')
             """)
     int backfillDefaultTaskExtensions();
+
+    @Update("""
+            UPDATE nx_admin_device_task
+               SET task_class = CASE LOWER(task_class)
+                     WHEN 'llm-inference' THEN 'LL'
+                     WHEN 'image-gen' THEN 'IG'
+                     WHEN 'video-render' THEN 'VG'
+                     WHEN 'fine-tune' THEN 'FT'
+                     WHEN 'embedding' THEN 'EM'
+                     WHEN 'speech' THEN 'SP'
+                     ELSE task_class END
+             WHERE is_deleted = 0
+               AND LOWER(task_class) IN ('llm-inference','image-gen','video-render','fine-tune','embedding','speech')
+            """)
+    int normalizeLegacyTaskClasses();
 
     @Select("""
             SELECT
@@ -1007,14 +1074,18 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Select("""
             <script>
-            SELECT COUNT(*) FROM nx_admin_device_order
-             WHERE is_deleted = 0
-             <if test='state != null and state != ""'>AND state = #{state}</if>
+            SELECT COUNT(*) FROM nx_order o
+             WHERE o.is_deleted = 0
+             <if test='state != null and state != ""'>AND (
+            """ + ORDER_STATE_SQL + """
+             ) = #{state}</if>
              <if test='keyword != null and keyword != ""'>
-               AND (order_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR user_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR sku_id LIKE CONCAT('%', #{keyword}, '%')
-                    OR sku_name LIKE CONCAT('%', #{keyword}, '%'))
+               AND (o.order_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U',o.user_id) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CAST(o.product_id AS CHAR) LIKE CONCAT('%', #{keyword}, '%')
+                    OR EXISTS (SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.is_deleted=0
+                                AND (oi.product_no LIKE CONCAT('%',#{keyword},'%')
+                                     OR oi.product_name LIKE CONCAT('%',#{keyword},'%'))))
              </if>
             </script>
             """)
@@ -1024,16 +1095,21 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             <script>
             SELECT
             """ + ORDER_COLUMNS + """
-              FROM nx_admin_device_order
-             WHERE is_deleted = 0
-             <if test='state != null and state != ""'>AND state = #{state}</if>
+              FROM nx_order o
+              LEFT JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
+             WHERE o.is_deleted = 0
+             <if test='state != null and state != ""'>AND (
+            """ + ORDER_STATE_SQL + """
+             ) = #{state}</if>
              <if test='keyword != null and keyword != ""'>
-               AND (order_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR user_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR sku_id LIKE CONCAT('%', #{keyword}, '%')
-                    OR sku_name LIKE CONCAT('%', #{keyword}, '%'))
+               AND (o.order_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U',o.user_id) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CAST(o.product_id AS CHAR) LIKE CONCAT('%', #{keyword}, '%')
+                    OR EXISTS (SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.is_deleted=0
+                                AND (oi.product_no LIKE CONCAT('%',#{keyword},'%')
+                                     OR oi.product_name LIKE CONCAT('%',#{keyword},'%'))))
              </if>
-             ORDER BY ordered_at DESC, id DESC
+             ORDER BY o.created_at DESC, o.id DESC
              LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
@@ -1043,18 +1119,136 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Select("""
             SELECT
             """ + ORDER_COLUMNS + """
-              FROM nx_admin_device_order
-             WHERE order_no = #{orderNo} AND is_deleted = 0
+              FROM nx_order o
+              LEFT JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
+             WHERE o.order_no = #{orderNo} AND o.is_deleted = 0
              LIMIT 1
             """)
     DeviceOrderView findOrder(@Param("orderNo") String orderNo);
 
-    @Update("""
-            UPDATE nx_admin_device_order
-               SET state = #{state}, updated_at = #{now}
-             WHERE order_no = #{orderNo} AND is_deleted = 0
+    @Select("""
+            SELECT o.order_no AS orderNo, o.user_id AS userId, o.quantity, o.order_type AS orderType,
+                   o.subtotal_usdt AS subtotalUsdt, o.discount_usdt AS discountUsdt,
+                   o.amount_usdt AS amountUsdt, o.payment_no AS paymentNo,
+                   COALESCE((SELECT pr.provider FROM nx_payment_record pr
+                              WHERE pr.order_no=o.order_no AND pr.is_deleted=0 ORDER BY pr.id DESC LIMIT 1),
+                            CASE WHEN o.payment_no IS NULL THEN 'USDT_WALLET' ELSE 'UNKNOWN' END) AS paymentMethod,
+                   o.payment_status AS paymentStatus, o.order_status AS orderStatus,
+                   o.activation_status AS activationStatus, o.product_id AS productId,
+                   COALESCE((SELECT oi.product_no FROM nx_order_item oi
+                              WHERE oi.order_no=o.order_no AND oi.is_deleted=0 ORDER BY oi.sort_order,oi.id LIMIT 1),
+                            p.product_no) AS productNo,
+                   COALESCE((SELECT oi.product_name FROM nx_order_item oi
+                              WHERE oi.order_no=o.order_no AND oi.is_deleted=0 ORDER BY oi.sort_order,oi.id LIMIT 1),
+                            p.name,o.order_no) AS productName,
+                   (SELECT ud.id FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
+                     ORDER BY ud.id DESC LIMIT 1) AS deviceId,
+                   (SELECT ud.instance_no FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
+                     ORDER BY ud.id DESC LIMIT 1) AS deviceInstanceNo,
+                   (SELECT ud.dc_location FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
+                     ORDER BY ud.id DESC LIMIT 1) AS dcLocation,
+                   o.created_at AS createdAt, o.paid_at AS paidAt,
+                   (SELECT ud.activated_at FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
+                     ORDER BY ud.id DESC LIMIT 1) AS activatedAt,
+                   o.updated_at AS updatedAt
+              FROM nx_order o
+              LEFT JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
+             WHERE o.order_no=#{orderNo} AND o.is_deleted=0
+             LIMIT 1
             """)
-    int updateOrderState(@Param("orderNo") String orderNo, @Param("state") String state, @Param("now") LocalDateTime now);
+    DeviceOrderFacts findOrderFacts(@Param("orderNo") String orderNo);
+
+    @Select("""
+            SELECT from_state AS fromState, to_state AS toState, reason, operator, created_at AS createdAt
+              FROM nx_order_state_history
+             WHERE order_no=#{orderNo}
+             ORDER BY created_at ASC,id ASC
+            """)
+    List<DeviceOrderHistoryView> listOrderHistory(@Param("orderNo") String orderNo);
+
+    @Select("""
+            SELECT source,bizNo,status,direction,amount,occurredAt FROM (
+              SELECT 'D1_PAYMENT' AS source,pr.payment_no AS bizNo,pr.payment_status AS status,
+                     'OUT' AS direction,pr.amount_usdt AS amount,COALESCE(pr.paid_at,pr.created_at) AS occurredAt
+                FROM nx_payment_record pr WHERE pr.order_no=#{orderNo} AND pr.is_deleted=0
+              UNION ALL
+              SELECT 'D4_LEDGER',wl.biz_no,wl.status,wl.direction,wl.amount,wl.created_at
+                FROM nx_wallet_ledger wl
+               WHERE wl.is_deleted=0 AND (wl.biz_no=#{orderNo} OR wl.biz_no=CONCAT('E4-REFUND-',#{orderNo}))
+              UNION ALL
+              SELECT 'D4_BILL',wb.bill_no,'SUCCESS',wb.direction,wb.amount,wb.occurred_at
+                FROM nx_wallet_bill wb
+               WHERE wb.deleted=0 AND wb.bill_no=CONCAT('E4-BILL-',#{orderNo})
+            ) evidence ORDER BY occurredAt ASC
+            """)
+    List<DeviceOrderFundingView> listOrderFunding(@Param("orderNo") String orderNo);
+
+    @Update("""
+            UPDATE nx_order o
+               SET payment_status = CASE #{state}
+                     WHEN 'placed' THEN 'PENDING' WHEN 'paid' THEN 'PAID'
+                     WHEN 'provisioning' THEN 'PAID' WHEN 'activated' THEN 'PAID'
+                     WHEN 'payment_failed' THEN 'FAILED' WHEN 'expired' THEN 'EXPIRED'
+                     WHEN 'refunded' THEN 'REFUNDED' WHEN 'chargeback' THEN 'CHARGEBACK'
+                     WHEN 'provisioning_failed' THEN 'PAID' WHEN 'cancelled' THEN 'CANCELLED'
+                     ELSE payment_status END,
+                   order_status = CASE #{state}
+                     WHEN 'placed' THEN 'PENDING_PAYMENT' WHEN 'paid' THEN 'PAID'
+                     WHEN 'provisioning' THEN 'PROVISIONING' WHEN 'activated' THEN 'COMPLETED'
+                     WHEN 'payment_failed' THEN 'PAYMENT_FAILED' WHEN 'expired' THEN 'EXPIRED'
+                     WHEN 'refunded' THEN 'REFUNDED' WHEN 'chargeback' THEN 'CHARGEBACK'
+                     WHEN 'provisioning_failed' THEN 'PROVISIONING_FAILED' WHEN 'cancelled' THEN 'CANCELLED'
+                     ELSE order_status END,
+                   activation_status = CASE #{state}
+                     WHEN 'placed' THEN 'WAITING_PAYMENT' WHEN 'paid' THEN 'WAITING_PROVISIONING'
+                     WHEN 'provisioning' THEN 'PROVISIONING' WHEN 'activated' THEN 'ACTIVATED'
+                     WHEN 'payment_failed' THEN 'WAITING_PAYMENT' WHEN 'expired' THEN 'WAITING_PAYMENT'
+                     WHEN 'refunded' THEN 'REFUNDED' WHEN 'chargeback' THEN 'DEACTIVATED'
+                     WHEN 'provisioning_failed' THEN 'PROVISIONING_FAILED' WHEN 'cancelled' THEN 'WAITING_PAYMENT'
+                     ELSE activation_status END,
+                   paid_at = CASE WHEN #{state} IN ('paid','provisioning','activated','provisioning_failed')
+                                  THEN COALESCE(paid_at,#{now}) ELSE paid_at END,
+                   updated_at = #{now}
+             WHERE o.order_no = #{orderNo} AND o.is_deleted = 0
+               AND (
+            """ + ORDER_STATE_SQL + """
+               ) = #{expectedState}
+            """)
+    int updateOrderState(@Param("orderNo") String orderNo,
+                         @Param("expectedState") String expectedState,
+                         @Param("state") String state,
+                         @Param("now") LocalDateTime now);
+
+    @Insert("""
+            INSERT INTO nx_order_state_history
+              (order_no,from_state,to_state,reason,operator,idempotency_key,created_at)
+            VALUES
+              (#{orderNo},#{fromState},#{toState},#{reason},#{operator},#{idempotencyKey},#{now})
+            """)
+    int insertOrderHistory(@Param("orderNo") String orderNo,
+                           @Param("fromState") String fromState,
+                           @Param("toState") String toState,
+                           @Param("reason") String reason,
+                           @Param("operator") String operator,
+                           @Param("idempotencyKey") String idempotencyKey,
+                           @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_user_device
+               SET ownership_status='REFUNDED',status='DEACTIVATED',pending_deactivate=0,
+                   deactivated_at=COALESCE(deactivated_at,#{now}),updated_at=#{now}
+             WHERE source_order_no=#{orderNo} AND is_deleted=0
+               AND UPPER(ownership_status) NOT IN ('REFUNDED','RECYCLED')
+            """)
+    int rollbackOrderDevices(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_product p
+              JOIN nx_order o ON o.product_id=p.id AND o.order_no=#{orderNo} AND o.is_deleted=0
+               SET p.stock=p.stock+o.quantity,p.sold_count=GREATEST(0,p.sold_count-o.quantity),p.updated_at=#{now}
+             WHERE p.is_deleted=0
+            """)
+    int restockOrderProduct(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
     @Select("""
             <script>

@@ -33,8 +33,13 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.shared.audit.A2AuditAggregate;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.BizException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -48,7 +53,6 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Lazy;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.util.StringUtils;
 
@@ -88,22 +92,30 @@ public class OpsAuditCenterService {
     @Lazy
     private final AuditReplayDispatcher replayDispatcher;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<AuditCenterOverview> overview() {
+        return overview(new AuditLogQueryRequest());
+    }
+
+    public ApiResult<AuditCenterOverview> overview(AuditLogQueryRequest filter) {
         ensureSeedData();
         Map<String, PlatformConfigItem> configs = loadConfigMap(List.of(GROUP_A2));
-        List<AuditOperationTicket> tickets = tickets();
-        List<AuditOperationHistory> history = history(tickets);
-        AuditStatsSummaryResponse todaySummary = statsSummary(1);
+        List<AuditOperationTicket> tickets = tickets(filter);
+        List<AuditOperationHistory> history = history(tickets, filter);
+        List<AuditLogRecord> logs = recentLogs(filter);
+        AuditLogQueryRequest aggregateFilter = calendarTodayFilter(filter);
+        List<A2AuditAggregate> aggregates = auditLogService.aggregate(aggregateFilter);
+        AuditStatsSummaryResponse todaySummary = filteredSummary(aggregateFilter, aggregates);
         return ApiResult.ok(new AuditCenterOverview(
                 stats(tickets, history, todaySummary),
                 tickets,
                 history,
                 mechanismParams(configs),
                 confirmCategories(),
-                recentLogs(),
+                logs,
                 todaySummary,
-                topActions()));
+                filteredTopActions(aggregates)));
     }
 
     public int pendingOperationCountByActionMarker(String marker) {
@@ -120,20 +132,24 @@ public class OpsAuditCenterService {
                 .count();
     }
 
-    @Transactional
     public ApiResult<AuditOperationTicket> approve(
             String idempotencyKey, String operationId, AuditOperationDecisionRequest request) {
-        return decide(idempotencyKey, operationId, request, STATUS_APPROVED, "A2_OPERATION_APPROVED");
+        return idempotentTicket("APPROVE:" + operationId, idempotencyKey, request,
+                () -> decide(idempotencyKey, operationId, request, STATUS_APPROVED, "A2_OPERATION_APPROVED"));
     }
 
-    @Transactional
     public ApiResult<AuditOperationTicket> reject(
             String idempotencyKey, String operationId, AuditOperationDecisionRequest request) {
-        return decide(idempotencyKey, operationId, request, STATUS_REJECTED, "A2_OPERATION_REJECTED");
+        return idempotentTicket("REJECT:" + operationId, idempotencyKey, request,
+                () -> decide(idempotencyKey, operationId, request, STATUS_REJECTED, "A2_OPERATION_REJECTED"));
     }
 
-    @Transactional
     public ApiResult<AuditOperationTicket> createProposal(String idempotencyKey, AuditOperationProposalRequest request) {
+        return idempotentTicket("PROPOSE", idempotencyKey, request,
+                () -> createProposalOnce(idempotencyKey, request));
+    }
+
+    private ApiResult<AuditOperationTicket> createProposalOnce(String idempotencyKey, AuditOperationProposalRequest request) {
         ensureSeedData();
         String authenticatedOperator = AdminActorResolver.resolve(request == null ? null : request.operator());
         ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey,
@@ -180,9 +196,10 @@ public class OpsAuditCenterService {
         ticket.setSos(Boolean.TRUE.equals(request.sos()) || "sos".equals(operationType) ? 1 : 0);
         ticket.setTimeLabel("刚刚");
         ticket.setMine(0);
-        ticket.setRoleGate(roleGate);
+        ticket.setRoleGate(normalizeRoleGate(roleGate));
         ticket.setReason(reason);
         ticket.setStatus(STATUS_PENDING);
+        ticket.setSourceDomain(normalizeDomain(sourceDomain));
         ticket.setIsDeleted(0);
         // 存回放指令(供 approve 时回放执行)
         AuditReplayCommand command = request.command();
@@ -210,6 +227,7 @@ public class OpsAuditCenterService {
             ticket.setSos(0);
             ticket.setRoleGate("门槛者");
             sourceDomain = descriptor.sourceDomain();
+            ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
         }
         if (command != null) {
@@ -268,7 +286,7 @@ public class OpsAuditCenterService {
         }
         ticketMapper.insert(ticket);
 
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A2_OPERATION_PROPOSED")
                 .resourceType("A2_OPERATION")
                 .resourceId(ticket.getOperationId())
@@ -291,15 +309,20 @@ public class OpsAuditCenterService {
         return ApiResult.ok(toTicket(ticket));
     }
 
-    @Transactional
     public ApiResult<AuditOperationTicket> recordExecuted(
             String idempotencyKey, AuditOperationProposalRequest request) {
-        // 事后台账:高敏操作已即时执行(单人确认,CLAUDE.md 双签已取消),
+        return idempotentTicket("EXECUTED", idempotencyKey, request,
+                () -> recordExecutedOnce(idempotencyKey, request));
+    }
+
+    private ApiResult<AuditOperationTicket> recordExecutedOnce(
+            String idempotencyKey, AuditOperationProposalRequest request) {
+        // 事后台账:高敏操作已即时执行（单人确认），建已执行票作为审计留痕。
         // 建 status=approved 的票作为"已执行留痕",而非 pending 待审。
         ensureSeedData();
+        String authenticatedOperator = AdminActorResolver.resolve(request == null ? null : request.operator());
         ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey,
-                request == null ? null : request.reason(),
-                request == null ? null : request.operator());
+                request == null ? null : request.reason(), authenticatedOperator);
         if (guard != null) {
             return guard;
         }
@@ -319,7 +342,7 @@ public class OpsAuditCenterService {
             objectText = normalizeLimitedText(request.obj(), "OBJECT_REQUIRED", 255);
             beforeValue = normalizeOptionalText(request.beforeValue(), "—", 128);
             afterValue = normalizeOptionalText(request.afterValue(), "—", 128);
-            operator = normalizeLimitedText(request.operator(), "OPERATOR_REQUIRED", 128);
+            operator = normalizeLimitedText(authenticatedOperator, "OPERATOR_REQUIRED", 128);
             operatorRole = normalizeOptionalText(request.operatorRole(), "operator", 32);
             roleGate = normalizeOptionalText(request.roleGate(), "超管", 255);
             reason = normalizeLimitedText(request.reason(), "REASON_REQUIRED", 512);
@@ -341,15 +364,16 @@ public class OpsAuditCenterService {
         ticket.setSos(Boolean.TRUE.equals(request.sos()) || "sos".equals(operationType) ? 1 : 0);
         ticket.setTimeLabel("刚刚");
         ticket.setMine(0);
-        ticket.setRoleGate(roleGate);
+        ticket.setRoleGate(normalizeRoleGate(roleGate));
         ticket.setReason(reason);
         ticket.setStatus(STATUS_APPROVED);
+        ticket.setSourceDomain(normalizeDomain(sourceDomain));
         ticket.setDecisionReason("即时执行·已生效(单人确认)");
         ticket.setDecidedAt(LocalDateTime.now());
         ticket.setIsDeleted(0);
         ticketMapper.insert(ticket);
 
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A2_OPERATION_EXECUTED")
                 .resourceType("A2_OPERATION")
                 .resourceId(ticket.getOperationId())
@@ -375,12 +399,26 @@ public class OpsAuditCenterService {
 
     public ApiResult<AuditMechanismParam> updateMechanismParam(
             String idempotencyKey, String paramKey, AuditMechanismParamUpdateRequest request) {
-        ensureSeedData();
-        ApiResult<AuditMechanismParam> guard = requireMutation(idempotencyKey, request == null ? null : request.reason(),
-                request == null ? null : request.operator());
+        String actor = AdminActorResolver.resolve(request == null ? null : request.operator());
+        ApiResult<AuditMechanismParam> guard = requireMutation(idempotencyKey,
+                request == null ? null : request.reason(), actor);
         if (guard != null) {
             return guard;
         }
+        try {
+            AuditMechanismParam result = idempotencyService.execute(
+                    "A2_COMMAND", idempotencyKey, commandHash(actor, "PARAM:" + paramKey, request),
+                    AuditMechanismParam.class,
+                    () -> requireSuccess(updateMechanismParamOnce(idempotencyKey, paramKey, request)));
+            return ApiResult.ok(result);
+        } catch (BizException ex) {
+            return ApiResult.fail(ex.getCode(), ex.getMessage());
+        }
+    }
+
+    private ApiResult<AuditMechanismParam> updateMechanismParamOnce(
+            String idempotencyKey, String paramKey, AuditMechanismParamUpdateRequest request) {
+        ensureSeedData();
         MechanismConfig config = mechanismConfig(paramKey);
         if (config == null || config.locked()) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A2_MECHANISM_PARAM_NOT_MUTABLE");
@@ -391,23 +429,74 @@ public class OpsAuditCenterService {
         } catch (IllegalArgumentException ex) {
             return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
         }
+        String before = configRepository.findActiveByKey(config.configKey())
+                .map(PlatformConfigItem::configValue).filter(StringUtils::hasText)
+                .orElse(defaultMechanismValue(config.key()));
         PlatformConfigItem saved = saveConfig(config.configKey(), normalizedValue, config.remark(request.reason()));
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A2_MECHANISM_PARAM_CHANGED")
                 .resourceType("A2_MECHANISM_PARAM")
                 .resourceId(config.key())
                 .actorType("ADMIN")
-                .actorUsername(request.operator().trim())
+                .actorUsername(AdminActorResolver.resolve(request.operator()))
                 .result("SUCCESS")
                 .riskLevel("MEDIUM")
                 .detail(Map.of(
                         "paramKey", config.key(),
                         "configKey", config.configKey(),
-                        "value", normalizedValue,
+                        "before", before,
+                        "after", normalizedValue,
                         "reason", request.reason().trim(),
                         "idempotencyKey", idempotencyKey.trim()))
                 .build());
         return ApiResult.ok(paramView(config, saved.configValue()));
+    }
+
+    private ApiResult<AuditOperationTicket> idempotentTicket(
+            String operation, String idempotencyKey, Object request,
+            java.util.function.Supplier<ApiResult<AuditOperationTicket>> action) {
+        String actor = AdminActorResolver.resolve(request instanceof AuditOperationDecisionRequest value
+                ? value.operator() : request instanceof AuditOperationProposalRequest value ? value.operator() : null);
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        try {
+            AuditOperationTicket result = idempotencyService.execute(
+                    "A2_COMMAND", idempotencyKey, commandHash(actor, operation, request), AuditOperationTicket.class,
+                    () -> requireSuccess(action.get()));
+            return ApiResult.ok(result);
+        } catch (BizException ex) {
+            return ApiResult.fail(ex.getCode(), ex.getMessage());
+        }
+    }
+
+    private <T> T requireSuccess(ApiResult<T> result) {
+        if (result == null || result.getCode() != 0) {
+            throw new BizException(result == null ? 500 : result.getCode(),
+                    result == null ? "A2_COMMAND_FAILED" : result.getMessage());
+        }
+        return result.getData();
+    }
+
+    private String commandHash(String actor, String operation, Object request) {
+        try {
+            Map<String, Object> envelope = new LinkedHashMap<>();
+            envelope.put("actor", actor == null ? "unknown" : actor);
+            envelope.put("operation", operation);
+            envelope.put("payload", request);
+            return sha256(objectMapper.writeValueAsString(envelope));
+        } catch (Exception ex) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "A2_REQUEST_HASH_FAILED");
+        }
+    }
+
+    private String sha256(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     private ApiResult<AuditOperationTicket> decide(
@@ -431,9 +520,8 @@ public class OpsAuditCenterService {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
         }
         if (STATUS_APPROVED.equals(nextStatus)
-                && requiresIndependentApprover(ticket)
-                && sameActor(authenticatedOperator, ticket.getOperatorName())) {
-            return ApiResult.fail(403, "A2_TWO_PERSON_SELF_APPROVAL_FORBIDDEN");
+                && sameActor(ticket.getOperatorName(), authenticatedOperator)) {
+            return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
         }
         // approve 才回放目标域;reject/withdrawn 只删锁不回放(原值天然保持)
         if (STATUS_APPROVED.equals(nextStatus)) {
@@ -466,7 +554,7 @@ public class OpsAuditCenterService {
         ticket.setDecisionReason(request.reason().trim());
         ticket.setDecidedAt(LocalDateTime.now());
         ticketMapper.updateById(ticket);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(auditAction)
                 .resourceType("A2_OPERATION")
                 .resourceId(ticket.getOperationId())
@@ -480,13 +568,10 @@ public class OpsAuditCenterService {
         return ApiResult.ok(toTicket(ticket));
     }
 
-    private boolean requiresIndependentApprover(AuditOperationTicketEntity ticket) {
-        return isTrue(ticket.getAmplifies())
-                || "TWO_PERSON".equalsIgnoreCase(ticket.getRoleGate() == null ? "" : ticket.getRoleGate().trim());
-    }
-
-    private boolean sameActor(String left, String right) {
-        return StringUtils.hasText(left) && StringUtils.hasText(right) && left.trim().equalsIgnoreCase(right.trim());
+    private boolean sameActor(String proposer, String checker) {
+        return proposer != null
+                && checker != null
+                && proposer.trim().equalsIgnoreCase(checker.trim());
     }
 
     private String operationRiskLevel(AuditOperationTicketEntity ticket) {
@@ -524,10 +609,36 @@ public class OpsAuditCenterService {
         if (!StringUtils.hasText(reason)) {
             return fail(OpsErrorCode.REASON_REQUIRED, OpsErrorCode.REASON_REQUIRED.name());
         }
+        if (reason.trim().codePointCount(0, reason.trim().length()) < currentReasonMinChars()) {
+            return fail(OpsErrorCode.REASON_REQUIRED, "REASON_TOO_SHORT_MIN_" + currentReasonMinChars());
+        }
+        if (reason.trim().codePointCount(0, reason.trim().length()) > 200) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "REASON_TOO_LONG_MAX_200");
+        }
         if (!StringUtils.hasText(operator)) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "OPERATOR_REQUIRED");
         }
         return null;
+    }
+
+    public int currentReasonMinChars() {
+        String configured = configRepository.findActiveByKey("admin.a2.reason_min_chars")
+                .map(PlatformConfigItem::configValue).orElse("8");
+        try {
+            int value = parseConfiguredPositiveInt(configured, "reason min chars");
+            return value >= 8 && value <= 200 ? value : 8;
+        } catch (IllegalArgumentException ex) {
+            return 8;
+        }
+    }
+
+    private String defaultMechanismValue(String key) {
+        return switch (key) {
+            case "ttl" -> "8 字";
+            case "retention" -> "13 个月";
+            case "schema" -> "v3";
+            default -> "";
+        };
     }
 
     /** 释放目标对象锁(approve/reject 后调用,物理删除 nx_audit_object_lock 行,放开 uk_target 唯一键).单锁/多锁均按 ticketId 全删。 */
@@ -559,12 +670,13 @@ public class OpsAuditCenterService {
                         LinkedHashMap::new));
     }
 
-    private List<AuditOperationTicket> tickets() {
+    private List<AuditOperationTicket> tickets(AuditLogQueryRequest filter) {
         return ticketMapper.selectList(new LambdaQueryWrapper<AuditOperationTicketEntity>()
                         .eq(AuditOperationTicketEntity::getIsDeleted, 0)
                         .orderByDesc(AuditOperationTicketEntity::getCreatedAt)
                         .orderByDesc(AuditOperationTicketEntity::getId))
                 .stream()
+                .filter(row -> matches(row, filter))
                 .map(this::toTicket)
                 .toList();
     }
@@ -583,14 +695,16 @@ public class OpsAuditCenterService {
                 isTrue(row.getSos()),
                 row.getTimeLabel(),
                 isTrue(row.getMine()),
-                row.getRoleGate(),
+                normalizeRoleGate(row.getRoleGate()),
                 row.getReason(),
                 status(row.getStatus()));
     }
 
-    private List<AuditOperationHistory> history(List<AuditOperationTicket> tickets) {
+    private List<AuditOperationHistory> history(List<AuditOperationTicket> tickets, AuditLogQueryRequest filter) {
         List<AuditOperationHistory> rows = new ArrayList<>();
+        Set<String> visibleIds = tickets.stream().map(AuditOperationTicket::id).collect(Collectors.toSet());
         terminalTickets().stream()
+                .filter(ticket -> matches(ticket, filter))
                 .map(ticket -> new AuditOperationHistory(
                         ticket.getOperationId(),
                         ticket.getAction(),
@@ -605,6 +719,7 @@ public class OpsAuditCenterService {
                         .eq(AuditOperationHistoryEntity::getIsDeleted, 0)
                         .orderByDesc(AuditOperationHistoryEntity::getId))
                 .stream()
+                .filter(row -> visibleIds.contains(row.getOperationId()))
                 .map(row -> new AuditOperationHistory(
                         row.getOperationId(),
                         row.getAction(),
@@ -711,9 +826,7 @@ public class OpsAuditCenterService {
 
     private String normalizeSchemaValue(String value) {
         String normalized = normalizeText(value)
-                .replace("统一 schema ·", "")
-                .replace("统一 schema", "")
-                .replace("schema", "")
+                .replaceFirst("(?i)^统一\\s*schema\\s*·?\\s*", "")
                 .trim();
         if (!StringUtils.hasText(normalized)) {
             throw new IllegalArgumentException("schema version is required");
@@ -721,10 +834,21 @@ public class OpsAuditCenterService {
         if (normalized.length() > 32) {
             throw new IllegalArgumentException("schema version is too long");
         }
+        if (!normalized.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,31}")) {
+            throw new IllegalArgumentException("schema version contains unsupported characters");
+        }
         return normalized;
     }
 
     private int parsePositiveInt(String value, String label) {
+        String normalized = normalizeText(value).trim();
+        if (!normalized.matches("[0-9]+")) {
+            throw new IllegalArgumentException(label + " is required");
+        }
+        return Integer.parseInt(normalized);
+    }
+
+    private int parseConfiguredPositiveInt(String value, String label) {
         String digits = normalizeText(value).replaceAll("[^0-9]", "");
         if (!StringUtils.hasText(digits)) {
             throw new IllegalArgumentException(label + " is required");
@@ -737,7 +861,7 @@ public class OpsAuditCenterService {
         if (item != null && StringUtils.hasText(item.configValue())) {
             return item.configValue();
         }
-        return "";
+        return fallback;
     }
 
     private String status(String value) {
@@ -919,11 +1043,18 @@ public class OpsAuditCenterService {
 
     private String inferAuditDomain(String action, String objectText) {
         String source = ((action == null ? "" : action) + " " + (objectText == null ? "" : objectText)).toUpperCase(Locale.ROOT);
+        java.util.regex.Matcher marker = java.util.regex.Pattern.compile("(?:^|[^A-Z])([A-M])\\d").matcher(source);
+        if (marker.find()) {
+            return marker.group(1);
+        }
         if (source.contains("D2") || source.contains("D5") || source.contains("提现") || source.contains("账单")) {
             return "D";
         }
         if (source.contains("C2") || source.contains("C3") || source.contains("账户") || source.contains("余额")) {
             return "C";
+        }
+        if (source.contains("KYC") || source.contains("风险") || source.contains("仲裁")) {
+            return "K";
         }
         if (source.contains("H1") || source.contains("PHASE")) {
             return "H";
@@ -950,11 +1081,99 @@ public class OpsAuditCenterService {
         return empty;
     }
 
-    private List<AuditLogRecord> recentLogs() {
-        AuditLogQueryRequest request = new AuditLogQueryRequest();
-        request.setLimit(20);
+    private List<AuditLogRecord> recentLogs(AuditLogQueryRequest filter) {
+        AuditLogQueryRequest request = filter == null ? new AuditLogQueryRequest() : filter;
+        request.setLimit(500);
         List<AuditLogRecord> rows = auditLogService.list(request);
         return rows == null ? List.of() : rows;
+    }
+
+    private AuditLogQueryRequest calendarTodayFilter(AuditLogQueryRequest filter) {
+        AuditLogQueryRequest query = copyFilter(filter);
+        LocalDateTime start = LocalDateTime.now().toLocalDate().atStartOfDay();
+        LocalDateTime now = LocalDateTime.now();
+        if (query.getStartTime() == null || query.getStartTime().isBefore(start)) query.setStartTime(start);
+        if (query.getEndTime() == null || query.getEndTime().isAfter(now)) query.setEndTime(now);
+        return query;
+    }
+
+    private AuditStatsSummaryResponse filteredSummary(AuditLogQueryRequest filter, List<A2AuditAggregate> rows) {
+        AuditStatsSummaryResponse summary = new AuditStatsSummaryResponse();
+        summary.setStartAt(filter.getStartTime()); summary.setEndAt(filter.getEndTime());
+        summary.setTotal(rows.stream().mapToLong(A2AuditAggregate::count).sum());
+        summary.setByResult(rows.stream().collect(Collectors.groupingBy(A2AuditAggregate::result, Collectors.summingLong(A2AuditAggregate::count)))
+                .entrySet().stream().map(entry -> new AuditStatsBucket(entry.getKey(), entry.getValue())).toList());
+        summary.setByRiskLevel(rows.stream().collect(Collectors.groupingBy(A2AuditAggregate::riskLevel, Collectors.summingLong(A2AuditAggregate::count)))
+                .entrySet().stream().map(entry -> new AuditStatsBucket(entry.getKey(), entry.getValue())).toList());
+        return summary;
+    }
+
+    private AuditLogQueryRequest copyFilter(AuditLogQueryRequest source) {
+        AuditLogQueryRequest copy = new AuditLogQueryRequest();
+        if (source == null) return copy;
+        copy.setAction(source.getAction());
+        copy.setDomain(source.getDomain());
+        copy.setOperator(source.getOperator());
+        copy.setOperatorExact(source.getOperatorExact());
+        copy.setObject(source.getObject());
+        copy.setStartTime(source.getStartTime());
+        copy.setEndTime(source.getEndTime());
+        copy.setAllowedDomains(source.getAllowedDomains());
+        return copy;
+    }
+
+    private List<AuditStatsBucket> filteredTopActions(List<A2AuditAggregate> rows) {
+        return rows.stream().collect(Collectors.groupingBy(A2AuditAggregate::action, Collectors.summingLong(A2AuditAggregate::count)))
+                .entrySet().stream().sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(10).map(entry -> new AuditStatsBucket(entry.getKey(), entry.getValue())).toList();
+    }
+
+    private boolean matches(AuditOperationTicketEntity row, AuditLogQueryRequest filter) {
+        if (filter == null) {
+            return true;
+        }
+        String domain = StringUtils.hasText(row.getSourceDomain()) ? normalizeDomain(row.getSourceDomain())
+                : inferAuditDomain(row.getAction(), row.getObjectText());
+        if (filter.getAllowedDomains() != null && !filter.getAllowedDomains().contains(domain)) {
+            return false;
+        }
+        if (StringUtils.hasText(filter.getDomain()) && !domain.equalsIgnoreCase(filter.getDomain().trim())) {
+            return false;
+        }
+        if (StringUtils.hasText(filter.getOperatorExact())
+                && !filter.getOperatorExact().equalsIgnoreCase(row.getOperatorName() == null ? "" : row.getOperatorName())) {
+            return false;
+        }
+        if (StringUtils.hasText(filter.getOperator()) && !contains(row.getOperatorName(), filter.getOperator())) {
+            return false;
+        }
+        if (StringUtils.hasText(filter.getAction()) && !contains(row.getAction(), filter.getAction())) {
+            return false;
+        }
+        if (StringUtils.hasText(filter.getObject()) && !contains(row.getObjectText(), filter.getObject())) {
+            return false;
+        }
+        if (filter.getStartTime() != null && row.getCreatedAt() != null && row.getCreatedAt().isBefore(filter.getStartTime())) {
+            return false;
+        }
+        return filter.getEndTime() == null || row.getCreatedAt() == null || !row.getCreatedAt().isAfter(filter.getEndTime());
+    }
+
+    private boolean contains(String source, String expected) {
+        return source != null && source.toLowerCase(Locale.ROOT).contains(expected.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private String normalizeDomain(String value) {
+        if (!StringUtils.hasText(value)) return "A";
+        char first = Character.toUpperCase(value.trim().charAt(0));
+        return first >= 'A' && first <= 'M' ? String.valueOf(first) : "A";
+    }
+
+    private String normalizeRoleGate(String value) {
+        if (!StringUtils.hasText(value) || "TWO_PERSON".equalsIgnoreCase(value.trim())) {
+            return "超管";
+        }
+        return value.trim();
     }
 
     private List<AuditStatsBucket> topActions() {

@@ -37,4 +37,8 @@ public interface SupportTicketRepository {
     void updatePriority(SupportTicketView ticket, String priority, LocalDateTime now);
 
     void assign(SupportTicketView ticket, Long assignedAdminId, String assignedAdminName, LocalDateTime now);
+
+    void archive(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now);
+
+    void appendSystemTrace(SupportTicketView ticket, String body, LocalDateTime now);
 }

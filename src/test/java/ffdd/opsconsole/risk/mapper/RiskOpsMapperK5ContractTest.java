@@ -48,9 +48,11 @@ class RiskOpsMapperK5ContractTest {
     }
 
     @Test
-    void ticketProjectionKeepsPendingSemanticForExistingUserWhoseKycIsNull() throws Exception {
+    void ticketProjectionReadsOnlyC4AuthorityAndFailsClosedWhenProfileIsMissing() throws Exception {
         for (String sql : kycTicketProjectionSql()) {
-            assertThat(sql).contains("ELSE COALESCE(u.kyc_status,'PENDING') END AS kyc");
+            assertThat(sql)
+                    .contains("LEFT JOIN nx_kyc_profile kyc", "ELSE COALESCE(kyc.status,'PENDING') END AS kyc")
+                    .doesNotContain("kyc.status,u.kyc_status");
         }
     }
 
@@ -122,6 +124,44 @@ class RiskOpsMapperK5ContractTest {
                         "insertKycReviewSource", String.class, String.class, String.class)
                 .getAnnotation(Insert.class);
         assertThat(String.join(" ", link.value())).contains("INSERT IGNORE", "ticket_id", "source_domain", "source_no");
+    }
+
+    @Test
+    void k4ScoreCrossingStateIsDurableLockedAndCasVersioned() throws Exception {
+        Update table = RiskOpsMapper.class.getMethod("createK4KycReviewTriggerStateTable")
+                .getAnnotation(Update.class);
+        String ddl = String.join(" ", table.value());
+        assertThat(ddl).contains(
+                "nx_admin_risk_score_kyc_trigger_state",
+                "user_no VARCHAR(64) PRIMARY KEY",
+                "above_threshold",
+                "last_threshold",
+                "trigger_sequence",
+                "version");
+
+        var locked = RiskOpsMapper.class.getMethod("findK4KycTriggerStateForUpdate", String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Select.class);
+        assertThat(String.join(" ", locked.value())).contains("FOR UPDATE");
+
+        Update cas = RiskOpsMapper.class.getMethod(
+                        "updateK4KycTriggerState", String.class, boolean.class, int.class, int.class,
+                        String.class, int.class, long.class)
+                .getAnnotation(Update.class);
+        assertThat(String.join(" ", cas.value()))
+                .contains("trigger_sequence=trigger_sequence+#{triggerIncrement}",
+                        "version=version+1", "version=#{expectedVersion}");
+    }
+
+    @Test
+    void thresholdChangeCandidatesUseCurrentFreshK4ProjectionAndTwoHundredRowChunks() throws Exception {
+        var select = RiskOpsMapper.class.getMethod(
+                        "scoreUserNosNeedingKycTriggerThresholdSync", int.class, int.class)
+                .getAnnotation(org.apache.ibatis.annotations.Select.class);
+        String sql = String.join(" ", select.value());
+        assertThat(sql)
+                .contains("m.state='active'", "s.model_version=CONCAT('k4-v',m.model_version)",
+                        "s.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)",
+                        "t.last_threshold<>#{threshold}", "LIMIT #{limit}");
     }
 
     @Test

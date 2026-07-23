@@ -74,7 +74,7 @@ ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_pat
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'E' d) x ON p.menu_code='E'
-JOIN (SELECT 'E1' code,'商品目录 & 代际门' name,'/devices/pricing' path,1 sort UNION ALL
+JOIN (SELECT 'E1' code,'商品目录 & 上架门' name,'/devices/pricing' path,1 sort UNION ALL
       SELECT 'E2','收益 & 任务引擎','/devices/tasks',2 UNION ALL
       SELECT 'E3','生命周期 & Trade-in','/devices/trade-in',3 UNION ALL
       SELECT 'E4','订单状态机','/devices/orders',4 UNION ALL
@@ -203,9 +203,23 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m WHERE r.role_code IN
 -- C: support+risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'C%' WHERE r.role_code IN ('SUPPORT','RISK');
+-- C1 跨职能入口；财务另需 C3 作为 D4 唯一纠错回链。
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('C','C1') WHERE r.role_code IN ('FINANCE','GROWTH');
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('C','C3','A','A4') WHERE r.role_code='FINANCE';
+-- C6 增长只读入口：只补 C6 子页；权限 seed 不授 C6 写权限。
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code='C6' WHERE r.role_code='GROWTH';
 -- D: finance+risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'D%' WHERE r.role_code IN ('FINANCE','RISK');
+-- D5 跨职能只读与 H1 权威跳转入口。
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('D','D5') WHERE r.role_code='GROWTH';
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('H','H1')
+WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK');
 -- E: growth+support
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'E%' WHERE r.role_code IN ('GROWTH','SUPPORT');
@@ -236,8 +250,26 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('
 -- M: support+risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'M%' WHERE r.role_code IN ('SUPPORT','RISK');
--- B/L: 全角色
+-- B: 全角色态势概览。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%' WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','SUPPORT','CONFIG_ADMIN');
+
+-- L: 按职能最小可见；清理旧版全角色可见的宽授权。
+DELETE rm FROM nx_admin_role_menu rm
+JOIN nx_admin_role r ON r.id=rm.role_id
+JOIN nx_admin_menu m ON m.id=rm.menu_id
+WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','SUPPORT','CONFIG_ADMIN') AND m.menu_code LIKE 'L%';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'L%' WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','SUPPORT','CONFIG_ADMIN');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('L','L3','L4','L5','L6') WHERE r.role_code='RISK';
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('L','L3','L5') WHERE r.role_code='FINANCE';
+
+-- 财务主管继承财务角色的全部菜单。
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT lead_role.id, rm.menu_id
+FROM nx_admin_role lead_role
+JOIN nx_admin_role finance_role ON finance_role.role_code='FINANCE' AND finance_role.is_deleted=0
+JOIN nx_admin_role_menu rm ON rm.role_id=finance_role.id AND rm.is_deleted=0
+WHERE lead_role.role_code='FINANCE_LEAD' AND lead_role.is_deleted=0;
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('L','L1','L2','L4','L5','L6') WHERE r.role_code='GROWTH';

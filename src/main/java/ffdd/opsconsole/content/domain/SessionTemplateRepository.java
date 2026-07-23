@@ -18,6 +18,10 @@ public interface SessionTemplateRepository {
 
     Optional<SessionScriptView> findScript(String scriptId);
 
+    default Optional<SessionScriptView> findScriptForUpdate(String scriptId) {
+        return findScript(scriptId);
+    }
+
     SessionScriptView createScript(String scriptId, SessionScriptCreateRequest request, LocalDateTime now);
 
     void updateScriptStatus(String scriptId, String status, LocalDateTime now);
@@ -29,6 +33,10 @@ public interface SessionTemplateRepository {
     PageResult<SessionReplyTemplateView> pageReplyTemplates(SessionReplyTemplateQueryRequest request);
 
     Optional<SessionReplyTemplateView> findReplyTemplate(String templateId);
+
+    default Optional<SessionReplyTemplateView> findReplyTemplateForUpdate(String templateId) {
+        return findReplyTemplate(templateId);
+    }
 
     SessionReplyTemplateView createReplyTemplate(String templateId, SessionReplyTemplateCreateRequest request, LocalDateTime now);
 

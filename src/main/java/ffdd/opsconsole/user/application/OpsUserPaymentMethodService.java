@@ -31,7 +31,18 @@ public class OpsUserPaymentMethodService {
         int safePage = Math.max(1, page);
         int safeSize = Math.min(50, Math.max(1, pageSize));
         long total = mapper.countMethods(userId, includeUnbound);
-        return Map.of("items", mapper.listMethods(userId, includeUnbound, (safePage - 1) * safeSize, safeSize),
+        var items = mapper.listMethods(userId, includeUnbound, (safePage - 1) * safeSize, safeSize);
+        audit.recordRequired(AuditLogWriteRequest.builder()
+                .action("USER_PAYMENT_METHOD_LIST")
+                .resourceType("USER")
+                .resourceId(String.valueOf(userId))
+                .userId(userId)
+                .actorUsername(AdminActorResolver.resolve("SYSTEM"))
+                .riskLevel("MEDIUM")
+                .detail(Map.of("includeUnbound", includeUnbound, "page", safePage,
+                        "pageSize", safeSize, "rowCount", items.size()))
+                .build());
+        return Map.of("items", items,
                 "page", safePage, "pageSize", safeSize, "total", total);
     }
 
@@ -111,9 +122,11 @@ public class OpsUserPaymentMethodService {
         if (!StringUtils.hasText(key)) {
             throw new BizException(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8
-                || request.reason().trim().length() > 500) {
+        if (request == null || !StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATION_REASON_TOO_SHORT");
+        }
+        if (request.reason().trim().length() > 200) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATION_REASON_TOO_LONG");
         }
         if (versionRequired && request.expectedVersion() == null) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EXPECTED_VERSION_REQUIRED");

@@ -3,6 +3,8 @@ package ffdd.opsconsole.content.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.infrastructure.NotificationCampaignEntity;
 import ffdd.opsconsole.content.domain.AppNotificationView;
+import ffdd.opsconsole.content.domain.NotificationActionReceipt;
+import ffdd.opsconsole.content.domain.NotificationEventFact;
 import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
@@ -113,6 +115,23 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
     int countNotificationsByBizNo(@Param("bizNo") String bizNo);
 
     @Select("""
+            SELECT n.id notificationId, n.user_id userId, LOWER(n.type) kind,
+                   LOWER(n.priority) priority, COALESCE(n.cta_href, '') ctaHref,
+                   (n.read_flag = 1) alreadyRead, #{currentPhase} phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, #{now}), 0) accountAgeMonths,
+                   DATE_FORMAT(u.created_at, '%x-W%v') cohort
+              FROM nx_notification n
+              JOIN nx_user u ON u.id=n.user_id AND u.is_deleted=0
+             WHERE n.biz_no=#{bizNo} AND n.is_deleted=0
+               AND n.push_status IN ('DELIVERED','READ','SENT','SUCCESS')
+             ORDER BY n.id
+            """)
+    List<NotificationEventFact> selectNotificationEventFactsByBizNo(
+            @Param("bizNo") String bizNo,
+            @Param("currentPhase") String currentPhase,
+            @Param("now") LocalDateTime now);
+
+    @Select("""
             SELECT COUNT(*)
               FROM nx_user
              WHERE is_deleted = 0
@@ -138,7 +157,51 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
 
     @Update("""
             UPDATE nx_notification_campaign
-               SET status = 'SENDING', updated_at = #{now}
+               SET name = #{name}, kind = #{kind}, tier = #{tier}, audience = #{audience},
+                   reach_label = #{reachLabel}, body_en = #{bodyEn}, body_zh = #{bodyZh}, body_vi = #{bodyVi},
+                   cta_label = #{ctaLabel}, cta_href = #{ctaHref}, budget_usd = #{budgetUsd},
+                   last_operator = #{operator}, revision = revision + 1, updated_at = #{now}
+             WHERE campaign_no = #{campaignNo}
+               AND is_deleted = 0
+               AND status = 'DRAFT'
+               AND revision = #{expectedRevision}
+            """)
+    int updateDraftIfRevision(
+            @Param("campaignNo") String campaignNo,
+            @Param("name") String name,
+            @Param("kind") String kind,
+            @Param("tier") String tier,
+            @Param("audience") String audience,
+            @Param("reachLabel") String reachLabel,
+            @Param("bodyEn") String bodyEn,
+            @Param("bodyZh") String bodyZh,
+            @Param("bodyVi") String bodyVi,
+            @Param("ctaLabel") String ctaLabel,
+            @Param("ctaHref") String ctaHref,
+            @Param("budgetUsd") java.math.BigDecimal budgetUsd,
+            @Param("operator") String operator,
+            @Param("expectedRevision") long expectedRevision,
+            @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_notification_campaign
+               SET status = 'SCHEDULED', schedule_text = #{schedule}, last_operator = #{operator},
+                   revision = revision + 1, updated_at = #{now}
+             WHERE campaign_no = #{campaignNo}
+               AND is_deleted = 0
+               AND status = 'DRAFT'
+               AND revision = #{expectedRevision}
+            """)
+    int scheduleDraftIfRevision(
+            @Param("campaignNo") String campaignNo,
+            @Param("schedule") String schedule,
+            @Param("operator") String operator,
+            @Param("expectedRevision") long expectedRevision,
+            @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_notification_campaign
+               SET status = 'SENDING', revision = revision + 1, updated_at = #{now}
              WHERE campaign_no = #{campaignNo}
                AND is_deleted = 0
                AND status = 'SCHEDULED'
@@ -147,33 +210,44 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
 
     @Update("""
             UPDATE nx_notification_campaign
-               SET status = 'SENDING', updated_at = #{now}
+               SET status = 'SENDING', revision = revision + 1, updated_at = #{now}
              WHERE campaign_no = #{campaignNo}
                AND is_deleted = 0
                AND status IN ('DRAFT', 'SCHEDULED')
+               AND revision = #{expectedRevision}
             """)
-    int claimForImmediateDispatch(@Param("campaignNo") String campaignNo, @Param("now") LocalDateTime now);
-
-    @Update("""
-            UPDATE nx_notification_campaign
-               SET status = 'CANCELLED', schedule_text = '已取消', last_operator = #{operator}, updated_at = #{now}
-             WHERE campaign_no = #{campaignNo}
-               AND is_deleted = 0
-               AND status = 'SCHEDULED'
-            """)
-    int cancelScheduled(
+    int claimForImmediateDispatch(
             @Param("campaignNo") String campaignNo,
-            @Param("operator") String operator,
+            @Param("expectedRevision") long expectedRevision,
             @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_notification_campaign
-               SET is_deleted = 1, updated_at = #{now}
+               SET status = 'CANCELLED', schedule_text = '已取消', last_operator = #{operator},
+                   revision = revision + 1, updated_at = #{now}
+             WHERE campaign_no = #{campaignNo}
+               AND is_deleted = 0
+               AND status = 'SCHEDULED'
+               AND revision = #{expectedRevision}
+            """)
+    int cancelScheduled(
+            @Param("campaignNo") String campaignNo,
+            @Param("operator") String operator,
+            @Param("expectedRevision") long expectedRevision,
+            @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_notification_campaign
+               SET is_deleted = 1, revision = revision + 1, updated_at = #{now}
              WHERE campaign_no = #{campaignNo}
                AND is_deleted = 0
                AND status IN ('DRAFT', 'CANCELLED')
+               AND revision = #{expectedRevision}
             """)
-    int softDeleteDraft(@Param("campaignNo") String campaignNo, @Param("now") LocalDateTime now);
+    int softDeleteDraft(
+            @Param("campaignNo") String campaignNo,
+            @Param("expectedRevision") long expectedRevision,
+            @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_notification_campaign
@@ -181,6 +255,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                        WHEN schedule_text REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
                        THEN 'SCHEDULED' ELSE 'DRAFT' END,
                    updated_at = #{now},
+                   revision = revision + 1,
                    last_operator = 'system-recovery'
              WHERE is_deleted = 0
                AND status = 'SENDING'
@@ -228,9 +303,64 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
     @Update("""
             UPDATE nx_notification
                SET read_flag = 1, read_at = COALESCE(read_at, NOW()), push_status = 'READ', updated_at = NOW()
-             WHERE id = #{notificationId} AND user_id = #{userId} AND is_deleted = 0
+             WHERE id = #{notificationId} AND user_id = #{userId} AND is_deleted = 0 AND read_flag = 0
             """)
     int markUserNotificationRead(@Param("userId") Long userId, @Param("notificationId") Long notificationId);
+
+    @Select("""
+            SELECT n.id notificationId, n.user_id userId, LOWER(n.type) kind,
+                   LOWER(n.priority) priority, COALESCE(n.cta_href, '') ctaHref,
+                   (n.read_flag = 1) alreadyRead,
+                   COALESCE((SELECT config_value FROM nx_config_item
+                              WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1),'P1') phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, NOW()), 0) accountAgeMonths,
+                   DATE_FORMAT(u.created_at, '%x-W%v') cohort
+              FROM nx_notification n
+              JOIN nx_user u ON u.id=n.user_id AND u.is_deleted=0
+             WHERE n.id=#{notificationId} AND n.user_id=#{userId} AND n.is_deleted=0
+               AND n.push_status IN ('DELIVERED','READ','SENT','SUCCESS')
+             LIMIT 1 FOR UPDATE
+            """)
+    NotificationEventFact lockNotificationEventFact(
+            @Param("userId") Long userId, @Param("notificationId") Long notificationId);
+
+    @Select("""
+            SELECT n.id notificationId, n.user_id userId, LOWER(n.type) kind,
+                   LOWER(n.priority) priority, COALESCE(n.cta_href, '') ctaHref,
+                   FALSE alreadyRead,
+                   COALESCE((SELECT config_value FROM nx_config_item
+                              WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1),'P1') phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, NOW()), 0) accountAgeMonths,
+                   DATE_FORMAT(u.created_at, '%x-W%v') cohort
+              FROM nx_notification n
+              JOIN nx_user u ON u.id=n.user_id AND u.is_deleted=0
+             WHERE n.user_id=#{userId} AND n.is_deleted=0 AND n.read_flag=0
+               AND n.push_status IN ('DELIVERED','SENT','SUCCESS')
+             ORDER BY n.id FOR UPDATE
+            """)
+    List<NotificationEventFact> lockUnreadNotificationEventFacts(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT user_id userId, notification_id notificationId, action, route,
+                   idempotency_key idempotencyKey
+             FROM nx_notification_action_receipt
+             WHERE idempotency_key=#{idempotencyKey} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    NotificationActionReceipt findNotificationActionReceipt(@Param("idempotencyKey") String idempotencyKey);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_notification_action_receipt
+              (notification_id,user_id,action,route,idempotency_key,created_at,is_deleted)
+            VALUES
+              (#{notificationId},#{userId},#{action},#{route},#{idempotencyKey},NOW(),0)
+            """)
+    int insertNotificationActionReceipt(
+            @Param("userId") Long userId,
+            @Param("notificationId") Long notificationId,
+            @Param("action") String action,
+            @Param("route") String route,
+            @Param("idempotencyKey") String idempotencyKey);
 
     @Update("""
             UPDATE nx_notification

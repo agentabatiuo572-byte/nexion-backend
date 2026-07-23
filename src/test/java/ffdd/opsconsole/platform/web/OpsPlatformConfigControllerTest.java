@@ -36,9 +36,9 @@ class OpsPlatformConfigControllerTest {
     @Test
     void updateDelegatesWithIdempotencyHeader() {
         PlatformConfigUpdateRequest request =
-                new PlatformConfigUpdateRequest("flag", "core.sse_v2", null, "on", "rollout", "superadmin");
+                new PlatformConfigUpdateRequest("flag", "ops.maintenanceBanner", null, "on", "off", "rollout reason", "superadmin");
         PlatformConfigResponse response =
-                new PlatformConfigResponse(1L, "feature.core.sse_v2", "on", "STRING", "admin_feature_flag", "ADMIN", "rollout", 1, null, null);
+                new PlatformConfigResponse(1L, "feature.ops.maintenanceBanner", "on", "STRING", "admin_feature_flag", "ADMIN", "rollout", 1, null, null);
         when(configService.update("idem-1", request)).thenReturn(ApiResult.ok(response));
 
         ApiResult<PlatformConfigResponse> result = controller.update("idem-1", request);

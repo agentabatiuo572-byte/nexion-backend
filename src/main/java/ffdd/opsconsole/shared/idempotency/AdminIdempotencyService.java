@@ -1,17 +1,14 @@
 package ffdd.opsconsole.shared.idempotency;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.exception.BizException;
-import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -21,12 +18,9 @@ public class AdminIdempotencyService {
     private static final Duration DEFAULT_TTL = Duration.ofHours(24);
     /** Must stay aligned with nx_admin_idempotency_record.idempotency_key VARCHAR(128). */
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
-    private static final String STATUS_PROCESSING = "PROCESSING";
-    private static final String STATUS_SUCCEEDED = "SUCCEEDED";
-    private static final String STATUS_FAILED = "FAILED";
-
-    private final AdminIdempotencyRecordMapper recordMapper;
-    private final ObjectMapper objectMapper;
+    /** Must stay aligned with nx_admin_idempotency_record.error_message VARCHAR(512). */
+    private static final int MAX_ERROR_MESSAGE_LENGTH = 512;
+    private final AdminIdempotencyTransactionExecutor transactionExecutor;
     private final Clock clock;
 
     public <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
@@ -34,55 +28,34 @@ public class AdminIdempotencyService {
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
 
-        AdminIdempotencyRecordEntity existing = recordMapper.selectActive(normalizedScope, normalizedKey);
-        if (existing != null) {
-            return replay(existing, normalizedHash, responseType);
-        }
-
-        LocalDateTime expiresAt = LocalDateTime.now(clock).plus(DEFAULT_TTL);
-        AdminIdempotencyRecordEntity record;
-        if (recordMapper.resetExpired(normalizedScope, normalizedKey, normalizedHash, expiresAt) == 1) {
-            record = recordMapper.selectActive(normalizedScope, normalizedKey);
-            if (record == null) {
-                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_RECLAIM_CONFLICT");
-            }
-        } else {
-            record = new AdminIdempotencyRecordEntity();
-            record.setScope(normalizedScope);
-            record.setIdempotencyKey(normalizedKey);
-            record.setRequestHash(normalizedHash);
-            record.setStatus(STATUS_PROCESSING);
-            record.setExpiresAt(expiresAt);
-            record.setIsDeleted(0);
-            try {
-                recordMapper.insert(record);
-            } catch (DuplicateKeyException ex) {
-                AdminIdempotencyRecordEntity duplicate = recordMapper.selectActive(normalizedScope, normalizedKey);
-                if (duplicate != null) {
-                    return replay(duplicate, normalizedHash, responseType);
-                }
-                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_KEY_CONFLICT");
-            }
+        LocalDateTime expiresAt = LocalDateTime.now(clock)
+                .truncatedTo(ChronoUnit.SECONDS)
+                .plus(DEFAULT_TTL);
+        AdminIdempotencyTransactionExecutor.Claim<T> claim = transactionExecutor.claim(
+                normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType);
+        if (!claim.executeAction()) {
+            return claim.replayResponse();
         }
 
         try {
-            T result = action.get();
-            recordMapper.markSucceeded(record.getId(), writeJson(result));
-            return result;
+            return transactionExecutor.runClaimed(claim.recordId(), action);
         } catch (RuntimeException ex) {
-            recordMapper.markFailed(record.getId(), ex.getMessage());
+            try {
+                transactionExecutor.markFailed(claim.recordId(), errorSummary(ex));
+            } catch (RuntimeException markFailedError) {
+                // Preserve the business/SQL root cause; persistence of failure metadata must never mask it.
+                ex.addSuppressed(markFailedError);
+            }
             throw ex;
         }
     }
 
-    private <T> T replay(AdminIdempotencyRecordEntity record, String requestHash, Class<T> responseType) {
-        if (!requestHash.equals(record.getRequestHash())) {
-            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+    private String errorSummary(RuntimeException ex) {
+        String value = ex.getClass().getSimpleName() + (StringUtils.hasText(ex.getMessage()) ? ": " + ex.getMessage().trim() : "");
+        if (value.length() <= MAX_ERROR_MESSAGE_LENGTH) {
+            return value;
         }
-        if (STATUS_SUCCEEDED.equals(record.getStatus()) && StringUtils.hasText(record.getResponseJson())) {
-            return readJson(record.getResponseJson(), responseType);
-        }
-        throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_REQUEST_IN_PROGRESS");
+        return value.substring(0, MAX_ERROR_MESSAGE_LENGTH - 1) + "…";
     }
 
     private String normalizeScope(String scope) {
@@ -110,19 +83,4 @@ public class AdminIdempotencyService {
         return value.trim();
     }
 
-    private String writeJson(Object value) {
-        try {
-            return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException ex) {
-            throw new BizException(500, "IDEMPOTENCY_RESPONSE_SERIALIZE_FAILED");
-        }
-    }
-
-    private <T> T readJson(String value, Class<T> responseType) {
-        try {
-            return objectMapper.readValue(value, responseType);
-        } catch (JsonProcessingException ex) {
-            throw new BizException(500, "IDEMPOTENCY_RESPONSE_DESERIALIZE_FAILED");
-        }
-    }
 }

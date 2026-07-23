@@ -2,8 +2,10 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
 import ffdd.opsconsole.content.domain.NotificationCampaignRow;
+import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,8 +19,9 @@ import org.springframework.transaction.annotation.Transactional;
 public class NotificationCampaignDispatchExecutor {
     private final NotificationCampaignRepository repository;
     private final AuditLogService auditLogService;
+    private final EventOutboxService eventOutboxService;
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRED)
     public int dispatchImmediate(
             String campaignNo,
             String bizNo,
@@ -26,10 +29,11 @@ public class NotificationCampaignDispatchExecutor {
             String operator,
             String idempotencyKey,
             String reason,
+            long expectedRevision,
             LocalDateTime now) {
         NotificationCampaignRow campaign = repository.findCampaign(campaignNo)
                 .orElseThrow(() -> new IllegalStateException("NOTIFICATION_CAMPAIGN_NOT_FOUND"));
-        if (!repository.claimForImmediateDispatch(campaignNo, now)) {
+        if (!repository.claimForImmediateDispatch(campaignNo, expectedRevision, now)) {
             throw new ConcurrentDispatchException();
         }
         long audience = repository.estimateAudience(campaign.audienceTarget(), currentPhase, now);
@@ -41,6 +45,7 @@ public class NotificationCampaignDispatchExecutor {
         if (delivered <= 0) {
             throw new AudienceEmptyException();
         }
+        publishDeliveredEvents(campaignNo, bizNo, currentPhase, delivered, now);
         repository.applyRetention(now);
         repository.completeDispatch(campaignNo, "SENT", delivered, "已进入用户通知流", operator, now);
         audit("I3_NOTIFICATION_CAMPAIGN_SEND_NOW", campaignNo, operator, idempotencyKey, reason,
@@ -69,11 +74,30 @@ public class NotificationCampaignDispatchExecutor {
         if (delivered <= 0) {
             throw new AudienceEmptyException();
         }
+        publishDeliveredEvents(campaignNo, bizNo, currentPhase, delivered, now);
         repository.applyRetention(now);
         repository.completeDispatch(campaignNo, "SENT", delivered, "已进入用户通知流", "system", now);
         audit("I3_NOTIFICATION_CAMPAIGN_SCHEDULE_DISPATCHED", campaignNo, "system", bizNo,
                 "排期到点自动下发", Map.of("deliveredCount", delivered));
         return delivered;
+    }
+
+    private void publishDeliveredEvents(
+            String campaignNo, String bizNo, String currentPhase, int delivered, LocalDateTime now) {
+        var facts = repository.listNotificationEventFactsByBizNo(bizNo, currentPhase, now);
+        if (facts.size() != delivered) {
+            throw new IllegalStateException("NOTIFICATION_DELIVERY_FACT_MISMATCH");
+        }
+        for (NotificationEventFact fact : facts) {
+            eventOutboxService.publishUserEvent(
+                    "NOTIFICATION", String.valueOf(fact.notificationId()), "notification.delivered",
+                    fact.userId(), fact.phase(), fact.accountAgeMonths(), fact.cohort(),
+                    Map.of(
+                            "campaign_id", campaignNo,
+                            "notification_id", fact.notificationId(),
+                            "kind", fact.kind(),
+                            "priority", fact.priority()));
+        }
     }
 
     private void audit(
@@ -83,7 +107,7 @@ public class NotificationCampaignDispatchExecutor {
         detail.put("idempotencyKey", idempotencyKey);
         detail.put("reason", reason);
         detail.putAll(extra);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("NOTIFICATION_CAMPAIGN")
                 .resourceId(resourceId)

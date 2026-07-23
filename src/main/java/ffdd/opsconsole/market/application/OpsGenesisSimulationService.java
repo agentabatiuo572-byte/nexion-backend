@@ -202,7 +202,7 @@ public class OpsGenesisSimulationService {
     }
 
     private String requireReason(String value, String error) {
-        if (!StringUtils.hasText(value) || value.trim().length() < 8 || value.trim().length() > 500) {
+        if (!StringUtils.hasText(value) || value.trim().length() < 8 || value.trim().length() > 200) {
             throw new BizException(OpsErrorCode.REASON_REQUIRED.httpStatus(), error);
         }
         return value.trim();

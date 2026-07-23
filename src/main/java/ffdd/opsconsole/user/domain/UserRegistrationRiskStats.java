@@ -8,5 +8,6 @@ public record UserRegistrationRiskStats(
         long locked,
         long stuffingClusters7d,
         boolean captchaTemporarilyDisabled,
-        String captchaRestoreWindow) {
+        String captchaRestoreAt,
+        long captchaRemainingSeconds) {
 }

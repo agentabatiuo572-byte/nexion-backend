@@ -198,10 +198,15 @@ public class OpsDomainRuntimeService {
                 api("UserSession", "/api/admin/users/sessions", "user_c5_read", "user_c5_write", false),
                 api("ManualAssetAdjustment", "/api/admin/users/profiles/{userId}/asset-adjustments", "user_c3_read", "user_c3_adjust_create", false)));
         map.put(DomainCode.D, List.of(
-                api("TopupReconciliation", "/api/admin/finance/topup/overview", "finance_d1_read", "finance_d1_write", true),
-                api("TopupFlows", "/api/admin/finance/topup/flows", "finance_d1_read", "finance_d1_write", false),
+                api("TopupOverview", "/api/admin/finance/topup/overview", "finance_d1_read", "finance_d1_reconcile", false),
+                api("TopupFlows", "/api/admin/finance/topup/flows", "finance_d1_read", "finance_d1_reconcile", false),
+                api("TopupChannel", "/api/admin/finance/topup/channels/**", "finance_d1_read", "finance_d1_channel_manage", false),
+                api("TopupPsp", "/api/admin/finance/topup/psp/primary", "finance_d1_read", "finance_d1_psp_switch", false),
+                api("TopupCardRisk", "/api/admin/finance/topup/card-risk/**", "finance_d1_read", "finance_d1_config_manage", false),
+                api("TopupRiskLock", "/api/admin/finance/topup/bin-locks/**", "finance_d1_read", "finance_d1_bin_lock", false),
+                api("TopupChargeback", "/api/admin/finance/topup/chargebacks/**", "finance_d1_read", "finance_d1_chargeback_refund", false),
                 api("Withdrawal", "/api/admin/finance/withdrawals", "finance_d2_read", "finance_d2_withdrawal_approve", false),
-                api("WithdrawalParam", "/api/admin/finance/withdrawal-params", "finance_d5_read", "finance_d5_daily_limit_write", false)));
+                api("WithdrawalParam", "/api/admin/withdraw/limits", "finance_d5_read", "finance_d5_daily_limit_write", false)));
         map.put(DomainCode.E, List.of(
                 api("Device", "/api/admin/devices", "device_e1_read", "device_e1_write", false),
                 api("DeviceSku", "/api/admin/devices/skus", "device_e1_read", "device_e1_write", false),

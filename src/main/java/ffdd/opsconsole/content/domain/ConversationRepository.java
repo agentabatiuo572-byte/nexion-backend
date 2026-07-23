@@ -16,13 +16,16 @@ public interface ConversationRepository {
 
     Optional<ContentConversationView> findByConversationNo(String conversationNo);
 
+    /** Locks the conversation header first and its active transfer second. */
+    Optional<ContentConversationView> findByConversationNoForUpdate(String conversationNo);
+
     List<ContentConversationMessageView> messages(String conversationNo);
 
     boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now);
 
     List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit);
 
-    void transferToPending(
+    boolean transferToPending(
             ContentConversationView conversation,
             String targetType,
             String targetId,
@@ -31,21 +34,25 @@ public interface ConversationRepository {
             String operator,
             LocalDateTime now);
 
-    void acceptTransfer(ContentConversationView conversation, String operator, LocalDateTime now);
+    boolean acceptTransfer(ContentConversationView conversation, String ownerAgentId, String ownerAgentName, String operator, LocalDateTime now);
 
-    void returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
+    boolean returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
 
-    void waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
+    boolean waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
 
-    void reply(ContentConversationView conversation, String body, String operator, LocalDateTime now);
+    boolean reply(ContentConversationView conversation, String body, String operator, LocalDateTime now);
 
-    void updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now);
+    boolean updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now);
 
-    void archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now);
+    boolean archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now);
 
     boolean fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
 
-    void markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now);
+    /**
+     * Atomically claims a conversation for its single terminal conversion to a ticket.
+     * A false result means another request already closed/converted the conversation.
+     */
+    boolean markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now);
 
     ContentConversationView createConversation(
             String conversationNo,

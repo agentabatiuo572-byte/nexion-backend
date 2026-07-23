@@ -15,6 +15,11 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.application.A2AccessPolicy;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.BizException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.security.MessageDigest;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
@@ -38,24 +43,33 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.transaction.annotation.Transactional;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/audit")
 @PreAuthorize("hasAuthority('platform_a2_read')")
 @RequiredArgsConstructor
 public class OpsAuditController {
+    private static final int MAX_EXPORT_ROWS = 5000;
     private final AuditLogService auditLogService;
     private final OpsAuditCenterService auditCenterService;
     private final AdminOperatorRoleResolver operatorRoleResolver;
+    private final A2AccessPolicy accessPolicy;
+    private final AdminIdempotencyService idempotencyService;
+    private final ObjectMapper objectMapper;
+
+    public ApiResult<AuditCenterOverview> overview() {
+        return overview(new AuditLogQueryRequest());
+    }
 
     @GetMapping("/overview")
-    public ApiResult<AuditCenterOverview> overview() {
-        return auditCenterService.overview();
+    public ApiResult<AuditCenterOverview> overview(AuditLogQueryRequest request) {
+        return auditCenterService.overview(accessPolicy.constrain(request));
     }
 
     @GetMapping("/logs")
     public ApiResult<List<AuditLogRecord>> logs(AuditLogQueryRequest request) {
-        return ApiResult.ok(auditLogService.list(request));
+        return ApiResult.ok(auditLogService.list(accessPolicy.constrain(request)));
     }
 
     @GetMapping("/logs/trace/{traceId}")
@@ -63,44 +77,78 @@ public class OpsAuditController {
         AuditLogQueryRequest request = new AuditLogQueryRequest();
         request.setTraceId(traceId);
         request.setLimit(200);
-        return ApiResult.ok(auditLogService.list(request));
+        return ApiResult.ok(auditLogService.list(accessPolicy.constrain(request)));
     }
 
     @PostMapping("/exports")
-    @PreAuthorize("hasAuthority('platform_a2_write')")
+    @PreAuthorize("hasAuthority('platform_a2_export')")
+    @Transactional
     public ResponseEntity<?> export(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditExportRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return jsonFailure(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
-        if (request == null || !StringUtils.hasText(request.reason())) {
+        int reasonLength = request == null || request.reason() == null ? 0
+                : request.reason().trim().codePointCount(0, request.reason().trim().length());
+        if (request == null || !StringUtils.hasText(request.reason())
+                || reasonLength < Math.max(8, auditCenterService.currentReasonMinChars())) {
             return jsonFailure(OpsErrorCode.REASON_REQUIRED);
+        }
+        if (reasonLength > 200) {
+            return jsonFailure(OpsErrorCode.VALIDATION_FAILED);
         }
 
         String normalizedKey = idempotencyKey.trim();
-        LocalDateTime createdAt = LocalDateTime.now();
-        String jobNo = "A2-AUD-EXP-" + DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(createdAt);
-        auditLogService.record(AuditLogWriteRequest.builder()
-                .action("A2_AUDIT_EXPORTED")
-                .resourceType("A2_AUDIT_EXPORT")
-                .resourceId(jobNo)
-                .bizNo(jobNo)
-                .result("SUCCESS")
-                .riskLevel("MEDIUM")
-                .detail(Map.of(
-                        "jobNo", jobNo,
-                        "filter", request.filter(),
-                        "reason", request.reason().trim(),
-                        "idempotencyKey", normalizedKey))
-                .build());
-        byte[] body = auditExportWorkbook(jobNo, normalizedKey, createdAt, request);
+        String actor = AdminActorResolver.resolve(null);
+        AuditExportResult export;
+        try {
+            export = idempotencyService.execute("A2_COMMAND", normalizedKey,
+                    exportHash(actor, request), AuditExportResult.class,
+                    () -> createExport(normalizedKey, actor, request));
+        } catch (BizException ex) {
+            return ResponseEntity.status(ex.getCode()).contentType(MediaType.APPLICATION_JSON)
+                    .body(ApiResult.fail(ex.getCode(), ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.unprocessableEntity().contentType(MediaType.APPLICATION_JSON)
+                    .body(ApiResult.fail(422, ex.getMessage()));
+        }
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/vnd.ms-excel;charset=UTF-8"))
-                .contentLength(body.length)
+                .contentLength(export.body().length)
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        ContentDisposition.attachment().filename(jobNo + ".xls", StandardCharsets.UTF_8).build().toString())
-                .body(body);
+                        ContentDisposition.attachment().filename(export.jobNo() + ".xls", StandardCharsets.UTF_8).build().toString())
+                .body(export.body());
+    }
+
+    private AuditExportResult createExport(String idempotencyKey, String actor, AuditExportRequest request) {
+        LocalDateTime createdAt = LocalDateTime.now();
+        String jobNo = "A2-AUD-EXP-" + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(createdAt);
+        ExportWorkbook workbook = auditExportWorkbook(jobNo, idempotencyKey, createdAt, request);
+        if (workbook.rowCount() == 0) {
+            throw new BizException(422, "A2_EXPORT_EMPTY_RESULT");
+        }
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("A2_AUDIT_EXPORTED").resourceType("A2_AUDIT_EXPORT")
+                .resourceId(jobNo).bizNo(jobNo).actorType("ADMIN").actorUsername(actor)
+                .result("SUCCESS").riskLevel("MEDIUM")
+                .detail(Map.of("jobNo", jobNo, "filter", request.filter(), "reason", request.reason().trim(),
+                        "idempotencyKey", idempotencyKey, "rowCount", workbook.rowCount()))
+                .build());
+        return new AuditExportResult(jobNo, createdAt, workbook.body());
+    }
+
+    private String exportHash(String actor, AuditExportRequest request) {
+        try {
+            Map<String, Object> envelope = new java.util.LinkedHashMap<>();
+            envelope.put("actor", actor == null ? "unknown" : actor);
+            envelope.put("operation", "EXPORT");
+            envelope.put("payload", request);
+            byte[] bytes = objectMapper.writeValueAsBytes(envelope);
+            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (Exception ex) {
+            throw new BizException(422, "A2_EXPORT_HASH_FAILED");
+        }
     }
 
     private ResponseEntity<ApiResult<Map<String, Object>>> jsonFailure(OpsErrorCode errorCode) {
@@ -109,17 +157,25 @@ public class OpsAuditController {
                 .body(ApiResult.fail(errorCode.httpStatus(), errorCode.name()));
     }
 
-    private byte[] auditExportWorkbook(
+    private ExportWorkbook auditExportWorkbook(
             String jobNo,
             String idempotencyKey,
             LocalDateTime createdAt,
             AuditExportRequest request) {
         AuditLogQueryRequest query = new AuditLogQueryRequest();
-        query.setLimit(500);
+        query.setLimit(MAX_EXPORT_ROWS);
         if (request.filter() != null) {
             applyAuditFilter(query, request.filter());
         }
-        List<AuditLogRecord> rows = auditLogService.list(query);
+        query = accessPolicy.constrain(query);
+        long total = auditLogService.count(query);
+        if (total > MAX_EXPORT_ROWS) {
+            throw new BizException(422, "A2_EXPORT_TOO_LARGE_REFINE_FILTER");
+        }
+        List<AuditLogRecord> rows = total == 0 ? List.of() : auditLogService.listForExport(query, MAX_EXPORT_ROWS);
+        if (rows.size() != total) {
+            throw new BizException(409, "A2_EXPORT_SNAPSHOT_CHANGED_RETRY");
+        }
         StringBuilder html = new StringBuilder(8192);
         html.append('\ufeff')
                 .append("<html><head><meta charset=\"UTF-8\"></head><body>")
@@ -144,7 +200,7 @@ public class OpsAuditController {
                     .append("</tr>");
         }
         html.append("</table></body></html>");
-        return html.toString().getBytes(StandardCharsets.UTF_8);
+        return new ExportWorkbook(html.toString().getBytes(StandardCharsets.UTF_8), rows == null ? 0 : rows.size());
     }
 
     private void applyAuditFilter(AuditLogQueryRequest query, Map<String, Object> filter) {
@@ -164,13 +220,42 @@ public class OpsAuditController {
         if (riskLevel instanceof String value && StringUtils.hasText(value)) {
             query.setRiskLevel(value.trim());
         }
+        setText(filter.get("domain"), query::setDomain);
+        setText(filter.get("operator"), query::setOperator);
+        setText(filter.get("object"), query::setObject);
+        setTime(filter.get("startTime"), query::setStartTime);
+        setTime(filter.get("endTime"), query::setEndTime);
+    }
+
+    private void setText(Object value, java.util.function.Consumer<String> setter) {
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            setter.accept(text.trim());
+        }
+    }
+
+    private void setTime(Object value, java.util.function.Consumer<LocalDateTime> setter) {
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                setter.accept(LocalDateTime.parse(text.trim()));
+            } catch (java.time.format.DateTimeParseException ex) {
+                throw new IllegalArgumentException("A2_FILTER_TIME_INVALID");
+            }
+        }
     }
 
     private String escape(Object value) {
         if (value == null) {
             return "";
         }
-        return String.valueOf(value)
+        String text = String.valueOf(value);
+        String firstVisible = text.stripLeading();
+        boolean leadingControl = !text.isEmpty()
+                && (text.charAt(0) == '\t' || text.charAt(0) == '\r' || text.charAt(0) == '\n');
+        boolean formulaPrefix = !firstVisible.isEmpty() && "=+-@".indexOf(firstVisible.charAt(0)) >= 0;
+        if (leadingControl || formulaPrefix) {
+            text = "'" + text;
+        }
+        return text
                 .replace("&", "&amp;")
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
@@ -227,26 +312,36 @@ public class OpsAuditController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
             @RequestBody(required = false) AuditMechanismParamUpdateRequest request) {
-        return auditCenterService.updateMechanismParam(idempotencyKey, paramKey, request);
+        AuditMechanismParamUpdateRequest authenticated = request == null ? null
+                : new AuditMechanismParamUpdateRequest(
+                        request.value(), request.reason(), AdminActorResolver.resolve(null));
+        return auditCenterService.updateMechanismParam(idempotencyKey, paramKey, authenticated);
     }
 
     @GetMapping("/stats/summary")
+    @PreAuthorize("@a2AccessPolicy.hasUnrestrictedRead()")
     public ApiResult<AuditStatsSummaryResponse> summary(AuditStatsQueryRequest request) {
         return ApiResult.ok(auditLogService.summary(request));
     }
 
     @GetMapping("/stats/actions")
+    @PreAuthorize("@a2AccessPolicy.hasUnrestrictedRead()")
     public ApiResult<List<AuditStatsBucket>> actions(AuditStatsQueryRequest request) {
         return ApiResult.ok(auditLogService.topActions(request));
     }
 
     @GetMapping("/stats/services")
+    @PreAuthorize("@a2AccessPolicy.hasUnrestrictedRead()")
     public ApiResult<List<AuditStatsBucket>> services(AuditStatsQueryRequest request) {
         return ApiResult.ok(auditLogService.topServices(request));
     }
 
     @GetMapping("/stats/users")
+    @PreAuthorize("@a2AccessPolicy.hasUnrestrictedRead()")
     public ApiResult<List<AuditStatsBucket>> users(AuditStatsQueryRequest request) {
         return ApiResult.ok(auditLogService.topUsers(request));
     }
+
+    public record AuditExportResult(String jobNo, LocalDateTime createdAt, byte[] body) {}
+    private record ExportWorkbook(byte[] body, int rowCount) {}
 }

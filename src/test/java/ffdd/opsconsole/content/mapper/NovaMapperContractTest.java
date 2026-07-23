@@ -52,6 +52,16 @@ class NovaMapperContractTest {
                 .doesNotContain("COALESCE(o.completed_at, o.paid_at) >=");
     }
 
+    @Test
+    void deliveredStatsOnlyCountNovaNotifications() throws Exception {
+        Select select = NovaMapper.class.getMethod("stats").getAnnotation(Select.class);
+        String sql = String.join(" ", select.value());
+
+        assertThat(sql)
+                .contains("n.type = 'NOVA_SOCIAL'")
+                .contains("UPPER(COALESCE(n.push_status, '')) IN ('SENT', 'DELIVERED', 'READ', 'SUCCESS')");
+    }
+
     private String selectSql(String method) throws Exception {
         Select select = NovaMapper.class.getMethod(method, LocalDateTime.class, LocalDateTime.class).getAnnotation(Select.class);
         return String.join(" ", select.value());

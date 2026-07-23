@@ -9,4 +9,9 @@ public interface UserKycStatusFacade {
     List<Map<String, Object>> reviewCandidates(String keyword, int limit);
 
     boolean updateKycStatusByUserNo(String userNo, String kycStatus, String reason, String operator);
+
+    default boolean updateKycStatusByUserNo(
+            String userNo, String kycStatus, String reason, String operator, String ticketId) {
+        return updateKycStatusByUserNo(userNo, kycStatus, reason, operator);
+    }
 }

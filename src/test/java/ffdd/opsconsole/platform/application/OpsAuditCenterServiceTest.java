@@ -57,6 +57,8 @@ class OpsAuditCenterServiceTest {
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard = mock(AuditReplayBusinessPermissionGuard.class);
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+    private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService =
+            mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
     private final OpsAuditCenterService service =
             new OpsAuditCenterService(
                     repository,
@@ -68,7 +70,8 @@ class OpsAuditCenterServiceTest {
                     lockMapper,
                     replayBusinessPermissionGuard,
                     replayDispatcher,
-                    objectMapper);
+                    objectMapper,
+                    idempotencyService);
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
     private final List<AuditOperationHistoryEntity> historyRows = new ArrayList<>();
     private final List<AuditConfirmCategoryEntity> categoryRows = new ArrayList<>();
@@ -90,6 +93,7 @@ class OpsAuditCenterServiceTest {
         when(auditLogService.summary(any(AuditStatsQueryRequest.class))).thenReturn(summary);
         when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of());
         when(auditLogService.topActions(any(AuditStatsQueryRequest.class))).thenReturn(List.of());
+        when(auditLogService.aggregate(any(AuditLogQueryRequest.class))).thenReturn(List.of());
         when(replayBusinessPermissionGuard.validateProposal(
                 org.mockito.ArgumentMatchers.nullable(AuditReplayCommand.class)))
                 .thenReturn(ApiResult.ok());
@@ -156,6 +160,10 @@ class OpsAuditCenterServiceTest {
         // 批0: approve 回放目标域,dispatch 须返回成功(code=0)否则 NPE/fail
         doReturn(ApiResult.ok()).when(replayDispatcher).dispatch(any(), any());
         doReturn(ApiResult.ok()).when(replayBusinessPermissionGuard).validateProposal(any());
+        when(idempotencyService.execute(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            java.util.function.Supplier<?> action = invocation.getArgument(4);
+            return action.get();
+        });
     }
 
     @AfterEach
@@ -207,13 +215,36 @@ class OpsAuditCenterServiceTest {
         assertThat(ticketRows.get("WO-8852").getStatus()).isEqualTo("approved");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A2_OPERATION_APPROVED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("A2_OPERATION");
         assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("operationId", "WO-8852")
                 .containsEntry("idempotencyKey", "idem-a2-1");
+    }
+
+    @Test
+    void overviewUsesExactAggregateInsteadOfCappedRecentLogList() {
+        when(auditLogService.aggregate(any(AuditLogQueryRequest.class))).thenReturn(List.of(
+                new ffdd.opsconsole.shared.audit.A2AuditAggregate("SUCCESS", "HIGH", "C2_FREEZE", 701L)));
+
+        ApiResult<AuditCenterOverview> result = service.overview();
+
+        assertThat(result.getData().stats().todayAuditEvents()).isEqualTo(701L);
+        assertThat(result.getData().topActions()).containsExactly(new ffdd.opsconsole.shared.audit.AuditStatsBucket("C2_FREEZE", 701L));
+    }
+
+    @Test
+    void overviewInfersLaterDomainsLAndMForLegacyTickets() {
+        putTicket("WO-L", "L2 funnel report", "pending", "param", false, false);
+        putTicket("WO-M", "M3 campaign report", "pending", "param", false, false);
+        AuditLogQueryRequest l = new AuditLogQueryRequest(); l.setDomain("L");
+        AuditLogQueryRequest m = new AuditLogQueryRequest(); m.setDomain("M");
+        assertThat(service.overview(l).getData().operationQueue()).extracting(AuditCenterOverview.AuditOperationTicket::id)
+                .containsExactly("WO-L");
+        assertThat(service.overview(m).getData().operationQueue()).extracting(AuditCenterOverview.AuditOperationTicket::id)
+                .containsExactly("WO-M");
     }
 
     @Test
@@ -259,7 +290,7 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
-    void twoPersonProposerCannotApproveOwnTicketEvenWithSpoofedOperator() {
+    void proposerCannotApproveOwnProposalEvenWhenClientSpoofsAnotherOperator() {
         putTicket("WO-SELF", "A6 role grants", "pending", "HIGH", true, false);
         ticketRows.get("WO-SELF").setOperatorName("alice.admin");
         ticketRows.get("WO-SELF").setRoleGate("TWO_PERSON");
@@ -268,12 +299,10 @@ class OpsAuditCenterServiceTest {
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve(
                 "idem-self", "WO-SELF", new AuditOperationDecisionRequest("looks good", "bob.admin"));
 
-        assertThat(result.getCode()).isEqualTo(403);
-        assertThat(result.getMessage()).isEqualTo("A2_TWO_PERSON_SELF_APPROVAL_FORBIDDEN");
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("A2_MAKER_CHECKER_REQUIRED");
         assertThat(ticketRows.get("WO-SELF").getStatus()).isEqualTo("pending");
         verify(replayDispatcher, never()).dispatch(any(), any());
-        verify(lockMapper, never()).selectActiveByTicketId("WO-SELF");
-        verify(ticketMapper, never()).updateById(ticketRows.get("WO-SELF"));
     }
 
     @Test
@@ -288,7 +317,7 @@ class OpsAuditCenterServiceTest {
 
         assertThat(result.getCode()).isZero();
         ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(audit.capture());
+        verify(auditLogService).recordRequired(audit.capture());
         assertThat(audit.getValue().getActorUsername()).isEqualTo("alice.admin");
         verify(replayDispatcher, never()).dispatch(any(), any());
     }
@@ -350,7 +379,7 @@ class OpsAuditCenterServiceTest {
         assertThat(ticketRows).containsKey(result.getData().id());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A2_OPERATION_PROPOSED");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("operationId", result.getData().id())
@@ -428,7 +457,7 @@ class OpsAuditCenterServiceTest {
                 "C", "c2_account_freeze", Map.of("userId", "52", "status", "frozen"));
         AuditOperationProposalRequest request = new AuditOperationProposalRequest(
                 "冻结账户", "52", "正常", "冻结", "superadmin", "超管", "acct",
-                true, false, "超管", "命中高风险规则", "C2", command,
+                true, false, "超管", "命中高风险规则需立即冻结", "C2", command,
                 new ffdd.opsconsole.platform.domain.AuditLockTarget("C", "ACCOUNT", "52"), null);
         var descriptor = new AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor(
                 "冻结账户 · 52", "52", "以服务器执行时状态为准", "frozen",
@@ -473,7 +502,7 @@ class OpsAuditCenterServiceTest {
         assertThat(result.getData().sos()).isFalse();
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A2_OPERATION_PROPOSED");
         assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
         assertThat(detailMap(captor.getValue().getDetail()))
@@ -485,7 +514,7 @@ class OpsAuditCenterServiceTest {
     @Test
     void mechanismParamUpdatePersistsConfigAndWritesAudit() {
         AuditMechanismParamUpdateRequest request =
-                new AuditMechanismParamUpdateRequest("12 字", "tighten confirmation reason", "superadmin");
+                new AuditMechanismParamUpdateRequest("12", "tighten confirmation reason", "superadmin");
 
         ApiResult<AuditCenterOverview.AuditMechanismParam> result =
                 service.updateMechanismParam("idem-param-1", "ttl", request);
@@ -495,9 +524,70 @@ class OpsAuditCenterServiceTest {
         assertThat(repository.items.get("admin.a2.reason_min_chars").configValue()).isEqualTo("12 字");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A2_MECHANISM_PARAM_CHANGED");
-        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("paramKey", "ttl");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("paramKey", "ttl")
+                .containsEntry("before", "8 字")
+                .containsEntry("after", "12 字");
+        verify(idempotencyService).execute(org.mockito.ArgumentMatchers.eq("A2_COMMAND"),
+                org.mockito.ArgumentMatchers.eq("idem-param-1"), any(),
+                org.mockito.ArgumentMatchers.eq(AuditCenterOverview.AuditMechanismParam.class), any());
+    }
+
+    @Test
+    void mechanismParamRejectsReasonShorterThanCurrentConfiguredMinimum() {
+        repository.save(new PlatformConfigItem(null, "admin.a2.reason_min_chars", "12 字", "STRING",
+                "admin_a2", "INTERNAL", "test", 1, null, null));
+
+        ApiResult<AuditCenterOverview.AuditMechanismParam> result = service.updateMechanismParam(
+                "idem-short", "retention", new AuditMechanismParamUpdateRequest("13", "only eight", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(repository.items).doesNotContainKey("admin.a2.retention_months");
+    }
+
+    @Test
+    void mechanismParamReplayDoesNotRepeatWriteOrAuditAndRejectsCrossOperationKeyReuse() {
+        java.util.concurrent.atomic.AtomicReference<String> storedHash = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Object> storedResult = new java.util.concurrent.atomic.AtomicReference<>();
+        doAnswer(invocation -> {
+            String hash = invocation.getArgument(2);
+            if (storedHash.get() == null) {
+                storedHash.set(hash);
+                Object result = ((java.util.function.Supplier<?>) invocation.getArgument(4)).get();
+                storedResult.set(result);
+                return result;
+            }
+            if (!storedHash.get().equals(hash)) {
+                throw new ffdd.opsconsole.shared.exception.BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+            }
+            return storedResult.get();
+        }).when(idempotencyService).execute(org.mockito.ArgumentMatchers.eq("A2_COMMAND"),
+                org.mockito.ArgumentMatchers.eq("idem-replay"), any(), any(), any());
+        AuditMechanismParamUpdateRequest request =
+                new AuditMechanismParamUpdateRequest("12", "tighten confirmation reason", "superadmin");
+
+        assertThat(service.updateMechanismParam("idem-replay", "ttl", request).getCode()).isZero();
+        assertThat(service.updateMechanismParam("idem-replay", "ttl", request).getCode()).isZero();
+        ApiResult<AuditCenterOverview.AuditMechanismParam> crossOperation = service.updateMechanismParam(
+                "idem-replay", "retention",
+                new AuditMechanismParamUpdateRequest("13", "retention evidence reason", "superadmin"));
+        authenticate("41", "alice.admin");
+        ApiResult<AuditCenterOverview.AuditMechanismParam> crossActor =
+                service.updateMechanismParam("idem-replay", "ttl", request);
+
+        assertThat(crossOperation.getCode()).isEqualTo(409);
+        assertThat(crossActor.getCode()).isEqualTo(409);
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void allA2MutationsRejectReasonLongerThanTwoHundredCharacters() {
+        ApiResult<AuditCenterOverview.AuditMechanismParam> result = service.updateMechanismParam(
+                "idem-long", "ttl", new AuditMechanismParamUpdateRequest("12", "x".repeat(201), "superadmin"));
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        verify(auditLogService, never()).recordRequired(any());
     }
 
     @Test
@@ -509,6 +599,37 @@ class OpsAuditCenterServiceTest {
                 service.updateMechanismParam("idem-param-1", "ttl", request);
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    void schemaVersionUsesTheSameThirtyTwoCharacterContractAsTheFrontend() {
+        ApiResult<AuditCenterOverview.AuditMechanismParam> valid = service.updateMechanismParam(
+                "idem-schema-valid", "schema",
+                new AuditMechanismParamUpdateRequest("schema2026", "publish audited schema version", "superadmin"));
+        ApiResult<AuditCenterOverview.AuditMechanismParam> invalidChars = service.updateMechanismParam(
+                "idem-schema-chars", "schema",
+                new AuditMechanismParamUpdateRequest("v4 unsafe", "reject malformed schema version", "superadmin"));
+        ApiResult<AuditCenterOverview.AuditMechanismParam> tooLong = service.updateMechanismParam(
+                "idem-schema-long", "schema",
+                new AuditMechanismParamUpdateRequest("v".repeat(33), "reject oversized schema version", "superadmin"));
+
+        assertThat(valid.getCode()).isZero();
+        assertThat(valid.getData().value()).isEqualTo("统一 schema · schema2026");
+        assertThat(invalidChars.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(tooLong.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    void numericMechanismInputsRejectEmbeddedNonNumericCharacters() {
+        ApiResult<AuditCenterOverview.AuditMechanismParam> ttl = service.updateMechanismParam(
+                "idem-dirty-ttl", "ttl",
+                new AuditMechanismParamUpdateRequest("abc8xyz", "reject dirty numeric value", "superadmin"));
+        ApiResult<AuditCenterOverview.AuditMechanismParam> retention = service.updateMechanismParam(
+                "idem-dirty-retention", "retention",
+                new AuditMechanismParamUpdateRequest("1e3", "reject dirty retention value", "superadmin"));
+
+        assertThat(ttl.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(retention.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
     }
 
     @SuppressWarnings("unchecked")

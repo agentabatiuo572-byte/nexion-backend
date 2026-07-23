@@ -226,12 +226,13 @@ public class OpsDashboardService {
         for (int i = 0; i < raw.size(); i++) {
             Map<String, Object> row = raw.get(i);
             long count = longValue(row.get("users"));
+            long previousCount = i == 0 ? count : longValue(raw.get(i - 1).get("users"));
             rows.add(linked(
                     "key", "stage-" + (i + 1),
                     "label", stringValue(row.get("stage")),
                     "event", stringValue(row.get("ev")),
                     "count", count,
-                    "prevCount", count,
+                    "prevCount", previousCount,
                     "conversion", row.getOrDefault("cvr", null),
                     "target", row.getOrDefault("target", null)));
         }

@@ -27,6 +27,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -95,6 +96,7 @@ public class OpsI18nLearningService {
         return ApiResult.ok(overview);
     }
 
+    @Transactional
     public ApiResult<I18nMessagePairView> saveLocalizedDraft(String messageKey, String idempotencyKey, I18nLocalizedCopyRequest request) {
         ApiResult<Void> guard = requireLocalizedCopy(messageKey, idempotencyKey, request);
         if (guard != null) {
@@ -823,7 +825,8 @@ public class OpsI18nLearningService {
     }
 
     private String operator(String operator) {
-        return StringUtils.hasText(operator) ? operator.trim() : "system";
+        String resolved = AdminActorResolver.resolve(operator);
+        return StringUtils.hasText(resolved) ? resolved.trim() : "system";
     }
 
     private <T> ApiResult<T> fail(ApiResult<Void> guard) {
@@ -835,7 +838,7 @@ public class OpsI18nLearningService {
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("reason", reason.trim());
         detail.putAll(extra);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)
@@ -854,7 +857,7 @@ public class OpsI18nLearningService {
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("reason", reason.trim());
         detail.putAll(extra);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)

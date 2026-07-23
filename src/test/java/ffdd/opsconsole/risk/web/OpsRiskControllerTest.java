@@ -117,16 +117,23 @@ class OpsRiskControllerTest {
     }
 
     @Test
-    void k4ModelAndOverrideWritesFailClosedToSuperAdminUntilLeadIdentityExists() {
-        for (String methodName : List.of(
-                "saveScoringModelDraft", "publishScoringModel", "restoreScoringModelDraft", "overrideScore")) {
+    void k4A6AuthoritiesCanDraftRestoreAndOverrideButOnlySuperAdminCanPublish() {
+        for (String methodName : List.of("saveScoringModelDraft", "restoreScoringModelDraft", "overrideScore")) {
             var method = java.util.Arrays.stream(OpsRiskController.class.getDeclaredMethods())
                     .filter(candidate -> candidate.getName().equals(methodName))
                     .findFirst().orElseThrow();
             String expression = method.getAnnotation(
                     org.springframework.security.access.prepost.PreAuthorize.class).value();
-            assertThat(expression).contains("superAdminAuthorization.isSuperAdmin");
+            assertThat(expression)
+                    .contains(methodName.equals("overrideScore") ? "risk_k4_user_override" : "risk_k4_write")
+                    .doesNotContain("superAdminAuthorization.isSuperAdmin");
         }
+        var publish = java.util.Arrays.stream(OpsRiskController.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals("publishScoringModel"))
+                .findFirst().orElseThrow();
+        assertThat(publish.getAnnotation(
+                org.springframework.security.access.prepost.PreAuthorize.class).value())
+                .contains("risk_k4_write", "superAdminAuthorization.isSuperAdmin");
     }
 
     @Test

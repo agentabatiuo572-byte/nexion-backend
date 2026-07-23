@@ -25,13 +25,17 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 
 class OpsSessionTemplateServiceTest {
     private final FakeSessionTemplateRepository templateRepository = new FakeSessionTemplateRepository();
@@ -60,14 +64,14 @@ class OpsSessionTemplateServiceTest {
         });
         assertThat(result.getData().advisorPolicy().delayMs()).isEqualTo(2500);
         assertThat(result.getData().workbenchPolicy().timeoutFallback()).isTrue();
-        assertThat(result.getData().statusOptions()).containsExactly("published", "draft");
+        assertThat(result.getData().statusOptions()).containsExactly("draft", "published", "archived");
         assertThat(result.getData().scripts()).extracting(SessionScriptView::id).contains("AS-001");
         assertThat(result.getData().sources()).contains("nx_config_item:content-session", "nx_help_article:session_script");
     }
 
     @Test
     void scriptsReturnPagedBackendRows() {
-        templateRepository.scripts.add(new SessionScriptView("AS-002", "升级", "升级设备收益更稳。", "/store", "draft", "全量", now()));
+        templateRepository.scripts.add(new SessionScriptView("AS-002", "升级", "升级设备收益更稳。", "/store", "draft", "全量用户", now()));
         templateRepository.scripts.add(new SessionScriptView("AS-003", "复投", "需要我帮你看复投方案吗?", "/staking", "published", "P3 阶段活跃", now()));
 
         var result = service.scripts(new SessionScriptQueryRequest(null, null, 2L, 2L));
@@ -108,7 +112,7 @@ class OpsSessionTemplateServiceTest {
         var result = service.updateCategory("advisor", "idem-m5-cat", new SessionCategoryToggleRequest(
                 false,
                 "Marina K.",
-                "暂停顾问入口"));
+                "暂停顾问会话入口"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().enabled()).isFalse();
@@ -131,7 +135,7 @@ class OpsSessionTemplateServiceTest {
         var result = service.updateAdvisorPolicy("cooldownHours", "idem-m5-policy", new SessionAdvisorPolicyUpdateRequest(
                 "48",
                 "Marina K.",
-                "收紧冷却时间"));
+                "收紧顾问推送冷却时间"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().cooldownHours()).isEqualTo(48);
@@ -179,7 +183,7 @@ class OpsSessionTemplateServiceTest {
                 "升级",
                 "点击 https://example.com",
                 "https://example.com",
-                "全量",
+                "全量用户",
                 "published",
                 "Marina K.",
                 "新增顾问话术"));
@@ -193,16 +197,50 @@ class OpsSessionTemplateServiceTest {
                 "升级",
                 "你的设备近期有不少时段闲置,升级后能减少空窗。",
                 "/store",
-                "全量",
+                "全量用户",
                 "draft",
                 "Marina K.",
-                "新增升级话术"));
+                "新增设备升级顾问话术"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().id()).startsWith("AS-");
         assertThat(result.getData().ctaPath()).isEqualTo("/store");
         assertThat(templateRepository.scripts).hasSize(2);
         assertAuditAction("M5_SESSION_SCRIPT_CREATED");
+    }
+
+    @Test
+    void concurrentSameMillisecondScriptCreatesUseCollisionResistantIds() {
+        var results = IntStream.range(0, 32).parallel()
+                .mapToObj(index -> service.createScript("idem-m5-script-same-ms-" + index, new SessionScriptCreateRequest(
+                        "开场", "同毫秒并发话术-" + index, "—", "全量用户", "draft", "Marina K.", "验证同毫秒并发创建话术唯一编号")))
+                .toList();
+
+        assertThat(results).allSatisfy(result -> assertThat(result.getCode()).isZero());
+        assertThat(results).extracting(result -> result.getData().id()).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void newScriptAndReplyTemplateMustStartAsDraft() {
+        var script = service.createScript("idem-m5-script-published", new SessionScriptCreateRequest(
+                "升级",
+                "这是一条不能绕过发布流程的话术。",
+                "—",
+                "全量用户",
+                "published",
+                "Marina K.",
+                "验证新增话术必须先保存草稿"));
+        var template = service.createReplyTemplate("idem-m5-template-archived", new SessionReplyTemplateCreateRequest(
+                "support",
+                "这是一条不能直接归档的回复模板。",
+                "archived",
+                "Marina K.",
+                "验证新增模板必须先保存草稿"));
+
+        assertThat(script.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(script.getMessage()).isEqualTo("SESSION_SCRIPT_INITIAL_STATUS_MUST_BE_DRAFT");
+        assertThat(template.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(template.getMessage()).isEqualTo("SESSION_REPLY_TEMPLATE_INITIAL_STATUS_MUST_BE_DRAFT");
     }
 
     @Test
@@ -216,14 +254,35 @@ class OpsSessionTemplateServiceTest {
     }
 
     @Test
-    void updateScriptAudiencePersistsDynamicOption() {
+    void updateScriptAudiencePersistsBackendOwnedOption() {
         var result = service.updateScriptAudience("AS-001", "idem-m5-script-audience", new SessionScriptAudienceRequest(
-                "注册 ≤14 天",
+                "新注册用户",
                 "Marina K.",
-                "圈定新注册用户"));
+                "圈定近期新注册用户范围"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().audience()).isEqualTo("注册 ≤14 天");
+        assertThat(result.getData().audience()).isEqualTo("新注册用户");
+    }
+
+    @Test
+    void scriptsRejectAudienceOutsideBackendOwnedOptions() {
+        var created = service.createScript("idem-m5-script-invalid-audience", new SessionScriptCreateRequest(
+                "开场",
+                "这是一条受众边界测试话术。",
+                "—",
+                "自由文本受众",
+                "draft",
+                "Marina K.",
+                "验证新增话术受众必须来自权威选项"));
+        var updated = service.updateScriptAudience("AS-001", "idem-m5-update-invalid-audience", new SessionScriptAudienceRequest(
+                "自由文本受众",
+                "Marina K.",
+                "验证修改话术受众必须来自权威选项"));
+
+        assertThat(created.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(updated.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(service.overview().getData().audienceOptions())
+                .containsExactly("全量用户", "新注册用户", "高价值用户", "活跃设备用户");
     }
 
     @Test
@@ -233,7 +292,7 @@ class OpsSessionTemplateServiceTest {
                 "收到,我先调出你的账户核对。",
                 "draft",
                 "Marina K.",
-                "新增客服模板"));
+                "新增客服标准回复模板"));
 
         assertThat(created.getCode()).isZero();
         assertThat(created.getData().id()).startsWith("RT-");
@@ -241,15 +300,151 @@ class OpsSessionTemplateServiceTest {
         var status = service.updateReplyTemplateStatus(created.getData().id(), "idem-m5-template-status", new SessionReplyTemplateStatusRequest(
                 "published",
                 "Marina K.",
-                "发布客服模板"));
+                "发布客服标准回复模板"));
 
         assertThat(status.getCode()).isZero();
         assertThat(status.getData().status()).isEqualTo("published");
     }
 
+    @Test
+    void concurrentSameMillisecondReplyTemplateCreatesUseCollisionResistantIds() {
+        var results = IntStream.range(0, 32).parallel()
+                .mapToObj(index -> service.createReplyTemplate("idem-m5-template-same-ms-" + index, new SessionReplyTemplateCreateRequest(
+                        "support", "同毫秒并发回复模板-" + index, "draft", "Marina K.", "验证同毫秒并发创建模板唯一编号")))
+                .toList();
+
+        assertThat(results).allSatisfy(result -> assertThat(result.getCode()).isZero());
+        assertThat(results).extracting(result -> result.getData().id()).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void overviewAlwaysProvidesBackendOwnedAudienceChoices() {
+        templateRepository.scripts.clear();
+
+        var result = service.overview();
+
+        assertThat(result.getData().audienceOptions()).isNotEmpty();
+        assertThat(result.getData().advisorPolicy().audience()).isIn(result.getData().audienceOptions());
+    }
+
+    @Test
+    void advisorAudienceCanBeUpdatedFromBackendOwnedChoices() {
+        var result = service.updateAdvisorPolicy("audience", "idem-m5-audience", new SessionAdvisorPolicyUpdateRequest(
+                "新注册用户",
+                "spoofed-user",
+                "调整顾问推送受众范围"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().audience()).isEqualTo("新注册用户");
+        assertThat(configFacade.values).containsEntry("I.session.advisor.policy.audience", "新注册用户");
+    }
+
+    @Test
+    void commandReasonMustStayWithinEightToTwoHundredCharacters() {
+        var tooShort = service.updateCategory("advisor", "idem-m5-short", new SessionCategoryToggleRequest(
+                false,
+                "spoofed-user",
+                "1234567"));
+        var tooLong = service.updateCategory("advisor", "idem-m5-long", new SessionCategoryToggleRequest(
+                false,
+                "spoofed-user",
+                "x".repeat(201)));
+
+        assertThat(tooShort.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(tooLong.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+    }
+
+    @Test
+    void publishedScriptAndTemplateArchiveWithoutFallingBackToDraft() {
+        var script = service.updateScriptStatus("AS-001", "idem-m5-script-archive", new SessionScriptStatusRequest(
+                "archived",
+                "spoofed-user",
+                "归档已发布顾问话术"));
+        var template = service.updateReplyTemplateStatus("RT-S1", "idem-m5-template-archive", new SessionReplyTemplateStatusRequest(
+                "archived",
+                "spoofed-user",
+                "归档已发布回复模板"));
+
+        assertThat(script.getCode()).isZero();
+        assertThat(script.getData().status()).isEqualTo("archived");
+        assertThat(template.getCode()).isZero();
+        assertThat(template.getData().status()).isEqualTo("archived");
+    }
+
+    @Test
+    void staleExpectedValuesAreRejectedBeforeAnyBusinessWrite() {
+        var category = service.updateCategory("advisor", "idem-m5-stale-category", new SessionCategoryToggleRequest(
+                false,
+                false,
+                "spoofed-user",
+                "基于过期页面暂停顾问入口"));
+        var policy = service.updateAdvisorPolicy("cooldownHours", "idem-m5-stale-policy", new SessionAdvisorPolicyUpdateRequest(
+                "48",
+                "12",
+                "spoofed-user",
+                "基于过期页面调整冷却时间"));
+        var script = service.updateScriptStatus("AS-001", "idem-m5-stale-script", new SessionScriptStatusRequest(
+                "archived",
+                "draft",
+                "spoofed-user",
+                "基于过期页面归档顾问话术"));
+
+        assertThat(category.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(policy.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(script.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(configFacade.values).doesNotContainKeys(
+                "I.session.cat.advisor.enabled",
+                "I.session.advisor.policy.cooldownHours");
+        assertThat(templateRepository.findScript("AS-001")).get().extracting(SessionScriptView::status).isEqualTo("published");
+    }
+
+    @Test
+    void auditActorComesFromAuthenticatedContextInsteadOfRequestBody() {
+        var authentication = new UsernamePasswordAuthenticationToken("77", "n/a", List.of());
+        authentication.setDetails(Map.of("username", "trusted-superadmin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            service.updateCategory("advisor", "idem-m5-actor", new SessionCategoryToggleRequest(
+                    false,
+                    "spoofed-user",
+                    "暂停顾问入口进行维护"));
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("trusted-superadmin");
+    }
+
+    @Test
+    void everyM5BusinessMutationIsTransactional() throws Exception {
+        assertThat(OpsSessionTemplateService.class
+                .getMethod("updateCategory", String.class, String.class, SessionCategoryToggleRequest.class)
+                .getAnnotation(Transactional.class)).isNotNull();
+        assertThat(OpsSessionTemplateService.class
+                .getMethod("updateScriptStatus", String.class, String.class, SessionScriptStatusRequest.class)
+                .getAnnotation(Transactional.class)).isNotNull();
+        assertThat(OpsSessionTemplateService.class
+                .getMethod("updateReplyTemplateStatus", String.class, String.class, SessionReplyTemplateStatusRequest.class)
+                .getAnnotation(Transactional.class)).isNotNull();
+        assertThat(OpsSessionTemplateService.class
+                .getMethod("updateAdvisorPolicy", String.class, String.class, SessionAdvisorPolicyUpdateRequest.class)
+                .getAnnotation(Transactional.class)).isNotNull();
+        assertThat(OpsSessionTemplateService.class
+                .getMethod("createScript", String.class, SessionScriptCreateRequest.class)
+                .getAnnotation(Transactional.class)).isNotNull();
+        assertThat(OpsSessionTemplateService.class
+                .getMethod("updateScriptAudience", String.class, String.class, SessionScriptAudienceRequest.class)
+                .getAnnotation(Transactional.class)).isNotNull();
+        assertThat(OpsSessionTemplateService.class
+                .getMethod("createReplyTemplate", String.class, SessionReplyTemplateCreateRequest.class)
+                .getAnnotation(Transactional.class)).isNotNull();
+    }
+
     private void assertAuditAction(String action) {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo(action);
         assertThat(captor.getValue().getResourceType()).isEqualTo("SESSION_TEMPLATE");
     }
@@ -279,15 +474,15 @@ class OpsSessionTemplateServiceTest {
 
     private static final class FakeSessionTemplateRepository implements SessionTemplateRepository {
         private int seedCalls;
-        private final List<SessionScriptView> scripts = new ArrayList<>(List.of(new SessionScriptView(
+        private final List<SessionScriptView> scripts = new CopyOnWriteArrayList<>(List.of(new SessionScriptView(
                 "AS-001",
                 "开场",
                 "你好,我是你的专属客服。",
                 "—",
                 "published",
-                "全量",
+                "全量用户",
                 now())));
-        private final List<SessionReplyTemplateView> templates = new ArrayList<>(List.of(new SessionReplyTemplateView(
+        private final List<SessionReplyTemplateView> templates = new CopyOnWriteArrayList<>(List.of(new SessionReplyTemplateView(
                 "RT-S1",
                 "support",
                 "好的,我先调出你的账户。",

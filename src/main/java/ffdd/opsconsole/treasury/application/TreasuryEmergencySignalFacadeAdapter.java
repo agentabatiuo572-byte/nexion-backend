@@ -16,10 +16,11 @@ public class TreasuryEmergencySignalFacadeAdapter implements TreasuryEmergencySi
 
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
+    private final OpsTreasuryService treasuryService;
 
     @Override
     public TreasuryEmergencySignalSnapshot snapshot() {
-        BigDecimal reserve = safe(ledgerRepository.currentReserveUsd());
+        BigDecimal reserve = decimal(treasuryService.reserve().getData().get("reserveTotalUsdt"));
         BigDecimal withdrawalRequests24h = safe(ledgerRepository.sumWithdrawalRequested24hUsdt());
         BigDecimal bankRunRatio = reserve.compareTo(BigDecimal.ZERO) > 0
                 ? withdrawalRequests24h.multiply(new BigDecimal("100"))
@@ -38,5 +39,16 @@ public class TreasuryEmergencySignalFacadeAdapter implements TreasuryEmergencySi
 
     private BigDecimal safe(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value.max(BigDecimal.ZERO);
+    }
+
+    private BigDecimal decimal(Object value) {
+        if (value instanceof BigDecimal decimal) {
+            return safe(decimal);
+        }
+        try {
+            return safe(new BigDecimal(String.valueOf(value)));
+        } catch (RuntimeException ignored) {
+            return BigDecimal.ZERO;
+        }
     }
 }

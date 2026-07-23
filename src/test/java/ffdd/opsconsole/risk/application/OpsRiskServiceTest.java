@@ -11,6 +11,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
 import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
@@ -54,6 +55,7 @@ import ffdd.opsconsole.risk.dto.RiskRuleDryRunRequest;
 import ffdd.opsconsole.risk.dto.RiskScoreOverrideRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringModelDraftRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringModelPublishRequest;
+import ffdd.opsconsole.risk.dto.RiskScoringModelRestoreRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
@@ -91,6 +93,12 @@ class OpsRiskServiceTest {
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final ffdd.opsconsole.shared.security.SuperAdminAuthorization superAdminAuthorization =
             mock(ffdd.opsconsole.shared.security.SuperAdminAuthorization.class);
+    private final ffdd.opsconsole.user.facade.UserAccountControlFacade userAccountControlFacade =
+            mock(ffdd.opsconsole.user.facade.UserAccountControlFacade.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
+    private final ChainAddressReputationGateway chainAddressReputationGateway = mock(ChainAddressReputationGateway.class);
+    private final K4KycReviewTriggerService k4KycReviewTriggerService =
+            new K4KycReviewTriggerService(riskRepository, auditLogService);
     private final OpsRiskService service = new OpsRiskService(
             riskRepository,
             userKycStatusFacade,
@@ -100,7 +108,11 @@ class OpsRiskServiceTest {
             auditLogService,
             lockMapper,
             idempotencyService,
-            superAdminAuthorization);
+            superAdminAuthorization,
+            userAccountControlFacade,
+            eventOutboxService,
+            chainAddressReputationGateway,
+            k4KycReviewTriggerService);
 
     @BeforeEach
     void stubLockMapperNoActiveLock() {
@@ -318,6 +330,28 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void createWithdrawRuleAcceptsExactAddressSourceAndRejectsThresholdOutsideZeroToOne() {
+        authenticateK3();
+
+        ApiResult<RiskRuleView> accepted = service.createWithdrawRule(
+                "idem-k-address-source",
+                new RiskRuleCreateRequest("地址信誉",
+                        "addressReputationSource=third-party; addressReputationLowThreshold=0.4",
+                        "freeze", 61, "configure authoritative chain reputation source", "spoofed-operator"));
+        ApiResult<RiskRuleView> rejected = service.createWithdrawRule(
+                "idem-k-address-threshold-invalid",
+                new RiskRuleCreateRequest("地址信誉",
+                        "addressReputationSource=combined; addressReputationLowThreshold=1.01",
+                        "freeze", 62, "reject invalid chain reputation threshold", "spoofed-operator"));
+
+        assertThat(accepted.getCode()).isZero();
+        assertThat(accepted.getData().conditionText()).isEqualTo(
+                "addressReputationSource=third-party; addressReputationLowThreshold=0.4");
+        assertThat(rejected.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(rejected.getMessage()).isEqualTo("RULE_CONDITION_INVALID");
+    }
+
+    @Test
     void createWithdrawRuleRejectsDuplicatePriorityWithinTheSameDimension() {
         authenticateK3();
 
@@ -371,6 +405,18 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void k3DryRunCacheKeepsBase58CaseButNormalizesEvmHexCase() throws Exception {
+        var method = OpsRiskService.class.getDeclaredMethod(
+                "addressReputationCacheKey", String.class, String.class);
+        method.setAccessible(true);
+
+        assertThat(method.invoke(service, "USDT-TRC20", "TRAbC123"))
+                .isNotEqualTo(method.invoke(service, "USDT-TRC20", "TRaBc123"));
+        assertThat(method.invoke(service, "USDT-ERC20", "0xAbC1230000000000000000000000000000000000"))
+                .isEqualTo(method.invoke(service, "USDT-ERC20", "0xaBc1230000000000000000000000000000000000"));
+    }
+
+    @Test
     void k3StateMachineRejectsIllegalJumpsAndStaleVersions() {
         authenticateK3();
 
@@ -405,6 +451,30 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void dryRunFailsClosedInsteadOfCompletingWithInventedThirdPartyScores() {
+        authenticateK3();
+        RiskRuleView thirdParty = new RiskRuleView(
+                "WR-THIRD-DRY", "地址信誉",
+                "addressReputationSource=third-party; addressReputationLowThreshold=0.4",
+                "freeze", "active", false, 77, 0L,
+                LocalDateTime.now().minusDays(1), LocalDateTime.now());
+        riskRepository.rules.add(thirdParty);
+        when(chainAddressReputationGateway.score(anyString(), anyString()))
+                .thenThrow(new IllegalStateException("K3_ADDRESS_REPUTATION_UNAVAILABLE"));
+        try {
+            ApiResult<Map<String, Object>> result = service.dryRunWithdrawRules(
+                    "idem-k3-dryrun-provider-down",
+                    new RiskRuleDryRunRequest("prove third party dry run fails closed", "spoofed-operator"));
+
+            assertThat(result.getCode()).isEqualTo(503);
+            assertThat(result.getMessage()).isEqualTo("K3_DRY_RUN_ADDRESS_REPUTATION_UNAVAILABLE");
+            assertThat(result.getData()).isNull();
+        } finally {
+            riskRepository.rules.remove(thirdParty);
+        }
+    }
+
+    @Test
     void k3AllowsOnlyDocumentedStateTransitionsAndIncrementsVersion() {
         authenticateK3();
 
@@ -423,7 +493,7 @@ class OpsRiskServiceTest {
     }
 
     @Test
-    void k3RejectsConfigurablePassAndReasonOutsideEightToTwoHundredChars() {
+    void k3RejectsConfigurablePassOutOfRangePriorityAndReasonOutsideEightToTwoHundredChars() {
         authenticateK3();
 
         ApiResult<RiskRuleView> pass = service.createWithdrawRule(
@@ -436,10 +506,15 @@ class OpsRiskServiceTest {
         ApiResult<RiskRuleView> longReason = service.createWithdrawRule(
                 "idem-long", new RiskRuleCreateRequest(
                         "金额", "单笔 >= $1,000", "manual", 10, "x".repeat(201), "ignored"));
+        ApiResult<RiskRuleView> outOfRangePriority = service.createWithdrawRule(
+                "idem-priority", new RiskRuleCreateRequest(
+                        "金额", "单笔 >= $1,000", "manual", 101,
+                        "priority must match the one through one hundred UI contract", "ignored"));
 
         assertThat(pass.getMessage()).isEqualTo("RULE_ACTION_INVALID");
         assertThat(shortReason.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
         assertThat(longReason.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+        assertThat(outOfRangePriority.getMessage()).isEqualTo("K3_RULE_PRIORITY_INVALID");
     }
 
     @Test
@@ -486,6 +561,19 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void withdrawRuleOverviewProjectsOnlyActiveRulesIntoCurrentDimensionCards() {
+        ApiResult<Map<String, Object>> result = service.withdrawRuleOverview();
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        List<RiskRuleDimensionView> dimensions = (List<RiskRuleDimensionView>) result.getData().get("dimensions");
+        assertThat(dimensions)
+                .extracting(RiskRuleDimensionView::ruleId)
+                .containsExactly("WR-01", "WR-02", "WR-03", "WR-04")
+                .doesNotContain("WR-DRAFT", "WR-06");
+    }
+
+    @Test
     void arbitrageOverviewRemovesRetiredHoldingGateAndUsesCurrentTradeInEvidenceModel() {
         riskRepository.arbitrageParams.add(new RiskArbitrageParamView(
                 "minHoldingMonths", "最小持仓月份", "6", "retired", "retired"));
@@ -504,6 +592,25 @@ class OpsRiskServiceTest {
         assertThat(tradeIn.sub()).contains("高频下架置换", "礼金/返佣叠加");
         assertThat(tradeIn.sub()).doesNotContain("最短持有", "残值 $0");
         assertThat(tradeIn.head()).doesNotContain("层数命中", "动作");
+        assertThat(riskRepository.e3TradeinProjectionRefreshes).isEqualTo(1);
+    }
+
+    @Test
+    void arbitrageOverviewProjectsAuthoritativeH2CyclesIntoDurableSignalAndA4Event() {
+        riskRepository.trialCycleDetections.add(
+                new RiskOpsRepository.TrialCycleDetection("K2-H2-U1", 1L, "CL-318", 3));
+
+        ApiResult<Map<String, Object>> result = service.arbitrageOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.k2Signals)
+                .extracting(K2Signal::userId, K2Signal::signalType)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(1L, "risk.trial_cycle_detected"));
+        verify(eventOutboxService).publish(
+                org.mockito.ArgumentMatchers.eq("RISK_ARBITRAGE_ROW"),
+                org.mockito.ArgumentMatchers.eq("K2-H2-U1"),
+                org.mockito.ArgumentMatchers.eq("risk.trial_cycle_detected"),
+                any());
     }
 
     @Test
@@ -521,6 +628,14 @@ class OpsRiskServiceTest {
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("K2_ARBITRAGE_MARKED");
         assertThat(captor.getValue().getDetail().toString()).contains("before", "after", "idempotencyKey");
+        assertThat(riskRepository.k2Signals)
+                .extracting(K2Signal::signalType)
+                .containsExactly("risk.arbitrage_suspected", "risk.arbitrage_suspected");
+        verify(eventOutboxService).publish(
+                org.mockito.ArgumentMatchers.eq("RISK_ARBITRAGE_ROW"),
+                org.mockito.ArgumentMatchers.eq("T-318"),
+                org.mockito.ArgumentMatchers.eq("risk.arbitrage_suspected"),
+                any());
         verify(idempotencyService).execute(
                 org.mockito.ArgumentMatchers.eq("K2_ACTION:T-318"),
                 org.mockito.ArgumentMatchers.eq("idem-k"), anyString(),
@@ -564,6 +679,9 @@ class OpsRiskServiceTest {
                     new RiskArbitrageActionRequest("freeze after K1 suspicious confirmation", "spoofed", 0L, 0L));
             assertThat(result.getCode()).isZero();
             assertThat(riskRepository.multiAccountClusters.get("CL-318")).isEqualTo("frozen");
+            verify(userAccountControlFacade).freezeActiveUsersByUserNos(
+                    List.of("U00000001", "U00000002"),
+                    "freeze after K1 suspicious confirmation", "k2-approver", "CL-318");
             verify(auditLogService, times(2)).recordRequired(any(AuditLogWriteRequest.class));
         } finally {
             org.springframework.security.core.context.SecurityContextHolder.clearContext();
@@ -967,6 +1085,7 @@ class OpsRiskServiceTest {
     @Test
     void k4PublishRequiresAuthoritativeSuperAdminAndArchivesPreviousVersion() {
         authenticateK4Admin(false);
+        riskRepository.kycReviewParams.put("reviewTriggerScore", ">= 80");
         riskRepository.saveScoringModelDraft(0L, canonicalDraft("prepare publish"), "authenticated-risk-lead");
         when(superAdminAuthorization.isSuperAdmin(any())).thenReturn(false);
 
@@ -986,6 +1105,11 @@ class OpsRiskServiceTest {
         assertThat(published.getCode()).isZero();
         assertThat(riskRepository.activeScoringModel().orElseThrow().version()).isEqualTo(2L);
         assertThat(riskRepository.archivedModelCount()).isEqualTo(1);
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(audit ->
+                "K5_KYC_REVIEW_TRIGGERED_BY_SCORE".equals(audit.getAction())
+                        && audit.getDetail().toString().contains(K4KycReviewTriggerService.SOURCE_MODEL_PUBLISH)
+                        && audit.getDetail().toString().contains("idem-k4-publish-ok:usr_55B1")));
         verify(idempotencyService).execute(
                 org.mockito.ArgumentMatchers.eq("K4_MODEL_PUBLISH"),
                 org.mockito.ArgumentMatchers.eq("idem-k4-publish-ok"),
@@ -1012,6 +1136,81 @@ class OpsRiskServiceTest {
         assertThat(riskRepository.activeScoringModel().orElseThrow().version()).isEqualTo(1L);
         assertThat(riskRepository.archivedModelCount()).isZero();
         verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void k4DraftRequiresAutoEscalationAtOrAboveTheHighRiskBandBoundary() {
+        authenticateK4Admin(false);
+        RiskScoringModelDraftRequest base = canonicalDraft("validate escalation boundary");
+        RiskScoringModelDraftRequest belowHighBand = new RiskScoringModelDraftRequest(
+                base.expectedVersion(), base.weights(), base.inputSources(), base.scoreMappings(),
+                41, 91, 85, base.reason(), base.operator());
+
+        ApiResult<Map<String, Object>> rejected = service.saveScoringModelDraft(
+                "idem-k4-escalate-below-high", belowHighBand);
+
+        assertThat(rejected.getCode()).isEqualTo(422);
+        assertThat(rejected.getMessage()).isEqualTo("K4_MODEL_ESCALATE_INVALID");
+        assertThat(riskRepository.draftScoringModel()).isEmpty();
+
+        RiskScoringModelDraftRequest equalToHighBand = new RiskScoringModelDraftRequest(
+                base.expectedVersion(), base.weights(), base.inputSources(), base.scoreMappings(),
+                41, 85, 85, base.reason(), base.operator());
+        ApiResult<Map<String, Object>> accepted = service.saveScoringModelDraft(
+                "idem-k4-escalate-equals-high", equalToHighBand);
+
+        assertThat(accepted.getCode()).isZero();
+        assertThat(riskRepository.draftScoringModel().orElseThrow().autoEscalateScore()).isEqualTo(85);
+    }
+
+    @Test
+    void k4PublishRejectsPersistedDraftWhoseEscalationThresholdIsBelowTheHighRiskBand() {
+        authenticateK4Admin(true);
+        when(superAdminAuthorization.isSuperAdmin(any())).thenReturn(true);
+        RiskScoringModelDraftRequest base = canonicalDraft("reject inconsistent persisted draft");
+        riskRepository.draftScoreModel = new RiskScoreModelView(
+                2L, 0L, "draft", base.weightPercentages(), base.inputSources(), base.scoreMappings(),
+                41, 91, 85, base.reason(), "legacy", null,
+                "2026-07-16 10:00:00", null);
+
+        ApiResult<Map<String, Object>> result = service.publishScoringModel(
+                "idem-k4-invalid-escalate-publish",
+                new RiskScoringModelPublishRequest(0L, "reject inconsistent persisted draft", "spoofed"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("K4_MODEL_SNAPSHOT_INVALID");
+        assertThat(riskRepository.activeScoringModel().orElseThrow().version()).isEqualTo(1L);
+        assertThat(riskRepository.archivedModelCount()).isZero();
+    }
+
+    @Test
+    void k4HistoryRestoreRejectsInconsistentThresholdsAndAcceptsTheEqualBoundary() {
+        authenticateK4Admin(false);
+        RiskScoringModelDraftRequest base = canonicalDraft("restore historical model boundary");
+        riskRepository.historicalScoreModel = new RiskScoreModelView(
+                7L, 3L, "archived", base.weightPercentages(), base.inputSources(), base.scoreMappings(),
+                41, 91, 85, base.reason(), "legacy", "legacy",
+                "2026-07-15 10:00:00", "2026-07-15 10:01:00");
+
+        ApiResult<Map<String, Object>> rejected = service.restoreScoringModelDraft(
+                "idem-k4-invalid-history",
+                new RiskScoringModelRestoreRequest(7L, 0L, "reject inconsistent history", "spoofed"));
+
+        assertThat(rejected.getCode()).isEqualTo(422);
+        assertThat(rejected.getMessage()).isEqualTo("K4_MODEL_SNAPSHOT_INVALID");
+        assertThat(riskRepository.draftScoringModel()).isEmpty();
+
+        riskRepository.historicalScoreModel = new RiskScoreModelView(
+                8L, 4L, "archived", base.weightPercentages(), base.inputSources(), base.scoreMappings(),
+                41, 85, 85, base.reason(), "legacy", "legacy",
+                "2026-07-15 11:00:00", "2026-07-15 11:01:00");
+        ApiResult<Map<String, Object>> accepted = service.restoreScoringModelDraft(
+                "idem-k4-valid-history-boundary",
+                new RiskScoringModelRestoreRequest(8L, 0L, "restore equal threshold boundary", "spoofed"));
+
+        assertThat(accepted.getCode()).isZero();
+        assertThat(riskRepository.draftScoringModel().orElseThrow().bandHighMin()).isEqualTo(85);
+        assertThat(riskRepository.draftScoringModel().orElseThrow().autoEscalateScore()).isEqualTo(85);
     }
 
     @Test
@@ -1076,6 +1275,7 @@ class OpsRiskServiceTest {
                 new RiskScoreOverrideRequest(45, before.rowVersion(), "stale concurrent override", "spoofed"));
         assertThat(stale.getCode()).isEqualTo(409);
 
+        riskRepository.kycReviewParams.put("reviewTriggerScore", ">= 80");
         ApiResult<RiskScoreUserView> recomputed = service.recomputeScore(
                 "usr_55B1",
                 "idem-k4-recompute",
@@ -1083,16 +1283,42 @@ class OpsRiskServiceTest {
                         overridden.getData().rowVersion(), "return to canonical scoring", "spoofed"));
         assertThat(recomputed.getCode()).isZero();
         assertThat(recomputed.getData().overridden()).isFalse();
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(audit ->
+                "K5_KYC_REVIEW_TRIGGERED_BY_SCORE".equals(audit.getAction())
+                        && audit.getDetail().toString().contains(K4KycReviewTriggerService.SOURCE_SCORE_RECOMPUTE)
+                        && audit.getDetail().toString().contains("idem-k4-recompute")));
         assertThat(recomputed.getData().contributions())
                 .extracting(RiskScoreContributionView::dimKey)
                 .containsExactlyInAnyOrder(
                         "multiAccount", "arbitrage", "kycStatus",
                         "withdrawVelocity", "accountAge", "anomalyBehavior");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> eventPayload = ArgumentCaptor.forClass(Map.class);
+        verify(eventOutboxService).publish(
+                org.mockito.ArgumentMatchers.eq("RISK_SCORE_USER"),
+                org.mockito.ArgumentMatchers.eq("usr_55B1"),
+                org.mockito.ArgumentMatchers.eq("risk.score_overridden"),
+                eventPayload.capture());
+        assertThat(eventPayload.getValue()).containsEntry("userId", "usr_55B1")
+                .containsEntry("overrideScore", 35)
+                .containsEntry("reason", "manual false positive")
+                .containsEntry("operator", "authenticated-risk-lead");
+        verify(eventOutboxService).publish(
+                org.mockito.ArgumentMatchers.eq("RISK_SCORE_USER"),
+                org.mockito.ArgumentMatchers.eq("usr_55B1"),
+                org.mockito.ArgumentMatchers.eq("risk.score_updated"),
+                eventPayload.capture());
+        assertThat(eventPayload.getValue()).containsEntry("userId", "usr_55B1")
+                .containsEntry("score", recomputed.getData().effectiveScore())
+                .containsEntry("modelVersion", "k4-v1")
+                .containsKeys("band", "changedDimensions");
     }
 
     @Test
     void k4BatchRecomputeUsesActiveModelAndWritesOneRequiredAudit() {
         authenticateK4Admin(false);
+        riskRepository.kycReviewParams.put("reviewTriggerScore", ">= 80");
 
         ApiResult<Map<String, Object>> result = service.recomputeScores(
                 "idem-k4-batch",
@@ -1101,8 +1327,13 @@ class OpsRiskServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("count", 1);
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
         verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(
                 audit -> "K4_SCORE_BATCH_RECOMPUTED".equals(audit.getAction())));
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(audit ->
+                "K5_KYC_REVIEW_TRIGGERED_BY_SCORE".equals(audit.getAction())
+                        && audit.getDetail().toString().contains(K4KycReviewTriggerService.SOURCE_BATCH_RECOMPUTE)
+                        && audit.getDetail().toString().contains("idem-k4-batch:usr_55B1")));
     }
 
     @Test
@@ -1346,6 +1577,44 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void k1ClusterFreezeUpdatesC2AuthoritativeAccountStatus() {
+        riskRepository.multiAccountClusters.put("CL-318", "flagged");
+        var authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
+                "risk-freezer", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("risk_k1_cluster_freeze"),
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_operation_approve")));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        ApiResult<Map<String, Object>> result = service.updateMultiAccountClusterStatus(
+                "CL-318", "idem-k1-c2-link",
+                new RiskClusterStatusRequest("frozen", "confirmed linked account cluster", "spoofed", 0L));
+
+        assertThat(result.getCode()).isZero();
+        verify(userAccountControlFacade).freezeActiveUsersByUserNos(
+                List.of("U00000001", "U00000002"),
+                "confirmed linked account cluster", "risk-freezer", "CL-318");
+    }
+
+    @Test
+    void k1ClusterReleaseRestoresOnlyAccountsFrozenByThatCluster() {
+        riskRepository.multiAccountClusters.put("CL-318", "frozen");
+        var authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
+                "risk-releaser", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("risk_k1_cluster_release"),
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_operation_approve")));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        ApiResult<Map<String, Object>> result = service.updateMultiAccountClusterStatus(
+                "CL-318", "idem-k1-c2-restore",
+                new RiskClusterStatusRequest("released", "cluster false positive cleared", "spoofed", 0L));
+
+        assertThat(result.getCode()).isZero();
+        verify(userAccountControlFacade).restoreUsersFrozenBySource(
+                List.of("U00000001", "U00000002"),
+                "cluster false positive cleared", "risk-releaser", "CL-318");
+    }
+
+    @Test
     void multiAccountWriteUsesAuthenticatedOperatorAndRealIdempotencyService() {
         var authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
                 "authenticated-admin", "n/a", List.of(
@@ -1478,6 +1747,37 @@ class OpsRiskServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("K5_PARAM_VALUE_INVALID");
+    }
+
+    @Test
+    void loweringK5ReviewScoreSynchronizesCurrentK4UsersInChunksImmediatelyAndIdempotently() {
+        authenticateK5("risk_k5_write");
+        riskRepository.kycReviewParams.put("reviewTriggerScore", ">= 95");
+        riskRepository.transitionK4KycReviewTriggerState("usr_55B1", 91, 95, "baseline-95");
+
+        ApiResult<Map<String, Object>> lowered = service.updateKycReviewParam(
+                "reviewTriggerScore",
+                "idem-k5-threshold-lower",
+                new RiskKycReviewParamUpdateRequest(">= 85", 0L,
+                        "lower review line for current high scores", "ignored"));
+
+        assertThat(lowered.getCode()).isZero();
+        assertThat(lowered.getData()).containsEntry("scoreTriggeredTickets", 1);
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(audit ->
+                "K5_KYC_REVIEW_TRIGGERED_BY_SCORE".equals(audit.getAction())
+                        && audit.getDetail().toString().contains(
+                        K4KycReviewTriggerService.SOURCE_REVIEW_THRESHOLD_CHANGE)));
+
+        ApiResult<Map<String, Object>> repeated = service.updateKycReviewParam(
+                "reviewTriggerScore",
+                "idem-k5-threshold-repeat",
+                new RiskKycReviewParamUpdateRequest(">= 85", 1L,
+                        "repeat same review line without duplicate trigger", "ignored"));
+
+        assertThat(repeated.getCode()).isZero();
+        assertThat(repeated.getData()).containsEntry("scoreTriggeredTickets", 0);
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
     }
 
     @Test
@@ -1641,6 +1941,41 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void k5DecisionRejectsUnavailableC4UserBeforeAnyBusinessSideEffectAndKeepsIdempotencyRecord() {
+        authenticateK5("risk_k5_ticket_pass");
+        riskRepository.createLargeWithdrawalKycReviewTicket(
+                "KR-ORPHAN", "missing-user", new BigDecimal("1200"), "WD-ORPHAN",
+                "PENDING", "orphaned account regression", "system");
+        userKycStatusFacade.existingUsers.remove("missing-user");
+
+        ApiResult<Map<String, Object>> result = service.decideKycReviewTicket(
+                "KR-ORPHAN", "idem-k5-orphan",
+                new RiskKycReviewDecisionRequest("passed", 0L, "KYC_PASSED",
+                        "must fail closed when C4 user no longer exists", "ignored"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("K5_REVIEW_USER_NOT_FOUND");
+        assertThat(riskRepository.kycTicketStatus("KR-ORPHAN")).isEqualTo("in-review");
+        assertThat(riskRepository.kycDecisionWrites).isZero();
+        assertThat(userKycStatusFacade.lastUserNo).isNull();
+        assertThat(financeWithdrawalKycReviewFacade.releasedWithdrawalNo).isNull();
+        assertThat(financeWithdrawalKycReviewFacade.rejectedWithdrawalNo).isNull();
+        assertThat(marketExchangeKycReviewFacade.releasedExchangeNo).isNull();
+        assertThat(marketExchangeKycReviewFacade.rejectedExchangeNo).isNull();
+        verify(idempotencyService).execute(
+                org.mockito.ArgumentMatchers.eq("K5_DECISION:KR-ORPHAN"),
+                org.mockito.ArgumentMatchers.eq("idem-k5-orphan"),
+                anyString(), org.mockito.ArgumentMatchers.eq(ApiResult.class), any());
+        verify(auditLogService).recordRequiredInNewTransaction(
+                org.mockito.ArgumentMatchers.argThat(audit ->
+                        "K5_KYC_REVIEW_DECISION_REJECTED".equals(audit.getAction())
+                                && "K5_REVIEW_USER_NOT_FOUND".equals(
+                                ((Map<?, ?>) audit.getDetail()).get("reasonCode"))
+                                && Boolean.FALSE.equals(
+                                ((Map<?, ?>) audit.getDetail()).get("businessDataChanged"))));
+    }
+
+    @Test
     void k5DecisionAuditsMissingLockedAndTerminalRejections() {
         authenticateK5("risk_k5_ticket_pass");
         var missing = service.decideKycReviewTicket("KR-MISSING", "idem-k5-missing-decision",
@@ -1748,6 +2083,21 @@ class OpsRiskServiceTest {
         Map<?, ?> manualResult = (Map<?, ?>) result.getData().get("manualResult");
         assertThat(manualResult.get("ticketId")).isEqualTo("KR-RACE");
         assertThat(manualResult.get("merged")).isEqualTo(true);
+    }
+
+    @Test
+    void concurrentManualTriggerLocksExistingOpenTicketBeforeMerging() {
+        authenticateK5("risk_k5_ticket_manual");
+        riskRepository.createManualKycReviewTicket("KR-OPEN-LOCK", "usr_55B1", "seed review ticket", "system");
+        riskRepository.simulateUnlockedManualMergeRace = true;
+
+        ApiResult<Map<String, Object>> result = service.createManualKycReviewTicket(
+                "idem-k5-open-race",
+                new RiskKycManualReviewRequest("usr_55B1", "concurrent existing-ticket signal", "ignored"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.kycTicketCount()).isEqualTo(1);
+        assertThat(riskRepository.kycTicketVersions.get("KR-OPEN-LOCK")).isEqualTo(1L);
     }
 
     @Test
@@ -1990,6 +2340,7 @@ class OpsRiskServiceTest {
     }
 
     private static final class FakeRiskOpsRepository implements RiskOpsRepository {
+        private int e3TradeinProjectionRefreshes;
         private RiskCaseView caseView = new RiskCaseView(
                 "RD-1", 1L, "WITHDRAWAL", "W-1", "US", "L1", "REVIEW", "manual review", 88, "K4", "REVIEWING", null,
                 null, LocalDateTime.now().minusHours(1));
@@ -2007,9 +2358,9 @@ class OpsRiskServiceTest {
                 new RiskRuleHitView("WD-3", "usr_3", "$500", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:10")));
         private final List<RiskWithdrawCandidateView> withdrawCandidates = new ArrayList<>(List.of(
                 new RiskWithdrawCandidateView("WD-K3-1", "U00000001", BigDecimal.valueOf(1_500), 1,
-                        BigDecimal.valueOf(1_500), 100, "normal", ""),
+                        BigDecimal.valueOf(1_500), 100, "normal", "", "USDT-TRC20", "TR-DRY-ONE"),
                 new RiskWithdrawCandidateView("WD-K3-2", "U00000002", BigDecimal.valueOf(80), 5,
-                        BigDecimal.valueOf(6_000), 3, "low", "")));
+                        BigDecimal.valueOf(6_000), 3, "low", "", "USDT-TRC20", "TR-DRY-TWO")));
         private final List<RiskArbitrageParamView> arbitrageParams = new ArrayList<>(List.of(
                 new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "sub", "note"),
                 new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "sub", "note"),
@@ -2019,6 +2370,8 @@ class OpsRiskServiceTest {
                 new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "sub", "note")));
         private final List<RiskArbitrageRowView> arbitrageRows = new ArrayList<>(List.of(
                 new RiskArbitrageRowView("T-318", "trial", "CL-318", List.of("CL-318", "7 次"), 3, List.of("freeze", "flag"), null)));
+        private final List<K2Signal> k2Signals = new ArrayList<>();
+        private final List<RiskOpsRepository.TrialCycleDetection> trialCycleDetections = new ArrayList<>();
         private final List<RiskScoreDimensionView> scoreDimensions = new ArrayList<>(List.of(
                 new RiskScoreDimensionView("multiAccount", "多账户命中", "来自 K1", 25),
                 new RiskScoreDimensionView("arbitrage", "套利信号", "来自 K2", 20),
@@ -2043,6 +2396,7 @@ class OpsRiskServiceTest {
                 40, 70, 85, "initial K4 model", "system", "system",
                 "2026-07-16 09:00:00", "2026-07-16 09:00:00");
         private RiskScoreModelView draftScoreModel;
+        private RiskScoreModelView historicalScoreModel;
         private int archivedScoreModels;
         private final List<RiskScoreOverrideView> scoreOverrides = new ArrayList<>();
         private final Map<String, String> multiAccountParams = new LinkedHashMap<>(Map.of(
@@ -2067,6 +2421,8 @@ class OpsRiskServiceTest {
         private final Map<String, String> kycTicketHistJson = new LinkedHashMap<>();
         private final Map<String, List<RiskOpsRepository.KycReviewSource>> kycTicketSources = new LinkedHashMap<>();
         private final Map<String, Long> kycTicketVersions = new LinkedHashMap<>();
+        private final Map<String, Boolean> k4KycTriggerAbove = new LinkedHashMap<>();
+        private final Map<String, Integer> k4KycTriggerThreshold = new LinkedHashMap<>();
         private final Map<String, Long> kycParamVersions = new LinkedHashMap<>(Map.of(
                 "largeWithdrawReviewUsdt", 0L,
                 "cumulativeKycThresholdUsdt", 0L,
@@ -2077,6 +2433,8 @@ class OpsRiskServiceTest {
         private long kycAlertSubscriptionVersion;
         private final List<Map<String, Object>> kycAlertRows = new ArrayList<>();
         private boolean simulateManualInsertRace;
+        private boolean simulateUnlockedManualMergeRace;
+        private boolean manualOpenReadLocked;
         private boolean simulateScoreInsertRace;
         private int kycDecisionWrites;
         private final Map<String, String> kycReviewParams = new LinkedHashMap<>(Map.of(
@@ -2125,6 +2483,15 @@ class OpsRiskServiceTest {
 
         @Override
         public void recordSignal(String signalNo, Long userId, String signalType, String severity, String evidence, String operator) {
+            k2Signals.add(new K2Signal(signalNo, userId, signalType));
+        }
+
+        @Override
+        public boolean recordSignalIfAbsent(
+                String signalNo, Long userId, String signalType, String severity, String evidence, String operator) {
+            if (k2Signals.stream().anyMatch(signal -> signal.signalNo().equals(signalNo))) return false;
+            k2Signals.add(new K2Signal(signalNo, userId, signalType));
+            return true;
         }
 
         @Override
@@ -2253,6 +2620,22 @@ class OpsRiskServiceTest {
         }
 
         @Override
+        public void refreshE3TradeinArbitrageProjection() {
+            e3TradeinProjectionRefreshes++;
+        }
+
+        @Override
+        public List<RiskOpsRepository.TrialCycleDetection> refreshTrialCycleArbitrageProjection(
+                int minimumCycles, int windowDays) {
+            return trialCycleDetections;
+        }
+
+        @Override
+        public List<Long> arbitrageSubjectUserIds(String rowId) {
+            return "T-318".equals(rowId) ? List.of(1L, 2L) : List.of();
+        }
+
+        @Override
         public List<RiskArbitrageRowView> arbitrageRows() {
             return arbitrageRows;
         }
@@ -2288,6 +2671,12 @@ class OpsRiskServiceTest {
         @Override
         public Optional<RiskScoreModelView> draftScoringModel() {
             return Optional.ofNullable(draftScoreModel);
+        }
+
+        @Override
+        public Optional<RiskScoreModelView> scoringModel(long modelVersion) {
+            return Optional.ofNullable(historicalScoreModel)
+                    .filter(model -> model.version() == modelVersion);
         }
 
         @Override
@@ -2410,6 +2799,11 @@ class OpsRiskServiceTest {
         }
 
         @Override
+        public Optional<RiskScoreUserView> findCurrentScoreUser(String userNo) {
+            return findScoreUser(userNo);
+        }
+
+        @Override
         public Optional<RiskScoreOverrideView> overrideScore(
                 String userNo, long expectedVersion, int score, String reason, String operator) {
             Optional<RiskScoreUserView> user = findScoreUser(userNo);
@@ -2477,8 +2871,48 @@ class OpsRiskServiceTest {
         }
 
         @Override
+        public Optional<RiskScoreUserView> refreshScoreProjection(
+                String userNo, long expectedVersion, RiskScoreModelView model, int modelScore,
+                List<RiskScoreContributionView> contributions) {
+            Optional<RiskScoreUserView> current = findScoreUser(userNo);
+            if (current.isEmpty() || !java.util.Objects.equals(current.get().rowVersion(), expectedVersion)) {
+                return Optional.empty();
+            }
+            RiskScoreOverrideView activeOverride = scoreOverrides.stream()
+                    .filter(row -> row.userNo().equals(userNo) && row.active())
+                    .findFirst().orElse(null);
+            int effectiveScore = activeOverride == null ? modelScore : activeOverride.overrideScore();
+            int low = model.bandLowMax();
+            int high = model.bandHighMin();
+            String now = "2026-07-16 10:03:00";
+            scoreUser = new RiskScoreUserView(
+                    userNo, modelScore, effectiveScore, activeOverride != null,
+                    effectiveScore >= high ? "高风险" : effectiveScore >= low ? "中风险" : "低风险",
+                    effectiveScore >= high ? "bad" : effectiveScore >= low ? "warn" : "ok",
+                    "k4-v" + model.version(), current.get().rowVersion() + 1, now, now, contributions);
+            return Optional.of(scoreUser);
+        }
+
+        @Override
         public List<String> scoreUserNos() {
             return List.of(scoreUser.userNo());
+        }
+
+        @Override
+        public boolean transitionK4KycReviewTriggerState(
+                String userNo, int effectiveScore, int threshold, String transitionId) {
+            boolean above = effectiveScore >= threshold;
+            boolean existed = k4KycTriggerAbove.containsKey(userNo);
+            boolean previousAbove = k4KycTriggerAbove.getOrDefault(userNo, false);
+            k4KycTriggerAbove.put(userNo, above);
+            k4KycTriggerThreshold.put(userNo, threshold);
+            return above && (!existed || !previousAbove);
+        }
+
+        @Override
+        public List<String> scoreUserNosNeedingKycTriggerThresholdSync(int threshold, int limit) {
+            return !java.util.Objects.equals(k4KycTriggerThreshold.get(scoreUser.userNo()), threshold)
+                    ? List.of(scoreUser.userNo()) : List.of();
         }
 
         @Override
@@ -2635,13 +3069,26 @@ class OpsRiskServiceTest {
 
         @Override
         public Optional<KycReviewTicketContext> findOpenKycReviewTicketByUser(String userNo) {
+            manualOpenReadLocked = false;
             return kycTicketUsers.entrySet().stream()
                     .filter(entry -> userNo.equals(entry.getValue()) && "in-review".equals(kycTickets.get(entry.getKey())))
                     .map(Map.Entry::getKey).findFirst().flatMap(this::findKycReviewTicket);
         }
 
         @Override
+        public Optional<KycReviewTicketContext> findOpenKycReviewTicketByUserForUpdate(String userNo) {
+            Optional<KycReviewTicketContext> result = findOpenKycReviewTicketByUser(userNo);
+            manualOpenReadLocked = true;
+            return result;
+        }
+
+        @Override
         public boolean mergeOpenKycReviewTicket(String ticketId, long expectedVersion, String reason, String operator) {
+            if (simulateUnlockedManualMergeRace && !manualOpenReadLocked) {
+                simulateUnlockedManualMergeRace = false;
+                kycTicketVersions.computeIfPresent(ticketId, (ignored, version) -> version + 1);
+                return false;
+            }
             if (!"in-review".equals(kycTickets.get(ticketId))
                     || kycTicketVersions.getOrDefault(ticketId, -1L) != expectedVersion) return false;
             kycTicketVersions.put(ticketId, expectedVersion + 1);
@@ -2825,6 +3272,9 @@ class OpsRiskServiceTest {
             int to = Math.min(rows.size(), from + pageSize);
             return rows.subList(from, to);
         }
+    }
+
+    private record K2Signal(String signalNo, Long userId, String signalType) {
     }
 
     private static final class FakeUserKycStatusFacade implements UserKycStatusFacade {

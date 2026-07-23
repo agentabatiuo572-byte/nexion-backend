@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -23,6 +24,7 @@ import ffdd.opsconsole.content.domain.SupportTicketMessageView;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
+import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
 import ffdd.opsconsole.content.dto.ConversationFallbackRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
@@ -40,6 +42,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,8 +62,13 @@ class OpsConversationServiceTest {
     private final OpsConversationService service = service();
 
     private OpsConversationService service() {
+        var assignable = new ffdd.opsconsole.content.domain.SupportAgentProfileView(
+                "agent-2", 11L, "Agent Two", "agent2@example.com", "support", "enabled",
+                "support", "客服", List.of("support"), List.of(), 8, true, true, false, 0L, "2026-06-17T00:00:00");
         when(supportAgentService.transferTargets())
                 .thenReturn(List.of(Map.of("targetType", "agent", "targetId", "agent-2", "targetName", "Agent Two")));
+        when(supportAgentService.currentAssignableSupportAgent()).thenReturn(java.util.Optional.of(assignable));
+        when(supportAgentService.assignableSupportAgent(11L)).thenReturn(java.util.Optional.of(assignable));
         return new OpsConversationService(
                 conversationRepository,
                 ticketRepository,
@@ -77,11 +85,21 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void transferRequiresReasonAtLeastSixCharacters() {
+    void transferRequiresReasonAtLeastEightCharacters() {
         var result = service.transfer(
                 "CV-1",
                 "idem-i9",
-                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "short", "agent-1"));
+                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "1234567", "agent-1"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+    }
+
+    @Test
+    void transferRejectsReasonLongerThanTwoHundredCharacters() {
+        var result = service.transfer(
+                "CV-1",
+                "idem-i9",
+                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "r".repeat(201), "agent-1"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
     }
@@ -106,6 +124,22 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void competingTransferThatLosesHeaderClaimReturns409WithoutMessageOrAudit() {
+        conversationRepository.conversation = conversation("CV-RACE", "OPEN");
+        conversationRepository.stateClaimSucceeds = false;
+
+        var result = service.transfer(
+                "CV-RACE",
+                "idem-i9-transfer-race",
+                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isEqualTo(1);
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void transferRejectsClosedConversationWith409() {
         conversationRepository.conversation = conversation("CV-1", "CLOSED");
 
@@ -115,6 +149,20 @@ class OpsConversationServiceTest {
                 new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void transferRejectsUnknownAgentInsteadOfCreatingGhostOwner() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+
+        var result = service.transfer(
+                "CV-1",
+                "idem-i9-ghost",
+                new ConversationTransferRequest("agent", "ghost-agent", "Ghost Agent", "send to unknown agent", "agent-1"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_TARGET_NOT_AVAILABLE");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
     }
 
     @Test
@@ -129,6 +177,36 @@ class OpsConversationServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("OPEN");
         assertThat(result.getData().ownerAgentId()).isEqualTo("agent-2");
+    }
+
+    @Test
+    void acceptTransferThatLosesPendingClaimReturns409WithoutMessageOrAudit() {
+        conversationRepository.conversation = transferredConversation("CV-ACCEPT-RACE");
+        conversationRepository.stateClaimSucceeds = false;
+
+        var result = service.acceptTransfer(
+                "CV-ACCEPT-RACE",
+                "idem-i9-accept-race",
+                new ConversationTransferDecisionRequest("accept incoming", "agent-2"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void returnTransferThatLosesPendingClaimReturns409WithoutMessageOrAudit() {
+        conversationRepository.conversation = transferredConversation("CV-RETURN-RACE");
+        conversationRepository.stateClaimSucceeds = false;
+
+        var result = service.returnTransfer(
+                "CV-RETURN-RACE",
+                "idem-i9-return-race",
+                new ConversationTransferDecisionRequest("return to original owner", "agent-2"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -151,6 +229,21 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void waitTransferThatLosesToDecisionReturns409WithoutMessageOrAudit() {
+        conversationRepository.conversation = transferredConversation("CV-WAIT-RACE");
+        conversationRepository.stateClaimSucceeds = false;
+
+        var result = service.waitTransfer(
+                "CV-WAIT-RACE",
+                "idem-i9-wait-race",
+                new ConversationTransferDecisionRequest("continue waiting for receiving agent", "agent-2"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void replyUpdatesConversationHeaderAndAudits() {
         conversationRepository.conversation = conversation("CV-1", "RESOLVED");
 
@@ -170,6 +263,36 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void replyRejectsAuditReasonShorterThanEightCharactersWithoutWriting() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+
+        var result = service.reply(
+                "CV-1",
+                "idem-i9-reply-short-reason",
+                new ConversationReplyRequest("This must not be appended.", "too few", "Marina K."));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+        assertThat(conversationRepository.conversation.lastMessage()).isNotEqualTo("This must not be appended.");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void replyRejectsAuditReasonLongerThanTwoHundredCharactersWithoutWriting() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+
+        var result = service.reply(
+                "CV-1",
+                "idem-i9-reply-long-reason",
+                new ConversationReplyRequest("This must not be appended.", "r".repeat(201), "Marina K."));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+        assertThat(conversationRepository.conversation.lastMessage()).isNotEqualTo("This must not be appended.");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void replyRejectsTransferredConversationWith409() {
         conversationRepository.conversation = transferredConversation("CV-1");
 
@@ -179,6 +302,21 @@ class OpsConversationServiceTest {
                 new ConversationReplyRequest("Please wait", "agent reply", "Marina K."));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void replyThatLosesToConcurrentCloseReturns409WithoutMessageOrAudit() {
+        conversationRepository.conversation = conversation("CV-REPLY-RACE", "OPEN");
+        conversationRepository.stateClaimSucceeds = false;
+
+        var result = service.reply(
+                "CV-REPLY-RACE",
+                "idem-i9-reply-race",
+                new ConversationReplyRequest("Please wait", "agent reply", "Marina K."));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -204,6 +342,20 @@ class OpsConversationServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("RESOLVED");
+    }
+
+    @Test
+    void updateStatusRejectsStaleExpectedStatusBeforeClaimAndAudit() {
+        conversationRepository.conversation = conversation("CV-STATUS-STALE", "RESOLVED");
+
+        var result = service.updateStatus(
+                "CV-STATUS-STALE",
+                "idem-i9-status-stale",
+                new ConversationStatusRequest("CLOSED", "OPEN", "close after resolution", "Marina K."));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.stateWriteAttempts).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -416,6 +568,43 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void archiveRejectsStaleExpectedStatusBeforeClaimAndAudit() {
+        conversationRepository.conversation = conversation("CV-ARCHIVE-STALE", "OPEN");
+
+        var result = service.archive(
+                "CV-ARCHIVE-STALE",
+                "idem-i9-archive-stale",
+                new ConversationArchiveRequest(true, "RESOLVED", "archive resolved session", "Marina K."));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.stateWriteAttempts).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void archiveBatchThrowsAfterAnyLostClaimSoTransactionCanRollBackAllRows() throws Exception {
+        ContentConversationView first = conversation("CV-BATCH-1", "RESOLVED");
+        ContentConversationView second = conversation("CV-BATCH-2", "RESOLVED");
+        conversationRepository.conversations.put(first.conversationNo(), first);
+        conversationRepository.conversations.put(second.conversationNo(), second);
+        conversationRepository.failStateClaimOnAttempt = 2;
+
+        assertThatThrownBy(() -> service.archiveBatch(
+                "idem-i9-archive-batch-race",
+                new ConversationArchiveBatchRequest(
+                        List.of("CV-BATCH-2", "CV-BATCH-1"),
+                        "archive resolved sessions",
+                        "Marina K.")))
+                .isInstanceOf(OpsConversationService.ConversationStateConflictException.class);
+
+        assertThat(conversationRepository.lockOrder).containsExactly("CV-BATCH-1", "CV-BATCH-2");
+        assertThat(OpsConversationService.class
+                .getMethod("archiveBatch", String.class, ConversationArchiveBatchRequest.class)
+                .getAnnotation(org.springframework.transaction.annotation.Transactional.class)
+                .rollbackFor()).contains(Exception.class);
+    }
+
+    @Test
     void fallbackTransferredConversationMovesToStandby() {
         conversationRepository.conversation = transferredConversation("CV-1");
 
@@ -427,6 +616,21 @@ class OpsConversationServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().transferToType()).isEqualTo("standby");
         assertThat(result.getData().transferToId()).isEqualTo("standby-pool");
+    }
+
+    @Test
+    void fallbackThatLosesToAcceptOrReturnReturns409WithoutMessageOrAudit() {
+        conversationRepository.conversation = transferredConversation("CV-FALLBACK-RACE");
+        conversationRepository.fallbackClaimSucceeds = false;
+
+        var result = service.fallbackTransfer(
+                "CV-FALLBACK-RACE",
+                "idem-i9-fallback-race",
+                new ConversationFallbackRequest("pending transfer timeout", "Marina K."));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -478,7 +682,22 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void convertToTicketCreatesSupportTicketAndResolvesConversation() {
+    void timeoutFallbackRereadsUnderLockAndSkipsAConversationAlreadyAccepted() {
+        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
+        ContentConversationView stale = transferredConversation("CV-TIMEOUT-RACE");
+        conversationRepository.overdueConversations = List.of(stale);
+        conversationRepository.conversation = conversation("CV-TIMEOUT-RACE", "OPEN");
+
+        int changed = service.runTimeoutFallback();
+
+        assertThat(changed).isZero();
+        assertThat(conversationRepository.fallbackCount).isZero();
+        assertThat(conversationRepository.lockedReads).isEqualTo(1);
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void convertToTicketCreatesSupportTicketAndClosesConversation() {
         conversationRepository.conversation = conversation("CV-1", "OPEN");
 
         var result = service.convertToTicket(
@@ -487,10 +706,41 @@ class OpsConversationServiceTest {
                 new ConversationTicketRequest("account", "HIGH", "Need account follow-up", 11L, "Tessa", "escalate to ticket", "Marina K."));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().conversation().status()).isEqualTo("RESOLVED");
+        assertThat(result.getData().conversation().status()).isEqualTo("CLOSED");
         assertThat(result.getData().ticket().ticket().ticketNo()).startsWith("TK-");
         assertThat(ticketRepository.ticket.category()).isEqualTo("account");
         assertThat(ticketRepository.ticket.priority()).isEqualTo("HIGH");
+    }
+
+    @Test
+    void convertToTicketRejectsASecondConversionForTheSameConversation() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+        ConversationTicketRequest request = new ConversationTicketRequest(
+                "account", "HIGH", "Need account follow-up", 11L, "Tessa", "escalate to ticket", "Marina K.");
+
+        var first = service.convertToTicket("CV-1", "idem-i9-ticket-1", request);
+        var second = service.convertToTicket("CV-1", "idem-i9-ticket-2", request);
+
+        assertThat(first.getCode()).isZero();
+        assertThat(second.getCode()).isEqualTo(409);
+        assertThat(second.getMessage()).isEqualTo("INVALID_STATE_TRANSITION");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("CLOSED");
+    }
+
+    @Test
+    void convertToTicketRejectsAConcurrentRequestThatLosesTheAtomicClaim() {
+        conversationRepository.conversation = conversation("CV-1", "OPEN");
+        conversationRepository.conversionClaimSucceeds = false;
+
+        var result = service.convertToTicket(
+                "CV-1",
+                "idem-i9-ticket-race",
+                new ConversationTicketRequest(
+                        "account", "HIGH", "Need account follow-up", 11L, "Tessa", "escalate to ticket", "Marina K."));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("CONVERSATION_ALREADY_CONVERTED_TO_TICKET");
+        assertThat(ticketRepository.ticket).isNull();
     }
 
     @Test
@@ -560,7 +810,7 @@ class OpsConversationServiceTest {
                 "agent-2",
                 "Agent Two",
                 "needs specialist",
-                LocalDateTime.now(),
+                LocalDateTime.of(2026, 6, 16, 23, 0),
                 LocalDateTime.now());
     }
 
@@ -573,7 +823,15 @@ class OpsConversationServiceTest {
         private LocalDateTime lastCutoff;
         private int lastLimit;
         private boolean fallbackClaimSucceeds = true;
+        private boolean conversionClaimSucceeds = true;
         private String receiptStatus = "sent";
+        private boolean stateClaimSucceeds = true;
+        private int failStateClaimOnAttempt = Integer.MAX_VALUE;
+        private int stateWriteAttempts;
+        private int messageWrites;
+        private int lockedReads;
+        private final Map<String, ContentConversationView> conversations = new LinkedHashMap<>();
+        private final List<String> lockOrder = new ArrayList<>();
 
         @Override
         public void ensureSeedData(LocalDateTime now) {
@@ -595,7 +853,18 @@ class OpsConversationServiceTest {
 
         @Override
         public Optional<ContentConversationView> findByConversationNo(String conversationNo) {
-            return Optional.ofNullable(conversation);
+            ContentConversationView mapped = conversations.get(conversationNo);
+            if (mapped != null) return Optional.of(mapped);
+            return Optional.ofNullable(conversation != null && conversationNo.equals(conversation.conversationNo())
+                    ? conversation
+                    : null);
+        }
+
+        @Override
+        public Optional<ContentConversationView> findByConversationNoForUpdate(String conversationNo) {
+            lockedReads += 1;
+            lockOrder.add(conversationNo);
+            return findByConversationNo(conversationNo);
         }
 
         @Override
@@ -626,7 +895,7 @@ class OpsConversationServiceTest {
         }
 
         @Override
-        public void transferToPending(
+        public boolean transferToPending(
                 ContentConversationView conversation,
                 String targetType,
                 String targetId,
@@ -634,7 +903,8 @@ class OpsConversationServiceTest {
                 String reason,
                 String operator,
                 LocalDateTime now) {
-            this.conversation = new ContentConversationView(
+            if (!claimState()) return false;
+            store(new ContentConversationView(
                     conversation.id(),
                     conversation.conversationNo(),
                     conversation.userId(),
@@ -652,19 +922,22 @@ class OpsConversationServiceTest {
                     targetName,
                     reason,
                     now,
-                    now);
+                    now));
+            messageWrites += 1;
+            return true;
         }
 
         @Override
-        public void acceptTransfer(ContentConversationView conversation, String operator, LocalDateTime now) {
-            this.conversation = new ContentConversationView(
+        public boolean acceptTransfer(ContentConversationView conversation, String ownerAgentId, String ownerAgentName, String operator, LocalDateTime now) {
+            if (!claimState()) return false;
+            store(new ContentConversationView(
                     conversation.id(),
                     conversation.conversationNo(),
                     conversation.userId(),
                     conversation.conversationType(),
                     "OPEN",
-                    operator,
-                    operator,
+                    ownerAgentId,
+                    ownerAgentName,
                     conversation.unreadCount(),
                     conversation.lastMessage(),
                     conversation.lastMessageAt(),
@@ -675,12 +948,15 @@ class OpsConversationServiceTest {
                     conversation.transferToName(),
                     conversation.transferReason(),
                     conversation.transferredAt(),
-                    now);
+                    now));
+            messageWrites += 1;
+            return true;
         }
 
         @Override
-        public void returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
-            this.conversation = new ContentConversationView(
+        public boolean returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+            if (!claimState()) return false;
+            store(new ContentConversationView(
                     conversation.id(),
                     conversation.conversationNo(),
                     conversation.userId(),
@@ -698,12 +974,15 @@ class OpsConversationServiceTest {
                     conversation.transferToName(),
                     reason,
                     conversation.transferredAt(),
-                    now);
+                    now));
+            messageWrites += 1;
+            return true;
         }
 
         @Override
-        public void waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
-            this.conversation = new ContentConversationView(
+        public boolean waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+            if (!claimState()) return false;
+            store(new ContentConversationView(
                     conversation.id(),
                     conversation.conversationNo(),
                     conversation.userId(),
@@ -721,12 +1000,15 @@ class OpsConversationServiceTest {
                     conversation.transferToName(),
                     conversation.transferReason(),
                     conversation.transferredAt(),
-                    now);
+                    now));
+            messageWrites += 1;
+            return true;
         }
 
         @Override
-        public void reply(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
-            this.conversation = new ContentConversationView(
+        public boolean reply(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
+            if (!claimState()) return false;
+            store(new ContentConversationView(
                     conversation.id(),
                     conversation.conversationNo(),
                     conversation.userId(),
@@ -744,12 +1026,15 @@ class OpsConversationServiceTest {
                     conversation.transferToName(),
                     conversation.transferReason(),
                     conversation.transferredAt(),
-                    now);
+                    now));
+            messageWrites += 1;
+            return true;
         }
 
         @Override
-        public void updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now) {
-            this.conversation = new ContentConversationView(
+        public boolean updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now) {
+            if (!claimState()) return false;
+            store(new ContentConversationView(
                     conversation.id(),
                     conversation.conversationNo(),
                     conversation.userId(),
@@ -767,34 +1052,45 @@ class OpsConversationServiceTest {
                     conversation.transferToName(),
                     conversation.transferReason(),
                     conversation.transferredAt(),
-                    now);
-        }
-
-        @Override
-        public void archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now) {
-            updateStatus(conversation, archived ? "CLOSED" : "RESOLVED", operator, now);
-        }
-
-        @Override
-        public boolean fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
-            if (!fallbackClaimSucceeds) {
-                return false;
-            }
-            fallbackCount += 1;
-            transferToPending(conversation, "standby", "standby-pool", "Standby pool", reason, operator, now);
+                    now));
+            messageWrites += 1;
             return true;
         }
 
         @Override
-        public void markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now) {
-            updateStatus(conversation, "RESOLVED", operator, now);
+        public boolean archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now) {
+            return updateStatus(conversation, archived ? "CLOSED" : "RESOLVED", operator, now);
+        }
+
+        @Override
+        public boolean fallbackTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+            if (!fallbackClaimSucceeds || !claimState()) {
+                return false;
+            }
+            fallbackCount += 1;
+            store(new ContentConversationView(
+                    conversation.id(), conversation.conversationNo(), conversation.userId(), conversation.conversationType(),
+                    "TRANSFERRED", "standby-pool", "Standby pool", conversation.unreadCount(),
+                    conversation.lastMessage(), conversation.lastMessageAt(), conversation.transferFromAgentId(),
+                    conversation.transferFromAgentName(), "standby", "standby-pool", "Standby pool", reason,
+                    conversation.transferredAt(), now));
+            messageWrites += 1;
+            return true;
+        }
+
+        @Override
+        public boolean markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now) {
+            if (!conversionClaimSucceeds || "CLOSED".equalsIgnoreCase(conversation.status())) {
+                return false;
+            }
+            return updateStatus(conversation, "CLOSED", operator, now);
         }
 
         @Override
         public ContentConversationView createConversation(String conversationNo, Long userId, String conversationType,
                                                          String ownerAgentId, String ownerAgentName,
                                                          String openingText, LocalDateTime now) {
-            this.conversation = new ContentConversationView(
+            store(new ContentConversationView(
                     2L,
                     conversationNo,
                     userId,
@@ -812,8 +1108,20 @@ class OpsConversationServiceTest {
                     null,
                     null,
                     null,
-                    now);
+                    now));
             return this.conversation;
+        }
+
+        private boolean claimState() {
+            stateWriteAttempts += 1;
+            return stateClaimSucceeds && stateWriteAttempts != failStateClaimOnAttempt;
+        }
+
+        private void store(ContentConversationView updated) {
+            this.conversation = updated;
+            if (conversations.containsKey(updated.conversationNo())) {
+                conversations.put(updated.conversationNo(), updated);
+            }
         }
     }
 
@@ -888,7 +1196,9 @@ class OpsConversationServiceTest {
                     now,
                     null,
                     now,
-                    now);
+                    now,
+                    false,
+                    null);
             messages = List.of(new SupportTicketMessageView(
                     10L,
                     10L,
@@ -915,6 +1225,20 @@ class OpsConversationServiceTest {
 
         @Override
         public void assign(SupportTicketView ticket, Long assignedAdminId, String assignedAdminName, LocalDateTime now) {
+        }
+
+        @Override
+        public void archive(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now) {
+        }
+
+        @Override
+        public void appendSystemTrace(SupportTicketView ticket, String body, LocalDateTime now) {
+            messages = java.util.stream.Stream.concat(
+                    messages.stream(),
+                    java.util.stream.Stream.of(new SupportTicketMessageView(
+                            (long) messages.size() + 1, ticket.id(), ticket.ticketNo(), null,
+                            "system", "系统", body, now)))
+                    .toList();
         }
     }
 }

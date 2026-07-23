@@ -140,6 +140,21 @@ class OpsKillSwitchServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void matrixDisplaysTheCurrentJ3TamperAlertThresholdUsedByR3() {
+        emergencyRepository.settings.put("emergency.tamper.alert.threshold", "37");
+
+        var result = service.matrix();
+        List<Map<String, Object>> rules = (List<Map<String, Object>>) result.getData().get("autoRules");
+
+        assertThat(rules).filteredOn(row -> "tamperCluster".equals(row.get("id")))
+                .singleElement()
+                .satisfies(row -> assertThat(row)
+                        .containsEntry("thr", "37")
+                        .containsEntry("configKey", "emergency.tamper.alert.threshold"));
+    }
+
+    @Test
     void missingGateSettingsMatchTheSharedDownstreamDefaultForEveryJ1Gate() {
         var result = service.matrix();
 

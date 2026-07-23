@@ -13,10 +13,13 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class NexMarketCurveScheduler implements SchedulingConfigurer {
     private final OpsNexMarketService marketService;
+    private final G3ScheduledAdvanceService scheduledAdvanceService;
 
     @Override
     public void configureTasks(ScheduledTaskRegistrar taskRegistrar) {
-        taskRegistrar.addTriggerTask(marketService::advanceScheduledFrame, this::nextExecution);
+        taskRegistrar.addTriggerTask(
+                scheduledAdvanceService == null ? marketService::advanceScheduledFrame : scheduledAdvanceService::advanceIfDue,
+                this::nextExecution);
     }
 
     java.time.Instant nextExecution(TriggerContext triggerContext) {

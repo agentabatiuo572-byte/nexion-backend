@@ -1,12 +1,13 @@
 package ffdd.opsconsole.shared.audit;
 
+import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
@@ -33,6 +34,7 @@ public class AuditLogService {
     private final AuditLogSanitizer sanitizer;
     private final ApplicationNameProperties applicationNameProperties;
     private final AuditProperties auditProperties;
+    private final AdminMapper adminMapper;
 
     public void record(AuditLogWriteRequest request) {
         if (!auditProperties.isEnabled() || request == null || !StringUtils.hasText(request.getAction())) {
@@ -64,6 +66,22 @@ public class AuditLogService {
     }
 
     /**
+     * Writes a required audit using an actor recovered from a server-validated durable record.
+     * This is reserved for flows such as read-only impersonation where the current SecurityContext
+     * intentionally represents the target user rather than the administrator who opened the session.
+     */
+    public void recordRequiredForTrustedActor(AuditLogWriteRequest request) {
+        if (!auditProperties.isEnabled()) {
+            throw new IllegalStateException("AUDIT_REQUIRED_DISABLED");
+        }
+        if (request == null || !StringUtils.hasText(request.getAction())
+                || !StringUtils.hasText(request.getActorUsername())) {
+            throw new IllegalArgumentException("AUDIT_TRUSTED_ACTOR_INVALID");
+        }
+        auditLogMapper.insertAuditLog(buildWrite(request, true));
+    }
+
+    /**
      * Persists the failure of a high-risk mutation after its business transaction has failed.
      * The separate transaction prevents the failure audit from being rolled back with business data.
      */
@@ -73,6 +91,14 @@ public class AuditLogService {
     }
 
     public List<AuditLogRecord> list(AuditLogQueryRequest request) {
+        return list(request, MAX_LIMIT);
+    }
+
+    public List<AuditLogRecord> listForExport(AuditLogQueryRequest request, int maxRows) {
+        return list(request, Math.max(1, Math.min(maxRows, 5000)));
+    }
+
+    private List<AuditLogRecord> list(AuditLogQueryRequest request, int maxRows) {
         AuditLogQueryRequest query = request == null ? new AuditLogQueryRequest() : request;
         return auditLogMapper.list(
                 textOrNull(query.getTraceId()),
@@ -85,7 +111,14 @@ public class AuditLogService {
                 query.getActorId(),
                 textOrNull(query.getResult()),
                 textOrNull(query.getRiskLevel()),
-                normalizeLimit(query.getLimit()));
+                textOrNull(query.getDomain()),
+                textOrNull(query.getOperator()),
+                textOrNull(query.getOperatorExact()),
+                textOrNull(query.getObject()),
+                query.getStartTime(),
+                query.getEndTime(),
+                query.getAllowedDomains(),
+                Math.min(maxRows, query.getLimit() == null || query.getLimit() < 1 ? maxRows : query.getLimit()));
     }
 
     public long countByActionAndResourceType(String action, String resourceType) {
@@ -94,6 +127,16 @@ public class AuditLogService {
         }
         return auditLogMapper.countByActionAndResourceType(
                 normalizeCode(action, "UNKNOWN"), normalizeCode(resourceType, "UNKNOWN"));
+    }
+
+    public long count(AuditLogQueryRequest request) {
+        return auditLogMapper.countFiltered(request == null ? new AuditLogQueryRequest() : request);
+    }
+
+    public List<A2AuditAggregate> aggregate(AuditLogQueryRequest request) {
+        List<A2AuditAggregate> rows = auditLogMapper.aggregateFiltered(
+                request == null ? new AuditLogQueryRequest() : request);
+        return rows == null ? List.of() : rows;
     }
 
     public AuditStatsSummaryResponse summary(AuditStatsQueryRequest request) {
@@ -144,13 +187,21 @@ public class AuditLogService {
     }
 
     private AuditLogMapper.AuditLogWrite buildWrite(AuditLogWriteRequest request) {
+        return buildWrite(request, false);
+    }
+
+    private AuditLogMapper.AuditLogWrite buildWrite(AuditLogWriteRequest request, boolean trustedRecordedActor) {
         HttpServletRequest servletRequest = currentRequest();
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         String actorName = authentication == null ? null : authentication.getName();
-        Long actorId = request.getActorId() == null ? parseLong(actorName) : request.getActorId();
-        String actorUsername = StringUtils.hasText(request.getActorUsername())
-                ? request.getActorUsername()
-                : authenticatedUsername(authentication, actorName);
+        String authenticatedActor = AdminActorResolver.resolve(null);
+        String requestedActor = textOrNull(request.getActorUsername());
+        Long actorId = trustedRecordedActor
+                ? firstActorId(request.getActorId(), requestedActor)
+                : (StringUtils.hasText(authenticatedActor) ? parseLong(actorName) : request.getActorId());
+        String actorUsername = trustedRecordedActor
+                ? requestedActor
+                : (StringUtils.hasText(authenticatedActor) ? authenticatedActor : requestedActor);
         return new AuditLogMapper.AuditLogWrite(
                 firstText(request.getTraceId(), AuditTraceContext.currentTraceId(), requestTraceId(servletRequest)),
                 applicationNameProperties.getName(),
@@ -168,6 +219,16 @@ public class AuditLogService {
                 normalizeCode(request.getResult(), "SUCCESS"),
                 normalizeCode(request.getRiskLevel(), "INFO"),
                 sanitizer.toSafeJson(request.getDetail()));
+    }
+
+    private Long firstActorId(Long requestedActorId, String actorUsername) {
+        if (requestedActorId != null && requestedActorId > 0) {
+            return requestedActorId;
+        }
+        if (!StringUtils.hasText(actorUsername) || "system".equalsIgnoreCase(actorUsername)) {
+            return null;
+        }
+        return adminMapper.findIdByUsername(actorUsername);
     }
 
     private NormalizedAuditStatsQuery normalizeStatsQuery(AuditStatsQueryRequest request) {
@@ -217,24 +278,6 @@ public class AuditLogService {
             return attributes.getRequest();
         }
         return null;
-    }
-
-    private String authenticatedUsername(Authentication authentication, String fallback) {
-        if (authentication == null) {
-            return fallback;
-        }
-        Object details = authentication.getDetails();
-        if (details instanceof Map<?, ?> values) {
-            Object username = values.get("username");
-            if (username instanceof String text && StringUtils.hasText(text)) {
-                return text.trim();
-            }
-        }
-        Object principal = authentication.getPrincipal();
-        if (principal instanceof String text && StringUtils.hasText(text) && parseLong(text) == null) {
-            return text.trim();
-        }
-        return fallback;
     }
 
     private String requestTraceId(HttpServletRequest request) {

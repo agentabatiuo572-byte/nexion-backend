@@ -15,13 +15,13 @@ import org.springframework.stereotype.Component;
  * 这里做按账号的 Redis 缓存：鉴权时从 Redis 读，miss 回源 MySQL 并回填，Redis 不可用时降级直查 MySQL。
  * 权限/角色变更（A6/A7 配置面）后调 {@link #evict(Long)} 即时失效，无需等 TTL 或重登。
  *
- * <p>Key: {@code rbac:admin:perms:{adminId}}，Redis Set 存权限码（每码一个 member，免序列化），TTL 30min 兜底。
+ * <p>Key: {@code rbac:v2:admin:perms:{adminId}}，Redis Set 存权限码（每码一个 member，免序列化），TTL 30min 兜底。
  * super_admin 在 DB 已绑定全 265 细点（{@code role_permission} seed），不再需要旧 PERM_* 桥接。
  */
 @Component
 @RequiredArgsConstructor
 public class AdminPermissionCache {
-    private static final String KEY_PREFIX = "rbac:admin:perms:";
+    private static final String KEY_PREFIX = "rbac:v2:admin:perms:";
     private static final Duration TTL = Duration.ofMinutes(30);
 
     private final StringRedisTemplate redisTemplate;

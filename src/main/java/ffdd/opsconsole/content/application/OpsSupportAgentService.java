@@ -18,7 +18,11 @@ import ffdd.opsconsole.platform.dto.AdminAccountOverview;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -52,6 +56,7 @@ public class OpsSupportAgentService {
     private final SupportAgentRepository repository;
     private final OpsAdminAccountService accountService;
     private final AuditLogService auditLogService;
+    private final AdminIdempotencyService idempotencyService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final Clock clock;
 
@@ -98,6 +103,56 @@ public class OpsSupportAgentService {
         List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
         ensureDefaultProfiles(operators);
         return transferTargets(profileViews(operators));
+    }
+
+    public boolean canManageSupportSeats() {
+        AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
+        if (actor == null) {
+            return false;
+        }
+        String actorRole = normalizedRole(actor.role());
+        return "super".equals(actorRole)
+                || "superadmin".equals(actorRole)
+                || ("support".equals(actorRole) && supportSeatSupervisor(actor));
+    }
+
+    public Optional<SupportAgentProfileView> assignableSupportAgent(String agentId) {
+        if (!StringUtils.hasText(agentId)) {
+            return Optional.empty();
+        }
+        try {
+            return assignableSupportAgent(Long.parseLong(agentId.trim()));
+        } catch (NumberFormatException ignored) {
+            return Optional.empty();
+        }
+    }
+
+    public Optional<SupportAgentProfileView> assignableSupportAgent(Long adminId) {
+        repository.ensureSchema();
+        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
+        if (operator == null) {
+            return Optional.empty();
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        repository.ensureDefaultProfile(
+                adminId,
+                defaultSeatType(),
+                defaultPosition(),
+                defaultServiceTypes(),
+                DEFAULT_TAGS,
+                defaultMaxConcurrent(),
+                now);
+        return repository.findProfile(adminId)
+                .map(profile -> profileView(operator, profile))
+                .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
+                .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
+                .filter(agent -> agent.serviceTypes().contains("support"));
+    }
+
+    public Optional<SupportAgentProfileView> currentAssignableSupportAgent() {
+        AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
+        if (actor == null) return Optional.empty();
+        return parseAdminId(actor.id()).flatMap(this::assignableSupportAgent);
     }
 
     public AdvisorRoutingDecision routeAdvisorForUser(Long userId) {
@@ -217,6 +272,17 @@ public class OpsSupportAgentService {
         if (guard != null) {
             return guard;
         }
+        return idempotentCommand(
+                "M1_SUPPORT_SEAT_ASSIGN",
+                idempotencyKey,
+                requestHash(String.valueOf(adminId), String.valueOf(request)),
+                () -> assignSeatOnce(adminId, idempotencyKey, request));
+    }
+
+    private ApiResult<SupportAgentProfileView> assignSeatOnce(
+            Long adminId,
+            String idempotencyKey,
+            SupportAgentSeatAssignmentRequest request) {
         AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
@@ -286,6 +352,17 @@ public class OpsSupportAgentService {
         if (guard != null) {
             return guard;
         }
+        return idempotentCommand(
+                "M1_SUPPORT_ADVISOR_BIND",
+                idempotencyKey,
+                requestHash(String.valueOf(adminId), String.valueOf(request)),
+                () -> assignAdvisorUserOnce(adminId, idempotencyKey, request));
+    }
+
+    private ApiResult<SupportAgentAssignmentView> assignAdvisorUserOnce(
+            Long adminId,
+            String idempotencyKey,
+            SupportAgentAssignmentRequest request) {
         AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
@@ -334,9 +411,25 @@ public class OpsSupportAgentService {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
         String reason = request == null ? null : request.reason();
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 8) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
+        if (reason.trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
+        }
+        return idempotentCommand(
+                "M1_SUPPORT_ADVISOR_UNBIND",
+                idempotencyKey,
+                requestHash(String.valueOf(adminId), String.valueOf(assignmentId), String.valueOf(request)),
+                () -> deactivateAdvisorAssignmentOnce(adminId, assignmentId, idempotencyKey, request, reason));
+    }
+
+    private ApiResult<SupportAgentAssignmentView> deactivateAdvisorAssignmentOnce(
+            Long adminId,
+            Long assignmentId,
+            String idempotencyKey,
+            SupportAgentAssignmentRequest request,
+            String reason) {
         AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
@@ -364,6 +457,33 @@ public class OpsSupportAgentService {
                 "agentAdminId", adminId,
                 "userId", deactivated.get().userId()));
         return ApiResult.ok(deactivated.get());
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> idempotentCommand(
+            String scope,
+            String idempotencyKey,
+            String requestHash,
+            java.util.function.Supplier<ApiResult<T>> action) {
+        return (ApiResult<T>) idempotencyService.execute(
+                scope,
+                idempotencyKey.trim(),
+                requestHash,
+                ApiResult.class,
+                (java.util.function.Supplier) action);
+    }
+
+    private String requestHash(String... values) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String value : values) {
+                digest.update((value == null ? "<null>" : value).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     private List<SupportAgentProfileView> profileViews(List<AdminAccountOverview.OperatorRecord> operators) {
@@ -615,8 +735,11 @@ public class OpsSupportAgentService {
         if (StringUtils.hasText(request.position()) && request.position().trim().length() > 64) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_TOO_LONG");
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (request.reason().trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
         }
         if (!StringUtils.hasText(request.operator())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATOR_REQUIRED");
@@ -640,8 +763,11 @@ public class OpsSupportAgentService {
         if (request.position().trim().length() > 64) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_TOO_LONG");
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (request.reason().trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
         }
         if (!StringUtils.hasText(request.operator())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATOR_REQUIRED");
@@ -659,8 +785,11 @@ public class OpsSupportAgentService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (request.reason().trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
         }
         if (!StringUtils.hasText(request.operator())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATOR_REQUIRED");
@@ -734,7 +863,7 @@ public class OpsSupportAgentService {
     }
 
     private void audit(String action, String resourceType, String resourceId, String operator, Map<String, Object> detail) {
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)

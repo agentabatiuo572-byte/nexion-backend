@@ -6,6 +6,7 @@ public record UserRegistrationRiskOverview(
         UserRegistrationRiskStats stats,
         List<UserRegistrationRiskParamView> params,
         List<UserRegistrationRiskK1GuardView> k1Guards,
+        long configVersion,
         String k1RejectCode,
         String k1Path,
         List<String> sources,

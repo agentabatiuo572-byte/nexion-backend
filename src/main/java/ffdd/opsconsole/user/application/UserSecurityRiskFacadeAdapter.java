@@ -7,23 +7,23 @@ import ffdd.opsconsole.user.domain.UserSecurityStatusView;
 import ffdd.opsconsole.user.facade.UserSecurityRiskDecision;
 import ffdd.opsconsole.user.facade.UserSecurityRiskFacade;
 import lombok.RequiredArgsConstructor;
+import java.time.Clock;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
 public class UserSecurityRiskFacadeAdapter implements UserSecurityRiskFacade {
-    private static final String CAPTCHA_OFF_WINDOW_KEY = "auth.risk.captcha_off_window";
-
     private final UserOpsRepository userRepository;
     private final PlatformConfigFacade configFacade;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final Clock clock;
 
     @Override
     public UserSecurityRiskDecision evaluateLogin(Long userId) {
         int shortThreshold = Math.max(configInt("auth.risk.login_lock_threshold", 5), 1);
-        int longThreshold = Math.max(configInt("auth.risk.login_long_lock_threshold", 10), shortThreshold);
-        int shortLockMinutes = Math.max(configInt("auth.risk.lock_duration_minutes", 30), 1);
+        int longThreshold = Math.max(configInt("auth.risk.login_long_lock_threshold", 10), shortThreshold + 1);
+        int shortLockMinutes = Math.max(configInt("auth.risk.lock_duration_minutes", 15), 1);
         int longLockHours = Math.max(configInt("auth.risk.long_lock_duration_hours", 24), 1);
         if (userId == null || userId <= 0) {
             return decision("LOGIN", userId, null, true, "USER_ID_REQUIRED", "USER_ID_REQUIRED",
@@ -50,9 +50,9 @@ public class UserSecurityRiskFacadeAdapter implements UserSecurityRiskFacade {
                     "OTP_COOLDOWN", "OTP_COOLDOWN_ACTIVE", observedCount, cooldownSeconds,
                     max24h, cooldownSeconds - lastOtpAge, "SECONDS", false, false, false);
         }
-        boolean captchaDisabled = configFacade.activeValue(CAPTCHA_OFF_WINDOW_KEY)
-                .filter(StringUtils::hasText)
-                .isPresent();
+        boolean captchaDisabled = RegistrationRiskCaptchaWindow.state(
+                configFacade.activeValue(RegistrationRiskCaptchaWindow.CONFIG_KEY).orElse(""),
+                clock).disabled();
         if (observedCount >= max24h && !captchaPassed && !captchaDisabled) {
             return decision("REGISTRATION_OTP", null, normalizeSubject(subjectKey), true,
                     "CAPTCHA_REQUIRED", "OTP_24H_LIMIT_REACHED", observedCount, max24h,
@@ -122,14 +122,14 @@ public class UserSecurityRiskFacadeAdapter implements UserSecurityRiskFacade {
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .map(value -> parseInt(value, fallback))
-                .orElse(0);
+                .orElse(fallback);
     }
 
     private int parseInt(String value, int fallback) {
         try {
             return Integer.parseInt(value);
         } catch (NumberFormatException ex) {
-            return 0;
+            return fallback;
         }
     }
 

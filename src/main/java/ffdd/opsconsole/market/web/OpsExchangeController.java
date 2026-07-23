@@ -2,9 +2,11 @@ package ffdd.opsconsole.market.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.market.application.OpsNexMarketService;
+import ffdd.opsconsole.market.application.G2G3AdminCommandService;
 import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
+import ffdd.opsconsole.market.dto.ExchangeQueueBatchRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsExchangeController {
     private final OpsNexMarketService marketService;
+    private final G2G3AdminCommandService commandService;
 
     @GetMapping
     @PreAuthorize("hasAuthority('finprod_g2_read')")
@@ -43,7 +46,8 @@ public class OpsExchangeController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
             @RequestBody ExchangeParamUpdateRequest request) {
-        return marketService.updateExchangeParam(idempotencyKey, paramKey, request);
+        return commandService == null ? marketService.updateExchangeParam(idempotencyKey, paramKey, request)
+                : commandService.exchangeParam(idempotencyKey, paramKey, request);
     }
 
     @PatchMapping("/swap")
@@ -51,7 +55,8 @@ public class OpsExchangeController {
     public ApiResult<Map<String, Object>> updateSwapStatus(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ExchangeSwapStatusRequest request) {
-        return marketService.updateExchangeSwapStatus(idempotencyKey, request);
+        return commandService == null ? marketService.updateExchangeSwapStatus(idempotencyKey, request)
+                : commandService.pauseExchange(idempotencyKey, request);
     }
 
     @PostMapping("/queue/{exchangeNo}/cancel")
@@ -60,7 +65,8 @@ public class OpsExchangeController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String exchangeNo,
             @RequestBody ExchangeQueueCancelRequest request) {
-        return marketService.cancelExchangeQueueOrder(idempotencyKey, exchangeNo, request);
+        return commandService == null ? marketService.cancelExchangeQueueOrder(idempotencyKey, exchangeNo, request)
+                : commandService.cancelExchange(idempotencyKey, exchangeNo, request);
     }
 
     @PostMapping("/queue/{exchangeNo}/kyc-review")
@@ -69,6 +75,16 @@ public class OpsExchangeController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String exchangeNo,
             @RequestBody ExchangeKycReviewRequest request) {
-        return marketService.triggerExchangeKycReview(idempotencyKey, exchangeNo, request);
+        return commandService == null ? marketService.triggerExchangeKycReview(idempotencyKey, exchangeNo, request)
+                : commandService.kycReview(idempotencyKey, exchangeNo, request);
+    }
+
+    @PostMapping("/queue/process")
+    @PreAuthorize("hasAuthority('finprod_g2_write')")
+    public ApiResult<Map<String,Object>> processQueue(
+            @RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String idempotencyKey,
+            @RequestBody ExchangeQueueBatchRequest request) {
+        if (commandService == null) return ApiResult.fail(503,"G2_COMMAND_BOUNDARY_UNAVAILABLE");
+        return commandService.processQueue(idempotencyKey,request);
     }
 }

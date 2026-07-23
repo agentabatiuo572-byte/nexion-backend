@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -13,14 +14,27 @@ import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 class OpsI18nLearningControllerTest {
     private final OpsI18nLearningService service = mock(OpsI18nLearningService.class);
-    private final OpsI18nLearningController controller = new OpsI18nLearningController(service);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final OpsI18nLearningController controller = new OpsI18nLearningController(service, idempotencyService);
+
+    OpsI18nLearningControllerTest() {
+        when(idempotencyService.execute(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+    }
 
     @Test
     void overviewAndI18nActionsDelegate() {
@@ -46,6 +60,12 @@ class OpsI18nLearningControllerTest {
         verify(service).saveLocalizedDraft("milestones.earnCross", "idem-i6-draft", copy);
         verify(service).publishLocalizedMessage("milestones.earnCross", "idem-i6-pub", copy);
         verify(service).fixIntegrity("missing-zh", "idem-i6-fix", fix);
+        verify(idempotencyService).execute(
+                org.mockito.ArgumentMatchers.eq("I6_I18N_DRAFT:milestones.earnCross"),
+                org.mockito.ArgumentMatchers.eq("idem-i6-draft"),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any());
     }
 
     @Test
@@ -73,5 +93,11 @@ class OpsI18nLearningControllerTest {
         verify(service).archiveCourse("new-compute-guide", "idem-i7-archive", action);
         verify(service).updateCourseReward("new-compute-guide", "idem-i7-reward", reward);
         verify(service).updateFeaturedCourse("idem-i7-featured", featured);
+        verify(idempotencyService, times(5)).execute(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any());
     }
 }

@@ -7,6 +7,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
+import ffdd.opsconsole.device.domain.DeviceOrderFacts;
+import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
+import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
@@ -69,8 +72,9 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             mapper.addTaskExtensionColumns();
         }
         mapper.backfillDefaultTaskExtensions();
+        mapper.normalizeLegacyTaskClasses();
         mapper.createPhoneTierRewardTable();
-        mapper.createOrderTable();
+        mapper.createOrderStateHistoryTable();
         mapper.createGenerationGateTable();
         mapper.widenGenerationGatePhaseColumn();
         if (mapper.countGenerationGatePhaseIdColumn() == 0) {
@@ -180,11 +184,15 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     public PageResult<DeviceTaskView> pageTasks(DeviceTaskQueryRequest request) {
         String status = request == null ? null : normalizeLower(request.status());
         String keyword = request == null ? null : normalize(request.keyword());
+        String taskClass = request == null ? null : normalize(request.taskClass());
+        if (StringUtils.hasText(taskClass)) {
+            taskClass = taskClass.toUpperCase(java.util.Locale.ROOT);
+        }
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
         long offset = (pageNum - 1) * pageSize;
-        long total = mapper.countTasks(status, keyword);
-        List<DeviceTaskView> records = mapper.pageTasks(status, keyword, pageSize, offset);
+        long total = mapper.countTasks(status, keyword, taskClass);
+        List<DeviceTaskView> records = mapper.pageTasks(status, keyword, taskClass, pageSize, offset);
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -286,9 +294,43 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
-    public Optional<DeviceOrderView> updateOrderState(String orderNo, String state, LocalDateTime now) {
-        int updated = mapper.updateOrderState(orderNo, state, now);
+    public Optional<DeviceOrderFacts> findOrderFacts(String orderNo) {
+        return Optional.ofNullable(mapper.findOrderFacts(orderNo));
+    }
+
+    @Override
+    public List<DeviceOrderHistoryView> listOrderHistory(String orderNo) {
+        return mapper.listOrderHistory(orderNo);
+    }
+
+    @Override
+    public List<DeviceOrderFundingView> listOrderFunding(String orderNo) {
+        return mapper.listOrderFunding(orderNo);
+    }
+
+    @Override
+    public Optional<DeviceOrderView> updateOrderState(
+            String orderNo, String expectedState, String state, LocalDateTime now) {
+        int updated = mapper.updateOrderState(orderNo, expectedState, state, now);
         return updated == 0 ? Optional.empty() : findOrder(orderNo);
+    }
+
+    @Override
+    public void recordOrderHistory(
+            String orderNo,
+            String fromState,
+            String toState,
+            String reason,
+            String operator,
+            String idempotencyKey,
+            LocalDateTime now) {
+        mapper.insertOrderHistory(orderNo, fromState, toState, reason, operator, idempotencyKey, now);
+    }
+
+    @Override
+    public void rollbackOrderAssets(String orderNo, LocalDateTime now) {
+        mapper.rollbackOrderDevices(orderNo, now);
+        mapper.restockOrderProduct(orderNo, now);
     }
 
     @Override
@@ -517,7 +559,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 StringUtils.hasText(request.requirement()) ? request.requirement().trim() : "S1+",
                 valueOrZero(request.saturation()),
                 taskStatus(request.status()),
-                StringUtils.hasText(request.taskClass()) ? request.taskClass().trim() : "llm-inference",
+                StringUtils.hasText(request.taskClass()) ? request.taskClass().trim() : "LL",
                 StringUtils.hasText(request.model()) ? request.model().trim() : "",
                 valueOrZero(request.minReward()),
                 valueOrZero(request.maxReward()),

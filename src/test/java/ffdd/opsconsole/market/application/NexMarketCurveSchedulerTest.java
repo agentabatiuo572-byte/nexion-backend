@@ -16,7 +16,7 @@ class NexMarketCurveSchedulerTest {
         OpsNexMarketService marketService = mock(OpsNexMarketService.class);
         when(marketService.currentSchedule()).thenReturn(NexMarketSchedule.unconfigured());
 
-        NexMarketCurveScheduler scheduler = new NexMarketCurveScheduler(marketService);
+        NexMarketCurveScheduler scheduler = new NexMarketCurveScheduler(marketService, null);
 
         assertThat(scheduler.nextExecution(new SimpleTriggerContext())).isNull();
     }
@@ -29,7 +29,7 @@ class NexMarketCurveSchedulerTest {
                 Instant.parse("2026-06-30T00:00:00Z"),
                 ZoneId.of("UTC")));
 
-        NexMarketCurveScheduler scheduler = new NexMarketCurveScheduler(marketService);
+        NexMarketCurveScheduler scheduler = new NexMarketCurveScheduler(marketService, null);
 
         assertThat(scheduler.nextExecution(context)).isEqualTo(Instant.parse("2026-06-30T04:15:00Z"));
     }

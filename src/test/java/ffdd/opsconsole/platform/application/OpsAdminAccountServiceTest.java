@@ -126,6 +126,7 @@ class OpsAdminAccountServiceTest {
         when(roleRelationMapper.activeRoleCode(any(Long.class)))
                 .thenAnswer(invocation -> roleRelations.get(invocation.getArgument(0)));
         when(roleRelationMapper.disableOtherPrimaryRoles(any(Long.class), any(String.class))).thenReturn(1);
+        when(roleRelationMapper.lockActiveRoleIdByCode(any(String.class))).thenReturn(1L);
         when(roleRelationMapper.ensurePrimaryRole(any(Long.class), any(String.class))).thenAnswer(invocation -> {
             roleRelations.put(invocation.getArgument(0), invocation.getArgument(1));
             return 1;
@@ -485,6 +486,18 @@ class OpsAdminAccountServiceTest {
         assertThat(admins.get(1).getIsDeleted()).isZero();
         verify(adminSessionRegistry, never()).revokeSessions(1L);
         verify(adminSessionRegistry, never()).revokeSessions(2L);
+    }
+
+    @Test
+    void changeRoleAcceptsExplicitUnassignedAndRemovesThePrimaryRole() {
+        AdminAccountRoleUpdateRequest request =
+                new AdminAccountRoleUpdateRequest("unassigned", "remove obsolete access", "superadmin");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result = service.changeRole("idem-unassign-1", "4", request);
+
+        assertThat(result.getCode()).isZero();
+        verify(roleRelationMapper).disableAllPrimaryRoles(4L);
+        verify(roleRelationMapper, never()).ensurePrimaryRole(eq(4L), anyString());
     }
 
     @Test

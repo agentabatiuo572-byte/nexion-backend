@@ -110,6 +110,20 @@ class GeoBlockEnforcementFilterTest {
     }
 
     @Test
+    void adminImpersonationSurfaceIsNotMistakenForAnAppUserGeoRequest() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/impersonation/view");
+        request.setRemoteAddr("127.0.0.1");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        verify(chain).doFilter(request, response);
+        verify(policyService, never()).evaluate(anyString(), anyString(), anyString());
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
     void activeTransitionFallsBackToThePreviousSourceWithoutAnEnforcementGap() throws Exception {
         when(repository.settingValue("emergency.geo.edgeJudgeSource"))
                 .thenReturn(Optional.of("cloudflare"));

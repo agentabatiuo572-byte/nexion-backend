@@ -50,7 +50,7 @@ class OpsConsoleArchitectureTest {
     private static final Pattern HAND_WRITTEN_JDBC_PATTERN =
             Pattern.compile("\\b(?:JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbcInsert)\\b|org\\.springframework\\.jdbc");
     private static final Pattern LEGACY_ADMIN_ROUTE_PATTERN =
-            Pattern.compile("/auth/admin\\b|/api/config\\b");
+            Pattern.compile("/auth/admin\\b|/api/config(?!/(?:platform|staking/pools|exchange/caps|market/nex|repurchase)\\b)");
     private static final Pattern LEGACY_DISTRIBUTED_PERMISSION_PATTERN =
             Pattern.compile("(?m)^.*PERM_[A-Z0-9_]+.*'/(?:auth/admins|auth/access-control|bff|compute|commerce|genesis|wallet|earnings|team|notifications|missions|compliance|openapi)(?:/|\\*|').*$");
     private static final Pattern LOMBOK_VALUE_COPYABLE_PATTERN =
@@ -100,7 +100,7 @@ class OpsConsoleArchitectureTest {
         }
 
         assertThat(violations)
-                .as("Back-office routes must use /api/admin/** only; do not reintroduce /auth/admin or /api/config")
+                .as("Back-office routes must use /api/admin/** only; only the reviewed public App /api/config projections are allowed")
                 .isEmpty();
     }
 

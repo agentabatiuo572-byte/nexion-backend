@@ -16,11 +16,13 @@ import ffdd.opsconsole.content.domain.CopyExperimentVariantMetric;
 import ffdd.opsconsole.content.domain.CopyFrameworkMutationResult;
 import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyMutationResult;
+import ffdd.opsconsole.content.domain.CopyPositionMutationResult;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.domain.CopyVersionOptionView;
 import ffdd.opsconsole.content.domain.CopyVersionOptionMutationResult;
 import ffdd.opsconsole.content.domain.CopyVoidMutationResult;
+import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
@@ -70,6 +72,11 @@ public class OpsCopyAbService {
     private static final String IDEMPOTENCY_SCOPE_DRAFT = "I1_COPY_DRAFT_SAVE";
     private static final String IDEMPOTENCY_SCOPE_PUBLISH = "I1_COPY_VERSION_PUBLISH";
     private static final String IDEMPOTENCY_SCOPE_DELETE_DRAFT = "I1_COPY_DRAFT_VERSION_DELETE";
+    private static final String IDEMPOTENCY_SCOPE_ROLLBACK = "I1_COPY_VERSION_ROLLBACK";
+    private static final String IDEMPOTENCY_SCOPE_ARCHIVE = "I1_COPY_VERSION_ARCHIVE";
+    private static final String IDEMPOTENCY_SCOPE_POSITION_CREATE = "I1_COPY_POSITION_CREATE";
+    private static final String IDEMPOTENCY_SCOPE_POSITION_UPDATE = "I1_COPY_POSITION_UPDATE";
+    private static final String IDEMPOTENCY_SCOPE_POSITION_DELETE = "I1_COPY_POSITION_DELETE";
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_CREATE = "I1_COPY_VERSION_OPTION_CREATE";
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_UPDATE = "I1_COPY_VERSION_OPTION_UPDATE";
     private static final String IDEMPOTENCY_SCOPE_VERSION_OPTION_DELETE = "I1_COPY_VERSION_OPTION_DELETE";
@@ -100,6 +107,7 @@ public class OpsCopyAbService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final AdminIdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
+    private final I18nLearningRepository i18nLearningRepository;
 
     public ApiResult<CopyAbOverview> overview() {
         List<CopyContentRow> copies = copyAbRepository.listCopies();
@@ -254,13 +262,20 @@ public class OpsCopyAbService {
             return guard;
         }
         String key = request.positionKey().trim();
+        return executePositionMutation(
+                IDEMPOTENCY_SCOPE_POSITION_CREATE, key, idempotencyKey, request,
+                () -> createPositionOnce(key, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyPositionView> createPositionOnce(
+            String key, String idempotencyKey, CopyPositionCreateRequest request) {
         if (copyAbRepository.findPositionForUpdate(key).isPresent()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_POSITION_EXISTS");
         }
         CopyPositionCreateRequest normalized = new CopyPositionCreateRequest(key, request.name().trim(),
                 normalizeSurface(request.surface()), request.sortOrder(), operator(request.operator()), request.reason().trim());
         CopyPositionView created = copyAbRepository.createPosition(normalized, now());
-        audit("I1_COPY_POSITION_CREATED", key, request.operator(), idempotencyKey, request.reason(), Map.of("surface", created.surface()));
+        auditRequired("I1_COPY_POSITION_CREATED", key, request.operator(), idempotencyKey, request.reason(), Map.of("surface", created.surface()));
         return ApiResult.ok(created);
     }
 
@@ -277,6 +292,13 @@ public class OpsCopyAbService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_POSITION_STATUS_INVALID");
         }
         String key = positionKey.trim();
+        return executePositionMutation(
+                IDEMPOTENCY_SCOPE_POSITION_UPDATE, key, idempotencyKey, request,
+                () -> updatePositionOnce(key, status, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyPositionView> updatePositionOnce(
+            String key, String status, String idempotencyKey, CopyPositionUpdateRequest request) {
         CopyPositionView current = copyAbRepository.findPositionForUpdate(key).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_POSITION_NOT_FOUND");
@@ -289,7 +311,7 @@ public class OpsCopyAbService {
         CopyPositionView updated = copyAbRepository.updatePosition(key,
                 new CopyPositionUpdateRequest(request.name().trim(), targetSurface, request.sortOrder(), status,
                         operator(request.operator()), request.reason().trim()), now());
-        audit("I1_COPY_POSITION_UPDATED", key, request.operator(), idempotencyKey, request.reason(),
+        auditRequired("I1_COPY_POSITION_UPDATED", key, request.operator(), idempotencyKey, request.reason(),
                 Map.of("surface", updated.surface(), "status", updated.status()));
         return ApiResult.ok(updated);
     }
@@ -307,6 +329,13 @@ public class OpsCopyAbService {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         String key = positionKey.trim();
+        return executeVoidMutation(
+                IDEMPOTENCY_SCOPE_POSITION_DELETE, key, idempotencyKey, request,
+                () -> deletePositionOnce(key, idempotencyKey, request));
+    }
+
+    private ApiResult<Void> deletePositionOnce(
+            String key, String idempotencyKey, CopyActionRequest request) {
         if (copyAbRepository.findPositionForUpdate(key).isEmpty()) {
             return ApiResult.fail(404, "COPY_POSITION_NOT_FOUND");
         }
@@ -314,7 +343,7 @@ public class OpsCopyAbService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_POSITION_IN_USE");
         }
         copyAbRepository.deletePosition(key, now());
-        audit("I1_COPY_POSITION_DELETED", key, request.operator(), idempotencyKey, request.reason(), Map.of());
+        auditRequired("I1_COPY_POSITION_DELETED", key, request.operator(), idempotencyKey, request.reason(), Map.of());
         return ApiResult.ok(null);
     }
 
@@ -367,7 +396,7 @@ public class OpsCopyAbService {
         }
         copyAbRepository.saveDraft(current.key(), normalizeDraft(request, version), now());
         CopyContentRow updated = findCopy(current.key());
-        audit("I1_COPY_DRAFT_SAVED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        auditRequired("I1_COPY_DRAFT_SAVED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "version", version,
                 "surface", request.surface().trim()));
         return ApiResult.ok(updated);
@@ -421,7 +450,8 @@ public class OpsCopyAbService {
             return positionGuard;
         }
         CopyContentRow updated = copyAbRepository.publishVersion(current.key(), normalizePublish(request, version), now());
-        audit("I1_COPY_VERSION_PUBLISHED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        syncPublishedI18n(updated);
+        auditRequired("I1_COPY_VERSION_PUBLISHED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
                 "to", version,
                 "surface", request.surface().trim(),
@@ -483,7 +513,8 @@ public class OpsCopyAbService {
         } catch (DuplicateKeyException ignored) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_EXISTS");
         }
-        audit("I1_COPY_CREATED", created.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        syncPublishedI18n(created);
+        auditRequired("I1_COPY_CREATED", created.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "copyKey", created.key(),
                 "version", created.version(),
                 "surface", created.surface()));
@@ -519,11 +550,23 @@ public class OpsCopyAbService {
                 || !VERSION_PATTERN.matcher(version.trim()).matches()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_INVALID");
         }
-        CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey.trim()).orElse(null);
+        String normalizedCopyKey = copyKey.trim();
+        String normalizedVersion = version.trim();
+        return executeIdempotentMutation(
+                IDEMPOTENCY_SCOPE_ROLLBACK,
+                normalizedCopyKey + ":" + normalizedVersion,
+                idempotencyKey,
+                request,
+                () -> rollbackVersionOnce(normalizedCopyKey, normalizedVersion, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyContentRow> rollbackVersionOnce(
+            String copyKey, String version, String idempotencyKey, CopyActionRequest request) {
+        CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
-        CopyVersionRow target = StringUtils.hasText(version) ? copyAbRepository.findVersion(current.key(), version.trim()).orElse(null) : null;
+        CopyVersionRow target = copyAbRepository.findVersion(current.key(), version).orElse(null);
         if (target == null) {
             return ApiResult.fail(404, "COPY_VERSION_NOT_FOUND");
         }
@@ -547,7 +590,8 @@ public class OpsCopyAbService {
             return positionGuard;
         }
         CopyContentRow updated = copyAbRepository.rollbackVersion(current.key(), target.version(), operator(request.operator()), now());
-        audit("I1_COPY_VERSION_ROLLED_BACK", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        syncPublishedI18n(updated);
+        auditRequired("I1_COPY_VERSION_ROLLED_BACK", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
                 "to", target.version()));
         return ApiResult.ok(updated);
@@ -559,9 +603,21 @@ public class OpsCopyAbService {
         if (guard != null) {
             return guard;
         }
-        CopyContentRow current = StringUtils.hasText(copyKey)
-                ? copyAbRepository.findCopyForUpdate(copyKey.trim()).orElse(null)
-                : null;
+        if (!StringUtils.hasText(copyKey)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_KEY_INVALID");
+        }
+        String normalizedCopyKey = copyKey.trim();
+        return executeIdempotentMutation(
+                IDEMPOTENCY_SCOPE_ARCHIVE,
+                normalizedCopyKey,
+                idempotencyKey,
+                request,
+                () -> archiveCurrentOnce(normalizedCopyKey, idempotencyKey, request));
+    }
+
+    private ApiResult<CopyContentRow> archiveCurrentOnce(
+            String copyKey, String idempotencyKey, CopyActionRequest request) {
+        CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
@@ -573,7 +629,11 @@ public class OpsCopyAbService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         CopyContentRow updated = copyAbRepository.archiveCurrent(current.key(), operator(request.operator()), now());
-        audit("I1_COPY_VERSION_ARCHIVED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        if (StringUtils.hasText(current.i18nKey())
+                && i18nLearningRepository.findPublishedMessagePair(current.i18nKey()).isPresent()) {
+            i18nLearningRepository.archiveMessage(current.i18nKey(), now());
+        }
+        auditRequired("I1_COPY_VERSION_ARCHIVED", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "version", current.version()));
         return ApiResult.ok(updated);
     }
@@ -886,6 +946,7 @@ public class OpsCopyAbService {
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        syncPublishedI18n(copyAbRepository.findCopy(current.copyKey()).orElseThrow());
         auditRequired("I1_EXPERIMENT_WINNER_ADOPTED", current.id(), request.operator(), idempotencyKey,
                 request.reason(), Map.of(
                         "from", current.state(),
@@ -1272,7 +1333,7 @@ public class OpsCopyAbService {
         if (!placeholders(zh).equals(placeholders(vi))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_PLACEHOLDERS_MISMATCH");
         }
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 200) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -1285,7 +1346,8 @@ public class OpsCopyAbService {
         if (idempotencyKey.trim().length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IDEMPOTENCY_KEY_INVALID");
         }
-        if (request == null || !StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (request == null || !StringUtils.hasText(request.reason())
+                || request.reason().trim().length() < 8 || request.reason().trim().length() > 200) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -1387,6 +1449,21 @@ public class OpsCopyAbService {
         return result.toApiResult();
     }
 
+    private ApiResult<CopyPositionView> executePositionMutation(
+            String scope,
+            String resourceId,
+            String idempotencyKey,
+            Object request,
+            Supplier<ApiResult<CopyPositionView>> action) {
+        CopyPositionMutationResult result = idempotencyService.execute(
+                scope,
+                idempotencyKey.trim(),
+                requestHash(scope, resourceId, request),
+                CopyPositionMutationResult.class,
+                () -> CopyPositionMutationResult.from(action.get()));
+        return result.toApiResult();
+    }
+
     private ApiResult<Void> executeVoidMutation(
             String scope, String resourceId, String idempotencyKey, Object request,
             Supplier<ApiResult<Void>> action) {
@@ -1438,6 +1515,16 @@ public class OpsCopyAbService {
 
     private CopyContentRow findCopy(String copyKey) {
         return StringUtils.hasText(copyKey) ? copyAbRepository.findCopy(copyKey.trim()).orElse(null) : null;
+    }
+
+    private void syncPublishedI18n(CopyContentRow copy) {
+        if (copy == null || !StringUtils.hasText(copy.i18nKey()) || !StringUtils.hasText(copy.version())) {
+            throw new IllegalStateException("I1_I6_LINK_INVALID");
+        }
+        CopyVersionRow version = copyAbRepository.findVersion(copy.key(), copy.version())
+                .orElseThrow(() -> new IllegalStateException("I1_I6_PUBLISHED_VERSION_NOT_FOUND"));
+        i18nLearningRepository.saveMessagePair(
+                copy.i18nKey(), version.zh(), version.en(), version.vi(), "published", now());
     }
 
     private CopyFrameworkParamView findFramework(String paramKey) {
@@ -1516,10 +1603,6 @@ public class OpsCopyAbService {
     private String operator(String operator) {
         String resolved = AdminActorResolver.resolve(operator);
         return StringUtils.hasText(resolved) ? resolved : "system";
-    }
-
-    private void audit(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
-        auditLogService.record(auditRequest(action, resourceId, operator, idempotencyKey, reason, extra));
     }
 
     private void auditRequired(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {

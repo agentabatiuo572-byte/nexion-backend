@@ -19,5 +19,7 @@ public record SupportTicketView(
         LocalDateTime lastMessageAt,
         LocalDateTime closedAt,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt) {
+        LocalDateTime updatedAt,
+        Boolean archived,
+        LocalDateTime archivedAt) {
 }

@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,6 +20,7 @@ import ffdd.opsconsole.content.domain.ContentExperimentRuntimeRepository.Running
 import ffdd.opsconsole.content.domain.ContentExperimentRuntimeRepository.UserAudienceProfile;
 import ffdd.opsconsole.content.domain.ContentExperimentRuntimeRepository.Variant;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -41,6 +43,8 @@ class AppCopyExperimentServiceTest {
     private ContentExperimentRuntimeRepository repository;
     @Mock
     private CopyAudiencePhaseProvider phaseProvider;
+    @Mock
+    private EventOutboxService eventOutboxService;
 
     private AppCopyExperimentService service;
 
@@ -50,7 +54,8 @@ class AppCopyExperimentServiceTest {
                 repository,
                 phaseProvider,
                 new ObjectMapper().findAndRegisterModules(),
-                Clock.fixed(Instant.parse("2026-07-12T03:00:00Z"), ZoneOffset.UTC));
+                Clock.fixed(Instant.parse("2026-07-12T03:00:00Z"), ZoneOffset.UTC),
+                eventOutboxService);
     }
 
     @Test
@@ -107,6 +112,9 @@ class AppCopyExperimentServiceTest {
         assertThat(result.getData().zh()).isEqualTo("experiment zh");
         verify(repository).insertAssignmentIfAbsent(any(Assignment.class));
         verify(repository).markExposedIfFirst("EXP-1", USER_ID, NOW);
+        verify(eventOutboxService).publishUserEvent(
+                anyString(), anyString(), org.mockito.ArgumentMatchers.eq("content.variant_exposed"),
+                org.mockito.ArgumentMatchers.eq(USER_ID), anyString(), anyInt(), anyString(), any());
     }
 
     @Test
@@ -132,6 +140,9 @@ class AppCopyExperimentServiceTest {
         when(repository.isEligibleConversionOrder(USER_ID, "ORD-1")).thenReturn(true);
         when(repository.isEligibleConversionOrder(USER_ID, "ORD-2")).thenReturn(true);
         when(repository.findAssignment("EXP-1", USER_ID)).thenReturn(Optional.of(assignment));
+        when(repository.findUserAudienceProfile(USER_ID)).thenReturn(Optional.of(
+                new UserAudienceProfile(USER_ID, "ACTIVE", "vi-VN", NOW.minusDays(60))));
+        when(phaseProvider.currentPhase()).thenReturn("P2");
         when(repository.insertConversionIfAbsent("EXP-1", USER_ID, "ORD-1", "B", NOW))
                 .thenReturn(true);
         when(repository.insertConversionIfAbsent("EXP-1", USER_ID, "ORD-2", "B", NOW))
@@ -143,6 +154,9 @@ class AppCopyExperimentServiceTest {
         assertThat(first.getCode()).isZero();
         assertThat(first.getData().counted()).isTrue();
         assertThat(replay.getData().counted()).isFalse();
+        verify(eventOutboxService, times(1)).publishUserEvent(
+                anyString(), anyString(), org.mockito.ArgumentMatchers.eq("content.variant_converted"),
+                org.mockito.ArgumentMatchers.eq(USER_ID), anyString(), anyInt(), anyString(), any());
     }
 
     @Test

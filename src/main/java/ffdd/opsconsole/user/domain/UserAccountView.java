@@ -1,5 +1,6 @@
 package ffdd.opsconsole.user.domain;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -22,4 +23,10 @@ public record UserAccountView(
         Long activeDeviceCount,
         LocalDateTime registeredAt,
         LocalDateTime lastLoginAt) {
+
+    /** Stable explicit identifier for clients that should not infer a database id from userNo. */
+    @JsonProperty("userId")
+    public Long userId() {
+        return id;
+    }
 }

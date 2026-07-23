@@ -14,6 +14,7 @@ import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningQuizQuestionView;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.util.List;
@@ -24,7 +25,8 @@ class AppLearningServiceTest {
     private final I18nLearningRepository repository = mock(I18nLearningRepository.class);
     private final AppLearningMapper mapper = mock(AppLearningMapper.class);
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
-    private final AppLearningService service = new AppLearningService(repository, mapper, ledger);
+    private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final AppLearningService service = new AppLearningService(repository, mapper, ledger, outbox);
 
     @Test
     void overviewReturnsPublishedCoursesInVietnameseWithRealStats() {
@@ -45,6 +47,8 @@ class AppLearningServiceTest {
         when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
         when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1, 0);
+        when(mapper.insertLearningEvent(42L, "test-course", "v2", "course_completed", "{\"source\":\"quiz\"}"))
+                .thenReturn(1, 0);
 
         var first = service.submitQuiz(42L, "test-course", new AppLearningQuizSubmitRequest(List.of(1)));
         var replay = service.submitQuiz(42L, "test-course", new AppLearningQuizSubmitRequest(List.of(1)));
@@ -54,6 +58,10 @@ class AppLearningServiceTest {
         assertThat(replay.getData().rewardGranted()).isFalse();
         verify(mapper, times(1)).creditWallet(42L, new BigDecimal("20.000000"));
         verify(ledger, times(1)).postLedgerEntry(anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+        verify(outbox, times(1)).publish(
+                "LEARNING", "42:test-course:v2", "LEARNING_COURSE_COMPLETED",
+                java.util.Map.of("user_id", 42L, "course_id", "test-course", "course_version", "v2",
+                        "nex_reward", new BigDecimal("20.000000")));
     }
 
     private static LearningCourseView course(String status) {

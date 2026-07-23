@@ -20,6 +20,8 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -41,7 +43,10 @@ class OpsReferralRewardServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
-    private final OpsReferralRewardService service = new OpsReferralRewardService(mapper, config, ledger, audit, idempotency, coverage);
+    private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final OpsReadTimeSeedPolicy readTimeSeedPolicy = mock(OpsReadTimeSeedPolicy.class);
+    private final OpsReferralRewardService service = new OpsReferralRewardService(
+            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy);
 
     @BeforeEach
     void setUp() {
@@ -53,6 +58,11 @@ class OpsReferralRewardServiceTest {
         when(config.activeValue("K.rewards.welcomeGift.lockMode")).thenReturn(Optional.of("risk_bucket"));
         when(config.activeValue("K.rewards.inviterReward.nexAmount")).thenReturn(Optional.of("10"));
         when(config.activeValue("K.rewards.referral.effectiveAt")).thenReturn(Optional.of("2026-07-17T00:00:00Z"));
+        when(config.activeValue("H1.rhythm.totalMonths")).thenReturn(Optional.of("12"));
+        when(config.activeValue("H1.rhythm.currentMonth")).thenReturn(Optional.of("7"));
+        when(config.activeValue("growth.phase.current")).thenReturn(Optional.of("P4"));
+        when(config.activeValue("growth.phase.month.7.newUserBonusMultiplier")).thenReturn(Optional.of("1"));
+        when(config.activeValue("growth.phase.month.7.inviteRewardMultiplier")).thenReturn(Optional.of("1"));
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("100"), new BigDecimal("85")));
     }
 
@@ -98,6 +108,24 @@ class OpsReferralRewardServiceTest {
 
         assertThat(transactional).isNotNull();
         assertThat(transactional.isolation()).isEqualTo(Isolation.SERIALIZABLE);
+    }
+
+    @Test
+    void overviewExposesTheSamePhaseAdjustedAmountsUsedBySettlement() {
+        when(config.activeValue("growth.phase.month.7.newUserBonusMultiplier"))
+                .thenReturn(Optional.of("1.5"));
+        when(config.activeValue("growth.phase.month.7.inviteRewardMultiplier"))
+                .thenReturn(Optional.of("2"));
+
+        Map<String, Object> overview = service.overview();
+
+        assertThat(overview).containsEntry("rhythmMonth", 7);
+        assertThat(overview).containsEntry("newcomerMultiplier", new BigDecimal("1.5"));
+        assertThat(overview).containsEntry("inviterMultiplier", new BigDecimal("2"));
+        Map<String, Object> effective = (Map<String, Object>) overview.get("effectiveRewards");
+        assertThat((BigDecimal) effective.get("newcomer.usdt")).isEqualByComparingTo("7.5");
+        assertThat((BigDecimal) effective.get("newcomer.nex")).isEqualByComparingTo("30");
+        assertThat((BigDecimal) effective.get("inviter.nex")).isEqualByComparingTo("20");
     }
 
     @Test

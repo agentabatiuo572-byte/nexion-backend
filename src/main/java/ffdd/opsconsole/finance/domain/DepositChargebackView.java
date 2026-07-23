@@ -8,6 +8,7 @@ public record DepositChargebackView(
         Long userId,
         String userCode,
         BigDecimal amount,
+        BigDecimal feeBufferRequired,
         String reasonCode,
         String enteredStatus,
         String status,

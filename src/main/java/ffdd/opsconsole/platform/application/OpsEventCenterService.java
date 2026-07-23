@@ -4,6 +4,8 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
+import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
+import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventCenterStats;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventCommonField;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventDetailRow;
@@ -13,6 +15,10 @@ import ffdd.opsconsole.platform.dto.EventCenterOverview.EventDomainItem;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventFamily;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventKpiFormula;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.EventGovernanceMapper;
+import ffdd.opsconsole.platform.mapper.EventGovernanceMapper.DomainExtensionRecord;
+import ffdd.opsconsole.platform.mapper.EventGovernanceMapper.EventFamilyCount;
+import ffdd.opsconsole.platform.mapper.EventGovernanceMapper.EventSchemaRecord;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
@@ -21,31 +27,42 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsEventCenterService {
     private static final String GROUP_A4 = "admin_a4_event";
-    private static final String SCHEMA_VERSION_KEY = "admin.a4.event.schema_version";
-    private static final String BATCH_KEY_PREFIX = "admin.a4.event.batch.";
-    private static final String BATCH_KEY_SUFFIX = ".status";
-    private static final String DEFAULT_SCHEMA_VERSION = "v3";
     private static final int MUTATION_VALUE_MAX_LENGTH = 160;
+    private static final int REASON_MIN_LENGTH = 8;
+    private static final int REASON_MAX_LENGTH = 200;
+    private static final Set<String> PRODUCERS = Set.of("server", "client", "server+client");
+    private static final Set<String> PROPERTY_TYPES = Set.of("string", "number", "boolean", "enum", "timestamp", "id", "json");
 
     private static final List<String> REGISTERED_DOMAINS = List.of(
             "app", "auth", "referral", "kyc", "onboarding", "store", "checkout", "device",
             "earnings", "wallet", "withdraw", "commission", "staking", "exchange", "genesis",
             "trial", "quest", "daily", "nova", "phase", "risk", "admin", "event", "milestone",
-            "nex", "repurchase");
-    private static final List<String> PENDING_DOMAINS = List.of("content", "notification", "disclosure", "learn");
+            "nex", "repurchase", "disclosure");
+    private static final List<String> PENDING_DOMAINS = List.of("content", "notification", "learn");
     private static final List<String> SUNSET_DOMAINS = List.of("premium", "points", "nexv2");
 
     private static final List<EventFamilyDefinition> EVENT_FAMILY_DEFINITIONS = List.of(
@@ -66,11 +83,11 @@ public class OpsEventCenterService {
                     row("trial.started", "试用开始"),
                     row("referral.invite_sent", "邀请发出")),
             familyDef("monetization", "③ 资金 / 资产", "钱包、提现、质押、兑换、Genesis 交易",
-                    "wallet.* · withdraw.* · staking.opened · exchange.swapped · genesis.purchased",
+                    "wallet.topup_* · withdraw.* · staking.opened · exchange.swapped · genesis.purchased",
                     "全部服务器发",
                     List.of("D1_", "D2_", "D3_", "D4_", "G1_", "G2_", "G3_", "G4_", "G7_", "B1_", "WALLET_", "WITHDRAW_", "STAKING_", "EXCHANGE_", "GENESIS_"),
-                    row("wallet.ledger_posted", "钱包流水落账"),
-                    row("withdraw.requested / approved / paid", "提现全链路"),
+                    row("wallet.topup_created / confirmed / failed", "充值全链路"),
+                    row("withdraw.submitted / risk_held / approved / confirmed", "提现全链路"),
                     row("staking.opened", "质押开仓"),
                     row("exchange.swapped", "兑换完成"),
                     row("genesis.purchased", "Genesis 购买完成")),
@@ -103,12 +120,16 @@ public class OpsEventCenterService {
 
     private static final List<EventCommonField> COMMON_FIELDS = List.of(
             new EventCommonField("event_id", "event_id", "服务器生成唯一号,去重用", "必带"),
+            new EventCommonField("event_name", "event_name", "domain.object_action,动作使用过去式", "必带"),
             new EventCommonField("ts", "ts", "服务器收到时间(毫秒),客户端时钟不算数", "服务器权威"),
-            new EventCommonField("phase_age", "phase + 账户月龄", "事发时用户处于 P 几,阶段效果归因字段", "必带"),
+            new EventCommonField("identity", "user_id / anon_id", "身份二选一,注册拼接期可并存", "字段必带,值可空"),
+            new EventCommonField("session_id", "session_id", "单次会话 ID", "字段必带,值可空"),
+            new EventCommonField("phase", "phase + 账户月龄", "事发时用户处于 P 几,阶段效果归因字段", "必带"),
             new EventCommonField("cohort", "cohort", "注册周(按周分群)", "必带"),
+            new EventCommonField("attribution", "ref / source", "推荐码或渠道归因来源", "字段必带,值可空"),
+            new EventCommonField("client", "platform / app_version / locale", "端、版本和语言", "必带"),
             new EventCommonField("is_server_authoritative", "is_server_authoritative",
-                    "资金/状态事件 = true(服务器发);界面交互 = false", "必带"),
-            new EventCommonField("misc", "其余:身份三件套 / 归因来源 ref / 端信息", "locale · 平台 · 版本号", "必带"));
+                    "资金/状态事件 = true(服务器发);界面交互 = false", "必带"));
 
     private static final List<EventKpiFormula> KPI_FORMULAS = List.of(
             new EventKpiFormula(1, "Day0 接入", "90 秒内拿到首笔收益的人 ÷ 注册数"),
@@ -123,36 +144,46 @@ public class OpsEventCenterService {
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final EventGovernanceMapper governanceMapper;
+    private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<EventCenterOverview> overview() {
         AuditStatsSummaryResponse todaySummary = auditLogService.summary(statsQuery(1, 10));
         long todayAuditEvents = todaySummary.getTotal() == null ? 0L : todaySummary.getTotal();
-        List<EventDomainExtensionBatch> batches = domainExtensions();
+        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        long todayEvents = governanceMapper.countEventsSince(todayStart);
+        List<DomainExtensionRecord> extensionRecords = governanceMapper.listDomainExtensions(100);
+        List<EventDomainExtensionBatch> batches = domainExtensions(extensionRecords);
+        List<String> registeredDomains = completedDomainNames(extensionRecords);
+        List<String> pendingDomains = pendingDomainNames(extensionRecords);
         int batchDone = (int) batches.stream()
-                .filter(batch -> "done".equals(batch.state()) || "inprogress".equals(batch.state()))
+                .filter(batch -> "done".equals(batch.state()))
                 .count();
         return ApiResult.ok(new EventCenterOverview(
                 new EventCenterStats(
-                        formatCount(todayAuditEvents),
+                        formatCount(todayEvents),
                         todayAuditEvents,
-                        REGISTERED_DOMAINS.size(),
-                        PENDING_DOMAINS.size(),
+                        registeredDomains.size(),
+                        pendingDomains.size(),
                         batchDone,
                         batches.size(),
                         schemaVersion()),
                 eventFamilies(),
-                REGISTERED_DOMAINS,
-                PENDING_DOMAINS,
+                registeredDomains,
+                pendingDomains,
                 SUNSET_DOMAINS,
                 COMMON_FIELDS,
                 dimensionParams(),
-                KPI_FORMULAS,
+                kpiFormulas(),
+                governanceMapper.listSchemas(50),
                 batches,
                 recentLogs(),
                 auditLogService.topActions(statsQuery(7, 10)),
                 guardrails()));
     }
 
+    @Transactional
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<EventDimensionParam> updateParam(
             String idempotencyKey, String paramKey, EventCenterMutationRequest request) {
         ApiResult<EventDimensionParam> guard = requireMutation(idempotencyKey, request);
@@ -168,73 +199,68 @@ public class OpsEventCenterService {
         }
         String value;
         try {
-            value = normalizeTextValue(request.value());
+            value = normalizeParamValue(definition.key(), request.value());
         } catch (IllegalArgumentException ex) {
             return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
         }
         if (containsSunsetTerm(value)) {
             return fail(OpsErrorCode.RETIRED_FEATURE, "SUNSET_CAPABILITY_READONLY");
         }
-        configFacade.upsertAdminValue(definition.configKey(), value, "STRING", GROUP_A4, mutationRemark(request.reason()));
-        audit("A4_EVENT_PARAM_CHANGED", "A4_EVENT_CENTER_PARAM", definition.key(), idempotencyKey, request,
-                Map.of("paramKey", definition.key(), "configKey", definition.configKey(), "value", value));
-        return ApiResult.ok(paramView(definition, value));
+        String reason = normalizeReason(request.reason());
+        String hash = requestHash(definition.key(), value, reason);
+        return (ApiResult<EventDimensionParam>) idempotencyService.execute(
+                "A4_PARAM:" + definition.key(), idempotencyKey.trim(), hash, ApiResult.class,
+                () -> updateParamOnce(definition, value, reason, idempotencyKey.trim()));
     }
 
-    public ApiResult<EventCenterOverview> registerSchema(String idempotencyKey, EventCenterMutationRequest request) {
-        ApiResult<EventCenterOverview> guard = requireMutation(idempotencyKey, request);
+    @Transactional
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public ApiResult<EventCenterOverview> registerSchema(
+            String idempotencyKey, EventSchemaRegistrationRequest request) {
+        ApiResult<EventCenterOverview> guard = requireSchemaMutation(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        String value;
+        NormalizedSchema normalized;
         try {
-            value = normalizeTextValue(request.value());
+            normalized = normalizeSchema(request);
         } catch (IllegalArgumentException ex) {
             return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
         }
-        if (containsSunsetTerm(value)) {
-            return fail(OpsErrorCode.RETIRED_FEATURE, "SUNSET_CAPABILITY_READONLY");
-        }
-        if (containsPiiTerm(value)) {
-            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_SCHEMA_PII_REJECTED");
-        }
-        configFacade.upsertAdminValue(SCHEMA_VERSION_KEY, value, "STRING", GROUP_A4, mutationRemark(request.reason()));
-        audit("A4_EVENT_SCHEMA_REGISTERED", "A4_EVENT_SCHEMA", value, idempotencyKey, request,
-                Map.of("schemaVersion", value));
-        return overview();
+        String hash = requestHash(
+                normalized.eventName(), normalized.ownerDomain(), normalized.producer(), normalized.consumer(),
+                normalized.propertyName(), normalized.propertyType(), String.valueOf(normalized.serverAuthoritative()),
+                normalized.samplingPolicy(), normalized.expectedVersion(), normalized.reason());
+        return (ApiResult<EventCenterOverview>) idempotencyService.execute(
+                "A4_SCHEMA:" + normalized.eventName(), idempotencyKey.trim(), hash, ApiResult.class,
+                () -> registerSchemaOnce(normalized, idempotencyKey.trim()));
     }
 
+    @Transactional
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<EventDomainExtensionBatch> registerDomainExtension(
-            String idempotencyKey, EventCenterMutationRequest request) {
-        ApiResult<EventDomainExtensionBatch> guard = requireMutation(idempotencyKey, request);
+            String idempotencyKey, EventDomainExtensionRequest request) {
+        ApiResult<EventDomainExtensionBatch> guard = requireDomainMutation(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        String value;
+        NormalizedDomainExtension normalized;
         try {
-            value = normalizeTextValue(request.value());
+            normalized = normalizeDomainExtension(request);
         } catch (IllegalArgumentException ex) {
             return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
         }
-        if (containsSunsetTerm(value)) {
-            return fail(OpsErrorCode.RETIRED_FEATURE, "SUNSET_CAPABILITY_READONLY");
-        }
-        String slug = slug(value);
-        if (!StringUtils.hasText(slug)) {
-            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_DOMAIN_EXTENSION_INVALID");
-        }
-        String configKey = BATCH_KEY_PREFIX + slug + BATCH_KEY_SUFFIX;
-        configFacade.upsertAdminValue(configKey, "registered", "STRING", GROUP_A4, mutationRemark(request.reason()));
-        EventDomainExtensionBatch batch = dynamicBatch(slug, value, "registered");
-        audit("A4_DOMAIN_EXTENSION_REGISTERED", "A4_DOMAIN_EXTENSION", slug, idempotencyKey, request,
-                Map.of("batchId", batch.id(), "value", value, "configKey", configKey));
-        return ApiResult.ok(batch);
+        String hash = requestHash(normalized.domainName(), normalized.eventName(), normalized.producer(),
+                normalized.consumer(), normalized.reason());
+        return (ApiResult<EventDomainExtensionBatch>) idempotencyService.execute(
+                "A4_DOMAIN_EXTENSION:" + normalized.domainName(), idempotencyKey.trim(), hash, ApiResult.class,
+                () -> registerDomainExtensionOnce(normalized, idempotencyKey.trim()));
     }
 
     private List<EventDimensionParam> dimensionParams() {
         return paramDefinitions().stream()
                 .map(definition -> paramView(definition, configFacade.activeValue(definition.configKey())
-                        .orElse("")))
+                        .orElse(definition.defaultValue())))
                 .toList();
     }
 
@@ -242,7 +268,7 @@ public class OpsEventCenterService {
         return new EventDimensionParam(definition.key(), definition.name(), definition.sub(), value, definition.locked());
     }
 
-    private List<EventDomainExtensionBatch> domainExtensions() {
+    private List<EventDomainExtensionBatch> domainExtensions(List<DomainExtensionRecord> extensionRecords) {
         List<EventDomainExtensionBatch> batches = new ArrayList<>();
         if (readTimeSeedPolicy.enabled()) {
             batches.addAll(List.of(
@@ -266,11 +292,11 @@ public class OpsEventCenterService {
                             "四类事件暂记 admin 占位 + 临时编号",
                             domains("content", "notification", "disclosure", "learn"),
                             List.of(
-                                    row("content.variant_exposed / converted", "文案 A/B 曝光与转化(I1/I6)占位中"),
-                                    row("content.trust_section_viewed", "信任版块曝光(I4)占位中"),
-                                    row("notification.delivered / read / swipe_action_taken", "通知三件套(I3)占位中"),
-                                    row("disclosure.viewed / acked / reack_triggered / gated_action_blocked", "披露操作链(I5)占位中"),
-                                    row("learn.course_started / quiz_passed / course_completed", "课程链(I7)已落地:进度、答题结果、完课与奖励账本均由后端事务写入"))),
+                                    row("content.variant_exposed / converted", "A4 已注册 · I1 服务端稳定分桶、首曝与已支付/完成订单转化"),
+                                    row("content.trust_section_viewed / admin.trust_content_published / archived / rolledback", "A4 已注册 · I4 App 曝光与发布/归档/回滚治理事件"),
+                                    row("notification.delivered / read / swipe_action_taken", "A4 已注册 · I3 持久通知送达、服务端已读与幂等 CTA/滑动动作"),
+                                    row("disclosure.viewed / acked / reack_triggered / gated_action_blocked", "A4 已注册 · I5 披露曝光、确认、逐用户 re-ack 与合规闸拦截"),
+                                    row("learn.course_started / quiz_passed / course_completed", "A4 已注册 · I7 完课事件保留 H3 投递类型，完成态、奖励账本与三语运行时均由后端权威写入"))),
                     new EventDomainExtensionBatch(
                             "v4-close",
                             "V4 收口核对",
@@ -299,22 +325,69 @@ public class OpsEventCenterService {
                         row("admin.emergency_playbook_executed", "应急剧本执行(J4)"),
                         row("admin.emergency_playbook_edited", "应急剧本编辑(J4)"))));
 
-        configFacade.activeValuesByGroup(GROUP_A4).entrySet().stream()
-                .filter(entry -> entry.getKey().startsWith(BATCH_KEY_PREFIX) && entry.getKey().endsWith(BATCH_KEY_SUFFIX))
-                .map(entry -> dynamicBatch(slugFromConfigKey(entry.getKey()), slugFromConfigKey(entry.getKey()), entry.getValue()))
+        extensionRecords.stream()
+                .map(this::dynamicBatch)
                 .forEach(batches::add);
         return batches;
     }
 
-    private EventDomainExtensionBatch dynamicBatch(String slug, String value, String status) {
+    private List<String> domainNames(
+            List<String> baseline, List<DomainExtensionRecord> extensionRecords, String status) {
+        List<String> result = new ArrayList<>(baseline);
+        extensionRecords.stream()
+                .filter(record -> status.equalsIgnoreCase(record.status()))
+                .map(DomainExtensionRecord::domainName)
+                .filter(domain -> !result.contains(domain))
+                .forEach(result::add);
+        return List.copyOf(result);
+    }
+
+    private List<String> pendingDomainNames(List<DomainExtensionRecord> extensionRecords) {
+        List<String> result = new ArrayList<>(domainNames(PENDING_DOMAINS, extensionRecords, "REGISTERED"));
+        extensionRecords.stream()
+                .filter(record -> "DONE".equalsIgnoreCase(record.status()))
+                .map(DomainExtensionRecord::domainName)
+                .distinct()
+                .filter(domain -> !hasOpenExtension(extensionRecords, domain))
+                .forEach(result::remove);
+        return List.copyOf(result);
+    }
+
+    private List<String> completedDomainNames(List<DomainExtensionRecord> extensionRecords) {
+        List<String> result = new ArrayList<>(REGISTERED_DOMAINS);
+        extensionRecords.stream()
+                .filter(record -> "DONE".equalsIgnoreCase(record.status()))
+                .map(DomainExtensionRecord::domainName)
+                .distinct()
+                .filter(domain -> !hasOpenExtension(extensionRecords, domain))
+                .filter(domain -> !result.contains(domain))
+                .forEach(result::add);
+        return List.copyOf(result);
+    }
+
+    private boolean hasOpenExtension(List<DomainExtensionRecord> extensionRecords, String domain) {
+        return extensionRecords.stream().anyMatch(record -> domain.equals(record.domainName())
+                && "REGISTERED".equalsIgnoreCase(record.status()));
+    }
+
+    private List<EventKpiFormula> kpiFormulas() {
+        String day0 = configFacade.activeValue("admin.a4.event.kpi.day0").orElse("90 秒");
+        return KPI_FORMULAS.stream()
+                .map(formula -> formula.n() == 1
+                        ? new EventKpiFormula(1, formula.kpi(), day0 + "内拿到首笔收益的人 ÷ 注册数")
+                        : formula)
+                .toList();
+    }
+
+    private EventDomainExtensionBatch dynamicBatch(DomainExtensionRecord record) {
         return new EventDomainExtensionBatch(
-                "manual-" + slug,
+                "manual-" + record.id(),
                 "登记扩展工单",
-                normalizeBatchStatus(status),
-                "A4 手工登记",
-                "待 schema 注册和归属确认",
-                List.of(new EventDomainItem(value, true)),
-                List.of(row(value, "管理员登记的 domain / 事件名,等待 schema registry 复核")));
+                normalizeBatchStatus(record.status()),
+                record.producer(),
+                "done".equalsIgnoreCase(record.status()) ? "schema 已注册并完成归属确认" : "待 schema 注册和归属确认",
+                List.of(new EventDomainItem(record.domainName(), true)),
+                List.of(row(record.eventName(), "生产方 " + record.producer() + " → 消费方 " + record.consumer())));
     }
 
     private List<AuditLogRecord> recentLogs() {
@@ -325,13 +398,9 @@ public class OpsEventCenterService {
     }
 
     private List<EventFamily> eventFamilies() {
-        List<String> prefixes = EVENT_FAMILY_DEFINITIONS.stream()
-                .flatMap(definition -> definition.actionPrefixes().stream())
-                .distinct()
-                .toList();
         Map<String, Long> counts = new LinkedHashMap<>();
-        auditLogService.countActionsByPrefixes(statsQuery(1, 50), prefixes)
-                .forEach(bucket -> counts.put(bucket.getKey(), bucket.getCount()));
+        governanceMapper.countEventsByFamilySince(LocalDate.now().atStartOfDay())
+                .forEach(bucket -> counts.put(bucket.familyKey(), bucket.eventCount()));
         return EVENT_FAMILY_DEFINITIONS.stream()
                 .map(definition -> family(
                         definition.key(),
@@ -339,9 +408,7 @@ public class OpsEventCenterService {
                         definition.sub(),
                         definition.sample(),
                         definition.serverAuth(),
-                        formatCount(definition.actionPrefixes().stream()
-                                .mapToLong(prefix -> counts.getOrDefault(prefix, 0L))
-                                .sum()),
+                        formatCount(counts.getOrDefault(definition.key(), 0L)),
                         definition.events().toArray(EventDetailRow[]::new)))
                 .toList();
     }
@@ -354,8 +421,11 @@ public class OpsEventCenterService {
     }
 
     private String schemaVersion() {
-        return configFacade.activeValue(SCHEMA_VERSION_KEY)
-                .orElse("");
+        Integer revision = governanceMapper.currentRevision();
+        if (revision == null || revision < 1) {
+            throw new IllegalStateException("A4_SCHEMA_REVISION_MISSING");
+        }
+        return "v" + revision;
     }
 
     private <T> ApiResult<T> requireMutation(String idempotencyKey, EventCenterMutationRequest request) {
@@ -368,8 +438,40 @@ public class OpsEventCenterService {
         if (!StringUtils.hasText(request.reason())) {
             return fail(OpsErrorCode.REASON_REQUIRED, OpsErrorCode.REASON_REQUIRED.name());
         }
-        if (!StringUtils.hasText(request.operator())) {
-            return fail(OpsErrorCode.VALIDATION_FAILED, "OPERATOR_REQUIRED");
+        if (!validReason(request.reason())) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_REASON_LENGTH_INVALID");
+        }
+        return null;
+    }
+
+    private <T> ApiResult<T> requireSchemaMutation(String idempotencyKey, EventSchemaRegistrationRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_SCHEMA_REQUEST_REQUIRED");
+        }
+        if (!StringUtils.hasText(request.reason())) {
+            return fail(OpsErrorCode.REASON_REQUIRED, OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (!validReason(request.reason())) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_REASON_LENGTH_INVALID");
+        }
+        return null;
+    }
+
+    private <T> ApiResult<T> requireDomainMutation(String idempotencyKey, EventDomainExtensionRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_DOMAIN_EXTENSION_REQUEST_REQUIRED");
+        }
+        if (!StringUtils.hasText(request.reason())) {
+            return fail(OpsErrorCode.REASON_REQUIRED, OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (!validReason(request.reason())) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_REASON_LENGTH_INVALID");
         }
         return null;
     }
@@ -389,26 +491,312 @@ public class OpsEventCenterService {
         return normalized;
     }
 
-    private void audit(
+    private ApiResult<EventDimensionParam> updateParamOnce(
+            ParamDefinition definition, String value, String reason, String idempotencyKey) {
+        String before = configFacade.activeValue(definition.configKey()).orElse(definition.defaultValue());
+        if (before.equals(value)) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_EVENT_PARAM_SAME_VALUE");
+        }
+        configFacade.upsertAdminValue(definition.configKey(), value, "STRING", GROUP_A4, mutationRemark(reason));
+        auditRequired("A4_EVENT_PARAM_CHANGED", "A4_EVENT_CENTER_PARAM", definition.key(), idempotencyKey, reason,
+                Map.of("paramKey", definition.key(), "configKey", definition.configKey(), "before", before, "after", value));
+        return ApiResult.ok(paramView(definition, value));
+    }
+
+    private ApiResult<EventCenterOverview> registerSchemaOnce(NormalizedSchema schema, String idempotencyKey) {
+        int currentRevision = requiredRevision(governanceMapper.lockCurrentRevision());
+        if (!schema.expectedVersion().equals("v" + currentRevision)) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_VERSION_STALE");
+        }
+        EventSchemaRecord existing = governanceMapper.findSchema(schema.eventName());
+        if (existing != null && governanceMapper.countProperty(existing.id(), schema.propertyName()) > 0) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_PROPERTY_DUPLICATE");
+        }
+        if (existing != null && (!existing.ownerDomain().equals(schema.ownerDomain())
+                || !existing.producer().equals(schema.producer())
+                || existing.serverAuthoritative() != schema.serverAuthoritative()
+                || !existing.samplingPolicy().equals(schema.samplingPolicy()))) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_METADATA_CONFLICT");
+        }
+
+        int nextRevision = currentRevision + 1;
+        if (governanceMapper.advanceRevision(currentRevision, nextRevision) != 1) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_VERSION_STALE");
+        }
+        String actor = authenticatedActor();
+        try {
+            long schemaId;
+            if (existing == null) {
+                governanceMapper.insertSchema(
+                        schema.eventName(), schema.ownerDomain(), schema.familyKey(), schema.producer(), schema.consumer(),
+                        schema.serverAuthoritative(), schema.samplingPolicy(), nextRevision, actor, schema.reason());
+                EventSchemaRecord inserted = governanceMapper.findSchema(schema.eventName());
+                if (inserted == null) {
+                    throw new IllegalStateException("A4_SCHEMA_INSERT_NOT_VISIBLE");
+                }
+                schemaId = inserted.id();
+            } else {
+                schemaId = existing.id();
+                if (governanceMapper.updateSchemaRevision(schemaId, nextRevision, actor, schema.reason()) != 1) {
+                    throw new IllegalStateException("A4_SCHEMA_UPDATE_FAILED");
+                }
+            }
+            governanceMapper.insertProperty(schemaId, schema.propertyName(), schema.propertyType(), nextRevision);
+            if (schema.extensionDomain()
+                    && governanceMapper.completeDomainExtension(schema.ownerDomain(), schema.eventName()) != 1) {
+                throw new IllegalStateException("A4_DOMAIN_EXTENSION_CLOSE_FAILED");
+            }
+        } catch (DuplicateKeyException ex) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_DUPLICATE");
+        }
+        auditRequired("A4_EVENT_SCHEMA_REGISTERED", "A4_EVENT_SCHEMA", schema.eventName(), idempotencyKey, schema.reason(),
+                Map.of(
+                        "eventName", schema.eventName(),
+                        "ownerDomain", schema.ownerDomain(),
+                        "producer", schema.producer(),
+                        "consumer", schema.consumer(),
+                        "propertyName", schema.propertyName(),
+                        "propertyType", schema.propertyType(),
+                        "serverAuthoritative", schema.serverAuthoritative(),
+                        "samplingPolicy", schema.samplingPolicy(),
+                        "beforeVersion", schema.expectedVersion(),
+                        "afterVersion", "v" + nextRevision));
+        return overview();
+    }
+
+    private ApiResult<EventDomainExtensionBatch> registerDomainExtensionOnce(
+            NormalizedDomainExtension extension, String idempotencyKey) {
+        if (governanceMapper.countDomainExtension(extension.domainName(), extension.eventName()) > 0) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_DOMAIN_EXTENSION_DUPLICATE");
+        }
+        String actor = authenticatedActor();
+        try {
+            governanceMapper.insertDomainExtension(
+                    extension.domainName(), extension.eventName(), extension.producer(), extension.consumer(),
+                    actor, extension.reason());
+        } catch (DuplicateKeyException ex) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_DOMAIN_EXTENSION_DUPLICATE");
+        }
+        auditRequired("A4_DOMAIN_EXTENSION_REGISTERED", "A4_DOMAIN_EXTENSION", extension.eventName(),
+                idempotencyKey, extension.reason(), Map.of(
+                        "domainName", extension.domainName(),
+                        "eventName", extension.eventName(),
+                        "producer", extension.producer(),
+                        "consumer", extension.consumer()));
+        return ApiResult.ok(new EventDomainExtensionBatch(
+                "manual-" + slug(extension.domainName() + "-" + extension.eventName()),
+                "登记扩展工单", "registered", extension.producer(), "待 schema 注册和归属确认",
+                List.of(new EventDomainItem(extension.domainName(), true)),
+                List.of(row(extension.eventName(), "生产方 " + extension.producer() + " → 消费方 " + extension.consumer()))));
+    }
+
+    private void auditRequired(
             String action,
             String resourceType,
             String resourceId,
             String idempotencyKey,
-            EventCenterMutationRequest request,
+            String reason,
             Map<String, Object> extraDetail) {
         Map<String, Object> detail = new LinkedHashMap<>(extraDetail);
-        detail.put("reason", request.reason().trim());
+        detail.put("reason", reason);
         detail.put("idempotencyKey", idempotencyKey.trim());
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)
                 .actorType("ADMIN")
-                .actorUsername(request.operator().trim())
+                .actorUsername(authenticatedActor())
                 .result("SUCCESS")
                 .riskLevel("MEDIUM")
                 .detail(detail)
                 .build());
+    }
+
+    private String normalizeParamValue(String paramKey, String rawValue) {
+        String value = normalizeTextValue(rawValue);
+        return switch (paramKey) {
+            case "day0" -> {
+                String digits = value.replaceAll("[^0-9]", "");
+                if (!value.matches("(?i)^\\s*\\d{1,4}\\s*(?:秒|s|sec|seconds?)?\\s*$") || !StringUtils.hasText(digits)) {
+                    throw new IllegalArgumentException("A4_DAY0_VALUE_INVALID");
+                }
+                int seconds = Integer.parseInt(digits);
+                if (seconds < 30 || seconds > 600) {
+                    throw new IllegalArgumentException("A4_DAY0_VALUE_INVALID");
+                }
+                yield seconds + " 秒";
+            }
+            case "event_retention" -> {
+                String digits = value.replaceAll("[^0-9]", "");
+                if (!value.matches("^\\s*\\d{1,3}\\s*(?:个月|月|months?)?\\s*$") || !StringUtils.hasText(digits)) {
+                    throw new IllegalArgumentException("A4_EVENT_RETENTION_INVALID");
+                }
+                int months = Integer.parseInt(digits);
+                if (months < 13 || months > 60) {
+                    throw new IllegalArgumentException("A4_EVENT_RETENTION_INVALID");
+                }
+                yield months + " 个月";
+            }
+            case "sampling" -> normalizeSampling(value, false);
+            default -> value;
+        };
+    }
+
+    private String normalizeSampling(String value, boolean protectedFamily) {
+        String compact = value.replace(" ", "");
+        for (String protectedName : List.of("资金", "风控", "转化")) {
+            java.util.regex.Matcher protectedMatcher = java.util.regex.Pattern
+                    .compile(protectedName + "[^0-9]*(\\d{1,3})%?")
+                    .matcher(compact);
+            if (protectedMatcher.find() && Integer.parseInt(protectedMatcher.group(1)) != 100) {
+                throw new IllegalArgumentException("A4_PROTECTED_EVENT_SAMPLING_INVALID");
+            }
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d{1,3})%?").matcher(compact);
+        if (!matcher.find()) {
+            throw new IllegalArgumentException("A4_SAMPLING_VALUE_INVALID");
+        }
+        int percent = Integer.parseInt(matcher.group(1));
+        if (percent < 1 || percent > 100 || (protectedFamily && percent != 100)) {
+            throw new IllegalArgumentException(protectedFamily
+                    ? "A4_PROTECTED_EVENT_SAMPLING_INVALID"
+                    : "A4_SAMPLING_VALUE_INVALID");
+        }
+        return protectedFamily ? "100%" : "浏览/会话 " + percent + "% · 资金/风控/转化 100%";
+    }
+
+    private NormalizedSchema normalizeSchema(EventSchemaRegistrationRequest request) {
+        String eventName = lowerRequired(request.eventName(), "A4_SCHEMA_EVENT_NAME_REQUIRED");
+        String ownerDomain = lowerRequired(request.ownerDomain(), "A4_SCHEMA_OWNER_DOMAIN_REQUIRED");
+        String producer = lowerRequired(request.producer(), "A4_SCHEMA_PRODUCER_REQUIRED");
+        String consumer = textRequired(request.consumer(), "A4_SCHEMA_CONSUMER_REQUIRED");
+        String propertyName = lowerRequired(request.propertyName(), "A4_SCHEMA_PROPERTY_REQUIRED");
+        String propertyType = lowerRequired(request.propertyType(), "A4_SCHEMA_PROPERTY_TYPE_REQUIRED");
+        String expectedVersion = lowerRequired(request.expectedVersion(), "A4_SCHEMA_VERSION_REQUIRED");
+        String reason = normalizeReason(request.reason());
+        if (containsSunsetTerm(eventName) || containsSunsetTerm(ownerDomain)) {
+            throw new IllegalArgumentException("SUNSET_CAPABILITY_READONLY");
+        }
+        if (!eventName.matches("^[a-z][a-z0-9_]*\\.[a-z0-9]+(?:_[a-z0-9]+)*$") || !pastTenseEvent(eventName)) {
+            throw new IllegalArgumentException("A4_SCHEMA_EVENT_NAME_INVALID");
+        }
+        String eventDomain = eventName.substring(0, eventName.indexOf('.'));
+        boolean extensionDomain = !REGISTERED_DOMAINS.contains(ownerDomain)
+                && governanceMapper.countRegistrableDomainExtension(ownerDomain, eventName) > 0;
+        if (!ownerDomain.equals(eventDomain)
+                || (!REGISTERED_DOMAINS.contains(ownerDomain) && !extensionDomain)) {
+            throw new IllegalArgumentException("A4_SCHEMA_OWNER_DOMAIN_INVALID");
+        }
+        if (!PRODUCERS.contains(producer)) {
+            throw new IllegalArgumentException("A4_SCHEMA_PRODUCER_INVALID");
+        }
+        if (!propertyName.matches("^[a-z][a-z0-9_]{0,63}$") || containsPiiTerm(propertyName)
+                || Boolean.TRUE.equals(request.pii())) {
+            throw new IllegalArgumentException("A4_SCHEMA_PII_REJECTED");
+        }
+        if (!PROPERTY_TYPES.contains(propertyType)) {
+            throw new IllegalArgumentException("A4_SCHEMA_PROPERTY_TYPE_INVALID");
+        }
+        if (!expectedVersion.matches("^v[1-9][0-9]*$")) {
+            throw new IllegalArgumentException("A4_SCHEMA_VERSION_INVALID");
+        }
+        String familyKey = familyKey(eventName);
+        boolean protectedFamily = Set.of("conversion", "monetization", "risk").contains(familyKey);
+        boolean authoritative = Boolean.TRUE.equals(request.serverAuthoritative());
+        if (protectedFamily && (!producer.contains("server") || !authoritative)) {
+            throw new IllegalArgumentException("A4_SERVER_AUTHORITY_REQUIRED");
+        }
+        String sampling = normalizeSampling(lowerRequired(request.samplingPolicy(), "A4_SCHEMA_SAMPLING_REQUIRED"), protectedFamily);
+        return new NormalizedSchema(eventName, ownerDomain, familyKey, producer, consumer, propertyName,
+                propertyType, authoritative, sampling, expectedVersion, reason, extensionDomain);
+    }
+
+    private NormalizedDomainExtension normalizeDomainExtension(EventDomainExtensionRequest request) {
+        String domain = lowerRequired(request.domainName(), "A4_DOMAIN_EXTENSION_DOMAIN_REQUIRED");
+        String eventName = lowerRequired(request.eventName(), "A4_DOMAIN_EXTENSION_EVENT_REQUIRED");
+        String producer = textRequired(request.producer(), "A4_DOMAIN_EXTENSION_PRODUCER_REQUIRED");
+        String consumer = textRequired(request.consumer(), "A4_DOMAIN_EXTENSION_CONSUMER_REQUIRED");
+        if (containsSunsetTerm(domain) || containsSunsetTerm(eventName)) {
+            throw new IllegalArgumentException("SUNSET_CAPABILITY_READONLY");
+        }
+        if (!domain.matches("^[a-z][a-z0-9_]{1,31}$") || REGISTERED_DOMAINS.contains(domain)) {
+            throw new IllegalArgumentException("A4_DOMAIN_EXTENSION_INVALID");
+        }
+        if (!eventName.startsWith(domain + ".")
+                || !eventName.matches("^[a-z][a-z0-9_]*\\.[a-z0-9]+(?:_[a-z0-9]+)*$")
+                || !pastTenseEvent(eventName)) {
+            throw new IllegalArgumentException("A4_DOMAIN_EXTENSION_EVENT_INVALID");
+        }
+        return new NormalizedDomainExtension(domain, eventName, producer, consumer, normalizeReason(request.reason()));
+    }
+
+    private String familyKey(String eventName) {
+        String domain = eventName.substring(0, eventName.indexOf('.'));
+        if (domain.equals("risk") || eventName.equals("auth.login_locked")) return "risk";
+        if (Set.of("wallet", "withdraw", "earnings", "commission", "staking", "exchange", "genesis").contains(domain)) {
+            return "monetization";
+        }
+        if (Set.of("store", "checkout", "trial").contains(domain) || eventName.equals("referral.invite_sent")) {
+            return "conversion";
+        }
+        if (Set.of("daily", "quest", "nova").contains(domain) || eventName.equals("app.dau")) return "retention";
+        if (Set.of("phase", "admin").contains(domain)) return "phase_admin";
+        return "acquisition";
+    }
+
+    private boolean pastTenseEvent(String eventName) {
+        String suffix = eventName.substring(eventName.indexOf('.') + 1);
+        String action = suffix.substring(suffix.lastIndexOf('_') + 1);
+        return action.endsWith("ed") || Set.of("sent", "paid", "held", "bound", "dau").contains(action);
+    }
+
+    private String requestHash(String... parts) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String part : parts) {
+                digest.update((part == null ? "" : part).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
+    }
+
+    private int requiredRevision(Integer revision) {
+        if (revision == null || revision < 1) throw new IllegalStateException("A4_SCHEMA_REVISION_MISSING");
+        return revision;
+    }
+
+    private boolean validReason(String reason) {
+        if (!StringUtils.hasText(reason)) return false;
+        int length = reason.trim().length();
+        return length >= REASON_MIN_LENGTH && length <= REASON_MAX_LENGTH;
+    }
+
+    private String normalizeReason(String reason) {
+        if (!validReason(reason)) throw new IllegalArgumentException("A4_REASON_LENGTH_INVALID");
+        return reason.trim();
+    }
+
+    private String lowerRequired(String value, String message) {
+        return textRequired(value, message).toLowerCase(Locale.ROOT);
+    }
+
+    private String textRequired(String value, String message) {
+        if (!StringUtils.hasText(value)) throw new IllegalArgumentException(message);
+        String normalized = value.trim();
+        if (normalized.length() > MUTATION_VALUE_MAX_LENGTH) throw new IllegalArgumentException("A4_VALUE_TOO_LONG");
+        return normalized;
+    }
+
+    private String text(String value) {
+        return StringUtils.hasText(value) ? value.trim() : "";
+    }
+
+    private String authenticatedActor() {
+        String actor = AdminActorResolver.resolve(null);
+        return StringUtils.hasText(actor) ? actor : "authenticated-admin";
     }
 
     private ParamDefinition paramDefinition(String paramKey) {
@@ -430,7 +818,7 @@ public class OpsEventCenterService {
                 new ParamDefinition("event_retention", "事件留存期", "完整 12 月周期 + 1 月缓冲;审计日志同口径",
                         "13 个月", false, "admin.a4.event.kpi.event_retention"),
                 new ParamDefinition("sampling", "采样率", "浏览/会话类抽样省成本;资金/风控/转化类永远全量",
-                        "浏览 10% · 资金 100%", false, "admin.a4.event.kpi.sampling"));
+                        "浏览/会话 10% · 资金/风控/转化 100%", false, "admin.a4.event.kpi.sampling"));
     }
 
     private List<String> guardrails() {
@@ -501,11 +889,13 @@ public class OpsEventCenterService {
 
     private boolean containsPiiTerm(String value) {
         String normalized = value.toLowerCase(Locale.ROOT);
-        return normalized.contains("phone")
+        boolean mentionsRawIdentifier = normalized.contains("phone")
                 || normalized.contains("mobile")
                 || normalized.contains("address")
                 || normalized.contains("手机号")
                 || normalized.contains("地址");
+        boolean explicitlyPseudonymized = normalized.endsWith("_hash") || normalized.endsWith("_id");
+        return mentionsRawIdentifier && !explicitlyPseudonymized;
     }
 
     private boolean containsSunsetTerm(String value) {
@@ -523,10 +913,6 @@ public class OpsEventCenterService {
         String normalized = value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_")
                 .replaceAll("^_+|_+$", "");
         return normalized.length() > 48 ? normalized.substring(0, 48).replaceAll("_+$", "") : normalized;
-    }
-
-    private String slugFromConfigKey(String configKey) {
-        return configKey.substring(BATCH_KEY_PREFIX.length(), configKey.length() - BATCH_KEY_SUFFIX.length());
     }
 
     private String normalizeBatchStatus(String status) {
@@ -551,5 +937,28 @@ public class OpsEventCenterService {
             String defaultValue,
             boolean locked,
             String configKey) {
+    }
+
+    private record NormalizedSchema(
+            String eventName,
+            String ownerDomain,
+            String familyKey,
+            String producer,
+            String consumer,
+            String propertyName,
+            String propertyType,
+            boolean serverAuthoritative,
+            String samplingPolicy,
+            String expectedVersion,
+            String reason,
+            boolean extensionDomain) {
+    }
+
+    private record NormalizedDomainExtension(
+            String domainName,
+            String eventName,
+            String producer,
+            String consumer,
+            String reason) {
     }
 }

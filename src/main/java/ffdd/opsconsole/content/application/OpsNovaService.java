@@ -3,6 +3,8 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.NovaChannelView;
+import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
+import ffdd.opsconsole.content.domain.NovaEventDrivenView;
 import ffdd.opsconsole.content.domain.NovaOverview;
 import ffdd.opsconsole.content.domain.NovaOptionView;
 import ffdd.opsconsole.content.domain.NovaRepository;
@@ -25,6 +27,7 @@ import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
@@ -72,6 +75,17 @@ public class OpsNovaService {
             new NovaOptionView("/team", "团队"),
             new NovaOptionView("/earn", "收益任务"),
             new NovaOptionView("/support", "客服中心"));
+    private static final List<NovaEventDrivenView> EVENT_DRIVEN_CHANNELS = List.of(
+            new NovaEventDrivenView("risk-alert", "设备掉线或任务失败的异常状态机即时触发，不使用周期扫描。",
+                    "E5/K 域异常状态机", "warn", "事件触发"),
+            new NovaEventDrivenView("team_event", "v3 业务频道尚未接入 Nova cadence 配置。",
+                    "F 域团队事件", "dim", "待整合"),
+            new NovaEventDrivenView("staking_event", "v3 业务频道尚未接入 Nova cadence 配置。",
+                    "G1 质押事件", "dim", "待整合"),
+            new NovaEventDrivenView("market_event", "v3 业务频道尚未接入 Nova cadence 配置。",
+                    "G3 市场事件", "dim", "待整合"),
+            new NovaEventDrivenView("weekly-quest-refresh", "归入 quest 配置 key，具体触发时点由 H3 任务状态机负责。",
+                    "H3 任务状态机", "warn", "事件触发"));
     private static final Map<String, DistributionOption> DISTRIBUTION_OPTIONS = List.of(
                     new DistributionOption("withdrawal", "提现到账", "var(--admin-cat-3)"),
                     new DistributionOption("vrank", "V 等级晋升", "var(--admin-cat-5)"),
@@ -82,15 +96,19 @@ public class OpsNovaService {
             .collect(Collectors.toMap(DistributionOption::key, Function.identity(), (left, right) -> left, LinkedHashMap::new));
     private final NovaRepository novaRepository;
     private final AuditLogService auditLogService;
+    private final CopyAudiencePhaseProvider audiencePhaseProvider;
 
     public ApiResult<NovaOverview> overview() {
         novaRepository.ensureTables();
-        List<NovaChannelView> channels = novaRepository.channels();
+        String currentPhase = normalizePhase(audiencePhaseProvider.currentPhase());
+        List<NovaChannelView> channels = novaRepository.channels().stream()
+                .map(channel -> phaseAwareChannel(channel, currentPhase))
+                .toList();
         Map<String, Object> stats = novaRepository.stats();
         return ApiResult.ok(new NovaOverview(
                 novaStats(stats),
                 channels,
-                List.of(),
+                EVENT_DRIVEN_CHANNELS,
                 novaRepository.templates(),
                 novaRepository.socialDistribution(),
                 publicEvents(novaRepository.socialEvents("", "", 20, 0)),
@@ -189,7 +207,7 @@ public class OpsNovaService {
                 }
                 ApiResult<NovaSocialEventView> ingested = ingestTrustedSocialEvent(
                         idempotencyKey + ":" + sourceType + ":" + currentOrdinal, source, expiresAt,
-                        request.operator(), request.reason());
+                        operator(request.operator()), request.reason());
                 if (ingested.getCode() == 0) {
                     inserted++;
                 }
@@ -201,7 +219,7 @@ public class OpsNovaService {
                     discovered.size(), inserted, duplicates, "只同步已验证终态且仍在有效期内的真实事件"));
         }
         NovaSocialSyncResult result = new NovaSocialSyncResult(discoveredTotal, insertedTotal, duplicateTotal, List.copyOf(results));
-        audit("I2_NOVA_SOCIAL_EVENTS_SYNCED", "social-events", request.operator(), idempotencyKey, request.reason(), Map.of(
+        audit("I2_NOVA_SOCIAL_EVENTS_SYNCED", "social-events", operator(request.operator()), idempotencyKey, request.reason(), Map.of(
                 "discovered", discoveredTotal, "inserted", insertedTotal, "duplicates", duplicateTotal,
                 "sources", sourceTypes));
         return ApiResult.ok(result);
@@ -229,6 +247,7 @@ public class OpsNovaService {
         if (!"NEXION_CORE".equals(source.sourceSystem()) || !expectedTable.equals(source.sourceTable())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_NOT_TRUSTED");
         }
+        String authenticatedOperator = operator(operator);
         novaRepository.ensureTables();
         Optional<NovaSocialEventView> existing = novaRepository.socialEventBySource(
                 source.eventType(), source.sourceSystem(), source.sourceEventId());
@@ -241,13 +260,13 @@ public class OpsNovaService {
         boolean inserted = novaRepository.tryCreateSocialEvent(
                 source, mask(source.actorName(), "匿名用户"), mask(source.city(), "未知地区"),
                 "newUsers".equals(source.eventType()) ? peopleBand(source.amount()) : amountBand(source.amount(), source.amountUnit()),
-                expiresAt, operator, reason.trim());
+                expiresAt, authenticatedOperator, reason.trim());
         Optional<NovaSocialEventView> created = novaRepository.socialEventBySource(
                 source.eventType(), source.sourceSystem(), source.sourceEventId());
         if (!inserted || created.isEmpty()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_ALREADY_INGESTED");
         }
-        audit("I2_NOVA_SOCIAL_EVENT_CREATED", publicReference(created.get()), operator, idempotencyKey, reason, Map.of(
+        audit("I2_NOVA_SOCIAL_EVENT_CREATED", publicReference(created.get()), authenticatedOperator, idempotencyKey, reason, Map.of(
                 "eventType", source.eventType(), "sourceSystem", source.sourceSystem(), "sourceTable", source.sourceTable()));
         return ApiResult.ok(publicEvent(created.get()));
     }
@@ -277,9 +296,9 @@ public class OpsNovaService {
         if ("ACTIVE".equals(status) && !current.get().expiresAt().isAfter(LocalDateTime.now())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_ALREADY_EXPIRED");
         }
-        novaRepository.updateSocialEventStatus(id, status, request.operator(), request.reason().trim());
+        novaRepository.updateSocialEventStatus(id, status, operator(request.operator()), request.reason().trim());
         NovaSocialEventView updated = novaRepository.socialEvent(id).orElseThrow();
-        audit("I2_NOVA_SOCIAL_EVENT_STATUS_CHANGED", String.valueOf(id), request.operator(), idempotencyKey, request.reason(),
+        audit("I2_NOVA_SOCIAL_EVENT_STATUS_CHANGED", String.valueOf(id), operator(request.operator()), idempotencyKey, request.reason(),
                 Map.of("from", current.get().status(), "to", status));
         return ApiResult.ok(publicEvent(updated));
     }
@@ -295,8 +314,8 @@ public class OpsNovaService {
         if (current.isEmpty()) {
             return ApiResult.ok();
         }
-        novaRepository.deleteSocialEvent(id, request.operator(), request.reason().trim());
-        audit("I2_NOVA_SOCIAL_EVENT_DELETED", String.valueOf(id), request.operator(), idempotencyKey, request.reason(),
+        novaRepository.deleteSocialEvent(id, operator(request.operator()), request.reason().trim());
+        audit("I2_NOVA_SOCIAL_EVENT_DELETED", String.valueOf(id), operator(request.operator()), idempotencyKey, request.reason(),
                 Map.of("eventType", current.get().eventType()));
         return ApiResult.ok();
     }
@@ -309,7 +328,7 @@ public class OpsNovaService {
         }
         novaRepository.ensureTables();
         int expired = novaRepository.expireSocialEvents(LocalDateTime.now());
-        audit("I2_NOVA_SOCIAL_EVENTS_EXPIRED", "social-events", request.operator(), idempotencyKey, request.reason(),
+        audit("I2_NOVA_SOCIAL_EVENTS_EXPIRED", "social-events", operator(request.operator()), idempotencyKey, request.reason(),
                 Map.of("expired", expired));
         return ApiResult.ok(Map.of("expired", expired));
     }
@@ -385,10 +404,10 @@ public class OpsNovaService {
                 safeCtr(request.ctr()),
                 false,
                 novaRepository.nextChannelOrder(),
-                request.operator(),
+                operator(request.operator()),
                 request.reason().trim());
         NovaChannelView created = novaRepository.channel(key).orElseThrow();
-        audit("I2_NOVA_CHANNEL_CREATED", key, request.operator(), idempotencyKey, request.reason(), Map.of(
+        audit("I2_NOVA_CHANNEL_CREATED", key, operator(request.operator()), idempotencyKey, request.reason(), Map.of(
                 "enabled", created.enabled(),
                 "tick", created.tick(),
                 "cooldown", created.cooldown()));
@@ -401,6 +420,9 @@ public class OpsNovaService {
         ApiResult<NovaChannelView> guard = requireChannelCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
+        }
+        if (isH1PhaseKeyedChannel(normalizedKey)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PHASE_CADENCE_H1_READ_ONLY");
         }
         novaRepository.ensureTables();
         Optional<NovaChannelView> current = novaRepository.channel(normalizedKey);
@@ -421,10 +443,10 @@ public class OpsNovaService {
                 request.cooldown().trim(),
                 safeCtr(request.ctr()),
                 enabled,
-                request.operator(),
+                operator(request.operator()),
                 request.reason().trim());
         NovaChannelView updated = novaRepository.channel(normalizedKey).orElseThrow();
-        audit("I2_NOVA_CHANNEL_UPDATED", normalizedKey, request.operator(), idempotencyKey, request.reason(), Map.of(
+        audit("I2_NOVA_CHANNEL_UPDATED", normalizedKey, operator(request.operator()), idempotencyKey, request.reason(), Map.of(
                 "fromCtr", current.get().ctr(),
                 "toCtr", updated.ctr(),
                 "enabled", updated.enabled()));
@@ -454,10 +476,10 @@ public class OpsNovaService {
                 .isEmpty()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PUBLISHED_TEMPLATE_REQUIRED");
         }
-        novaRepository.updateChannelStatus(normalizedKey, request.enabled(), request.operator(), request.reason().trim());
+        novaRepository.updateChannelStatus(normalizedKey, request.enabled(), operator(request.operator()), request.reason().trim());
         NovaChannelView updated = novaRepository.channel(normalizedKey).orElseThrow();
         audit(request.enabled() ? "I2_NOVA_CHANNEL_RESTORED" : "I2_NOVA_CHANNEL_KILLED", normalizedKey,
-                request.operator(), idempotencyKey, request.reason(), Map.of("enabled", request.enabled()));
+                operator(request.operator()), idempotencyKey, request.reason(), Map.of("enabled", request.enabled()));
         return ApiResult.ok(updated);
     }
 
@@ -473,10 +495,10 @@ public class OpsNovaService {
             return ApiResult.fail(404, "NOVA_CHANNEL_NOT_FOUND");
         }
         if (novaRepository.template(normalizedKey).isPresent()) {
-            novaRepository.deleteTemplate(normalizedKey, request.operator(), request.reason().trim());
+            novaRepository.deleteTemplate(normalizedKey, operator(request.operator()), request.reason().trim());
         }
-        novaRepository.deleteChannel(normalizedKey, request.operator(), request.reason().trim());
-        audit("I2_NOVA_CHANNEL_DELETED", normalizedKey, request.operator(), idempotencyKey, request.reason(), Map.of("deleted", true));
+        novaRepository.deleteChannel(normalizedKey, operator(request.operator()), request.reason().trim());
+        audit("I2_NOVA_CHANNEL_DELETED", normalizedKey, operator(request.operator()), idempotencyKey, request.reason(), Map.of("deleted", true));
         return ApiResult.ok();
     }
 
@@ -505,14 +527,14 @@ public class OpsNovaService {
                 request.bodyVi().trim(),
                 trimToEmpty(request.titleEn()),
                 trimToEmpty(request.bodyEn()),
-                request.operator(),
+                operator(request.operator()),
                 request.reason().trim());
         novaRepository.channel(channel)
                 .filter(NovaChannelView::enabled)
                 .ifPresent(channelView -> novaRepository.updateChannelStatus(
-                        channel, false, request.operator(), request.reason().trim()));
+                        channel, false, operator(request.operator()), request.reason().trim()));
         NovaTemplateView created = novaRepository.template(channel).orElseThrow();
-        audit("I2_NOVA_TEMPLATE_CREATED", channel, request.operator(), idempotencyKey, request.reason(), Map.of("status", "DRAFT"));
+        audit("I2_NOVA_TEMPLATE_CREATED", channel, operator(request.operator()), idempotencyKey, request.reason(), Map.of("status", "DRAFT"));
         return ApiResult.ok(created);
     }
 
@@ -533,13 +555,13 @@ public class OpsNovaService {
         }
         novaRepository.updateTemplate(normalizedChannel, request.name().trim(), request.cta().trim(), request.version().trim(),
                 request.titleZh().trim(), request.bodyZh().trim(), request.titleVi().trim(), request.bodyVi().trim(),
-                trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()), request.operator(), request.reason().trim());
+                trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()), operator(request.operator()), request.reason().trim());
         novaRepository.channel(normalizedChannel)
                 .filter(NovaChannelView::enabled)
                 .ifPresent(channelView -> novaRepository.updateChannelStatus(
-                        normalizedChannel, false, request.operator(), request.reason().trim()));
+                        normalizedChannel, false, operator(request.operator()), request.reason().trim()));
         NovaTemplateView updated = novaRepository.template(normalizedChannel).orElseThrow();
-        audit("I2_NOVA_TEMPLATE_UPDATED", normalizedChannel, request.operator(), idempotencyKey, request.reason(), Map.of(
+        audit("I2_NOVA_TEMPLATE_UPDATED", normalizedChannel, operator(request.operator()), idempotencyKey, request.reason(), Map.of(
                 "fromVersion", current.get().version(), "toVersion", updated.version(), "status", updated.status()));
         return ApiResult.ok(updated);
     }
@@ -559,8 +581,8 @@ public class OpsNovaService {
         if ("PUBLISHED".equals(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PUBLISHED_TEMPLATE_CANNOT_DELETE");
         }
-        novaRepository.deleteTemplate(normalizedChannel, request.operator(), request.reason().trim());
-        audit("I2_NOVA_TEMPLATE_DELETED", normalizedChannel, request.operator(), idempotencyKey, request.reason(), Map.of("deleted", true));
+        novaRepository.deleteTemplate(normalizedChannel, operator(request.operator()), request.reason().trim());
+        audit("I2_NOVA_TEMPLATE_DELETED", normalizedChannel, operator(request.operator()), idempotencyKey, request.reason(), Map.of("deleted", true));
         return ApiResult.ok();
     }
 
@@ -586,14 +608,14 @@ public class OpsNovaService {
         if ("PUBLISHED".equals(status) && !hasCompleteLocalizedContent(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZED_CONTENT_REQUIRED");
         }
-        novaRepository.updateTemplateStatus(normalizedChannel, status, request.operator(), request.reason().trim());
+        novaRepository.updateTemplateStatus(normalizedChannel, status, operator(request.operator()), request.reason().trim());
         novaRepository.channel(normalizedChannel)
                 .filter(NovaChannelView::enabled)
                 .filter(channelView -> !"PUBLISHED".equals(status))
                 .ifPresent(channelView -> novaRepository.updateChannelStatus(
-                        normalizedChannel, false, request.operator(), request.reason().trim()));
+                        normalizedChannel, false, operator(request.operator()), request.reason().trim()));
         NovaTemplateView updated = novaRepository.template(normalizedChannel).orElseThrow();
-        audit("I2_NOVA_TEMPLATE_STATUS_CHANGED", normalizedChannel, request.operator(), idempotencyKey, request.reason(), Map.of(
+        audit("I2_NOVA_TEMPLATE_STATUS_CHANGED", normalizedChannel, operator(request.operator()), idempotencyKey, request.reason(), Map.of(
                 "from", current.get().status(),
                 "to", status));
         return ApiResult.ok(updated);
@@ -621,10 +643,10 @@ public class OpsNovaService {
         novaRepository.ensureTables();
         next.forEach((key, value) -> {
             DistributionOption option = DISTRIBUTION_OPTIONS.get(key);
-            novaRepository.upsertDistribution(key, option.name(), value, option.color(), request.operator(), request.reason().trim());
+            novaRepository.upsertDistribution(key, option.name(), value, option.color(), operator(request.operator()), request.reason().trim());
         });
         List<NovaSocialDistributionItem> updated = novaRepository.socialDistribution();
-        audit("I2_NOVA_SOCIAL_DISTRIBUTION_CHANGED", "social", request.operator(), idempotencyKey, request.reason(), Map.of("total", total));
+        audit("I2_NOVA_SOCIAL_DISTRIBUTION_CHANGED", "social", operator(request.operator()), idempotencyKey, request.reason(), Map.of("total", total));
         return ApiResult.ok(updated);
     }
 
@@ -927,7 +949,7 @@ public class OpsNovaService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
+        if (!validReason(reason)) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -937,10 +959,56 @@ public class OpsNovaService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
+        if (!validReason(reason)) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
+    }
+
+    private NovaChannelView phaseAwareChannel(NovaChannelView channel, String currentPhase) {
+        if (channel == null || !isH1PhaseKeyedChannel(channel.key())) {
+            return channel;
+        }
+        String effectiveCooldown;
+        if (!currentPhase.matches("P[1-6]")) {
+            effectiveCooldown = channel.cooldown();
+            currentPhase = "不可用";
+        } else if ("tradein".equals(channel.key())) {
+            effectiveCooldown = switch (currentPhase) {
+                case "P1", "P2" -> "skip";
+                case "P3", "P4" -> "60 min";
+                default -> "24h";
+            };
+        } else {
+            effectiveCooldown = switch (currentPhase) {
+                case "P1", "P2" -> "30d";
+                case "P3", "P4" -> "7d";
+                default -> "84h";
+            };
+        }
+        String phaseLabel = channel.phaseKeyed() + " · H1 当前 " + currentPhase + " → " + effectiveCooldown;
+        return new NovaChannelView(
+                channel.key(), channel.name(), channel.trigger(), channel.tick(), effectiveCooldown,
+                phaseLabel, channel.ctr(), channel.enabled());
+    }
+
+    private boolean isH1PhaseKeyedChannel(String key) {
+        return "tradein".equals(key) || "taskLockMonthly".equals(key);
+    }
+
+    private String normalizePhase(String value) {
+        return StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : "";
+    }
+
+    private boolean validReason(String reason) {
+        return StringUtils.hasText(reason)
+                && reason.trim().length() >= 8
+                && reason.trim().length() <= 200;
+    }
+
+    private String operator(String requestedOperator) {
+        String resolved = AdminActorResolver.resolve(requestedOperator);
+        return StringUtils.hasText(resolved) ? resolved : "system";
     }
 
     private BigDecimal safeCtr(BigDecimal value) {
@@ -982,11 +1050,11 @@ public class OpsNovaService {
         Map<String, Object> fullDetail = new LinkedHashMap<>(detail == null ? Map.of() : detail);
         fullDetail.put("idempotencyKey", idempotencyKey);
         fullDetail.put("reason", reason);
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("NOVA")
                 .resourceId(resourceId)
-                .actorUsername(StringUtils.hasText(operator) ? operator.trim() : "system")
+                .actorUsername(operator(operator))
                 .detail(fullDetail)
                 .build());
     }

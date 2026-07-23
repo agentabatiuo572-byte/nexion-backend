@@ -2,6 +2,8 @@ package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.content.application.AppNotificationService;
 import ffdd.opsconsole.content.domain.AppNotificationPage;
+import ffdd.opsconsole.content.domain.NotificationActionResult;
+import ffdd.opsconsole.content.dto.NotificationActionRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -11,6 +13,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -32,6 +36,17 @@ public class AppNotificationController {
     @PostMapping("/{notificationId}/read")
     public ApiResult<Void> markRead(@PathVariable Long notificationId, Authentication authentication) {
         return service.markRead(authenticatedUserId(authentication), notificationId);
+    }
+
+    @PostMapping("/{notificationId}/actions")
+    public ApiResult<NotificationActionResult> recordAction(
+            @PathVariable Long notificationId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestBody NotificationActionRequest request,
+            Authentication authentication) {
+        return service.recordAction(
+                authenticatedUserId(authentication), notificationId,
+                request == null ? null : request.action(), idempotencyKey);
     }
 
     @PostMapping("/read-all")

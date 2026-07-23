@@ -10,6 +10,16 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEntity> {
+    @Select("""
+            SELECT id
+              FROM nx_admin_role
+             WHERE role_code = #{roleCode}
+               AND status = 1
+               AND is_deleted = 0
+             FOR UPDATE
+            """)
+    Long lockActiveRoleIdByCode(@Param("roleCode") String roleCode);
+
     @Update("""
             UPDATE nx_admin_role_relation
                SET is_deleted = 1, updated_at = NOW()

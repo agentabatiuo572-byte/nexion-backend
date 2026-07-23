@@ -5,9 +5,13 @@ import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportView;
+import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
+import ffdd.opsconsole.bi.domain.L2FunnelAnalytics;
+import ffdd.opsconsole.bi.domain.L4OperationsAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
 import jakarta.annotation.PostConstruct;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +27,15 @@ public class MybatisBiReportRepository implements BiReportRepository {
     @PostConstruct
     void ensureSchema() {
         mapper.createReportTable();
+        if (mapper.countSnapshotCsvColumn() == 0) {
+            mapper.addSnapshotCsvColumn();
+        }
+        if (mapper.countDownloadTokenHashColumn() == 0) {
+            mapper.addDownloadTokenHashColumn();
+        }
+        if (mapper.countDownloadTokenExpiresAtColumn() == 0) {
+            mapper.addDownloadTokenExpiresAtColumn();
+        }
     }
 
     @Override
@@ -32,6 +45,7 @@ public class MybatisBiReportRepository implements BiReportRepository {
         overview.put("sensitiveReports", mapper.countSensitiveReports());
         overview.put("pendingConfirm", mapper.countPendingConfirm());
         overview.put("readyReports", mapper.countReadyReports());
+        overview.put("legacyReadyWithoutSnapshot", mapper.countReadyReportsWithoutSnapshot());
         return overview;
     }
 
@@ -82,72 +96,131 @@ public class MybatisBiReportRepository implements BiReportRepository {
     }
 
     @Override
-    public void updateAction(String reportId, String action, String nextStatus, String reason) {
-        mapper.updateAction(reportId, action, nextStatus, reason);
+    public void saveSnapshotCsv(String reportId, String snapshotCsv) {
+        if (mapper.updateSnapshotCsv(reportId, snapshotCsv) != 1) {
+            throw new IllegalStateException("BI_REPORT_SNAPSHOT_WRITE_FAILED");
+        }
+    }
+
+    @Override
+    public Optional<String> findSnapshotCsv(String reportId) {
+        return Optional.ofNullable(mapper.findSnapshotCsv(reportId));
+    }
+
+    @Override
+    public void saveDownloadToken(String reportId, String tokenHash, LocalDateTime expiresAt) {
+        if (mapper.updateDownloadToken(reportId, tokenHash, expiresAt) != 1) {
+            throw new IllegalStateException("BI_DOWNLOAD_TOKEN_WRITE_FAILED");
+        }
+    }
+
+    @Override
+    public boolean isDownloadTokenValid(String reportId, String tokenHash, LocalDateTime now) {
+        return mapper.countValidDownloadToken(reportId, tokenHash, now) == 1;
+    }
+
+    @Override
+    public boolean updateActionIfStatus(String reportId, String action, String expectedStatus, String nextStatus, String reason) {
+        return mapper.updateActionIfStatus(reportId, action, expectedStatus, nextStatus, reason) == 1;
     }
 
     private Map<String, Object> kpiDashboard() {
-        return linked(
-                "module", "L1",
-                "totals", linked(
-                        "users", mapper.countUsers(),
-                        "orders", mapper.countOrders() + mapper.countAdminDeviceOrders(),
-                        "withdrawals", mapper.countWithdrawals(),
-                        "exchanges", mapper.countExchanges(),
-                        "stakingPositions", mapper.countStakingPositions(),
-                        "walletLedgerRows", mapper.countWalletLedgers(),
-                        "supportTickets", mapper.countSupportTickets(),
-                        "auditLogs", mapper.countAuditLogs()),
-                "sources", List.of(
-                        "nx_user",
-                        "nx_order",
-                        "nx_admin_device_order",
-                        "nx_withdrawal_order",
-                        "nx_exchange_order",
-                        "nx_staking_position",
-                        "nx_wallet_ledger",
-                        "nx_support_ticket",
-                        "nx_audit_log"));
+        return kpiDashboard("7d", null, null, null, null);
+    }
+
+    @Override
+    public Map<String, Object> kpiDashboard(
+            String window, String cohort, String phase, String locale, String ref) {
+        return L1KpiAnalytics.calculate(mapper.selectL1EventFacts(), window, cohort, phase, locale, ref);
+    }
+
+    @Override
+    public Map<String, Object> kpiDrilldown(
+            int kpiId, String window, String cohort, String phase, String locale, String ref) {
+        return L1KpiAnalytics.drilldown(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref);
+    }
+
+    @Override
+    public Map<String, Object> kpiTrend(
+            int kpiId, String window, String cohort, String phase, String locale, String ref) {
+        return L1KpiAnalytics.trend(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref);
     }
 
     private Map<String, Object> funnelDashboard() {
-        return linked(
+        Map<String, Object> dashboard = linked(
                 "module", "L2",
                 "stages", List.of(
-                        stage("registered", mapper.countUsers(), "nx_user"),
-                        stage("profileCompleted", mapper.countUserProfiles(), "nx_user_profile"),
-                        stage("kycSubmitted", mapper.countKycProfiles(), "nx_kyc_profile"),
-                        stage("kycApproved", mapper.countKycProfilesByStatus("APPROVED"), "nx_kyc_profile"),
-                        stage("ordered", mapper.countOrders() + mapper.countAdminDeviceOrders(), "nx_order/nx_admin_device_order"),
-                        stage("walletActivity", mapper.countWalletLedgers() + mapper.countWalletBills(), "nx_wallet_ledger/nx_wallet_bill")),
-                "sources", List.of(
-                        "nx_user",
-                        "nx_user_profile",
-                        "nx_kyc_profile",
-                        "nx_order",
-                        "nx_admin_device_order",
-                        "nx_wallet_ledger",
-                        "nx_wallet_bill"));
+                        stage("registered", mapper.countA4DistinctActors("auth.register_completed"), "nx_event_outbox:auth.register_completed"),
+                        stage("profileCompleted", mapper.countA4DistinctActors("onboarding.profile_completed"), "nx_event_outbox:onboarding.profile_completed"),
+                        stage("kycSubmitted", mapper.countA4DistinctActors("kyc.express_started"), "nx_event_outbox:kyc.express_started"),
+                        stage("kycApproved", mapper.countA4DistinctActors("kyc.express_verified"), "nx_event_outbox:kyc.express_verified"),
+                        stage("ordered", mapper.countA4DistinctActors("checkout.started"), "nx_event_outbox:checkout.started"),
+                        stage("walletActivity", mapper.countA4DistinctActors("wallet.topup_confirmed"), "nx_event_outbox:wallet.topup_confirmed")),
+                "sources", List.of("nx_event_outbox:event_name", "nx_event_schema_registry"));
+        Map<String, Object> analytics = L2FunnelAnalytics.calculate(mapper.selectL2EventFacts());
+        dashboard.put("capabilities", linked(
+                "sameUserFunnel", Boolean.TRUE.equals(analytics.get("available")),
+                "cohortRetention", Boolean.TRUE.equals(analytics.get("available")),
+                "crossAnalysis", Boolean.TRUE.equals(analytics.get("available")),
+                "incompleteRatesAreNull", true));
+        if (Boolean.TRUE.equals(analytics.get("available"))) {
+            dashboard.putAll(analytics);
+            dashboard.put("module", "L2");
+        } else {
+            dashboard.put("degraded", analytics);
+        }
+        return dashboard;
     }
 
     private Map<String, Object> operationsDashboard() {
-        return linked(
-                "module", "L4",
-                "workload", linked(
-                        "supportTickets", mapper.countSupportTickets(),
-                        "openSupportTickets", mapper.countSupportTicketsByStatus("OPEN"),
-                        "conversations", mapper.countConversations(),
+        return operationsDashboard("week", "ALL", null, null);
+    }
+
+    @Override
+    public Map<String, Object> operationsDashboard(String period, String phase, String from, String to) {
+        Map<String, Object> result = new LinkedHashMap<>(
+                L4OperationsAnalytics.calculate(mapper.selectL4EventFacts(), period, phase, from, to));
+        Object deviceValue = result.get("device");
+        if (deviceValue instanceof Map<?, ?> deviceRaw) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> device = (Map<String, Object>) deviceRaw;
+            Object summaryValue = device.get("summary");
+            if (summaryValue instanceof Map<?, ?> summaryRaw) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> summary = (Map<String, Object>) summaryRaw;
+                summary.put("activeDevices", mapper.countActiveUserDevices());
+            }
+        }
+        result.put("liveFacts", linked(
+                        "deviceCatalogItems", mapper.countDevices(),
                         "deviceOrders", mapper.countAdminDeviceOrders(),
-                        "devices", mapper.countDevices(),
-                        "pendingWithdrawals", mapper.countWithdrawalsByStatus("PENDING"),
-                        "auditLogs", mapper.countAuditLogs()),
-                "sources", List.of(
-                        "nx_support_ticket",
-                        "nx_conversation",
-                        "nx_admin_device_order",
-                        "nx_device",
-                        "nx_withdrawal_order",
-                        "nx_audit_log"));
+                        "userDevices", mapper.countUserDevices(),
+                        "activeUserDevices", mapper.countActiveUserDevices(),
+                        "computeTasks", mapper.countComputeTasks(),
+                        "completedComputeTasks", mapper.countCompletedComputeTasks(),
+                        "taskCatalogItems", mapper.countDeviceTaskCatalogItems(),
+                        "teamRelationships", mapper.countTeamRelationships(),
+                        "commissionEvents", mapper.countCommissionEvents(),
+                        "configuredPhases", mapper.countConfiguredPhases(),
+                        "e3ConfigChanges", mapper.countA4Events("admin.tradein_config_changed"),
+                        "tradeinApplications", mapper.countTradeinApplications(),
+                        "completedTradeins", mapper.countCompletedTradeins()));
+        result.put("snapshotSources", List.of(
+                "E device catalog and device ledger",
+                "E task engine",
+                "F team relationship ledger",
+                "H1 phase configuration"));
+        return result;
+    }
+
+    @Override
+    public List<Map<String, Object>> networkTreeRows(String period, int depth, int limit) {
+        return mapper.selectL4NetworkTreeRows(period, depth, limit);
+    }
+
+    @Override
+    public long countRegisteredServerEvent(String eventName) {
+        return mapper.countA4Events(eventName);
     }
 
     private Map<String, Object> behaviorDashboard() {

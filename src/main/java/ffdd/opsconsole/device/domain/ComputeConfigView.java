@@ -11,6 +11,7 @@ public record ComputeConfigView(
     public record FlagView(String key, String label, String desc, boolean enabled, String frontendEffect) {}
     public record CoeffView(String key, String label, String value, String unit, String desc, String frontendEffect) {}
     public record YieldView(String key, String label, String value, String unit) {}
-    public record GpuTierView(String id, String label, String desc, String defaultModel, String tops, List<String> keywords) {}
+    public record GpuTierView(String id, String label, String desc, String defaultModel, String tops, List<KeywordView> keywords) {}
+    public record KeywordView(String slot, String value) {}
     public record DownloadView(String url, String zhTitle, String zhGuide, String enTitle, String enGuide) {}
 }

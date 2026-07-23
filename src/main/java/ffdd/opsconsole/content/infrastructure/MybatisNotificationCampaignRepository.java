@@ -7,6 +7,8 @@ import ffdd.opsconsole.content.domain.NotificationAudienceTarget;
 import ffdd.opsconsole.content.domain.NotificationCapRuleView;
 import ffdd.opsconsole.content.domain.AppNotificationPage;
 import ffdd.opsconsole.content.domain.AppNotificationView;
+import ffdd.opsconsole.content.domain.NotificationActionReceipt;
+import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.dto.NotificationCampaignCreateRequest;
 import ffdd.opsconsole.content.dto.NotificationCampaignDraftRequest;
 import ffdd.opsconsole.content.mapper.NotificationCampaignMapper;
@@ -68,6 +70,7 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
         entity.setBudgetUsd(request.budget());
         entity.setCreatedBy(operator(request.operator()));
         entity.setLastOperator(operator(request.operator()));
+        entity.setRevision(0L);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
@@ -76,26 +79,28 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
-    public void updateDraft(String campaignNo, NotificationCampaignDraftRequest request, long estimatedAudience, LocalDateTime now) {
-        NotificationCampaignEntity entity = findEntity(campaignNo);
-        if (entity == null) {
-            return;
-        }
-        entity.setName(request.name().trim());
-        entity.setKind(request.kind().trim().toLowerCase(Locale.ROOT));
-        entity.setTier(request.tier().trim().toLowerCase(Locale.ROOT));
-        entity.setAudience(encodeAudience(request.audienceTarget()));
-        entity.setReachLabel(String.valueOf(estimatedAudience));
-        entity.setBodyEn(notificationBody(request.titleEn(), request.bodyEn()));
-        entity.setBodyZh(notificationBody(request.titleZh(), request.bodyZh()));
-        entity.setBodyVi(notificationBody(request.titleVi(), request.bodyVi()));
-        entity.setCtaLabel(text(request.ctaLabel()));
-        entity.setCtaHref(text(request.ctaHref()));
-        entity.setBudgetUsd(request.budget());
-        entity.setStatus("DRAFT");
-        entity.setLastOperator(operator(request.operator()));
-        entity.setUpdatedAt(now);
-        campaignMapper.updateById(entity);
+    public boolean updateDraft(
+            String campaignNo,
+            NotificationCampaignDraftRequest request,
+            long estimatedAudience,
+            long expectedRevision,
+            LocalDateTime now) {
+        return campaignMapper.updateDraftIfRevision(
+                campaignNo,
+                request.name().trim(),
+                request.kind().trim().toLowerCase(Locale.ROOT),
+                request.tier().trim().toLowerCase(Locale.ROOT),
+                encodeAudience(request.audienceTarget()),
+                String.valueOf(estimatedAudience),
+                notificationBody(request.titleEn(), request.bodyEn()),
+                notificationBody(request.titleZh(), request.bodyZh()),
+                notificationBody(request.titleVi(), request.bodyVi()),
+                text(request.ctaLabel()),
+                text(request.ctaHref()),
+                request.budget(),
+                operator(request.operator()),
+                expectedRevision,
+                now) == 1;
     }
 
     @Override
@@ -107,8 +112,14 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
-    public boolean deleteDraft(String campaignNo, LocalDateTime now) {
-        return campaignMapper.softDeleteDraft(campaignNo, now) > 0;
+    public boolean deleteDraft(String campaignNo, long expectedRevision, LocalDateTime now) {
+        return campaignMapper.softDeleteDraft(campaignNo, expectedRevision, now) > 0;
+    }
+
+    @Override
+    public boolean scheduleDraft(String campaignNo, String schedule, String operator, long expectedRevision, LocalDateTime now) {
+        return campaignMapper.scheduleDraftIfRevision(
+                campaignNo, schedule, operator(operator), expectedRevision, now) == 1;
     }
 
     @Override
@@ -122,6 +133,7 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
             entity.setScheduleText(schedule.trim());
         }
         entity.setLastOperator(operator(operator));
+        entity.setRevision(revision(entity) + 1);
         entity.setUpdatedAt(now);
         campaignMapper.updateById(entity);
     }
@@ -163,6 +175,12 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
+    public List<NotificationEventFact> listNotificationEventFactsByBizNo(
+            String bizNo, String currentPhase, LocalDateTime now) {
+        return campaignMapper.selectNotificationEventFactsByBizNo(bizNo, currentPhase, now);
+    }
+
+    @Override
     public List<String> listDueScheduledCampaignNos(LocalDateTime now, int limit) {
         return campaignMapper.selectDueScheduledCampaignNos(now, Math.max(1, Math.min(limit, 200)));
     }
@@ -173,13 +191,13 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
-    public boolean claimForImmediateDispatch(String campaignNo, LocalDateTime now) {
-        return campaignMapper.claimForImmediateDispatch(campaignNo, now) > 0;
+    public boolean claimForImmediateDispatch(String campaignNo, long expectedRevision, LocalDateTime now) {
+        return campaignMapper.claimForImmediateDispatch(campaignNo, expectedRevision, now) > 0;
     }
 
     @Override
-    public boolean cancelScheduled(String campaignNo, String operator, LocalDateTime now) {
-        return campaignMapper.cancelScheduled(campaignNo, operator(operator), now) > 0;
+    public boolean cancelScheduled(String campaignNo, String operator, long expectedRevision, LocalDateTime now) {
+        return campaignMapper.cancelScheduled(campaignNo, operator(operator), expectedRevision, now) > 0;
     }
 
     @Override
@@ -193,6 +211,7 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
         entity.setReachLabel(String.valueOf(Math.max(0, sentCount)));
         entity.setScheduleText(schedule);
         entity.setLastOperator(operator(operator));
+        entity.setRevision(revision(entity) + 1);
         entity.setUpdatedAt(now);
         campaignMapper.updateById(entity);
     }
@@ -227,6 +246,28 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     @Override
     public boolean markNotificationRead(Long userId, Long notificationId) {
         return campaignMapper.markUserNotificationRead(userId, notificationId) > 0;
+    }
+
+    @Override
+    public Optional<NotificationEventFact> lockNotificationEventFact(Long userId, Long notificationId) {
+        return Optional.ofNullable(campaignMapper.lockNotificationEventFact(userId, notificationId));
+    }
+
+    @Override
+    public List<NotificationEventFact> lockUnreadNotificationEventFacts(Long userId) {
+        return campaignMapper.lockUnreadNotificationEventFacts(userId);
+    }
+
+    @Override
+    public Optional<NotificationActionReceipt> findNotificationActionReceipt(String idempotencyKey) {
+        return Optional.ofNullable(campaignMapper.findNotificationActionReceipt(idempotencyKey));
+    }
+
+    @Override
+    public boolean recordNotificationAction(
+            Long userId, Long notificationId, String action, String route, String idempotencyKey) {
+        return campaignMapper.insertNotificationActionReceipt(
+                userId, notificationId, action, route, idempotencyKey) > 0;
     }
 
     @Override
@@ -302,7 +343,8 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
                 entity.getBudgetUsd(),
                 target,
                 text(entity.getCtaLabel()),
-                text(entity.getCtaHref()));
+                text(entity.getCtaHref()),
+                revision(entity));
     }
 
     private NotificationCapRuleView toCapView(NotificationCapRuleEntity entity) {
@@ -385,6 +427,10 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
 
     private String operator(String operator) {
         return StringUtils.hasText(operator) ? operator.trim() : "system";
+    }
+
+    private long revision(NotificationCampaignEntity entity) {
+        return entity.getRevision() == null ? 0L : entity.getRevision();
     }
 
     private void applyRetention(Long userId, LocalDateTime now) {

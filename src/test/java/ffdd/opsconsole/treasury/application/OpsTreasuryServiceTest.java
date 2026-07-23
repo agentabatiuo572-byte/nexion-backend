@@ -19,14 +19,15 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
-import ffdd.opsconsole.treasury.dto.TreasuryLedgerAdjustmentRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
@@ -58,6 +59,7 @@ class OpsTreasuryServiceTest {
     private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final RiskTamperSignalFacade riskTamperSignalFacade = mock(RiskTamperSignalFacade.class);
     private final Map<String, String> idempotencyHashes = new LinkedHashMap<>();
     private final Map<String, ApiResult<Map<String, Object>>> idempotencyResponses = new LinkedHashMap<>();
@@ -75,6 +77,7 @@ class OpsTreasuryServiceTest {
                 riskTamperSignalFacade,
                 auditLogService,
                 idempotencyService,
+                eventOutboxService,
                 CLOCK,
                 new TreasuryDualLedgerProperties(),
                 new ObjectMapper(),
@@ -159,20 +162,22 @@ class OpsTreasuryServiceTest {
         ledgerRepository.activeQueueCount = 3L;
         ledgerRepository.avgRiskScore = new BigDecimal("42.4");
         ledgerRepository.pendingCommission = new BigDecimal("80");
+        ledgerRepository.legacyLockOther = new BigDecimal("250");
         ledgerRepository.netFlow = new BigDecimal("-20");
 
         Map<String, Object> dualLedger = service.dualLedger().getData();
 
         Map<String, Object> snapshot = (Map<String, Object>) dualLedger.get("snapshot");
         assertThat(snapshot)
-                .containsEntry("reserveUsd", new BigDecimal("5000.00"))
-                .containsEntry("liabilitiesUsd", new BigDecimal("2607.00"))
+                .containsEntry("reserveUsd", new BigDecimal("4500.00"))
+                .containsEntry("liabilitiesUsd", new BigDecimal("2367.00"))
                 .containsEntry("queueBacklogCount", 3L)
                 .containsEntry("avgRiskScore", 42L);
         assertThat((Iterable<Map<String, Object>>) dualLedger.get("accounts"))
                 .extracting(account -> account.get("key"))
-                .contains("nex_payable")
-                .doesNotContain("nexv2", "premium", "points");
+                .containsExactly("withdrawable_balance", "usdt_staking_principal", "staking_interest",
+                        "genesis_daily_emission", "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other")
+                .doesNotContain("nex_payable", "pending_withdraw", "premium", "points");
         assertThat(dualLedger.get("h1Rhythm"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("currentMonth", 8)
@@ -292,6 +297,7 @@ class OpsTreasuryServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void bDomainAlertAckWritesConfigAndAudits() {
+        ledgerRepository.usdtAvailable = new BigDecimal("6000");
         TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("covered by treasury shift", "superadmin");
 
         ApiResult<Map<String, Object>> result = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
@@ -315,6 +321,7 @@ class OpsTreasuryServiceTest {
 
     @Test
     void bDomainAlertAckReplaysDuplicateIdempotencyWithoutSideEffects() {
+        ledgerRepository.usdtAvailable = new BigDecimal("6000");
         TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("covered by treasury shift", "superadmin");
 
         ApiResult<Map<String, Object>> first = service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert", request);
@@ -330,6 +337,7 @@ class OpsTreasuryServiceTest {
 
     @Test
     void bDomainAlertAckRejectsIdempotencyPayloadMismatch() {
+        ledgerRepository.usdtAvailable = new BigDecimal("6000");
         TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("covered by treasury shift", "superadmin");
         TreasuryAlertAckRequest changed = new TreasuryAlertAckRequest("changed reason", "superadmin");
 
@@ -357,10 +365,10 @@ class OpsTreasuryServiceTest {
         TreasuryInjectionRequest request =
                 new TreasuryInjectionRequest(new BigDecimal("100"), "V-1", "reserve top-up", "superadmin");
 
-        assertThat(service.createInjection(" ", request).getCode())
-                .isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
-        assertThat(service.createInjection("idem-1", new TreasuryInjectionRequest(new BigDecimal("100"), "V-1", " ", "superadmin")).getCode())
-                .isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThatThrownBy(() -> service.createInjection(" ", request))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(400));
+        assertThatThrownBy(() -> service.createInjection("idem-1", new TreasuryInjectionRequest(new BigDecimal("100"), "V-1", " ", "superadmin")))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(400));
     }
 
     @Test
@@ -379,8 +387,8 @@ class OpsTreasuryServiceTest {
                 .containsEntry("newReserveUsd", new BigDecimal("5250.13"));
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("B1_TREASURY_RESERVE_INJECTION");
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("D3_TREASURY_RESERVE_INJECTION");
         assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("reason", "reserve top-up")
@@ -403,7 +411,7 @@ class OpsTreasuryServiceTest {
         assertThat(injection).containsEntry("voucherNo", "V-20260617");
         assertThat((BigDecimal) injection.get("oldReserveUsd")).isEqualByComparingTo(new BigDecimal("5000"));
         assertThat((BigDecimal) injection.get("newReserveUsd")).isEqualByComparingTo(new BigDecimal("5250.13"));
-        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
+        verify(auditLogService, times(1)).recordRequired(any(AuditLogWriteRequest.class));
         assertThat(ledgerRepository.reserveInjections).hasSize(1);
         assertThat(configFacade.upsertedKeys).doesNotContain("wallet.dual-ledger.reserve-usd");
     }
@@ -421,7 +429,7 @@ class OpsTreasuryServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
         assertThat(ledgerRepository.reserveUsd).isEqualByComparingTo(new BigDecimal("5250.13"));
-        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
+        verify(auditLogService, times(1)).recordRequired(any(AuditLogWriteRequest.class));
     }
 
     @Test
@@ -436,6 +444,19 @@ class OpsTreasuryServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("B1_DUAL_LEDGER_SCOPE_CHANGED");
+    }
+
+    @Test
+    void scopeUpdateReplaysSameIdempotencyKeyWithoutDuplicateConfigOrAudit() {
+        TreasuryScopeRequest request = new TreasuryScopeRequest("active liabilities only", "policy change", "superadmin");
+
+        service.updateScope("idem-scope-replay", request);
+        service.updateScope("idem-scope-replay", request);
+
+        assertThat(configFacade.upsertedKeys.stream()
+                .filter("wallet.dual-ledger.scope"::equals)
+                .count()).isEqualTo(1);
+        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
     }
 
     @Test
@@ -457,6 +478,222 @@ class OpsTreasuryServiceTest {
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("B1_DUAL_LEDGER_THRESHOLDS_CHANGED");
         assertThat(captor.getValue().getRiskLevel()).isEqualTo("HIGH");
+    }
+
+    @Test
+    void thresholdUpdateReplaysSameIdempotencyKeyWithoutDuplicateConfigOrAudit() {
+        TreasuryThresholdRequest request = new TreasuryThresholdRequest(
+                new BigDecimal("92.36"), new BigDecimal("112.4"), null, "risk policy", "superadmin");
+
+        service.updateThresholds("idem-threshold-replay", request);
+        service.updateThresholds("idem-threshold-replay", request);
+
+        assertThat(configFacade.upsertedKeys.stream()
+                .filter(key -> key.equals("wallet.dual-ledger.redline-pct")
+                        || key.equals("wallet.dual-ledger.healthy-pct"))
+                .count()).isEqualTo(2);
+        verify(auditLogService, times(1)).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void thresholdUpdateEnforcesThePrdRedAndYellowRanges() {
+        assertThatThrownBy(() -> service.updateThresholds(
+                "idem-threshold-red-low",
+                new TreasuryThresholdRequest(new BigDecimal("79.9"), new BigDecimal("110"), null,
+                        "risk policy", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("redlinePct is out of range");
+        assertThatThrownBy(() -> service.updateThresholds(
+                "idem-threshold-red-high",
+                new TreasuryThresholdRequest(new BigDecimal("150.1"), new BigDecimal("160"), null,
+                        "risk policy", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("redlinePct is out of range");
+        assertThatThrownBy(() -> service.updateThresholds(
+                "idem-threshold-yellow-low",
+                new TreasuryThresholdRequest(new BigDecimal("90"), new BigDecimal("99.9"), null,
+                        "risk policy", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("healthyPct is out of range");
+        assertThatThrownBy(() -> service.updateThresholds(
+                "idem-threshold-yellow-high",
+                new TreasuryThresholdRequest(new BigDecimal("120"), new BigDecimal("200.1"), null,
+                        "risk policy", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("healthyPct is out of range");
+        assertThat(configFacade.upsertedKeys)
+                .doesNotContain("wallet.dual-ledger.redline-pct", "wallet.dual-ledger.healthy-pct");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void thresholdUpdateAcceptsBothInclusivePrdBoundaries() {
+        ApiResult<Map<String, Object>> minimums = service.updateThresholds(
+                "idem-threshold-minimums",
+                new TreasuryThresholdRequest(new BigDecimal("80"), new BigDecimal("100"), null,
+                        "risk policy", "superadmin"));
+        ApiResult<Map<String, Object>> maximums = service.updateThresholds(
+                "idem-threshold-maximums",
+                new TreasuryThresholdRequest(new BigDecimal("150"), new BigDecimal("200"), null,
+                        "risk policy", "superadmin"));
+
+        assertThat(minimums.getCode()).isZero();
+        assertThat(maximums.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("wallet.dual-ledger.redline-pct", "150.0")
+                .containsEntry("wallet.dual-ledger.healthy-pct", "200.0");
+        verify(auditLogService, times(2)).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void d3CanonicalReadModelsExposeReserveEightLiabilitiesAndWindowedForecastsWithoutCoverage() {
+        ledgerRepository.usdtAvailable = new BigDecimal("1000");
+        ledgerRepository.stakingPrincipal = new BigDecimal("500");
+        ledgerRepository.stakingInterest = new BigDecimal("50");
+        ledgerRepository.nexLocked = new BigDecimal("100");
+        ledgerRepository.nexReward = new BigDecimal("25");
+        ledgerRepository.withdrawalQueue = new BigDecimal("300");
+        ledgerRepository.pendingCommission = new BigDecimal("80");
+        ledgerRepository.pendingWithdraw = new BigDecimal("40");
+        ledgerRepository.injectedCumulative = new BigDecimal("250");
+        ledgerRepository.genesisDaily = new BigDecimal("12.50");
+
+        Map<String, Object> reserve = service.reserve().getData();
+        Map<String, Object> liabilities = service.liabilities(true).getData();
+        Map<String, Object> maturity = service.maturityForecast("30d").getData();
+        Map<String, Object> exposure = service.netExposure("90d").getData();
+
+        assertThat(reserve)
+                .containsKeys("usdtReserveUsdt", "otherLiquidUsdt", "injectedCumulativeUsdt", "reserveTotalUsdt", "asOf", "waterLevel")
+                .doesNotContainKeys("coverageRatio", "redlinePct", "healthyPct");
+        assertThat((List<Map<String, Object>>) liabilities.get("breakdown"))
+                .extracting(row -> row.get("category"))
+                .containsExactly("withdrawable_balance", "usdt_staking_principal", "staking_interest", "genesis_daily_emission",
+                        "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other");
+        assertThat((List<Map<String, Object>>) maturity.get("daily")).hasSize(30)
+                .allSatisfy(row -> assertThat(row).containsKeys("date", "withdrawDueUsdt", "interestDueUsdt", "genesisDividendUsdt"));
+        assertThat(maturity).containsKeys("cumulative", "reserveCoverDays", "farLiabilityExcluded");
+        assertThat((List<Map<String, Object>>) exposure.get("series")).hasSize(90);
+        assertThat(exposure).doesNotContainKey("coverageRatio");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void d3ForecastConfigIsStructuredVersionedAndReasonBounded() {
+        TreasuryForecastConfigRequest request = new TreasuryForecastConfigRequest(
+                Map.of("usdt", true, "otherLiquid", false),
+                Map.of(
+                        "withdrawable_balance", true,
+                        "usdt_staking_principal", true,
+                        "staking_interest", true,
+                        "genesis_daily_emission", true,
+                        "nex_v2_future", true,
+                        "withdrawal_queue", true,
+                        "commission_cooling", true,
+                        "lock_other", true),
+                "30d", true, false, "LINEAR", false,
+                0L, "调整未来三十天资金预测口径", "finance-lead");
+
+        assertThatThrownBy(() -> service.updateForecastConfig("idem-config-short", new TreasuryForecastConfigRequest(
+                null, null, "7d", true, false, "LINEAR", false, 0L, "太短", "finance-lead")))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(400));
+
+        Map<String, Object> response = service.updateForecastConfig("idem-config-1", request).getData();
+
+        assertThat(response).containsKeys("before", "after", "forecastDeltaPreview", "effectiveAt", "version");
+        assertThat(response).containsEntry("effectiveAt", Instant.parse("2026-06-18T00:00:00Z"));
+        assertThat((Map<String, Object>) response.get("after"))
+                .containsEntry("forecastWindow", "30d")
+                .containsEntry("stakingInterestMode", "LINEAR");
+        assertThat(configFacade.values)
+                .doesNotContainKey("treasury.d3.forecast-config")
+                .containsKey("treasury.d3.forecast-config.pending")
+                .containsEntry("treasury.d3.forecast-config.pending-effective-at", "2026-06-18T00:00:00Z");
+        assertThat(service.forecastConfig().getData())
+                .containsEntry("forecastWindow", "7d")
+                .containsEntry("pendingEffectiveAt", Instant.parse("2026-06-18T00:00:00Z"));
+        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+        verify(eventOutboxService).publish(eq("TREASURY_CONFIG"), eq("D3"), eq("admin.treasury_forecast_config_changed"), any());
+    }
+
+    @Test
+    void d3ForecastConfigRejectsStaleVersionBeforeCreatingANewPendingRevision() {
+        configFacade.values.put("treasury.d3.forecast-config.version", "4");
+        TreasuryForecastConfigRequest stale = new TreasuryForecastConfigRequest(
+                null, null, "30d", true, false, "AT_MATURITY", true,
+                3L, "并发修改时必须拒绝旧版本请求", "finance-lead");
+
+        assertThatThrownBy(() -> service.updateForecastConfig("idem-config-stale", stale))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(409));
+
+        assertThat(configFacade.values).doesNotContainKey("treasury.d3.forecast-config.pending");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void bDomainAlertAckRejectsHealthyCoverageWithoutWritingPseudoDisposition() {
+        TreasuryAlertAckRequest request = new TreasuryAlertAckRequest("no active alert to acknowledge", "superadmin");
+
+        ApiResult<Map<String, Object>> result =
+                service.acknowledgeBDomainAlert("coverage-redline", "idem-b-alert-healthy", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("B_ALERT_NOT_ACTIVE");
+        assertThat(configFacade.values).doesNotContainKey("wallet.dual-ledger.alert.coverage-redline.ack");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void d3DuePendingConfigIsPromotedClearedAndSnapshottedExactlyOnce() throws Exception {
+        String pending = new ObjectMapper().writeValueAsString(Map.of(
+                "reserveCategories", Map.of("usdt", true, "otherLiquid", false),
+                "liabilityCategories", Map.of(
+                        "withdrawable_balance", true, "usdt_staking_principal", true,
+                        "staking_interest", true, "genesis_daily_emission", true,
+                        "nex_v2_future", true, "withdrawal_queue", true,
+                        "commission_cooling", true, "lock_other", true),
+                "forecastWindow", "30d", "genesisIncluded", true,
+                "includeFarLiabilities", false, "stakingInterestMode", "AT_MATURITY",
+                "trialStressEnabled", true));
+        configFacade.values.put("treasury.d3.forecast-config.version", "5");
+        configFacade.values.put("treasury.d3.forecast-config.active-version", "4");
+        configFacade.values.put("treasury.d3.forecast-config.pending-version", "5");
+        configFacade.values.put("treasury.d3.forecast-config.pending", pending);
+        configFacade.values.put("treasury.d3.forecast-config.pending-effective-at", "2026-06-16T00:00:00Z");
+
+        Map<String, Object> response = service.forecastConfig().getData();
+
+        assertThat(response)
+                .containsEntry("forecastWindow", "30d")
+                .containsEntry("version", 5L)
+                .containsEntry("effectiveVersion", 5L)
+                .doesNotContainKeys("pendingConfig", "pendingEffectiveAt", "pendingVersion");
+        assertThat(configFacade.values)
+                .containsEntry("treasury.d3.forecast-config.pending", "")
+                .containsEntry("treasury.d3.forecast-config.pending-effective-at", "")
+                .containsEntry("treasury.d3.forecast-config.pending-version", "")
+                .containsKey("treasury.d3.forecast-config.snapshot.5");
+    }
+
+    @Test
+    void d3InjectionRejectsMissingShortOrDuplicateVoucherWithoutSideEffects() {
+        BigDecimal before = ledgerRepository.reserveUsd;
+
+        assertThatThrownBy(() -> service.createInjection("idem-empty", new TreasuryInjectionRequest(
+                new BigDecimal("10"), " ", "登记真实到账凭证并纳入储备", "finance-lead")))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(400));
+        assertThatThrownBy(() -> service.createInjection("idem-short", new TreasuryInjectionRequest(
+                new BigDecimal("10"), "BANK-20260720-001", "短", "finance-lead")))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(400));
+        ledgerRepository.vouchers.add("BANK-20260720-001");
+        assertThatThrownBy(() -> service.createInjection("idem-duplicate", new TreasuryInjectionRequest(
+                new BigDecimal("10"), "BANK-20260720-001", "登记真实到账凭证并纳入储备", "finance-lead")))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(409));
+
+        assertThat(ledgerRepository.reserveUsd).isEqualByComparingTo(before);
+        assertThat(ledgerRepository.reserveInjections).isEmpty();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -548,6 +785,136 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void b5RiskRadarUsesOnlyCurrentK4EffectiveScoresAndKeepsDecisionEvidenceSeparate() {
+        ledgerRepository.k4RiskScoreSnapshot = Map.ofEntries(
+                Map.entry("modelVersion", "k4-v23"),
+                Map.entry("totalUsers", 6L),
+                Map.entry("bandLowMax", 35),
+                Map.entry("bandHighMin", 65),
+                Map.entry("autoEscalateScore", 80),
+                Map.entry("autoEscalated", 1L),
+                Map.entry("highRisk", 1L),
+                Map.entry("mediumRisk", 2L),
+                Map.entry("lowRisk", 3L),
+                Map.entry("flaggedAccounts", 3L),
+                Map.entry("activeOverrides", 1L),
+                Map.entry("staleScoreUsers", 1L));
+        ledgerRepository.riskSeverityRows = List.of(
+                Map.of("nm", "P1", "v", 9L, "c", "var(--warning)"));
+
+        Map<String, Object> riskRadar =
+                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+
+        assertThat(riskRadar)
+                .containsEntry("k4ScoringAvailable", true)
+                .containsEntry("k4ModelVersion", "k4-v23")
+                .containsEntry("k4BandLowMax", 35)
+                .containsEntry("k4BandHighMin", 65)
+                .containsEntry("k4AutoEscalateScore", 80)
+                .containsEntry("k4AutoEscalatedAccounts", 1L)
+                .containsEntry("flaggedAccounts", 3L)
+                .containsEntry("k4ActiveOverrides", 1L)
+                .containsEntry("k4StaleScoreUsers", 1L);
+        assertThat((List<Map<String, Object>>) riskRadar.get("severity"))
+                .extracting(row -> row.get("nm") + ":" + row.get("v"))
+                .containsExactly("高风险:1", "中风险:2", "低风险:3");
+        assertThat((List<Map<String, Object>>) riskRadar.get("decisionSeverity"))
+                .extracting(row -> row.get("nm") + ":" + row.get("v"))
+                .containsExactly("P1:9");
+        assertThat((List<Map<String, Object>>) riskRadar.get("feed"))
+                .anySatisfy(row -> assertThat(row)
+                        .containsEntry("href", "/risk/scoring")
+                        .containsEntry("sev", "p0")
+                        .satisfies(item -> assertThat(item.get("t").toString())
+                                .contains("自动升级线 80", "1 个账户", "k4-v23")))
+                .anySatisfy(row -> assertThat(row.get("t").toString()).contains("1 个账户等待当前模型重算"));
+        assertThat((List<String>) riskRadar.get("sources"))
+                .contains("nx_admin_risk_score_user:current-model",
+                        "nx_admin_risk_score_user:fresh-current-model",
+                        "nx_admin_risk_score_model:active-thresholds",
+                        "nx_admin_risk_score_override:active",
+                        "nx_risk_decision");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void b5RiskRadarFailsClosedWhenTheK4ActiveSnapshotIsUnavailable() {
+        ledgerRepository.k4RiskScoreSnapshot = Map.of();
+
+        Map<String, Object> riskRadar =
+                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+
+        assertThat(riskRadar)
+                .containsEntry("k4ScoringAvailable", false)
+                .containsEntry("flaggedAccounts", 0L);
+        assertThat((List<Map<String, Object>>) riskRadar.get("severity")).isEmpty();
+        assertThat((List<Map<String, Object>>) riskRadar.get("feed"))
+                .anySatisfy(row -> assertThat(row)
+                        .containsEntry("sev", "p1")
+                        .containsEntry("href", "/risk/scoring")
+                        .satisfies(item -> assertThat(item.get("t").toString()).contains("停止推测")));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void b5RiskRadarProjectsRecentK5ThresholdSlaAndBurstAlertsInStableOrderAndLimit() {
+        ledgerRepository.k5KycAlerts = List.of(
+                k5Alert("threshold-hit:T-6", "warn", "KYC 复审追加触发 · T-6", "阈值再次命中", "2026-06-17 08:06", 0),
+                k5Alert("sla-breach:T-5", "bad", "KYC 复审 SLA 逾期 · T-5", "已超过处理期限", "2026-06-17 08:05", 0),
+                k5Alert("large-withdraw-burst:202606170804", "bad", "大额提现集中触发 KYC 复审", "最近一小时达到集中阈值", "2026-06-17 08:04", 0),
+                k5Alert("threshold-hit:T-3", "warn", "KYC 复审已触发 · T-3", "评分阈值命中", "2026-06-17 08:03", 0),
+                k5Alert("sla-breach:T-2", "bad", "KYC 复审 SLA 逾期 · T-2", "已超过处理期限", "2026-06-17 08:02", 0),
+                k5Alert("threshold-hit:T-1", "warn", "KYC 复审已触发 · T-1", "评分阈值命中", "2026-06-17 08:01", 0));
+
+        Map<String, Object> riskRadar =
+                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+        List<Map<String, Object>> k5Feed = ((List<Map<String, Object>>) riskRadar.get("feed")).stream()
+                .filter(row -> "K5".equals(row.get("domain")))
+                .toList();
+
+        assertThat(k5Feed).hasSize(5);
+        assertThat(k5Feed).extracting(row -> row.get("eventKey"))
+                .containsExactly("threshold-hit:T-6", "sla-breach:T-5", "large-withdraw-burst:202606170804",
+                        "threshold-hit:T-3", "sla-breach:T-2");
+        assertThat(k5Feed).allSatisfy(row -> assertThat(row)
+                .containsEntry("domain", "K5")
+                .containsEntry("href", "/risk/kyc-review")
+                .containsEntry("route", "/risk/kyc-review")
+                .containsKeys("sev", "severityLabel", "t", "m"));
+        assertThat(k5Feed.get(0)).containsEntry("sev", "p2").containsEntry("severityLabel", "中风险");
+        assertThat(k5Feed.get(1)).containsEntry("sev", "p1").containsEntry("severityLabel", "高风险");
+        assertThat((List<String>) riskRadar.get("sources")).contains("nx_admin_risk_kyc_alert:active-recent");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void b5RiskRadarKeepsK5ProjectionEmptyWhenNoActiveRecentAlertExists() {
+        ledgerRepository.k5KycAlerts = List.of();
+
+        Map<String, Object> riskRadar =
+                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+
+        assertThat((List<Map<String, Object>>) riskRadar.get("feed"))
+                .noneSatisfy(row -> assertThat(row).containsEntry("domain", "K5"));
+        assertThat((List<String>) riskRadar.get("sources")).contains("nx_admin_risk_kyc_alert:active-recent");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void b5RiskRadarNeverProjectsDeletedOrUnsupportedK5Alerts() {
+        ledgerRepository.k5KycAlerts = List.of(
+                k5Alert("threshold-hit:T-DELETED", "warn", "已删除告警", "不应展示", "2026-06-17 08:00", 1),
+                k5Alert("manual-note:T-OTHER", "bad", "非三类告警", "不应展示", "2026-06-17 07:59", 0));
+
+        Map<String, Object> riskRadar =
+                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
+
+        assertThat((List<Map<String, Object>>) riskRadar.get("feed"))
+                .noneSatisfy(row -> assertThat(row).containsEntry("domain", "K5"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void b5RiskRadarFallsBackToTheSameSafeBandsAsJ1WhenStoredValuesAreAbnormal() {
         configFacade.values.put("risk.bankrun-yellow-pct", "50");
         configFacade.values.put("risk.bankrun-red-pct", "45");
@@ -563,7 +930,7 @@ class OpsTreasuryServiceTest {
     @Test
     void thresholdUpdateRejectsEqualRedlineAndHealthy() {
         TreasuryThresholdRequest request = new TreasuryThresholdRequest(
-                new BigDecimal("95"), new BigDecimal("95"), null, "risk policy", "superadmin");
+                new BigDecimal("110"), new BigDecimal("110"), null, "risk policy", "superadmin");
 
         ApiResult<Map<String, Object>> result = service.updateThresholds("idem-threshold", request);
 
@@ -598,7 +965,7 @@ class OpsTreasuryServiceTest {
         assertThat(result.getData().getTotal()).isEqualTo(1);
         assertThat(result.getData().getRecords()).extracting(TreasuryLedgerBillView::bizNo).containsExactly("WD-1");
         assertThat(result.getData().getRecords()).extracting(TreasuryLedgerBillView::userNo).containsExactly("U00010001");
-        assertThat(ledgerRepository.lastBillType).isEqualTo("WITHDRAWAL");
+        assertThat(ledgerRepository.lastBillType).isEqualTo("withdraw");
         assertThat(ledgerRepository.lastBillUserId).isEqualTo(10001L);
         assertThat(ledgerRepository.lastBillKeyword).isEqualTo("WD");
     }
@@ -613,78 +980,89 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
-    void ledgerAdjustmentCreatesPendingReviewAndAudits() {
-        TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
-                10001L,
-                "USDT",
-                "credit",
-                new BigDecimal("12.3456789"),
-                "WD-1",
-                "ledger repair after reconciliation",
-                "superadmin");
+    void ledgerBillsCsvRejectsShortReasonBeforeReadingOrAuditing() {
+        assertThatThrownBy(() -> service.ledgerBillsCsv(
+                new TreasuryLedgerQueryRequest(null, null, null, 1, 20), "short"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("D4_EXPORT_REASON_LENGTH_INVALID");
 
-        ApiResult<Map<String, Object>> result = service.createLedgerAdjustment("idem-d4", request);
+        assertThat(ledgerRepository.lastBillType).isNull();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void ledgerBillsCsvMasksUserAndWritesRequiredUnifiedExportAudit() {
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                1L, 10001L, "U00010001", "不应出现在导出中的昵称", "WD-1", "WITHDRAWAL", "USDT", "OUT",
+                new BigDecimal("25.5"), new BigDecimal("74.5"), "SUCCESS", "withdraw completed",
+                LocalDateTime.now(CLOCK), LocalDateTime.now(CLOCK)));
+
+        String csv = new String(service.ledgerBillsCsv(
+                new TreasuryLedgerQueryRequest(null, null, null, 1, 20),
+                "99105 L5验收七类账单脱敏导出"), java.nio.charset.StandardCharsets.UTF_8);
+
+        assertThat(csv)
+                .contains("bill_id,user_masked,bill_type")
+                .contains("U******01")
+                .doesNotContain("U00010001", "不应出现在导出中的昵称");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("admin.report_exported");
+        assertThat(detailMap(captor.getValue().getDetail()))
+                .containsEntry("exportType", "BILL_CSV")
+                .containsEntry("containsPii", true)
+                .containsEntry("maskingPolicy", "MASKED")
+                .containsEntry("rowCount", 1)
+                .containsEntry("reason", "99105 L5验收七类账单脱敏导出");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void d4RunningBalanceDetectsInternalBreakAndReconcilesAgainstWalletTruth() {
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                1L, 10001L, "U00010001", "测试用户", "TOPUP-1", "CARD_TOPUP", "USDT", "IN",
+                new BigDecimal("100"), new BigDecimal("100"), "POSTED", "topup",
+                LocalDateTime.parse("2026-06-15T10:00:00"), LocalDateTime.parse("2026-06-15T10:00:00")));
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                2L, 10001L, "U00010001", "测试用户", "WD-1", "WITHDRAWAL", "USDT", "OUT",
+                new BigDecimal("20"), new BigDecimal("79"), "POSTED", "withdraw",
+                LocalDateTime.parse("2026-06-16T10:00:00"), LocalDateTime.parse("2026-06-16T10:00:00")));
+        ledgerRepository.actualBalances.put("10001:USDT", new BigDecimal("80"));
+
+        ApiResult<Map<String, Object>> result = service.runningBalance(10001L);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData())
-                .containsEntry("userId", 10001L)
-                .containsEntry("asset", "USDT")
-                .containsEntry("direction", "CREDIT")
-                .containsEntry("amount", new BigDecimal("12.345679"))
-                .containsEntry("status", "PENDING_REVIEW");
-        assertThat(ledgerRepository.adjustments).hasSize(1);
-        assertThat(ledgerRepository.adjustments.get(0))
-                .containsEntry("userId", 10001L)
-                .containsEntry("relatedBizNo", "WD-1");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("D4_LEDGER_ADJUSTMENT_CREATED");
-        assertThat(detailMap(captor.getValue().getDetail()))
-                .containsEntry("reason", "ledger repair after reconciliation")
-                .containsEntry("idempotencyKey", "idem-d4");
+        assertThat(result.getData()).containsEntry("breakCount", 2);
+        Map<String, Object> reconciliation = (Map<String, Object>) result.getData().get("reconciliation");
+        assertThat(reconciliation).containsEntry("USDT", new BigDecimal("1"));
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("rows");
+        assertThat(rows.get(1)).containsEntry("breakDetected", true)
+                .containsEntry("expectedBalanceAfter", new BigDecimal("80"));
     }
 
     @Test
-    void ledgerAdjustmentRejectsMissingOperator() {
-        TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
-                10001L,
-                "USDT",
-                "credit",
-                new BigDecimal("12.345678"),
-                "WD-1",
-                "ledger repair after reconciliation",
-                " ");
+    @SuppressWarnings("unchecked")
+    void d4UserLedgerAlwaysReturnsAllSevenBillTypesForBothCanonicalAssets() {
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                1L, 10001L, "U00010001", "测试用户", "TOPUP-1", "CARD_TOPUP", "USDT", "IN",
+                new BigDecimal("100"), new BigDecimal("100"), "POSTED", "topup",
+                LocalDateTime.parse("2026-06-15T10:00:00"), LocalDateTime.parse("2026-06-15T10:00:00")));
 
-        ApiResult<Map<String, Object>> result = service.createLedgerAdjustment("idem-d4", request);
+        ApiResult<Map<String, Object>> result = service.userLedger(10001L);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.OPERATOR_REQUIRED.name());
-        assertThat(ledgerRepository.adjustments).isEmpty();
-        verifyNoInteractions(auditLogService);
-    }
-
-    @Test
-    void ledgerAdjustmentRejectsCreditWhenBaseConfigWouldBreachRedline() {
-        OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        ledgerRepository.reserveUsd = BigDecimal.ZERO;
-        ledgerRepository.usdtAvailable = new BigDecimal("100");
-        TreasuryLedgerAdjustmentRequest request = new TreasuryLedgerAdjustmentRequest(
-                10001L,
-                "USDT",
-                "credit",
-                new BigDecimal("12.345678"),
-                "WD-1",
-                "ledger repair after reconciliation",
-                "superadmin");
-
-        ApiResult<Map<String, Object>> result = realOnlyService.createLedgerAdjustment("idem-d4-redline", request);
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("B1_COVERAGE_REDLINE_BREACHED");
-        assertThat(ledgerRepository.adjustments).isEmpty();
-        assertThat(configFacade.upsertedKeys).isEmpty();
-        verifyNoInteractions(auditLogService);
+        assertThat(result.getCode()).isZero();
+        Map<String, BigDecimal> categorySums =
+                (Map<String, BigDecimal>) result.getData().get("categorySums");
+        assertThat(categorySums).hasSize(14)
+                .containsEntry("swap:USDT", BigDecimal.ZERO)
+                .containsEntry("swap:NEX", BigDecimal.ZERO)
+                .containsEntry("topup:USDT", new BigDecimal("100"))
+                .containsEntry("topup:NEX", BigDecimal.ZERO)
+                .containsEntry("withdraw:USDT", BigDecimal.ZERO)
+                .containsEntry("earning:USDT", BigDecimal.ZERO)
+                .containsEntry("commission:USDT", BigDecimal.ZERO)
+                .containsEntry("refund:USDT", BigDecimal.ZERO)
+                .containsEntry("bonus:USDT", BigDecimal.ZERO);
     }
 
     @SuppressWarnings("unchecked")
@@ -861,6 +1239,7 @@ class OpsTreasuryServiceTest {
         private BigDecimal usdtAvailable = BigDecimal.ZERO;
         private BigDecimal pendingWithdraw = BigDecimal.ZERO;
         private BigDecimal nexAvailable = BigDecimal.ZERO;
+        private BigDecimal legacyLockOther = BigDecimal.ZERO;
         private BigDecimal stakingPrincipal = BigDecimal.ZERO;
         private BigDecimal stakingInterest = BigDecimal.ZERO;
         private BigDecimal nexLocked = BigDecimal.ZERO;
@@ -871,13 +1250,19 @@ class OpsTreasuryServiceTest {
         private BigDecimal pendingCommission = BigDecimal.ZERO;
         private BigDecimal netFlow = BigDecimal.ZERO;
         private BigDecimal reserveUsd = new BigDecimal("5000");
+        private BigDecimal injectedCumulative = BigDecimal.ZERO;
+        private BigDecimal genesisDaily = BigDecimal.ZERO;
         private BigDecimal nexUsdRate = new BigDecimal("0.17");
         private final List<TreasuryLedgerBillView> bills = new ArrayList<>();
-        private final List<Map<String, Object>> adjustments = new ArrayList<>();
+        private final Map<String, BigDecimal> actualBalances = new LinkedHashMap<>();
         private final List<Map<String, Object>> reserveInjections = new ArrayList<>();
+        private final java.util.Set<String> vouchers = new java.util.HashSet<>();
         private String lastBillType;
         private Long lastBillUserId;
         private String lastBillKeyword;
+        private Map<String, Object> k4RiskScoreSnapshot = Map.of();
+        private List<Map<String, Object>> riskSeverityRows = List.of();
+        private List<Map<String, Object>> k5KycAlerts = List.of();
 
         @Override
         public long countDeposits(LocalDateTime since, String status) {
@@ -912,6 +1297,11 @@ class OpsTreasuryServiceTest {
         @Override
         public BigDecimal sumNexAvailable() {
             return nexAvailable;
+        }
+
+        @Override
+        public BigDecimal legacyLockOtherLiabilityUsd() {
+            return legacyLockOther;
         }
 
         @Override
@@ -981,7 +1371,17 @@ class OpsTreasuryServiceTest {
 
         @Override
         public List<Map<String, Object>> riskSeverityBuckets(LocalDateTime since) {
-            return List.of();
+            return riskSeverityRows;
+        }
+
+        @Override
+        public Map<String, Object> currentK4RiskScoreSnapshot() {
+            return k4RiskScoreSnapshot;
+        }
+
+        @Override
+        public List<Map<String, Object>> recentK5KycAlerts(LocalDateTime since, int limit) {
+            return k5KycAlerts.stream().limit(limit).toList();
         }
 
         @Override
@@ -995,6 +1395,21 @@ class OpsTreasuryServiceTest {
         }
 
         @Override
+        public BigDecimal injectedCumulativeUsd() {
+            return injectedCumulative;
+        }
+
+        @Override
+        public BigDecimal genesisDailyLiabilityUsd() {
+            return genesisDaily;
+        }
+
+        @Override
+        public boolean reserveVoucherExists(String voucherNo) {
+            return vouchers.contains(voucherNo);
+        }
+
+        @Override
         public Optional<BigDecimal> latestNexUsdtPrice() {
             return Optional.ofNullable(nexUsdRate);
         }
@@ -1003,6 +1418,8 @@ class OpsTreasuryServiceTest {
         public void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
             BigDecimal normalized = amountUsd.setScale(2, java.math.RoundingMode.HALF_UP);
             reserveUsd = reserveUsd.add(normalized);
+            injectedCumulative = injectedCumulative.add(normalized);
+            vouchers.add(voucherNo);
             reserveInjections.add(Map.of(
                     "voucherNo", voucherNo,
                     "amountUsd", normalized,
@@ -1041,17 +1458,9 @@ class OpsTreasuryServiceTest {
         }
 
         @Override
-        public void createLedgerAdjustment(String adjustmentNo, Long userId, String asset, String direction,
-                                           BigDecimal amount, String relatedBizNo, String reason, String operator) {
-            adjustments.add(Map.of(
-                    "adjustmentNo", adjustmentNo,
-                    "userId", userId,
-                    "asset", asset,
-                    "direction", direction,
-                    "amount", amount,
-                    "relatedBizNo", relatedBizNo,
-                    "reason", reason,
-                    "operator", operator));
+        public Optional<BigDecimal> actualUserBalance(Long userId, String asset) {
+            return Optional.ofNullable(actualBalances.get(userId + ":" + asset))
+                    .or(() -> currentUserBalance(userId, asset));
         }
 
         @Override
@@ -1074,5 +1483,16 @@ class OpsTreasuryServiceTest {
                     LocalDateTime.now(CLOCK)));
         }
 
+    }
+
+    private static Map<String, Object> k5Alert(
+            String eventKey, String tone, String title, String body, String timeText, int isDeleted) {
+        return Map.of(
+                "eventKey", eventKey,
+                "tone", tone,
+                "title", title,
+                "body", body,
+                "timeText", timeText,
+                "isDeleted", isDeleted);
     }
 }

@@ -13,15 +13,20 @@ import ffdd.opsconsole.content.domain.ContentExperimentRuntimeRepository.Variant
 import ffdd.opsconsole.content.domain.CopyAudienceTarget;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.WeekFields;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +45,7 @@ public class AppCopyExperimentService {
     private final CopyAudiencePhaseProvider phaseProvider;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final EventOutboxService eventOutboxService;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppCopyDeliveryView> deliver(long userId, String copyKey) {
@@ -104,6 +110,9 @@ public class AppCopyExperimentService {
                 normalizedConversionKey,
                 assignment.variant(),
                 LocalDateTime.now(clock));
+        if (counted) {
+            publishConversionEvent(userId, assignment, normalizedConversionKey);
+        }
         if (!counted && !repository.isEligibleConversionOrder(userId, normalizedConversionKey)) {
             return ApiResult.fail(422, "CONTENT_EXPERIMENT_CONVERSION_ORDER_INVALID");
         }
@@ -123,10 +132,67 @@ public class AppCopyExperimentService {
                     : ApiResult.ok(view(published, null));
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        if (assignment.exposedAt() == null) {
-            repository.markExposedIfFirst(assignment.experimentId(), assignment.userId(), now);
+        if (assignment.exposedAt() == null
+                && repository.markExposedIfFirst(assignment.experimentId(), assignment.userId(), now)) {
+            publishExposureEvent(copyKey, assignment);
         }
         return ApiResult.ok(view(body, assignment));
+    }
+
+    private void publishExposureEvent(String copyKey, Assignment assignment) {
+        publishUserEvent(
+                assignment.userId(),
+                assignment.experimentId(),
+                "content.variant_exposed",
+                Map.of(
+                        "experiment_id", assignment.experimentId(),
+                        "variant", assignment.variant(),
+                        "copy_key", copyKey,
+                        "copy_version", assignment.copyVersion(),
+                        "bucket_no", assignment.bucket()));
+    }
+
+    private void publishConversionEvent(long userId, Assignment assignment, String conversionKey) {
+        publishUserEvent(
+                userId,
+                assignment.experimentId(),
+                "content.variant_converted",
+                Map.of(
+                        "experiment_id", assignment.experimentId(),
+                        "variant", assignment.variant(),
+                        "order_id", conversionKey,
+                        "paid_or_completed_at", LocalDateTime.now(clock).toString()));
+    }
+
+    private void publishUserEvent(
+            long userId,
+            String experimentId,
+            String eventName,
+            Map<String, Object> payload) {
+        UserAudienceProfile user = repository.findUserAudienceProfile(userId)
+                .orElseThrow(() -> new IllegalStateException("CONTENT_EXPERIMENT_USER_NOT_FOUND"));
+        String phase = phaseProvider.currentPhase();
+        LocalDate registeredDate = user.registeredAt().toLocalDate();
+        LocalDate currentDate = LocalDateTime.now(clock).toLocalDate();
+        int accountAgeMonths = Math.toIntExact(Math.max(0L, ChronoUnit.MONTHS.between(registeredDate, currentDate)));
+        WeekFields iso = WeekFields.ISO;
+        String cohort = String.format(
+                Locale.ROOT,
+                "%d-W%02d",
+                registeredDate.get(iso.weekBasedYear()),
+                registeredDate.get(iso.weekOfWeekBasedYear()));
+        Map<String, Object> eventPayload = new java.util.LinkedHashMap<>(payload);
+        eventPayload.put("source", "server_copy_experiment");
+        eventPayload.put("locale", normalizedLanguage(user.language()));
+        eventOutboxService.publishUserEvent(
+                "CONTENT_EXPERIMENT",
+                experimentId,
+                eventName,
+                userId,
+                phase,
+                accountAgeMonths,
+                cohort,
+                eventPayload);
     }
 
     private boolean matchesAudience(UserAudienceProfile user, String audienceJson) {

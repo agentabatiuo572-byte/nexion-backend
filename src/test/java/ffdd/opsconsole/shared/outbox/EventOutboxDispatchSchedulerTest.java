@@ -51,6 +51,45 @@ class EventOutboxDispatchSchedulerTest {
         verify(service).markPublished("event-tamper");
     }
 
+    @Test
+    void c2HighRiskMessagesUseTheDurableDispatchAndPublicationState() {
+        EventOutboxMessage message = message("event-c2");
+        String eventType = "admin.user_impersonation_ended";
+        message.setEventType(eventType);
+        when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+
+        scheduler.dispatchPending();
+
+        verify(publisher).publishEvent(message);
+        verify(service).markPublished("event-c2");
+    }
+
+    @Test
+    void c5SecurityMessagesUseTheDurableDispatchAndPublicationState() {
+        EventOutboxMessage message = message("event-c5");
+        String eventType = "auth.refresh_token_reuse_detected";
+        message.setEventType(eventType);
+        when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+
+        scheduler.dispatchPending();
+
+        verify(publisher).publishEvent(message);
+        verify(service).markPublished("event-c5");
+    }
+
+    @Test
+    void h3CanonicalQuestFactsUseTheDurableDispatchAndPublicationState() {
+        EventOutboxMessage message = message("event-h3");
+        String eventType = "H8_REFERRAL_REWARD_SETTLED";
+        message.setEventType(eventType);
+        when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+
+        scheduler.dispatchPending();
+
+        verify(publisher).publishEvent(message);
+        verify(service).markPublished("event-h3");
+    }
+
     private EventOutboxMessage message(String eventId) {
         EventOutboxMessage message = new EventOutboxMessage();
         message.setEventId(eventId);

@@ -253,7 +253,7 @@ public class OpsRiskController {
     }
 
     @PutMapping("/scoring/model/draft")
-    @PreAuthorize("hasAuthority('risk_k4_write') and @superAdminAuthorization.isSuperAdmin(authentication)")
+    @PreAuthorize("hasAuthority('risk_k4_write')")
     public ApiResult<Map<String, Object>> saveScoringModelDraft(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskScoringModelDraftRequest request) {
@@ -269,7 +269,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/scoring/model/restore-draft")
-    @PreAuthorize("hasAuthority('risk_k4_write') and @superAdminAuthorization.isSuperAdmin(authentication)")
+    @PreAuthorize("hasAuthority('risk_k4_write')")
     public ApiResult<Map<String, Object>> restoreScoringModelDraft(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskScoringModelRestoreRequest request) {
@@ -309,7 +309,7 @@ public class OpsRiskController {
     }
 
     @PostMapping("/scoring/users/{userNo}/override")
-    @PreAuthorize("hasAuthority('risk_k4_user_override') and @superAdminAuthorization.isSuperAdmin(authentication)")
+    @PreAuthorize("hasAuthority('risk_k4_user_override')")
     public ApiResult<RiskScoreUserView> overrideScore(
             @PathVariable String userNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

@@ -29,4 +29,5 @@ public class NotificationCampaignEntity extends BaseEntity {
     private BigDecimal budgetUsd;
     private String createdBy;
     private String lastOperator;
+    private Long revision;
 }

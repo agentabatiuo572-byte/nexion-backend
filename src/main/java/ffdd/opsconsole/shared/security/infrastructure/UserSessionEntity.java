@@ -16,4 +16,8 @@ public class UserSessionEntity extends BaseEntity {
     private String clientIp;
     private LocalDateTime expiresAt;
     private LocalDateTime revokedAt;
+    private LocalDateTime lastActiveAt;
+    private String sessionChainId;
+    private String rotatedToId;
+    private LocalDateTime rotationRedeemedAt;
 }

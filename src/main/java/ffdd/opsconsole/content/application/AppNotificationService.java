@@ -1,8 +1,13 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.AppNotificationPage;
+import ffdd.opsconsole.content.domain.NotificationActionReceipt;
+import ffdd.opsconsole.content.domain.NotificationActionResult;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
+import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -14,7 +19,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppNotificationService {
     private static final Set<String> PRIORITIES = Set.of("critical", "high", "normal", "low");
+    private static final Set<String> ACTIONS = Set.of("cta", "swipe_conversion");
     private final NotificationCampaignRepository repository;
+    private final EventOutboxService eventOutboxService;
 
     @Transactional
     public ApiResult<AppNotificationPage> page(Long userId, String cursor, String priority, Integer limit) {
@@ -43,16 +50,85 @@ public class AppNotificationService {
         if (notificationId == null || notificationId <= 0) {
             return ApiResult.fail(400, "NOTIFICATION_ID_INVALID");
         }
-        return repository.markNotificationRead(userId, notificationId)
-                ? ApiResult.ok(null)
-                : ApiResult.fail(404, "NOTIFICATION_NOT_FOUND");
+        NotificationEventFact fact = repository.lockNotificationEventFact(userId, notificationId).orElse(null);
+        if (fact == null) {
+            return ApiResult.fail(404, "NOTIFICATION_NOT_FOUND");
+        }
+        if (fact.alreadyRead()) {
+            return ApiResult.ok(null);
+        }
+        if (repository.markNotificationRead(userId, notificationId)) {
+            publishUserEvent(fact, "notification.read", Map.of(
+                    "notification_id", fact.notificationId(),
+                    "kind", fact.kind(),
+                    "priority", fact.priority()));
+        }
+        return ApiResult.ok(null);
     }
 
     @Transactional
     public ApiResult<Integer> markAllRead(Long userId) {
-        return userId == null || userId <= 0
-                ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
-                : ApiResult.ok(repository.markAllNotificationsRead(userId));
+        if (userId == null || userId <= 0) {
+            return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        }
+        var facts = repository.lockUnreadNotificationEventFacts(userId);
+        int updated = repository.markAllNotificationsRead(userId);
+        if (updated != facts.size()) {
+            throw new IllegalStateException("NOTIFICATION_READ_FACT_MISMATCH");
+        }
+        facts.forEach(fact -> publishUserEvent(fact, "notification.read", Map.of(
+                "notification_id", fact.notificationId(),
+                "kind", fact.kind(),
+                "priority", fact.priority())));
+        return ApiResult.ok(updated);
+    }
+
+    @Transactional
+    public ApiResult<NotificationActionResult> recordAction(
+            Long userId, Long notificationId, String action, String idempotencyKey) {
+        if (userId == null || userId <= 0) {
+            return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        }
+        if (notificationId == null || notificationId <= 0) {
+            return ApiResult.fail(400, "NOTIFICATION_ID_INVALID");
+        }
+        if (!StringUtils.hasText(idempotencyKey)
+                || idempotencyKey.trim().length() < 8 || idempotencyKey.trim().length() > 128) {
+            return ApiResult.fail(400, "IDEMPOTENCY_KEY_REQUIRED");
+        }
+        String normalizedAction = StringUtils.hasText(action)
+                ? action.trim().toLowerCase(Locale.ROOT) : "";
+        if (!ACTIONS.contains(normalizedAction)) {
+            return ApiResult.fail(422, "NOTIFICATION_ACTION_INVALID");
+        }
+        NotificationEventFact fact = repository.lockNotificationEventFact(userId, notificationId).orElse(null);
+        if (fact == null) {
+            return ApiResult.fail(404, "NOTIFICATION_NOT_FOUND");
+        }
+        String route = canonicalRoute(fact);
+        if (!StringUtils.hasText(route)
+                || ("swipe_conversion".equals(normalizedAction) && "system".equalsIgnoreCase(fact.kind()))) {
+            return ApiResult.fail(422, "NOTIFICATION_ACTION_NOT_ALLOWED");
+        }
+        String key = idempotencyKey.trim();
+        NotificationActionReceipt replay = repository.findNotificationActionReceipt(key).orElse(null);
+        if (replay != null) {
+            boolean same = userId.equals(replay.userId()) && notificationId.equals(replay.notificationId())
+                    && normalizedAction.equals(replay.action()) && route.equals(replay.route());
+            return same
+                    ? ApiResult.ok(new NotificationActionResult(notificationId, normalizedAction, route, false))
+                    : ApiResult.fail(409, "IDEMPOTENCY_KEY_CONFLICT");
+        }
+        boolean recorded = repository.recordNotificationAction(
+                userId, notificationId, normalizedAction, route, key);
+        if (recorded) {
+            publishUserEvent(fact, "notification.swipe_action_taken", Map.of(
+                    "notification_id", fact.notificationId(),
+                    "kind", fact.kind(),
+                    "action", normalizedAction,
+                    "route", route));
+        }
+        return ApiResult.ok(new NotificationActionResult(notificationId, normalizedAction, route, recorded));
     }
 
     @Transactional
@@ -76,5 +152,25 @@ public class AppNotificationService {
         if (!StringUtils.hasText(priority)) return null;
         String value = priority.trim().toLowerCase(Locale.ROOT);
         return PRIORITIES.contains(value) ? value : null;
+    }
+
+    private void publishUserEvent(NotificationEventFact fact, String eventName, Map<String, Object> payload) {
+        eventOutboxService.publishUserEvent(
+                "NOTIFICATION", String.valueOf(fact.notificationId()), eventName,
+                fact.userId(), fact.phase(), fact.accountAgeMonths(), fact.cohort(), payload);
+    }
+
+    private String canonicalRoute(NotificationEventFact fact) {
+        if (StringUtils.hasText(fact.ctaHref())) {
+            return fact.ctaHref().trim();
+        }
+        return switch (fact.kind() == null ? "" : fact.kind().trim().toLowerCase(Locale.ROOT)) {
+            case "commission" -> "/pages/me/wallet-repurchase";
+            case "team" -> "/pages/team/team";
+            case "staking" -> "/pages/staking/staking";
+            case "market" -> "/pages/market/market";
+            case "genesis" -> "/pages/genesis/marketplace";
+            default -> "";
+        };
     }
 }

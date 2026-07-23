@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.security;
 
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -29,6 +30,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final GatewaySecurityProperties gatewayProperties;
     private final AdminSessionRegistry adminSessionRegistry;
     private final AdminPermissionCache permissionCache;
+    private final ImpersonationSessionVerifier impersonationSessionVerifier;
+    private final PlatformConfigFacade configFacade;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -132,17 +135,39 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         }
         if (!"USER".equals(subjectType)) {
-            return false;
+            if (!"IMPERSONATION".equals(subjectType)) {
+                return false;
+            }
+            String sessionId = claims.get("sessionId", String.class);
+            if (!StringUtils.hasText(sessionId)) {
+                return false;
+            }
+            return impersonationSessionVerifier.isActive(Long.valueOf(claims.getSubject()), sessionId);
         }
         String sessionId = claims.get("sessionId", String.class);
         if (!StringUtils.hasText(sessionId)) {
             return false;
         }
         try {
-            int activeCount = authSessionMapper.countActiveUserSession(sessionId, Long.valueOf(claims.getSubject()));
+            int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
+            int activeCount = authSessionMapper.touchActiveUserSession(
+                    sessionId, Long.valueOf(claims.getSubject()), idleDays);
             return activeCount > 0;
         } catch (RuntimeException ex) {
             throw new SessionStoreUnavailableException(ex);
+        }
+    }
+
+    private int configInt(String key, int fallback, int min, int max) {
+        try {
+            int value = configFacade.activeValue(key)
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .map(Integer::parseInt)
+                    .orElse(fallback);
+            return value < min || value > max ? fallback : value;
+        } catch (RuntimeException ignored) {
+            return fallback;
         }
     }
 

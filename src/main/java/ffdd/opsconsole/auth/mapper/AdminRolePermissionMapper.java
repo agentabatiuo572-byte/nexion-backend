@@ -281,6 +281,23 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             """)
     List<String> selectActivePermissionCodesByRole(@Param("roleId") Long roleId);
 
+    @Select("""
+            <script>
+            SELECT permission_code
+              FROM nx_admin_permission
+             WHERE status = 1
+               AND is_deleted = 0
+               AND resource_type = 'API'
+               AND permission_code IN
+               <foreach collection="permissionCodes" item="code" open="(" separator="," close=")">
+                 #{code}
+               </foreach>
+             ORDER BY permission_code
+            </script>
+            """)
+    List<String> selectExistingActivePermissionCodes(
+            @Param("permissionCodes") Collection<String> permissionCodes);
+
     @Update("""
             <script>
             UPDATE nx_admin_role_permission rp

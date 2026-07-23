@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.OpsSessionTemplateService;
+import ffdd.opsconsole.content.application.OpsSupportAgentService;
 import ffdd.opsconsole.content.domain.SessionAdvisorPolicyView;
 import ffdd.opsconsole.content.domain.SessionCategoryView;
 import ffdd.opsconsole.content.domain.SessionReplyTemplateView;
@@ -19,6 +20,15 @@ import ffdd.opsconsole.content.dto.SessionScriptQueryRequest;
 import ffdd.opsconsole.content.dto.SessionScriptStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.function.Supplier;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,6 +45,84 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsSessionTemplateController {
     private final OpsSessionTemplateService templateService;
+    private final OpsSupportAgentService supportAgentService;
+    private final AdminIdempotencyService idempotencyService;
+    private final AuditLogService auditLogService;
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> executeCommand(
+            String scope,
+            String idempotencyKey,
+            Object request,
+            Supplier<ApiResult<T>> action) {
+        ApiResult<T> result;
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            result = action.get();
+        } else {
+            result = (ApiResult<T>) idempotencyService.execute(
+                    scope,
+                    idempotencyKey.trim(),
+                    requestHash(String.valueOf(request)),
+                    ApiResult.class,
+                    (Supplier) action);
+        }
+        if (result != null && result.getCode() != 0) {
+            auditRejected(scope, result.getCode(), result.getMessage(), request);
+        }
+        return result;
+    }
+
+    private String requestHash(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return java.util.HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
+    }
+
+    private <T> ApiResult<T> executeManagedCommand(
+            String scope,
+            String idempotencyKey,
+            Object request,
+            Supplier<ApiResult<T>> action) {
+        if (!supportAgentService.canManageSupportSeats()) {
+            ApiResult<T> rejected = ApiResult.fail(403, "M5_CONFIGURATION_MANAGEMENT_FORBIDDEN");
+            auditRejected(scope, rejected.getCode(), rejected.getMessage(), request);
+            return rejected;
+        }
+        return executeCommand(scope, idempotencyKey, request, action);
+    }
+
+    private void auditRejected(String scope, int code, String message, Object request) {
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("M5_CONFIGURATION_REJECTED")
+                .resourceType("SESSION_TEMPLATE")
+                .resourceId(scope)
+                .bizNo(scope)
+                .actorType("ADMIN")
+                .actorUsername(AdminActorResolver.resolve("system"))
+                .result("REJECTED")
+                .riskLevel(code == 403 ? "HIGH" : "MEDIUM")
+                .detail(Map.of(
+                        "scope", scope,
+                        "errorCode", code,
+                        "error", message == null ? "UNKNOWN" : message,
+                        "reason", requestReason(request)))
+                .build());
+    }
+
+    private String requestReason(Object request) {
+        if (request == null) {
+            return "";
+        }
+        try {
+            Object value = request.getClass().getMethod("reason").invoke(request);
+            return value == null ? "" : String.valueOf(value);
+        } catch (ReflectiveOperationException ignored) {
+            return "";
+        }
+    }
 
     // 模板总览（会话类别/推送策略/话术/模板） — M5 话术与模板配置 读
     @PreAuthorize("hasAuthority('service_m5_read')")
@@ -64,7 +152,8 @@ public class OpsSessionTemplateController {
             @PathVariable String type,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionCategoryToggleRequest request) {
-        return templateService.updateCategory(type, idempotencyKey, request);
+        return executeManagedCommand("M5_CATEGORY_UPDATE:" + type, idempotencyKey, request,
+                () -> templateService.updateCategory(type, idempotencyKey, request));
     }
 
     // 顾问推送策略（开关/延迟/冷却/上限/受众） — M5 话术与模板配置 写
@@ -74,17 +163,19 @@ public class OpsSessionTemplateController {
             @PathVariable String field,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionAdvisorPolicyUpdateRequest request) {
-        return templateService.updateAdvisorPolicy(field, idempotencyKey, request);
+        return executeManagedCommand("M5_ADVISOR_POLICY_UPDATE:" + field, idempotencyKey, request,
+                () -> templateService.updateAdvisorPolicy(field, idempotencyKey, request));
     }
 
     // 工作台推送策略 — M5 话术与模板配置 写
-    @PreAuthorize("hasAuthority('service_m5_write')")
+    @PreAuthorize("hasAuthority('service_m3_write')")
     @PatchMapping("/workbench-policy/{field}")
     public ApiResult<SessionWorkbenchPolicyView> updateWorkbenchPolicy(
             @PathVariable String field,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionAdvisorPolicyUpdateRequest request) {
-        return templateService.updateWorkbenchPolicy(field, idempotencyKey, request);
+        return executeCommand("M3_WORKBENCH_POLICY_UPDATE:" + field, idempotencyKey, request,
+                () -> templateService.updateWorkbenchPolicy(field, idempotencyKey, request));
     }
 
     // 话术新增 — M5 话术与模板配置 写
@@ -93,7 +184,8 @@ public class OpsSessionTemplateController {
     public ApiResult<SessionScriptView> createScript(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionScriptCreateRequest request) {
-        return templateService.createScript(idempotencyKey, request);
+        return executeManagedCommand("M5_SCRIPT_CREATE", idempotencyKey, request,
+                () -> templateService.createScript(idempotencyKey, request));
     }
 
     // 话术发布/上下架 — M5 话术与模板配置 写
@@ -103,7 +195,8 @@ public class OpsSessionTemplateController {
             @PathVariable String scriptId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionScriptStatusRequest request) {
-        return templateService.updateScriptStatus(scriptId, idempotencyKey, request);
+        return executeManagedCommand("M5_SCRIPT_STATUS:" + scriptId, idempotencyKey, request,
+                () -> templateService.updateScriptStatus(scriptId, idempotencyKey, request));
     }
 
     // 话术受众配置 — M5 话术与模板配置 写
@@ -113,7 +206,8 @@ public class OpsSessionTemplateController {
             @PathVariable String scriptId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionScriptAudienceRequest request) {
-        return templateService.updateScriptAudience(scriptId, idempotencyKey, request);
+        return executeManagedCommand("M5_SCRIPT_AUDIENCE:" + scriptId, idempotencyKey, request,
+                () -> templateService.updateScriptAudience(scriptId, idempotencyKey, request));
     }
 
     // 模板新增 — M5 话术与模板配置 写
@@ -122,7 +216,8 @@ public class OpsSessionTemplateController {
     public ApiResult<SessionReplyTemplateView> createReplyTemplate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionReplyTemplateCreateRequest request) {
-        return templateService.createReplyTemplate(idempotencyKey, request);
+        return executeManagedCommand("M5_REPLY_TEMPLATE_CREATE", idempotencyKey, request,
+                () -> templateService.createReplyTemplate(idempotencyKey, request));
     }
 
     // 模板启停 — M5 话术与模板配置 写
@@ -132,6 +227,7 @@ public class OpsSessionTemplateController {
             @PathVariable String templateId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionReplyTemplateStatusRequest request) {
-        return templateService.updateReplyTemplateStatus(templateId, idempotencyKey, request);
+        return executeManagedCommand("M5_REPLY_TEMPLATE_STATUS:" + templateId, idempotencyKey, request,
+                () -> templateService.updateReplyTemplateStatus(templateId, idempotencyKey, request));
     }
 }

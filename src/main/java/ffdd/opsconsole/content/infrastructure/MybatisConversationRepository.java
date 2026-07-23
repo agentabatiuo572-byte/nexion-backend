@@ -60,6 +60,16 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public Optional<ContentConversationView> findByConversationNoForUpdate(String conversationNo) {
+        if (mapper.lockConversationHeader(conversationNo) == null) {
+            return Optional.empty();
+        }
+        // Global state-machine lock order: header first, active transfer second.
+        mapper.lockPendingTransfers(conversationNo);
+        return Optional.ofNullable(mapper.findByConversationNo(conversationNo));
+    }
+
+    @Override
     public List<ContentConversationMessageView> messages(String conversationNo) {
         return messageMapper.listByConversationNo(conversationNo);
     }
@@ -75,8 +85,10 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
-    public void transferToPending(ContentConversationView conversation, String targetType, String targetId, String targetName, String reason, String operator, LocalDateTime now) {
-        mapper.markTransferred(conversation.conversationNo(), targetId, targetName, now);
+    public boolean transferToPending(ContentConversationView conversation, String targetType, String targetId, String targetName, String reason, String operator, LocalDateTime now) {
+        if (mapper.markTransferred(conversation.conversationNo(), targetId, targetName, now) == 0) {
+            return false;
+        }
         mapper.insertTransfer(
                 conversation.conversationNo(),
                 conversation.ownerAgentId(),
@@ -89,51 +101,92 @@ public class MybatisConversationRepository implements ConversationRepository {
                 now);
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
                 "会话转交至 " + targetName + ": " + reason, now);
+        return true;
     }
 
     @Override
-    public void acceptTransfer(ContentConversationView conversation, String operator, LocalDateTime now) {
-        mapper.acceptConversation(conversation.conversationNo(), operator, now);
-        mapper.markTransferAccepted(conversation.conversationNo(), operator, now);
+    public boolean acceptTransfer(ContentConversationView conversation, String ownerAgentId, String ownerAgentName, String operator, LocalDateTime now) {
+        int claimed = mapper.markTransferAccepted(conversation.conversationNo(), operator, now);
+        if (claimed == 0) {
+            return false;
+        }
+        if (claimed != 1) {
+            throw new IllegalStateException("CONVERSATION_ACCEPT_TRANSFER_CARDINALITY_INVALID");
+        }
+        if (mapper.acceptConversation(conversation.conversationNo(), ownerAgentId, ownerAgentName, now) == 0) {
+            throw new IllegalStateException("CONVERSATION_ACCEPT_HEADER_UPDATE_FAILED");
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
                 operator + " 已接收转入会话", now);
+        return true;
     }
 
     @Override
-    public void returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
-        mapper.returnConversation(conversation.conversationNo(), conversation.transferFromAgentId(), conversation.transferFromAgentName(), now);
-        mapper.markTransferReturned(conversation.conversationNo(), reason, operator, now);
+    public boolean returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+        int claimed = mapper.markTransferReturned(conversation.conversationNo(), reason, operator, now);
+        if (claimed == 0) {
+            return false;
+        }
+        if (claimed != 1) {
+            throw new IllegalStateException("CONVERSATION_RETURN_TRANSFER_CARDINALITY_INVALID");
+        }
+        if (mapper.returnConversation(conversation.conversationNo(), conversation.transferFromAgentId(), conversation.transferFromAgentName(), now) == 0) {
+            throw new IllegalStateException("CONVERSATION_RETURN_HEADER_UPDATE_FAILED");
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
                 "转入会话已退回: " + reason, now);
+        return true;
     }
 
     @Override
-    public void waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
+    public boolean waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now) {
         String message = "转入会话继续等待: " + reason;
-        mapper.markTransferWait(conversation.conversationNo(), message, now);
+        if (mapper.markTransferWait(conversation.conversationNo(), message, now) == 0) {
+            return false;
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
                 operator + " " + message, now);
+        return true;
     }
 
     @Override
-    public void reply(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
-        mapper.replyConversation(conversation.conversationNo(), body, now);
+    public boolean reply(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
+        if (mapper.replyConversation(conversation.conversationNo(), body, conversation.status(), now) == 0) {
+            return false;
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "agent", operator, body, now);
+        return true;
     }
 
     @Override
-    public void updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now) {
-        mapper.updateConversationStatus(conversation.conversationNo(), status, now);
+    public boolean updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now) {
+        if (mapper.updateConversationStatus(conversation.conversationNo(), status, conversation.status(), now) == 0) {
+            return false;
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
-                operator + " 将会话状态更新为 " + status, now);
+                operator + " 将会话状态更新为" + statusLabel(status), now);
+        return true;
+    }
+
+    private String statusLabel(String status) {
+        return switch (status == null ? "" : status.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "OPEN" -> "进行中";
+            case "TRANSFERRED" -> "转入待处理";
+            case "RESOLVED" -> "已解决";
+            case "CLOSED" -> "已关闭";
+            default -> "未知";
+        };
     }
 
     @Override
-    public void archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now) {
+    public boolean archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now) {
         String status = archived ? "CLOSED" : "RESOLVED";
-        mapper.updateConversationStatus(conversation.conversationNo(), status, now);
+        if (mapper.updateConversationStatus(conversation.conversationNo(), status, conversation.status(), now) == 0) {
+            return false;
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
                 operator + (archived ? " 已归档会话" : " 已撤销归档会话"), now);
+        return true;
     }
 
     @Override
@@ -143,6 +196,9 @@ public class MybatisConversationRepository implements ConversationRepository {
         int claimed = mapper.markTransferFallback(conversation.conversationNo(), targetId, targetName, reason, operator, now);
         if (claimed == 0) {
             return false;
+        }
+        if (claimed != 1) {
+            throw new IllegalStateException("CONVERSATION_FALLBACK_TRANSFER_CARDINALITY_INVALID");
         }
         int updated = mapper.fallbackConversation(conversation.conversationNo(), targetId, targetName, now);
         if (updated == 0) {
@@ -154,11 +210,15 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
-    public void markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now) {
+    public boolean markConvertedToTicket(ContentConversationView conversation, String ticketNo, String operator, LocalDateTime now) {
         String message = "会话已转工单 " + ticketNo;
-        mapper.markConvertedToTicket(conversation.conversationNo(), message, now);
+        int claimed = mapper.markConvertedToTicket(conversation.conversationNo(), message, now);
+        if (claimed == 0) {
+            return false;
+        }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
                 operator + " " + message, now);
+        return true;
     }
 
     @Override

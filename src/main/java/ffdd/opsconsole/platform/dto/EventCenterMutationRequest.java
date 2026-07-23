@@ -1,4 +1,5 @@
 package ffdd.opsconsole.platform.dto;
 
-public record EventCenterMutationRequest(String value, String reason, String operator) {
+/** A4 parameter mutation. The actor always comes from the authenticated admin session. */
+public record EventCenterMutationRequest(String value, String reason) {
 }

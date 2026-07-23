@@ -8,6 +8,7 @@ import ffdd.opsconsole.platform.dto.PlatformMenuNodeUpdateRequest;
 import ffdd.opsconsole.platform.dto.PlatformMenuTreeOverview;
 import ffdd.opsconsole.platform.dto.PlatformMenuTreeOverview.MenuNodeView;
 import ffdd.opsconsole.shared.api.ApiResult;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -37,7 +38,7 @@ public class OpsPlatformMenuController {
     @PreAuthorize("hasAuthority('platform_a7_write')")
     public ApiResult<MenuNodeView> create(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody PlatformMenuNodeCreateRequest request) {
+            @Valid @RequestBody PlatformMenuNodeCreateRequest request) {
         return menuService.createNode(idempotencyKey, request);
     }
 
@@ -46,7 +47,7 @@ public class OpsPlatformMenuController {
     public ApiResult<MenuNodeView> update(
             @PathVariable Long menuId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody PlatformMenuNodeUpdateRequest request) {
+            @Valid @RequestBody PlatformMenuNodeUpdateRequest request) {
         return menuService.updateNode(menuId, idempotencyKey, request);
     }
 
@@ -55,7 +56,7 @@ public class OpsPlatformMenuController {
     public ApiResult<Void> delete(
             @PathVariable Long menuId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) AdminAccountActionRequest request) {
+            @Valid @RequestBody(required = false) AdminAccountActionRequest request) {
         return menuService.deleteNode(menuId, idempotencyKey, request);
     }
 }

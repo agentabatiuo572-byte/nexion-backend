@@ -31,6 +31,13 @@ class JanusMapperSqlTest {
     }
 
     @Test
+    void idempotencyLookupUsesCurrentReadAfterWaitingForConcurrentInsert() throws Exception {
+        String readSql = annotationSql("findCommand", Select.class);
+
+        assertThat(readSql).containsIgnoringCase("FOR SHARE");
+    }
+
+    @Test
     void dailyCapReservationUsesOneAtomicUpsert() throws Exception {
         String sql = annotationSql("reserveDailyEvaluation", Insert.class);
         assertThat(sql).contains("ON DUPLICATE KEY UPDATE")

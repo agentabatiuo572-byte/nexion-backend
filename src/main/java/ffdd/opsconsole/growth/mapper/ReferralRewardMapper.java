@@ -16,7 +16,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
     @Select("""
             SELECT u.id AS invitedUserId, u.sponsor_user_id AS inviterUserId
               FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0
+              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
@@ -30,6 +30,19 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                            LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
                            LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM nx_admin_risk_arbitrage_row risk
+                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
+                     ON risk_cluster.cluster_id = risk.cluster_id
+                    AND risk_cluster.is_deleted = 0
+                    AND risk_cluster.nodes_json IS NOT NULL
+                    AND JSON_VALID(risk_cluster.nodes_json) = 1
+                  WHERE risk.is_deleted = 0
+                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
                )
                AND NOT EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
@@ -73,7 +86,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    #{inviterNex}, #{lockMode}, #{configSnapshot}, #{operator}, #{reason},
                    #{idempotencyKey}, 'SETTLED', NOW(), NOW(), 0
               FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0
+              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
              WHERE u.id = #{invitedUserId} AND inviter.id = #{inviterUserId}
                AND u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND u.sponsor_user_id <> u.id AND u.created_at >= #{effectiveAt}
@@ -85,6 +98,19 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                            LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
                            LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM nx_admin_risk_arbitrage_row risk
+                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
+                     ON risk_cluster.cluster_id = risk.cluster_id
+                    AND risk_cluster.is_deleted = 0
+                    AND risk_cluster.nodes_json IS NOT NULL
+                    AND JSON_VALID(risk_cluster.nodes_json) = 1
+                  WHERE risk.is_deleted = 0
+                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
                )
                AND NOT EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
@@ -143,7 +169,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COUNT(*) FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0
+              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
               LEFT JOIN nx_referral_reward_settlement s ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND u.sponsor_user_id <> u.id
@@ -156,6 +182,19 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                            LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
                            LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+               )
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM nx_admin_risk_arbitrage_row risk
+                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
+                     ON risk_cluster.cluster_id = risk.cluster_id
+                    AND risk_cluster.is_deleted = 0
+                    AND risk_cluster.nodes_json IS NOT NULL
+                    AND JSON_VALID(risk_cluster.nodes_json) = 1
+                  WHERE risk.is_deleted = 0
+                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
                )
                AND NOT EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
@@ -188,7 +227,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COUNT(*) FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0
+              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND u.created_at >= #{effectiveAt}
                AND (EXISTS (
@@ -199,6 +238,18 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                            LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
                            LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+               ) OR EXISTS (
+                 SELECT 1
+                   FROM nx_admin_risk_arbitrage_row risk
+                   JOIN nx_admin_risk_multi_account_cluster risk_cluster
+                     ON risk_cluster.cluster_id = risk.cluster_id
+                    AND risk_cluster.is_deleted = 0
+                    AND risk_cluster.nodes_json IS NOT NULL
+                    AND JSON_VALID(risk_cluster.nodes_json) = 1
+                  WHERE risk.is_deleted = 0
+                    AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
                ) OR EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
                   WHERE cluster.is_deleted = 0 AND cluster.status = 'frozen'

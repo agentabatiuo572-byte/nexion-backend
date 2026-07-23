@@ -60,6 +60,16 @@ class OpsSupportKnowledgeServiceTest {
     }
 
     @Test
+    void consecutiveFaqCreatesUseDistinctIdsEvenAtTheSameClockTick() {
+        var first = service.createFaq("idem-m4-faq-first", faqRequest("DRAFT"));
+        var second = service.createFaq("idem-m4-faq-second", faqRequest("DRAFT"));
+
+        assertThat(first.getCode()).isZero();
+        assertThat(second.getCode()).isZero();
+        assertThat(first.getData().id()).isNotEqualTo(second.getData().id());
+    }
+
+    @Test
     void updateFaqChangesContent() {
         var result = service.updateFaq("FAQ-001", "idem-m4-faq-update", new SupportFaqUpsertRequest(
                 "kyc",
@@ -67,6 +77,8 @@ class OpsSupportKnowledgeServiceTest {
                 "KYC retry window?",
                 "Upload a clear document and keep every corner visible.",
                 "DRAFT",
+                "en-US",
+                20,
                 "Marina K.",
                 "更新 KYC FAQ 文案"));
 
@@ -94,6 +106,9 @@ class OpsSupportKnowledgeServiceTest {
                 "Payment desk checks risk and chain state.",
                 "DRAFT",
                 "Help Center",
+                "zh-CN",
+                10,
+                1,
                 now()));
 
         var result = service.updateFaqStatus("FAQ-001", "idem-m4-publish", new SupportFaqStatusRequest(
@@ -165,6 +180,8 @@ class OpsSupportKnowledgeServiceTest {
                 "Why is withdrawal pending?",
                 "Payment desk checks risk and chain state.",
                 status,
+                "zh-CN",
+                10,
                 "Marina K.",
                 "新增提现 FAQ");
     }
@@ -182,6 +199,9 @@ class OpsSupportKnowledgeServiceTest {
                 "Payment desk checks risk and chain state.",
                 "PUBLISHED",
                 "Help Center",
+                "zh-CN",
+                10,
+                1,
                 now())));
         private final List<SupportSlaView> sla = new ArrayList<>(List.of(new SupportSlaView(
                 "withdrawal",
@@ -215,6 +235,9 @@ class OpsSupportKnowledgeServiceTest {
                     request.answer(),
                     request.status(),
                     request.surface(),
+                    request.language(),
+                    request.sortOrder(),
+                    1,
                     now);
             faqs.add(0, created);
             return created;
@@ -229,6 +252,9 @@ class OpsSupportKnowledgeServiceTest {
                     request.answer(),
                     request.status(),
                     request.surface(),
+                    request.language(),
+                    request.sortOrder(),
+                    findFaq(faqId).map(SupportFaqView::version).orElse(1) + 1,
                     now));
         }
 
@@ -242,6 +268,9 @@ class OpsSupportKnowledgeServiceTest {
                     current.answer(),
                     status,
                     current.surface(),
+                    current.language(),
+                    current.sortOrder(),
+                    current.version() + 1,
                     now));
         }
 

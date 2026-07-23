@@ -1,4 +1,4 @@
--- 域 C · 用户与账户 · 39 权限点
+-- 域 C · 用户与账户 · 45 权限点
 -- 源：docs/superpowers/specs/rbac-classic/C.md（6 页 + C1 详情 HUB · 原 72 点收敛后 39 点 · READ 7 · WRITE 7 · HIGH 25）
 -- 表：nx_admin_permission（schema 见 00-permission-alter.sql）
 -- 幂等：permission_code 唯一键，重复执行只更新不报错。
@@ -46,18 +46,23 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('user_c3_adjust_approve',             'C3 资产调整通过(⚡资金放大)',      'API', '/users/assets',       'HIGH',  1, 1, 0),
   ('user_c3_adjust_reverse',             'C3 资产冲正(⚡资金放大)',          'API', '/users/assets',       'HIGH',  1, 1, 0),
 
-  -- ===== C4 KYC 合规台账 /users/kyc (3) =====
+  -- ===== C4 KYC 合规台账 /users/kyc (6) =====
   ('user_c4_read',                       'C4 KYC合规台账-页面读',            'API', '/users/kyc',          'READ',  0, 1, 0),
-  ('user_c4_write',                      'C4 KYC合规台账-常规写',            'API', '/users/kyc',          'WRITE', 0, 1, 0),
-  ('user_c4_kyc_revoke',                 'C4 撤销实名',                      'API', '/users/kyc',          'HIGH',  0, 1, 0),
+  ('user_c4_verify',                     'C4 人工标记实名通过',              'API', '/users/kyc',          'HIGH',  1, 1, 0),
+  ('user_c4_revoke',                     'C4 撤销实名',                      'API', '/users/kyc',          'HIGH',  0, 1, 0),
+  ('user_c4_trigger_review',             'C4 触发K5增强复审',                'API', '/users/kyc',          'HIGH',  0, 1, 0),
+  ('user_c4_export',                     'C4 监管脱敏导出',                  'API', '/users/kyc',          'HIGH',  0, 1, 0),
+  ('user_c4_network_write',              'C4 配对网络白名单',                'API', '/users/kyc',          'HIGH',  0, 1, 0),
 
-  -- ===== C5 安全 & 会话 /users/security (6) =====
+  -- ===== C5 安全 & 会话 /users/security (8) =====
   ('user_c5_read',                       'C5 安全&会话-页面读',              'API', '/users/security',     'READ',  0, 1, 0),
   ('user_c5_write',                      'C5 安全&会话-常规写',              'API', '/users/security',     'WRITE', 0, 1, 0),
   ('user_c5_session_revoke_one',         'C5 踢线(单会话)',                  'API', '/users/security',     'HIGH',  0, 1, 0),
   ('user_c5_session_revoke_all',         'C5 全部踢线',                      'API', '/users/security',     'HIGH',  0, 1, 0),
   ('user_c5_2fa_disable',                'C5 关闭2FA',                       'API', '/users/security',     'HIGH',  0, 1, 0),
   ('user_c5_password_reset',             'C5 密码重置',                      'API', '/users/security',     'HIGH',  0, 1, 0),
+  ('user_c5_unlock_short',               'C5 解除短锁',                      'API', '/users/security',     'HIGH',  0, 1, 0),
+  ('user_c5_unlock_long',                'C5 解除长锁',                      'API', '/users/security',     'HIGH',  0, 1, 0),
 
   -- ===== C6 注册/登录风控 /users/reg-risk (2) =====
   ('user_c6_read',                       'C6 注册/登录风控-页面读',          'API', '/users/reg-risk',     'READ',  0, 1, 0),
@@ -69,6 +74,7 @@ ON DUPLICATE KEY UPDATE
   amplifies = VALUES(amplifies),
   status = 1, is_deleted = 0;
 
--- 统计：READ 7 · WRITE 7 · HIGH 26 = 40 权限点
--- amplifies=1 计 6 个（⚡资金放大）：user_c1hub_earning_grant / user_c1hub_earning_reverse / user_c1hub_compensation_grant
+-- 统计：READ 7 · WRITE 6 · HIGH 32 = 45 权限点
+-- amplifies=1 计 7 个（⚡资金放大）：user_c1hub_earning_grant / user_c1hub_earning_reverse / user_c1hub_compensation_grant
 --   user_c3_adjust_create / user_c3_adjust_approve / user_c3_adjust_reverse
+--   user_c4_verify

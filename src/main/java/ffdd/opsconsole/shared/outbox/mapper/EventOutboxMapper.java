@@ -16,6 +16,16 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             aggregate_type AS aggregateType,
             aggregate_id AS aggregateId,
             event_type AS eventType,
+            event_name AS eventName,
+            family_key AS familyKey,
+            event_ts AS eventTs,
+            phase,
+            account_age_months AS accountAgeMonths,
+            cohort,
+            is_server_authoritative AS serverAuthoritative,
+            schema_revision AS schemaRevision,
+            schema_registered AS schemaRegistered,
+            analytics_event AS analyticsEvent,
             payload,
             status,
             retry_count AS retryCount,
@@ -28,16 +38,46 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
 
     @Insert("""
             INSERT INTO nx_event_outbox (
-              event_id, aggregate_type, aggregate_id, event_type, payload,
+              event_id, aggregate_type, aggregate_id, event_type,
+              event_name, family_key, event_ts, phase, account_age_months, cohort,
+              is_server_authoritative, schema_revision, schema_registered, analytics_event, payload,
               status, retry_count, next_retry_at, created_at, updated_at, is_deleted
             ) VALUES (
-              #{eventId}, #{aggregateType}, #{aggregateId}, #{eventType}, #{payload},
+              #{eventId}, #{aggregateType}, #{aggregateId}, #{eventType},
+              #{eventName}, #{familyKey}, NOW(3), #{phase}, #{accountAgeMonths}, #{cohort},
+              #{serverAuthoritative}, #{schemaRevision}, #{schemaRegistered}, #{analyticsEvent}, #{payload},
               'PENDING', 0, NOW(), NOW(), NOW(), 0
             )
             """)
     int insertEvent(@Param("eventId") String eventId, @Param("aggregateType") String aggregateType,
                     @Param("aggregateId") String aggregateId, @Param("eventType") String eventType,
+                    @Param("eventName") String eventName, @Param("familyKey") String familyKey,
+                    @Param("phase") String phase, @Param("accountAgeMonths") int accountAgeMonths,
+                    @Param("cohort") String cohort, @Param("serverAuthoritative") boolean serverAuthoritative,
+                    @Param("schemaRevision") Integer schemaRevision,
+                    @Param("schemaRegistered") boolean schemaRegistered,
+                    @Param("analyticsEvent") boolean analyticsEvent,
                     @Param("payload") String payload);
+
+    @Select("""
+            SELECT family_key AS familyKey, current_revision AS revision,
+                   is_server_authoritative AS serverAuthoritative
+              FROM nx_event_schema_registry
+             WHERE event_name=#{eventName} AND status='ACTIVE' AND is_deleted=0
+             LIMIT 1
+            """)
+    SchemaGateRow findActiveSchema(@Param("eventName") String eventName);
+
+    @Select("""
+            SELECT p.property_name AS propertyName, p.property_type AS propertyType,
+                   p.required_field AS requiredField
+              FROM nx_event_schema_property p
+              JOIN nx_event_schema_registry s ON s.id=p.schema_id
+             WHERE s.event_name=#{eventName} AND s.status='ACTIVE' AND s.is_deleted=0
+               AND p.is_deleted=0
+             ORDER BY p.id
+            """)
+    List<SchemaPropertyGateRow> listActiveProperties(@Param("eventName") String eventName);
 
     @Select("""
             <script>
@@ -122,4 +162,10 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     int markFailed(@Param("eventId") String eventId, @Param("errorMessage") String errorMessage,
                    @Param("maxRetries") int maxRetries, @Param("deadStatus") String deadStatus,
                    @Param("failedStatus") String failedStatus, @Param("pendingStatus") String pendingStatus);
+
+    record SchemaGateRow(String familyKey, int revision, boolean serverAuthoritative) {
+    }
+
+    record SchemaPropertyGateRow(String propertyName, String propertyType, boolean requiredField) {
+    }
 }

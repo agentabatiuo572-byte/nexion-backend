@@ -2,147 +2,186 @@ package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.audit.AuditLogService;
-import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.platform.dto.PlatformConfigOverview;
 import ffdd.opsconsole.platform.dto.PlatformConfigResponse;
 import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
-import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class OpsPlatformConfigServiceTest {
     private final InMemoryPlatformConfigRepository repository = new InMemoryPlatformConfigRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
+    private final PlatformEmergencyStateProvider emergencyStateProvider = mock(PlatformEmergencyStateProvider.class);
+    private final PlatformSystemHealthProvider healthProvider = mock(PlatformSystemHealthProvider.class);
     private final OpsPlatformConfigService service = new OpsPlatformConfigService(
             repository,
             auditLogService,
-            ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+            idempotencyService,
+            roleResolver,
+            emergencyStateProvider,
+            healthProvider);
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void setUp() {
+        when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
+        when(emergencyStateProvider.currentKillSwitches()).thenReturn(List.of(
+                Map.of("key", "exchange", "name", "兑换闸", "status", "disabled", "up", false,
+                        "lastChange", "2026-07-17T10:00:00", "chain", "J1 / nx_emergency_control_setting"),
+                Map.of("key", "geo-block", "name", "地区屏蔽", "status", "2 个国家已屏蔽", "up", false,
+                        "lastChange", "2026-07-17T10:01:00", "chain", "J2 / nx_emergency_geo_country_policy")));
+        when(healthProvider.currentHealth()).thenReturn(List.of(
+                Map.of("name", "事件待投递", "tone", "ok", "metric", "0 条", "source", "nx_event_outbox",
+                        "observedAt", "2026-07-17T10:02:00", "stale", false)));
+        doAnswer(invocation -> ((Supplier<ApiResult<PlatformConfigResponse>>) invocation.getArgument(4)).get())
+                .when(idempotencyService)
+                .execute(anyString(), anyString(), anyString(), any(), any());
+    }
 
     @Test
-    void overviewExcludesDeletedDomainsWithoutMutatingReadPath() {
-        repository.put(activeConfig(90L, "admin.system.ntp_source", "pool.ntp.org"));
-        repository.put(activeConfig(91L, "admin.idempotency.window_hours", "24"));
+    void overviewUsesOnlyPersistedRegisteredFlagsAndAuthoritativeJ1J2State() {
+        repository.put(activeConfig(1L, "feature.ops.maintenanceBanner", "off", "admin_feature_flag"));
+        repository.put(activeConfig(2L, "feature.unknownUnusedFlag", "on", "admin_feature_flag"));
+        repository.put(activeConfig(3L, "killswitch.exchange", "enabled", "admin_killswitch"));
 
         ApiResult<PlatformConfigOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        // overview 用固定 SEEDS 视图(前端 A3 展示 5 flag / 6 gate / 5 health),不受 config 表数据影响
-        assertThat(result.getData().featureFlags()).hasSize(5);
-        assertThat(result.getData().killSwitches()).hasSize(6);
-        assertThat(result.getData().systemHealth()).hasSize(5);
-        // read-only: overview 不写 seed keys 到 config 表
-        assertThat(repository.items)
-                .doesNotContainKeys(
-                        "feature.ab.newWithdrawFlow",
-                        "killswitch.withdraw",
-                        "admin.health.event_pipeline");
-        assertThat(repository.items.get("admin.system.ntp_source").status()).isEqualTo(1);
-        assertThat(repository.items.get("admin.idempotency.window_hours").status()).isEqualTo(1);
+        assertThat(result.getData().featureFlags()).hasSize(1);
+        assertThat(result.getData().featureFlags().get(0))
+                .containsEntry("key", "ops.maintenanceBanner")
+                .containsEntry("status", "off")
+                .containsEntry("writable", true)
+                .containsEntry("consumer", "ops-console-shell");
+        assertThat(result.getData().killSwitches()).extracting(row -> row.get("key"))
+                .containsExactly("exchange", "geo-block");
+        assertThat(result.getData().killSwitches().get(0)).containsEntry("status", "disabled");
+        assertThat(result.getData().systemHealth().get(0))
+                .containsEntry("source", "nx_event_outbox")
+                .containsEntry("stale", false);
+        assertThat(result.getData().stats())
+                .containsEntry("flagCount", 1)
+                .containsEntry("killGates", 2)
+                .containsEntry("killGatesUp", 0L);
     }
 
     @Test
-    void disabledReadTimeSeedsDoNotExposeA3SeededCurrentState() {
-        OpsPlatformConfigService realOnlyService = new OpsPlatformConfigService(
-                repository,
-                auditLogService,
-                OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-
-        ApiResult<PlatformConfigOverview> result = realOnlyService.overview();
+    void overviewDoesNotInventMissingFlagState() {
+        ApiResult<PlatformConfigOverview> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        // overview 用固定 SEEDS 视图,OpsReadTimeSeedPolicy 不影响 overview(disabled 仍返 SEEDS 视图,前端 A3 展示需要)
-        assertThat(result.getData().featureFlags()).hasSize(5);
-        assertThat(result.getData().killSwitches()).hasSize(6);
-        assertThat(result.getData().systemHealth()).hasSize(5);
-        assertThat(result.getData().stats())
-                .containsEntry("flagCount", 5)
-                .containsEntry("killGates", 6);
-        // read-only: overview 不写 seed keys 到 config 表
-        assertThat(repository.items).doesNotContainKeys(
-                "feature.ab.newWithdrawFlow",
-                "killswitch.withdraw",
-                "admin.health.event_pipeline");
+        assertThat(result.getData().featureFlags()).isEmpty();
+        assertThat(repository.items).isEmpty();
     }
 
     @Test
-    void updateRequiresIdempotencyKey() {
-        PlatformConfigUpdateRequest request =
-                new PlatformConfigUpdateRequest("flag", "core.sse_v2", null, "on", "ops rollout", "superadmin");
+    void runtimeFlagsUseTheSamePersistedSource() {
+        repository.put(activeConfig(1L, "feature.ops.maintenanceBanner", "on", "admin_feature_flag"));
 
-        ApiResult<PlatformConfigResponse> result = service.update(" ", request);
+        ApiResult<Map<String, Object>> result = service.runtimeFlags();
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("maintenanceBanner", true)
+                .containsEntry("source", "nx_config_item:feature.ops.maintenanceBanner");
     }
 
     @Test
-    void updateRequiresReason() {
-        PlatformConfigUpdateRequest request =
-                new PlatformConfigUpdateRequest("flag", "core.sse_v2", null, "on", " ", "superadmin");
+    void updateRejectsUnknownFlagInvalidValueAndInvalidReasonBounds() {
+        repository.put(activeConfig(1L, "feature.ops.maintenanceBanner", "off", "admin_feature_flag"));
 
-        ApiResult<PlatformConfigResponse> result = service.update("idem-1", request);
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+        assertFailure(request("other.flag", "on", "off", "valid reason"), "A3_FLAG_UNKNOWN");
+        assertFailure(request("ops.maintenanceBanner", "abc", "off", "valid reason"), "A3_FLAG_VALUE_INVALID");
+        assertFailure(request("ops.maintenanceBanner", "on", "off", "short"), "A3_REASON_LENGTH_INVALID");
+        assertFailure(request("ops.maintenanceBanner", "on", "off", "x".repeat(201)), "A3_REASON_LENGTH_INVALID");
+        verify(auditLogService, never()).recordRequired(any());
     }
 
     @Test
-    void updateRejectsSunsetCapabilityKeys() {
-        PlatformConfigUpdateRequest request =
-                new PlatformConfigUpdateRequest("flag", "premium.enabled", null, "on", "legacy rollback", "superadmin");
+    void updateRejectsSameValueStaleValueAndUnauthorizedRole() {
+        repository.put(activeConfig(1L, "feature.ops.maintenanceBanner", "off", "admin_feature_flag"));
 
-        ApiResult<PlatformConfigResponse> result = service.update("idem-1", request);
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.PHASE_PARAM_READONLY.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("SUNSET_CAPABILITY_READONLY");
-        assertThat(repository.items).doesNotContainKey("feature.premium.enabled");
+        assertFailure(request("ops.maintenanceBanner", "off", "off", "same value reason"), "A3_FLAG_SAME_VALUE");
+        assertFailure(request("ops.maintenanceBanner", "on", "on", "stale value reason"), "A3_FLAG_STALE");
+        when(roleResolver.resolveCode()).thenReturn("AUDITOR");
+        assertFailure(request("ops.maintenanceBanner", "on", "off", "auditor must fail"), "A3_FLAG_ROLE_FORBIDDEN");
+        assertThat(repository.items.get("feature.ops.maintenanceBanner").configValue()).isEqualTo("off");
     }
 
     @Test
-    void updateUpsertsFeatureFlagAndWritesA2Audit() {
-        PlatformConfigUpdateRequest request =
-                new PlatformConfigUpdateRequest("flag", "core.sse_v2", null, "灰度 80%", "expand gray release", "superadmin");
+    void updateWritesBeforeAfterAuditAndUsesAuthenticatedActor() {
+        repository.put(activeConfig(1L, "feature.ops.maintenanceBanner", "off", "admin_feature_flag"));
+        PlatformConfigUpdateRequest request = new PlatformConfigUpdateRequest(
+                "flag", "ops.maintenanceBanner", null, "on", "off", "planned maintenance", "spoofed-user");
 
         ApiResult<PlatformConfigResponse> result = service.update("idem-a3-1", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().configKey()).isEqualTo("feature.core.sse_v2");
-        assertThat(result.getData().configValue()).isEqualTo("灰度 80%");
-        assertThat(repository.items.get("feature.core.sse_v2").configGroup()).isEqualTo("admin_feature_flag");
-
+        assertThat(result.getData().configValue()).isEqualTo("on");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("ADMIN_FEATURE_FLAG_CHANGED");
-        assertThat(captor.getValue().getResourceType()).isEqualTo("A3_PLATFORM_CONFIG");
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getActorUsername()).isNotEqualTo("spoofed-user");
         assertThat(detailMap(captor.getValue().getDetail()))
-                .containsEntry("reason", "expand gray release")
+                .containsEntry("before", "off")
+                .containsEntry("after", "on")
+                .containsEntry("reason", "planned maintenance")
+                .containsEntry("consumer", "ops-console-shell")
+                .containsEntry("role", "SUPER_ADMIN")
                 .containsEntry("idempotencyKey", "idem-a3-1");
     }
 
     @Test
-    void updateRejectsKillSwitchBecauseJ1OwnsEmergencyControlSettings() {
-        PlatformConfigUpdateRequest request =
-                new PlatformConfigUpdateRequest("gate", null, "withdraw", "disabled", "incident freeze", "superadmin");
+    void updateDelegatesReplayProtectionToTwentyFourHourIdempotencyStore() {
+        repository.put(activeConfig(1L, "feature.ops.maintenanceBanner", "off", "admin_feature_flag"));
+        PlatformConfigUpdateRequest request = request(
+                "ops.maintenanceBanner", "on", "off", "planned maintenance");
 
-        ApiResult<PlatformConfigResponse> result = service.update("idem-gate-1", request);
+        service.update("idem-a3-2", request);
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("J1_KILLSWITCH_MOVED_TO_EMERGENCY_CONTROL_SETTING");
-        assertThat(repository.items).doesNotContainKey("killswitch.withdraw");
+        verify(idempotencyService).execute(
+                org.mockito.ArgumentMatchers.eq("A3_FEATURE_FLAG:ops.maintenanceBanner"),
+                org.mockito.ArgumentMatchers.eq("idem-a3-2"),
+                anyString(),
+                org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                any());
+    }
+
+    private void assertFailure(PlatformConfigUpdateRequest request, String message) {
+        ApiResult<PlatformConfigResponse> result = service.update("idem-test-" + message, request);
+        assertThat(result.getCode()).isIn(
+                OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(message);
+    }
+
+    private static PlatformConfigUpdateRequest request(String key, String value, String expectedValue, String reason) {
+        return new PlatformConfigUpdateRequest("flag", key, null, value, expectedValue, reason, "spoofed-user");
     }
 
     @SuppressWarnings("unchecked")
@@ -150,14 +189,13 @@ class OpsPlatformConfigServiceTest {
         return (Map<String, Object>) detail;
     }
 
-    private static PlatformConfigItem activeConfig(Long id, String key, String value) {
+    private static PlatformConfigItem activeConfig(Long id, String key, String value, String group) {
         LocalDateTime now = LocalDateTime.now();
-        return new PlatformConfigItem(id, key, value, "STRING", "admin_a3", "ADMIN", "legacy A3 config", 1, now, now);
+        return new PlatformConfigItem(id, key, value, "STRING", group, "ADMIN", "test config", 1, now, now);
     }
 
     private static final class InMemoryPlatformConfigRepository implements PlatformConfigRepository {
         private final Map<String, PlatformConfigItem> items = new LinkedHashMap<>();
-        private long sequence = 1L;
 
         private void put(PlatformConfigItem item) {
             items.put(item.configKey(), item);
@@ -178,21 +216,8 @@ class OpsPlatformConfigServiceTest {
 
         @Override
         public PlatformConfigItem save(PlatformConfigItem item) {
-            PlatformConfigItem saved = item.id() == null
-                    ? new PlatformConfigItem(
-                            sequence++,
-                            item.configKey(),
-                            item.configValue(),
-                            item.valueType(),
-                            item.configGroup(),
-                            item.visibility(),
-                            item.remark(),
-                            item.status(),
-                            LocalDateTime.now(),
-                            LocalDateTime.now())
-                    : item;
-            items.put(saved.configKey(), saved);
-            return saved;
+            items.put(item.configKey(), item);
+            return item;
         }
     }
 }

@@ -44,6 +44,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -73,6 +74,7 @@ class OpsTrustDisclosureServiceTest {
     private final OpsI18nLearningService i18nLearningService = mock(OpsI18nLearningService.class);
     private final DisclosureReackNotificationService disclosureReackNotificationService = mock(DisclosureReackNotificationService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final OpsTrustDisclosureService service = new OpsTrustDisclosureService(
             repository,
             configFacade,
@@ -83,7 +85,8 @@ class OpsTrustDisclosureServiceTest {
             notificationCampaignService,
             i18nLearningService,
             disclosureReackNotificationService,
-            idempotencyService);
+            idempotencyService,
+            eventOutboxService);
 
     @BeforeEach
     void stubLockGuard() {
@@ -535,6 +538,7 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void updateGateRejectsSunsetFeatureReactivation() {
+        A2ReplayContext.enterReplay();
         var result = service.updateGateScope("idem-i5-gate", new DisclosureGateUpdateRequest(
                 "提现 + NEX v2 锁仓",
                 "Marina K.",
@@ -546,6 +550,7 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void updateGatePersistsActiveScopeWithoutSunsetAction() {
+        A2ReplayContext.enterReplay();
         var result = service.updateGateScope("idem-i5-gate", new DisclosureGateUpdateRequest(
                 "提现 + 质押锁仓",
                 "Marina K.",
@@ -560,6 +565,21 @@ class OpsTrustDisclosureServiceTest {
                 .allSatisfy(action -> assertThat(action.active()).isFalse());
         verify(configFacade).upsertAdminValue("disclosure.gate.withdraw", "true", "BOOLEAN", "content", "调整合规闸范围");
         verify(configFacade).upsertAdminValue("disclosure.gate.staking", "true", "BOOLEAN", "content", "调整合规闸范围");
+        verify(idempotencyService).execute(eq("I5_DISCLOSURE_GATE_UPDATE"), eq("idem-i5-gate"), anyString(), any(), any());
+    }
+
+    @Test
+    void updateGateRequiresA2ReplayAndDoesNotMutateWhenCalledDirectly() {
+        var result = service.updateGateScope("idem-i5-gate-direct", new DisclosureGateUpdateRequest(
+                "提现 + 质押锁仓",
+                "spoofed-operator",
+                "直接调用不得绕过双人复核边界"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(repository.activeGateKeys).containsExactly("withdraw");
+        verify(configFacade, times(0)).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(auditLogService, times(0)).recordRequired(any());
     }
 
     @Test
@@ -823,7 +843,8 @@ class OpsTrustDisclosureServiceTest {
         assertThat(repository.findJurisdiction("SBV").orElseThrow().countryCodes()).containsExactly("VN");
         assertThat(repository.findJurisdiction("SBV").orElseThrow().name()).isEqualTo("越南国家银行");
         verify(disclosureReackNotificationService).notifyPublished(
-                eq("SBV"), eq("v1"), eq(List.of("VN")), eq("idem-i5-matrix-create"), any(LocalDateTime.class));
+                eq("SBV"), eq("none"), eq("v1"), eq(List.of("VN")),
+                eq("idem-i5-matrix-create"), any(LocalDateTime.class));
 
         repository.jurisdictionCatalogs.put("NEW", new DisclosureJurisdictionCatalogView(
                 "NEW", "新法域", "ACTIVE", 1L, 0L, false, "tester", "2026-06-18"));
@@ -837,6 +858,26 @@ class OpsTrustDisclosureServiceTest {
                 "NEW", "未知版本", List.of("US"), "v999", "DRAFT", "Marina K.", "校验版本目录来源"));
         assertThat(unknownVersion.getCode()).isEqualTo(409);
         assertThat(unknownVersion.getMessage()).isEqualTo("DISCLOSURE_MATRIX_VERSION_NOT_PUBLISHED");
+    }
+
+    @Test
+    void mappingChangeNotifiesUsersFromBothRemovedAndAddedCountries() {
+        repository.jurisdictionCatalogs.put("SBV", new DisclosureJurisdictionCatalogView(
+                "SBV", "越南国家银行", "ACTIVE", 1L, 2L, true, "tester", "2026-06-18"));
+        repository.jurisdictions.put("SBV", new DisclosureJurisdictionView(
+                "SBV", "越南国家银行", List.of("VN"), "v1", "published", "2026-06-18", 12, 100, 0));
+        repository.drafts.put("SBV::v1", publishedDraft("SBV", "v1"));
+        repository.drafts.put("SBV::v2", publishedDraft("SBV", "v2"));
+        A2ReplayContext.enterReplay();
+
+        var changed = service.configureMatrix("SBV", "idem-i5-matrix-country-switch", new DisclosureMatrixRequest(
+                "SBV", "客户端伪造名称", List.of("US"), "v2", "DRAFT",
+                "Marina K.", "切换法域国家并通知新旧两侧用户"));
+
+        assertThat(changed.getCode()).isZero();
+        verify(disclosureReackNotificationService).notifyPublished(
+                eq("SBV"), eq("v1"), eq("v2"), eq(List.of("US", "VN")),
+                eq("idem-i5-matrix-country-switch"), any(LocalDateTime.class));
     }
 
     @Test
@@ -877,7 +918,8 @@ class OpsTrustDisclosureServiceTest {
         assertThat(mapped.getCode()).isZero();
         assertThat(repository.findJurisdiction("SBV").orElseThrow().version()).isEqualTo("v1");
         verify(disclosureReackNotificationService).notifyPublished(
-                eq("SBV"), eq("v1"), eq(List.of("VN")), eq("idem-i5-first-mapping"), any(LocalDateTime.class));
+                eq("SBV"), eq("none"), eq("v1"), eq(List.of("VN")),
+                eq("idem-i5-first-mapping"), any(LocalDateTime.class));
     }
 
     @Test
@@ -984,6 +1026,9 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void replayI4GateAdjustWritesConfigFacade() {
+        // 生产链路由 OpsAuditCenterService 在 maker-checker 审批成功后进入该上下文，
+        // 再通过 AuditReplayDispatcher 调用本 service；直接调用必须继续被 gate 拒绝。
+        A2ReplayContext.enterReplay();
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("I", "i4_gate_adjust", Map.of("scope", "提现 + 质押锁仓")),
                 new AuditReplayContext("Marina K.", "replay gate adjust scope", "idem-replay-i4-gate"));
@@ -995,6 +1040,7 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void replayI5GateAdjustUsesNewOperationName() {
+        A2ReplayContext.enterReplay();
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("I", "i5_gate_adjust", Map.of("scope", "提现 + 质押锁仓")),
                 new AuditReplayContext("Marina K.", "replay I5 gate scope", "idem-replay-i5-gate"));

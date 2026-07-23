@@ -137,6 +137,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void overviewExposesSevenFrameCurveAndSunsetExclusions() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         marketRepository.pricePoints = pricePoints(
                 "0.17100000",
                 "0.17400000",
@@ -167,14 +168,11 @@ class OpsNexMarketServiceTest {
         marketRepository.latestSparkline = Optional.empty();
         marketRepository.pricePoints = List.of();
 
-        ApiResult<Map<String, Object>> result = service.overview();
-
-        assertThat(result.getCode()).isZero();
+        assertThatThrownBy(service::overview)
+                .isInstanceOf(BizException.class)
+                .hasMessage("G3_WEEKLY_CURVE_INVALID");
         assertThat(marketRepository.marketSeeded).isFalse();
         assertThat(configFacade.values).isEmpty();
-        assertThat((BigDecimal) result.getData().get("currentPrice")).isEqualByComparingTo("0");
-        assertThat((List<?>) result.getData().get("frames")).isEmpty();
-        assertThat(result.getData().get("sunsetExclusions")).asList().isEmpty();
     }
 
     @Test
@@ -271,13 +269,13 @@ class OpsNexMarketServiceTest {
         marketRepository.orders = List.of();
         OpsNexMarketService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
 
-        ApiResult<Map<String, Object>> overview = realOnlyService.overview();
+        assertThatThrownBy(realOnlyService::overview)
+                .isInstanceOf(BizException.class)
+                .hasMessage("G3_WEEKLY_CURVE_INVALID");
         ApiResult<Map<String, Object>> exchange = realOnlyService.exchangeOverview();
 
-        assertThat(overview.getCode()).isZero();
         assertThat(realOnlyService.currentSchedule().displayValue()).isEmpty();
         assertThat(realOnlyService.currentSchedule().cronExpression()).isEmpty();
-        assertThat((List<?>) overview.getData().get("frames")).isEmpty();
         assertThat(exchange.getCode()).isZero();
         assertThat(marketRepository.exchangeSeeded).isFalse();
         assertThat((List<?>) exchange.getData().get("queue")).isEmpty();
@@ -520,6 +518,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void raisingCurveBelowB1CoverageRedlineReturns422() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> result = service.updateWeeklyCurve(
@@ -532,6 +531,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void validCurveWritesConfigPublishesActiveFrameAndAudits() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         ApiResult<Map<String, Object>> result = service.updateWeeklyCurve(
                 "idem-g3",
                 new NexMarketCurveUpdateRequest(frames("0.160"), "weekly schedule", "superadmin"));
@@ -558,6 +558,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void advancePersistsActiveDayAndFeedsDownstreamMarketSurfaces() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", steppedCurveJson());
         configFacade.values.put("wallet.nex_market.control.active_day_index", "2");
         marketRepository.pricePoints = pricePoints(
                 "0.10",
@@ -586,6 +587,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void updateControlWritesConfigAndAudits() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         ApiResult<Map<String, Object>> result = service.updateControl(
                 "idem-control",
                 "pin",
@@ -602,6 +604,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void updateScheduleControlNormalizesTimeAndWritesConfig() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         ApiResult<Map<String, Object>> result = service.updateControl(
                 "idem-schedule",
                 "schedule",
@@ -647,6 +650,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void updateOverridePricePublishesMarketPriceAndAudits() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         ApiResult<Map<String, Object>> result = service.updateOverride(
                 "idem-price",
                 "currentPrice",
@@ -977,18 +981,33 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void stakingOverviewReadsI4DisclosureGateAsBlocked() {
+    void stakingOverviewShowsI5DisclosureAsPerUserRequirementWithoutStoppingG1() {
+        configFacade.values.put("disclosure.gate.staking", "true");
+
+        ApiResult<Map<String, Object>> result = service.stakingOverview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(detailMap(result.getData().get("stats"))).containsEntry("stakingGateOn", true);
+        assertThat(detailMap(result.getData().get("gate")))
+                .containsEntry("enabled", true)
+                .doesNotContainKey("blockedBy");
+        assertThat(detailMap(result.getData().get("disclosureGate")))
+                .containsEntry("staking", true);
+    }
+
+    @Test
+    void stakingDisclosureUsesConfigTruthBeforeLegacyEmergencyFallback() {
+        configFacade.values.put("disclosure.gate.staking", "false");
         emergencyRepository.settings.put("disclosure.gate.staking", "true");
 
         ApiResult<Map<String, Object>> result = service.stakingOverview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(detailMap(result.getData().get("stats"))).containsEntry("stakingGateOn", false);
-        assertThat(detailMap(result.getData().get("gate")))
-                .containsEntry("enabled", false)
-                .containsEntry("blockedBy", "I5_DISCLOSURE_GATE");
         assertThat(detailMap(result.getData().get("disclosureGate")))
-                .containsEntry("staking", true);
+                .containsEntry("staking", false);
+        assertThat(detailMap(result.getData().get("gate")))
+                .containsEntry("enabled", true)
+                .doesNotContainKey("blockedBy");
     }
 
     @Test
@@ -1008,7 +1027,7 @@ class OpsNexMarketServiceTest {
                 .containsEntry("pendingCount", 0L);
         assertThat((List<?>) result.getData().get("positions"))
                 .extracting("rows")
-                .allSatisfy(rows -> assertThat((List<?>) rows).isNotEmpty());
+                .allSatisfy(rows -> assertThat((List<?>) rows).isEmpty());
     }
 
     @Test
@@ -1050,7 +1069,7 @@ class OpsNexMarketServiceTest {
         assertThat(configFacade.values).containsEntry("G.staking.penalty.usdt30d", "6");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G1_STAKING_POOL_PARAM_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-g1-penalty");
     }
@@ -1085,17 +1104,38 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void perUserDisclosureRequirementDoesNotBlockRestoringAPoolSale() {
+        configFacade.values.put("disclosure.gate.staking", "true");
+        configFacade.values.put("G.staking.enabled.usdt365d", "false");
+
+        ApiResult<Map<String, Object>> result = service.updateStakingPoolSaleStatus(
+                "idem-g1-disclosure-is-per-user",
+                "usdt365d",
+                new NexMarketValueUpdateRequest("true", "restore sale while preserving per-user disclosure", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("G.staking.enabled.usdt365d", "true");
+        assertThat(detailMap(result.getData().get("disclosureGate"))).containsEntry("staking", true);
+    }
+
+    @Test
     void killingStakingTierWritesConfigAndAudits() {
         ApiResult<Map<String, Object>> result = service.updateStakingPoolKillStatus(
                 "idem-g1-kill",
                 "usdt365d",
-                new NexMarketValueUpdateRequest("true", "slash open positions by published incident plan", "superadmin"));
+                new NexMarketValueUpdateRequest(
+                        "true",
+                        "slash open positions by published incident plan",
+                        "superadmin",
+                        null,
+                        "Slash only active positions and preserve all settled balances.",
+                        "INC-20260722-G1"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("G.staking.usdt365d.killed", "true");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G1_STAKING_POOL_KILL_STATUS_CHANGED");
     }
 
@@ -1112,12 +1152,13 @@ class OpsNexMarketServiceTest {
         assertThat(configFacade.values).containsEntry("G.staking.penalty.usdt30d", "6");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G1_STAKING_POOL_PARAM_CHANGED");
     }
 
     @Test
     void replayG3CurveControlWritesConfigAndAudits() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("G", "g3_curve_control", Map.of(
                         "controlKey", "pin",
@@ -1156,6 +1197,16 @@ class OpsNexMarketServiceTest {
         return java.util.stream.IntStream.range(0, 7)
                 .mapToObj(index -> "{\"dayIndex\":" + index
                         + ",\"targetPrice\":" + price
+                        + ",\"pumpProbability\":0.08,\"volatilityPct\":3}")
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
+    }
+
+    private static String steppedCurveJson() {
+        return java.util.stream.IntStream.range(0, 7)
+                .mapToObj(index -> "{\"dayIndex\":" + index
+                        + ",\"targetPrice\":" + new BigDecimal("0.10")
+                                .add(new BigDecimal("0.01").multiply(BigDecimal.valueOf(index)))
+                                .toPlainString()
                         + ",\"pumpProbability\":0.08,\"volatilityPct\":3}")
                 .collect(java.util.stream.Collectors.joining(",", "[", "]"));
     }

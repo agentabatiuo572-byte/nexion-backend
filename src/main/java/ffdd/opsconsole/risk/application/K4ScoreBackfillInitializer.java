@@ -1,13 +1,11 @@
 package ffdd.opsconsole.risk.application;
 
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
-import ffdd.opsconsole.risk.domain.RiskScoreContributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreModelView;
 import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
 import ffdd.opsconsole.shared.exception.BizException;
-import java.util.List;
-import java.util.Set;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -21,13 +19,12 @@ import org.springframework.scheduling.annotation.Scheduled;
 @Order(20)
 @RequiredArgsConstructor
 public class K4ScoreBackfillInitializer implements ApplicationRunner {
-    static final int CHUNK_SIZE = 200;
-    private static final Set<String> CANONICAL_DIMENSIONS = Set.of(
-            "multiAccount", "arbitrage", "kycStatus",
-            "withdrawVelocity", "accountAge", "anomalyBehavior");
+    public static final int CHUNK_SIZE = 200;
 
     private final RiskOpsRepository riskRepository;
     private final K4RiskScorer scorer;
+    private final EventOutboxService eventOutboxService;
+    private final K4KycReviewTriggerService kycReviewTriggerService;
 
     @Override
     @Transactional
@@ -43,14 +40,22 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
         for (String userNo : riskRepository.scoreUserNosNeedingProjection(model.version(), CHUNK_SIZE)) {
             RiskScoreUserView current = riskRepository.findScoreUser(userNo)
                     .orElseThrow(() -> new BizException(500, "K4_SCORE_USER_MISSING_DURING_BACKFILL"));
-            if (isCurrentProjection(current, model)) continue;
             RiskScoreRawInput input = riskRepository.scoringInput(userNo)
                     .orElseThrow(() -> new BizException(500, "K4_SCORE_INPUT_MISSING_DURING_BACKFILL"));
             K4RiskScorer.ScoreResult result = scorer.score(input, model);
-            if (riskRepository.recomputeScore(
-                    userNo, current.rowVersion(), model, result.score(), result.contributions()).isEmpty()) {
+            RiskScoreUserView updated = riskRepository.refreshScoreProjection(
+                    userNo, current.rowVersion(), model, result.score(), result.contributions()).orElse(null);
+            if (updated == null) {
                 throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE_DURING_BACKFILL");
             }
+            K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, current, updated);
+            kycReviewTriggerService.triggerIfThresholdReached(
+                    current,
+                    updated,
+                    K4KycReviewTriggerService.SOURCE_FACT_REFRESH,
+                    "K4 source facts or stale projection required recompute",
+                    "system",
+                    "k4-fact-refresh:" + model.version() + ":" + userNo + ":" + updated.rowVersion());
         }
     }
 
@@ -61,17 +66,4 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
         backfillCanonicalScores();
     }
 
-    private boolean isCurrentProjection(RiskScoreUserView score, RiskScoreModelView model) {
-        List<RiskScoreContributionView> rows = score.contributions();
-        if (!java.util.Objects.equals(score.modelVersion(), "k4-v" + model.version())
-                || rows == null || rows.size() != CANONICAL_DIMENSIONS.size()) {
-            return false;
-        }
-        Set<String> keys = rows.stream().map(RiskScoreContributionView::dimKey)
-                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
-        int points = rows.stream().map(RiskScoreContributionView::points)
-                .filter(java.util.Objects::nonNull).mapToInt(Integer::intValue).sum();
-        return keys.equals(CANONICAL_DIMENSIONS)
-                && java.util.Objects.equals(score.modelScore(), points);
-    }
 }

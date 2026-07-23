@@ -70,7 +70,7 @@ VALUES
   (1304, 'MENU_FINANCE_D4', '账本/账单审计', '账本/账单审计', 'D4', 1300, '/finance/ledger', 'Document', 1304, 'D4 账本/账单审计,按PC左侧菜单同步。', 1),
   (1305, 'MENU_FINANCE_D5', '提现参数配置', '提现参数配置', 'D5', 1300, '/finance/params', 'Document', 1305, 'D5 提现参数配置,按PC左侧菜单同步。', 1),
   (1400, 'MENU_DEVICES', '设备与商城', '设备与商城', 'devices', NULL, '/devices', 'Server', 1400, '设备与商城目录,按PC左侧菜单同步。', 1),
-  (1401, 'MENU_DEVICES_E1', '商品目录 & 代际门', '商品目录 & 代际门', 'E1', 1400, '/devices/pricing', 'Document', 1401, 'E1 商品目录 & 代际门,按PC左侧菜单同步。', 1),
+  (1401, 'MENU_DEVICES_E1', '商品目录 & 上架门', '商品目录 & 上架门', 'E1', 1400, '/devices/pricing', 'Document', 1401, 'E1 商品目录 & 上架门,按PC左侧菜单同步。', 1),
   (1402, 'MENU_DEVICES_E2', '收益 & 任务引擎', '收益 & 任务引擎', 'E2', 1400, '/devices/tasks', 'Document', 1402, 'E2 收益 & 任务引擎,按PC左侧菜单同步。', 1),
   (1403, 'MENU_DEVICES_E3', '生命周期 & Trade-in', '生命周期 & Trade-in', 'E3', 1400, '/devices/trade-in', 'Document', 1403, 'E3 生命周期 & Trade-in,按PC左侧菜单同步。', 1),
   (1404, 'MENU_DEVICES_E4', '订单状态机', '订单状态机', 'E4', 1400, '/devices/orders', 'Document', 1404, 'E4 订单状态机,按PC左侧菜单同步。', 1),

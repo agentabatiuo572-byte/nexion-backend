@@ -17,6 +17,7 @@ import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.application.A2AccessPolicy;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
@@ -37,8 +38,25 @@ class OpsAuditControllerTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final OpsAuditCenterService auditCenterService = mock(OpsAuditCenterService.class);
     private final AdminOperatorRoleResolver operatorRoleResolver = mock(AdminOperatorRoleResolver.class);
+    private final A2AccessPolicy accessPolicy = mock(A2AccessPolicy.class);
+    private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService =
+            mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper =
+            new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
     private final OpsAuditController controller =
-            new OpsAuditController(auditLogService, auditCenterService, operatorRoleResolver);
+            new OpsAuditController(auditLogService, auditCenterService, operatorRoleResolver, accessPolicy,
+                    idempotencyService, objectMapper);
+
+    {
+        when(accessPolicy.constrain(any(AuditLogQueryRequest.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(idempotencyService.execute(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            java.util.function.Supplier<?> action = invocation.getArgument(4);
+            return action.get();
+        });
+        when(auditLogService.count(any(AuditLogQueryRequest.class))).thenReturn(1L);
+        when(auditLogService.listForExport(any(AuditLogQueryRequest.class), any(Integer.class)))
+                .thenAnswer(invocation -> auditLogService.list(invocation.getArgument(0)));
+    }
 
     @AfterEach
     void clearSecurityContext() {
@@ -49,13 +67,13 @@ class OpsAuditControllerTest {
     void overviewDelegatesToA2AuditCenterService() {
         AuditCenterOverview overview = new AuditCenterOverview(null, List.of(), List.of(), List.of(), List.of(),
                 List.of(), null, List.of());
-        when(auditCenterService.overview()).thenReturn(ApiResult.ok(overview));
+        when(auditCenterService.overview(any(AuditLogQueryRequest.class))).thenReturn(ApiResult.ok(overview));
 
         ApiResult<AuditCenterOverview> result = controller.overview();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).isSameAs(overview);
-        verify(auditCenterService).overview();
+        verify(auditCenterService).overview(any(AuditLogQueryRequest.class));
     }
 
     @Test
@@ -126,7 +144,7 @@ class OpsAuditControllerTest {
         assertThat(workbook).contains("A2 审计日志导出", "incident review", "LOGIN", "superadmin");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("A2_AUDIT_EXPORTED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("A2_AUDIT_EXPORT");
         assertThat(captor.getValue().getRiskLevel()).isEqualTo("MEDIUM");
@@ -177,6 +195,10 @@ class OpsAuditControllerTest {
 
     @Test
     void mechanismParamEndpointDelegatesToAuditCenterService() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("1", null, List.of());
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "username", "superadmin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
         AuditMechanismParamUpdateRequest request =
                 new AuditMechanismParamUpdateRequest("12 字", "tighten reason", "superadmin");
         AuditCenterOverview.AuditMechanismParam param =
@@ -184,6 +206,112 @@ class OpsAuditControllerTest {
         when(auditCenterService.updateMechanismParam("idem-1", "ttl", request)).thenReturn(ApiResult.ok(param));
 
         assertThat(controller.updateMechanismParam("idem-1", "ttl", request).getData()).isSameAs(param);
+    }
+
+    @Test
+    void mechanismParamEndpointReplacesSpoofedOperatorWithAuthenticatedUsername() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("41", null, List.of());
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "username", "alice.admin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        AuditMechanismParamUpdateRequest spoofed =
+                new AuditMechanismParamUpdateRequest("12", "tighten reason", "mallory");
+
+        controller.updateMechanismParam("idem-1", "ttl", spoofed);
+
+        verify(auditCenterService).updateMechanismParam("idem-1", "ttl",
+                new AuditMechanismParamUpdateRequest("12", "tighten reason", "alice.admin"));
+    }
+
+    @Test
+    void workbookNeutralizesSpreadsheetFormulaCells() {
+        AuditLogRecord record = new AuditLogRecord();
+        record.setAction("  =HYPERLINK(\"https://evil\")");
+        record.setActorUsername("\t+cmd|' /C calc'!A0");
+        record.setResourceType("\r-2+3");
+        record.setResourceId("\n@SUM(1,1)");
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(record));
+
+        ResponseEntity<?> result = controller.export("idem-formula",
+                new AuditExportRequest("security review", Map.of()));
+
+        String workbook = new String((byte[]) result.getBody(), StandardCharsets.UTF_8);
+        assertThat(workbook).contains("'  =HYPERLINK", "'\t+cmd", "'\r-2+3", "'\n@SUM");
+    }
+
+    @Test
+    void exportUsesFixedA2ScopeAndSerializableReplayPayload() throws Exception {
+        AuditLogRecord record = new AuditLogRecord();
+        record.setAction("C2_ACCOUNT_REVIEWED");
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(record));
+
+        controller.export("idem-fixed-scope",
+                new AuditExportRequest("security evidence export", Map.of("domain", "C")));
+
+        verify(idempotencyService).execute(org.mockito.ArgumentMatchers.eq("A2_COMMAND"),
+                org.mockito.ArgumentMatchers.eq("idem-fixed-scope"), any(),
+                org.mockito.ArgumentMatchers.eq(OpsAuditController.AuditExportResult.class), any());
+        OpsAuditController.AuditExportResult expected = new OpsAuditController.AuditExportResult(
+                "job-1", java.time.LocalDateTime.of(2026, 7, 17, 12, 0), new byte[]{1, 2, 3});
+        byte[] json = objectMapper.writeValueAsBytes(expected);
+        assertThat(objectMapper.readValue(json, OpsAuditController.AuditExportResult.class).body())
+                .containsExactly(1, 2, 3);
+    }
+
+    @Test
+    void exportReplayReturnsStoredWorkbookWithoutSecondAudit() {
+        AuditLogRecord record = new AuditLogRecord();
+        record.setAction("D2_EXPORTABLE");
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(record));
+        java.util.concurrent.atomic.AtomicReference<Object> stored = new java.util.concurrent.atomic.AtomicReference<>();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            if (stored.get() == null) stored.set(((java.util.function.Supplier<?>) invocation.getArgument(4)).get());
+            return stored.get();
+        }).when(idempotencyService).execute(org.mockito.ArgumentMatchers.eq("A2_COMMAND"),
+                org.mockito.ArgumentMatchers.eq("idem-export-replay"), any(), any(), any());
+        AuditExportRequest request = new AuditExportRequest("replay evidence export", Map.of("domain", "D"));
+
+        ResponseEntity<?> first = controller.export("idem-export-replay", request);
+        ResponseEntity<?> second = controller.export("idem-export-replay", request);
+
+        assertThat((byte[]) second.getBody()).containsExactly((byte[]) first.getBody());
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void exportRejectsEmptyResultAndOverlongReasonWithoutSuccessAudit() {
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of());
+        when(auditLogService.count(any(AuditLogQueryRequest.class))).thenReturn(0L);
+        assertThat(controller.export("idem-empty",
+                new AuditExportRequest("empty result evidence", Map.of())).getStatusCode().value()).isEqualTo(422);
+        assertThat(controller.export("idem-long",
+                new AuditExportRequest("x".repeat(201), Map.of())).getStatusCode().value())
+                .isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        verify(auditLogService, org.mockito.Mockito.never()).recordRequired(any());
+    }
+
+    @Test
+    void exportNeverSilentlyTruncatesMoreThanFiveThousandRows() {
+        when(auditLogService.count(any(AuditLogQueryRequest.class))).thenReturn(5001L);
+        ResponseEntity<?> result = controller.export("idem-too-large",
+                new AuditExportRequest("large export evidence", Map.of()));
+        assertThat(result.getStatusCode().value()).isEqualTo(422);
+        assertThat(((ApiResult<?>) result.getBody()).getMessage()).isEqualTo("A2_EXPORT_TOO_LARGE_REFINE_FILTER");
+        verify(auditLogService, org.mockito.Mockito.never()).listForExport(any(), any(Integer.class));
+        verify(auditLogService, org.mockito.Mockito.never()).recordRequired(any());
+    }
+
+    @Test
+    void exportIncludesAllTwoHundredAndOneRowsInsteadOfUsingUiListCap() {
+        AuditLogRecord record = new AuditLogRecord(); record.setAction("D2_ROW");
+        when(auditLogService.count(any(AuditLogQueryRequest.class))).thenReturn(201L);
+        when(auditLogService.list(any(AuditLogQueryRequest.class)))
+                .thenReturn(java.util.Collections.nCopies(201, record));
+        ResponseEntity<?> result = controller.export("idem-201",
+                new AuditExportRequest("complete export evidence", Map.of("domain", "D")));
+        assertThat(result.getStatusCode().is2xxSuccessful()).isTrue();
+        verify(auditLogService).listForExport(any(AuditLogQueryRequest.class),
+                org.mockito.ArgumentMatchers.eq(5000));
     }
 
     @Test

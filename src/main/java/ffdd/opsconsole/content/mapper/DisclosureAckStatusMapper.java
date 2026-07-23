@@ -59,6 +59,15 @@ public interface DisclosureAckStatusMapper extends BaseMapper<DisclosureAckStatu
     String findUserCountryCode(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COALESCE((SELECT config_value FROM nx_config_item
+                              WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1),'P1') phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH,u.created_at,NOW()),0) accountAgeMonths,
+                   DATE_FORMAT(u.created_at,'%x-W%v') cohort
+              FROM nx_user u WHERE u.id=#{userId} AND u.is_deleted=0 LIMIT 1
+            """)
+    UserAttribution userAttribution(@Param("userId") Long userId);
+
+    @Select("""
             SELECT country FROM nx_kyc_profile
              WHERE user_id = #{userId} AND is_deleted = 0
                AND UPPER(status) IN ('APPROVED', 'VERIFIED', 'PASSED')
@@ -140,4 +149,7 @@ public interface DisclosureAckStatusMapper extends BaseMapper<DisclosureAckStatu
                               @Param("actionKey") String actionKey,
                               @Param("businessFlowId") String businessFlowId,
                               @Param("now") LocalDateTime now);
+
+    record UserAttribution(String phase, Integer accountAgeMonths, String cohort) {
+    }
 }

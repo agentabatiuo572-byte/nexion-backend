@@ -55,6 +55,11 @@ public class MybatisSessionTemplateRepository implements SessionTemplateReposito
     }
 
     @Override
+    public Optional<SessionScriptView> findScriptForUpdate(String scriptId) {
+        return Optional.ofNullable(helpArticleMapper.lockSessionScript(scriptId));
+    }
+
+    @Override
     public SessionScriptView createScript(String scriptId, SessionScriptCreateRequest request, LocalDateTime now) {
         HelpArticleEntity entity = baseEntity(scriptId, SCRIPT_FORMAT, now);
         entity.setTitle(request.scriptGroup().trim());
@@ -111,6 +116,11 @@ public class MybatisSessionTemplateRepository implements SessionTemplateReposito
     }
 
     @Override
+    public Optional<SessionReplyTemplateView> findReplyTemplateForUpdate(String templateId) {
+        return Optional.ofNullable(helpArticleMapper.lockSessionReplyTemplate(templateId));
+    }
+
+    @Override
     public SessionReplyTemplateView createReplyTemplate(String templateId, SessionReplyTemplateCreateRequest request, LocalDateTime now) {
         String type = request.type().trim().toLowerCase(Locale.ROOT);
         HelpArticleEntity entity = baseEntity(templateId, REPLY_TEMPLATE_FORMAT, now);
@@ -152,11 +162,17 @@ public class MybatisSessionTemplateRepository implements SessionTemplateReposito
     }
 
     private int toDbStatus(String status) {
-        return "published".equalsIgnoreCase(status) ? 1 : 0;
+        if ("published".equalsIgnoreCase(status)) {
+            return 1;
+        }
+        return "archived".equalsIgnoreCase(status) ? 2 : 0;
     }
 
     private String toScriptStatus(Integer status) {
-        return status != null && status == 1 ? "published" : "draft";
+        if (status != null && status == 1) {
+            return "published";
+        }
+        return status != null && status == 2 ? "archived" : "draft";
     }
 
     private long normalizePage(Long pageNum) {
@@ -175,7 +191,7 @@ public class MybatisSessionTemplateRepository implements SessionTemplateReposito
             return null;
         }
         String normalized = status.trim().toLowerCase(Locale.ROOT);
-        return List.of("published", "draft").contains(normalized) ? normalized : null;
+        return List.of("draft", "published", "archived").contains(normalized) ? normalized : null;
     }
 
     private String normalizeTemplateType(String type) {

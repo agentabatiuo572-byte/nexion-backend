@@ -13,6 +13,7 @@ public record EventCenterOverview(
         List<EventCommonField> commonFields,
         List<EventDimensionParam> dimensionParams,
         List<EventKpiFormula> kpiFormulas,
+        List<EventSchemaRegistration> schemaRegistrations,
         List<EventDomainExtensionBatch> domainExtensions,
         List<AuditLogRecord> recentLogs,
         List<AuditStatsBucket> topActions,
@@ -48,6 +49,19 @@ public record EventCenterOverview(
     }
 
     public record EventKpiFormula(int n, String kpi, String formula) {
+    }
+
+    public record EventSchemaRegistration(
+            String eventName,
+            String ownerDomain,
+            String familyKey,
+            String producer,
+            String consumers,
+            String properties,
+            boolean serverAuthoritative,
+            String samplingPolicy,
+            String version,
+            String updatedAt) {
     }
 
     public record EventDomainExtensionBatch(

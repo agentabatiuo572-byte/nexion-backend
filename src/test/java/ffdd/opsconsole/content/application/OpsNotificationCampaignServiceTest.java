@@ -2,12 +2,16 @@ package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
+import ffdd.opsconsole.content.domain.NotificationActionReceipt;
+import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NotificationCampaignRow;
 import ffdd.opsconsole.content.domain.NotificationAudienceTarget;
 import ffdd.opsconsole.content.domain.NotificationCapRuleView;
@@ -21,6 +25,9 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -33,6 +40,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -47,8 +55,10 @@ class OpsNotificationCampaignServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T08:30:00Z"), ZoneOffset.UTC);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final NotificationCampaignDispatchExecutor dispatchExecutor =
-            new NotificationCampaignDispatchExecutor(repository, auditLogService);
+            new NotificationCampaignDispatchExecutor(repository, auditLogService, eventOutboxService);
     private final OpsNotificationCampaignService service = new OpsNotificationCampaignService(
             repository,
             auditLogService,
@@ -56,7 +66,8 @@ class OpsNotificationCampaignServiceTest {
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
             lockMapper,
             configFacade,
-            dispatchExecutor);
+            dispatchExecutor,
+            idempotencyService);
 
     @BeforeEach
     void stubLockGuard() {
@@ -65,6 +76,8 @@ class OpsNotificationCampaignServiceTest {
         when(configFacade.activeValue("growth.phase.current")).thenReturn(Optional.of("P3"));
         repository.estimatedAudience = 1;
         SecurityContextHolder.clearContext();
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
     }
 
     @Test
@@ -126,9 +139,36 @@ class OpsNotificationCampaignServiceTest {
         assertThat(repository.campaigns).containsKey(result.getData().id());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I3_NOTIFICATION_CAMPAIGN_CREATED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("NOTIFICATION_CAMPAIGN");
+    }
+
+    @Test
+    void createCampaignUsesDurableIdempotencyBoundary() {
+        var result = service.createCampaign("idem-i3-create-durable", createRequest());
+
+        assertThat(result.getCode()).isZero();
+        verify(idempotencyService).execute(
+                eq("I3_NOTIFICATION_CAMPAIGN_CREATE"),
+                eq("idem-i3-create-durable"),
+                anyString(),
+                eq(ApiResult.class),
+                any());
+    }
+
+    @Test
+    void authenticatedOperatorOverridesSpoofedRequestOperator() {
+        var authentication = new UsernamePasswordAuthenticationToken("42", "n/a", List.of());
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "username", "trusted-admin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        var result = service.createCampaign("idem-i3-authenticated-operator", createRequest());
+
+        assertThat(result.getCode()).isZero();
+        assertThat(repository.lastCreateOperator).isEqualTo("trusted-admin");
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
+                "trusted-admin".equals(request.getActorUsername())));
     }
 
     @Test
@@ -207,6 +247,18 @@ class OpsNotificationCampaignServiceTest {
     }
 
     @Test
+    void sendNowRejectsEmptyAudienceBeforeClaimWith422() {
+        repository.estimatedAudience = 0;
+
+        var result = service.sendNow("CMP-2619", "idem-i3-send-empty", action(null));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("AUDIENCE_EMPTY");
+        assertThat(repository.campaigns.get("CMP-2619").status()).isEqualTo("draft");
+        assertThat(repository.dispatchBizNos).isEmpty();
+    }
+
+    @Test
     void updateScheduledCampaignCannotResetItToDraft() {
         var result = service.updateDraft("CMP-2618", "idem-i3-draft-scheduled", draftRequest());
 
@@ -281,6 +333,29 @@ class OpsNotificationCampaignServiceTest {
         assertThat(result.getData().bodyZh()).contains("中文标题", "中文正文");
         assertThat(result.getData().bodyVi()).contains("Tiêu đề", "Nội dung");
         assertThat(result.getData().bodyEn()).contains("English title", "English body");
+    }
+
+    @Test
+    void updateDraftRejectsStaleRevisionWithoutOverwritingNewerDraft() {
+        var first = service.updateDraft("CMP-2619", "idem-i3-draft-revision-1", draftRequest(0L));
+        assertThat(first.getCode()).isZero();
+        assertThat(first.getData().revision()).isEqualTo(1L);
+
+        var stale = service.updateDraft("CMP-2619", "idem-i3-draft-revision-stale", draftRequest(0L));
+
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("NOTIFICATION_CAMPAIGN_STALE_VERSION");
+        assertThat(repository.campaigns.get("CMP-2619").revision()).isEqualTo(1L);
+    }
+
+    @Test
+    void mutationRejectsMissingRevisionInsteadOfSilentlyUsingLatestServerState() {
+        var result = service.scheduleCampaign("CMP-2619", "idem-i3-missing-revision",
+                new NotificationCampaignActionRequest("2026-06-20T10:00:00", "Marina K.", "执行通知状态变更操作"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("NOTIFICATION_CAMPAIGN_REVISION_REQUIRED");
+        assertThat(repository.campaigns.get("CMP-2619").status()).isEqualTo("draft");
     }
 
     @Test
@@ -414,6 +489,10 @@ class OpsNotificationCampaignServiceTest {
     }
 
     private static NotificationCampaignDraftRequest draftRequest() {
+        return draftRequest(0L);
+    }
+
+    private static NotificationCampaignDraftRequest draftRequest(Long expectedRevision) {
         return new NotificationCampaignDraftRequest(
                 "7 月费率说明公告",
                 "中文标题",
@@ -426,11 +505,15 @@ class OpsNotificationCampaignServiceTest {
                 new NotificationAudienceTarget("P1", "P6", "all", 0),
                 new BigDecimal("1200"),
                 "Marina K.",
-                "更新系统通知草稿内容");
+                "更新系统通知草稿内容",
+                "system",
+                "",
+                "",
+                expectedRevision);
     }
 
     private static NotificationCampaignActionRequest action(String schedule) {
-        return new NotificationCampaignActionRequest(schedule, "Marina K.", "执行通知状态变更操作");
+        return new NotificationCampaignActionRequest(schedule, "Marina K.", "执行通知状态变更操作", 0L);
     }
 
     private static final class FakeNotificationCampaignRepository implements NotificationCampaignRepository {
@@ -443,6 +526,7 @@ class OpsNotificationCampaignServiceTest {
         private String lastEstimatePhase;
         private int seedCalls;
         private int recoverStaleCalls;
+        private String lastCreateOperator;
 
         private FakeNotificationCampaignRepository() {
             campaigns.put("CMP-2618", campaign("CMP-2618", "6/15 钱包维护窗口公告", "high", "scheduled", "06-15 02:00 排期", "-", "-", null));
@@ -471,6 +555,7 @@ class OpsNotificationCampaignServiceTest {
 
         @Override
         public NotificationCampaignRow createCampaign(String campaignNo, NotificationCampaignCreateRequest request, long estimatedAudience, LocalDateTime now) {
+            lastCreateOperator = request.operator();
             NotificationCampaignRow row = new NotificationCampaignRow(
                     campaignNo,
                     request.name(),
@@ -487,14 +572,20 @@ class OpsNotificationCampaignServiceTest {
                     request.titleVi() + "\n" + request.bodyVi(),
                     "-",
                     request.budget(),
-                    request.audienceTarget());
+                    request.audienceTarget(),
+                    "",
+                    "",
+                    0L);
             campaigns.put(campaignNo, row);
             return row;
         }
 
         @Override
-        public void updateDraft(String campaignNo, NotificationCampaignDraftRequest request, long estimatedAudience, LocalDateTime now) {
+        public boolean updateDraft(String campaignNo, NotificationCampaignDraftRequest request, long estimatedAudience, long expectedRevision, LocalDateTime now) {
             NotificationCampaignRow current = campaigns.get(campaignNo);
+            if (current == null || current.revision() != expectedRevision || !"draft".equals(current.status())) {
+                return false;
+            }
             campaigns.put(campaignNo, new NotificationCampaignRow(
                     current.id(),
                     request.name(),
@@ -511,7 +602,11 @@ class OpsNotificationCampaignServiceTest {
                     request.titleVi() + "\n" + request.bodyVi(),
                     current.swipeTo(),
                     request.budget(),
-                    request.audienceTarget()));
+                    request.audienceTarget(),
+                    current.ctaLabel(),
+                    current.ctaHref(),
+                    current.revision() + 1));
+            return true;
         }
 
         @Override
@@ -522,8 +617,18 @@ class OpsNotificationCampaignServiceTest {
         }
 
         @Override
-        public boolean deleteDraft(String campaignNo, LocalDateTime now) {
+        public boolean deleteDraft(String campaignNo, long expectedRevision, LocalDateTime now) {
+            NotificationCampaignRow current = campaigns.get(campaignNo);
+            if (current == null || current.revision() != expectedRevision) return false;
             return campaigns.remove(campaignNo) != null;
+        }
+
+        @Override
+        public boolean scheduleDraft(String campaignNo, String schedule, String operator, long expectedRevision, LocalDateTime now) {
+            NotificationCampaignRow current = campaigns.get(campaignNo);
+            if (current == null || current.revision() != expectedRevision || !"draft".equals(current.status())) return false;
+            updateStatus(campaignNo, "SCHEDULED", schedule, operator, now);
+            return true;
         }
 
         @Override
@@ -542,15 +647,27 @@ class OpsNotificationCampaignServiceTest {
                     current.read(),
                     current.bodyEn(),
                     current.bodyZh(),
+                    current.bodyVi(),
                     current.swipeTo(),
                     current.budget(),
-                    current.audienceTarget()));
+                    current.audienceTarget(),
+                    current.ctaLabel(),
+                    current.ctaHref(),
+                    current.revision() + 1));
         }
 
         @Override
         public int dispatchCampaignNotification(String campaignNo, String bizNo, String currentPhase, String trigger, String operator, LocalDateTime now) {
             dispatchBizNos.add(bizNo);
             return 1;
+        }
+
+        @Override
+        public List<NotificationEventFact> listNotificationEventFactsByBizNo(
+                String bizNo, String currentPhase, LocalDateTime now) {
+            return List.of(new NotificationEventFact(
+                    1L, 7L, "system", "normal", "", false,
+                    currentPhase, 1, "2026-W01"));
         }
 
         @Override
@@ -569,9 +686,10 @@ class OpsNotificationCampaignServiceTest {
         }
 
         @Override
-        public boolean claimForImmediateDispatch(String campaignNo, LocalDateTime now) {
+        public boolean claimForImmediateDispatch(String campaignNo, long expectedRevision, LocalDateTime now) {
             NotificationCampaignRow current = campaigns.get(campaignNo);
-            if (current == null || !Set.of("draft", "scheduled").contains(current.status())) {
+            if (current == null || current.revision() != expectedRevision
+                    || !Set.of("draft", "scheduled").contains(current.status())) {
                 return false;
             }
             updateStatus(campaignNo, "SENDING", "立即下发中", "system", now);
@@ -579,9 +697,9 @@ class OpsNotificationCampaignServiceTest {
         }
 
         @Override
-        public boolean cancelScheduled(String campaignNo, String operator, LocalDateTime now) {
+        public boolean cancelScheduled(String campaignNo, String operator, long expectedRevision, LocalDateTime now) {
             NotificationCampaignRow current = campaigns.get(campaignNo);
-            if (current == null || !"scheduled".equals(current.status())) {
+            if (current == null || current.revision() != expectedRevision || !"scheduled".equals(current.status())) {
                 return false;
             }
             updateStatus(campaignNo, "CANCELLED", "已取消", operator, now);
@@ -614,6 +732,27 @@ class OpsNotificationCampaignServiceTest {
 
         @Override
         public boolean markNotificationRead(Long userId, Long notificationId) {
+            return false;
+        }
+
+        @Override
+        public Optional<NotificationEventFact> lockNotificationEventFact(Long userId, Long notificationId) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<NotificationEventFact> lockUnreadNotificationEventFacts(Long userId) {
+            return List.of();
+        }
+
+        @Override
+        public Optional<NotificationActionReceipt> findNotificationActionReceipt(String idempotencyKey) {
+            return Optional.empty();
+        }
+
+        @Override
+        public boolean recordNotificationAction(
+                Long userId, Long notificationId, String action, String route, String idempotencyKey) {
             return false;
         }
 
@@ -657,9 +796,13 @@ class OpsNotificationCampaignServiceTest {
                     read,
                     "Body EN",
                     "Body ZH",
+                    "Body VI",
                     "-",
                     budget,
-                    new NotificationAudienceTarget("P1", "P6", "all", 0));
+                    new NotificationAudienceTarget("P1", "P6", "all", 0),
+                    "",
+                    "",
+                    0L);
         }
     }
 }

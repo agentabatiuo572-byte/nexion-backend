@@ -4,6 +4,8 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.platform.application.OpsEventCenterService;
 import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
+import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
+import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -41,7 +43,7 @@ public class OpsEventCenterController {
     @PreAuthorize("hasAuthority('platform_a4_write')")
     public ApiResult<EventCenterOverview> registerSchema(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) EventCenterMutationRequest request) {
+            @RequestBody(required = false) EventSchemaRegistrationRequest request) {
         return eventCenterService.registerSchema(idempotencyKey, request);
     }
 
@@ -49,7 +51,7 @@ public class OpsEventCenterController {
     @PreAuthorize("hasAuthority('platform_a4_write')")
     public ApiResult<EventCenterOverview.EventDomainExtensionBatch> registerDomainExtension(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) EventCenterMutationRequest request) {
+            @RequestBody(required = false) EventDomainExtensionRequest request) {
         return eventCenterService.registerDomainExtension(idempotencyKey, request);
     }
 }

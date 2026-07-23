@@ -1,8 +1,11 @@
 package ffdd.opsconsole.device.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -11,17 +14,23 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
+import ffdd.opsconsole.device.domain.DeviceOrderFacts;
+import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
+import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
@@ -34,13 +43,19 @@ import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.domain.DeviceTradeinTxView;
 import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
+import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
+import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
+import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
+import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
+import ffdd.opsconsole.device.dto.DeviceEarlyAccessUpdateRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGatePatchRequest;
+import ffdd.opsconsole.device.dto.DeviceGenerationGateUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderActionRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceOrderStateRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseArchiveRequest;
-import ffdd.opsconsole.device.dto.DevicePhaseCurrentRequest;
 import ffdd.opsconsole.device.dto.DevicePhaseUpsertRequest;
 import ffdd.opsconsole.device.dto.DevicePhoneTierRewardUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
@@ -56,10 +71,14 @@ import ffdd.opsconsole.device.dto.DeviceTaskQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskStatusRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
+import ffdd.opsconsole.device.dto.E2TaskPricingUpdateRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.finance.facade.E4OrderRefundSettlementFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -72,16 +91,25 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsDeviceServiceTest {
     private final FakeDeviceOpsRepository deviceRepository = new FakeDeviceOpsRepository();
     private final FakeDeviceCatalogRepository catalogRepository = new FakeDeviceCatalogRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
+    private final FakeE4OrderRefundSettlementFacade refundSettlementFacade = new FakeE4OrderRefundSettlementFacade();
+    private final TreasuryCoverageFacade coverageFacade = mock(TreasuryCoverageFacade.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsDeviceService service = service();
@@ -96,7 +124,11 @@ class OpsDeviceServiceTest {
                 catalogRepository,
                 configFacade,
                 ledgerPostingFacade,
+                refundSettlementFacade,
+                coverageFacade,
                 auditLogService,
+                idempotencyService,
+                outboxService,
                 clock,
                 seedPolicy,
                 lockMapper);
@@ -106,6 +138,16 @@ class OpsDeviceServiceTest {
     void stubLocksNoActive() {
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,replay 与常规写方法直通
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), any(), any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(200), BigDecimal.valueOf(100), true));
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        A2ReplayContext.exitReplay();
+        SecurityContextHolder.clearContext();
     }
 
     @Test
@@ -177,19 +219,20 @@ class OpsDeviceServiceTest {
         assertThat(deviceRepository.config).containsEntry("promoCooldownDays", "21");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("E3_CONFIG_CHANGED");
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("admin.tradein_config_changed");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-e3");
     }
 
     @Test
-    void updateE3ConfigAcceptsNegativeDegradeRate() {
-        E3ConfigUpdateRequest request = new E3ConfigUpdateRequest("E.device.degradeLate", "-23.7", "align lifecycle curve", "superadmin");
+    void updateE3ConfigAcceptsNegativeCapacityDelta() {
+        E3ConfigUpdateRequest request = new E3ConfigUpdateRequest(
+                "E.device.capacity.band3DeltaPct", "-23.7", "align lifecycle curve", "superadmin");
 
         ApiResult<Map<String, Object>> result = service.updateE3Config("idem-e3", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(deviceRepository.config).containsEntry("degradeLate", "-23.7");
+        assertThat(deviceRepository.config).containsEntry("capacityBand3DeltaPct", "-23.7");
     }
 
     @Test
@@ -246,7 +289,10 @@ class OpsDeviceServiceTest {
 
     @Test
     void e1GenerationGatePersistsBusinessTableAndAudits() {
-        configFacade.values.put("growth.phase.current_month", "4");
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.phases.put("P2", phase("P2", "P2", 20));
+        catalogRepository.phases.put("P3", phase("P3", "P3", 30));
+        configFacade.values.put("H1.rhythm.currentMonth", "4");
         configFacade.values.put("growth.phase.current", "P2");
         configFacade.values.put("device.e1.phaseOrder", "P1,P2,P3");
         configFacade.values.put("device.e1.phase.P1.meta", "L0+");
@@ -270,7 +316,7 @@ class OpsDeviceServiceTest {
                 .contains("E.gen.stellarbox-pro-v2.phaseOffset=2");
         assertThat(result.getData())
                 .containsEntry("platformMonth", 4)
-                .containsEntry("phaseCurrent", "")
+                .containsEntry("phaseCurrent", "P1")
                 .containsKeys("phaseOrder", "phases", "releases");
         assertThat((List<?>) result.getData().get("releases"))
                 .anySatisfy(row -> {
@@ -281,9 +327,337 @@ class OpsDeviceServiceTest {
                 });
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E1_GENERATION_GATE_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-e1-gate");
+    }
+
+    @Test
+    void e5OverviewAlwaysReturnsHardSixDeviceLimit() {
+        ApiResult<Map<String, Object>> result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("maxDevicesPerUser", 6);
+        assertThat((List<?>) result.getData().get("sources"))
+                .noneMatch(source -> String.valueOf(source).contains("maxDevicesPerUser"));
+    }
+
+    @Test
+    void e5ManualActivateUsesDurableIdempotencyAndCanonicalEvent() {
+        deviceRepository.device = device("INVENTORY", 0, null);
+
+        ApiResult<DeviceOpsView> result = service.activateE5Device(
+                1L, false, "idem-e5-activate",
+                new DeviceE5ActionRequest("activate inventory device", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("OFFLINE");
+        verify(idempotencyService).execute(eq("E5_DEVICE_ACTIVATE"), eq("idem-e5-activate"),
+                anyString(), eq(ApiResult.class), any());
+        verify(outboxService).publish(eq("E5_DEVICE"), eq("1"),
+                eq("admin.device_activated"), argThat(payload -> payload instanceof Map<?, ?> map
+                        && "manual".equals(map.get("mode"))));
+        verify(auditLogService).recordRequired(argThat(audit ->
+                "admin.device_activated".equals(audit.getAction())));
+    }
+
+    @Test
+    void e5ForceActivateNeverBypassesHardDeviceCap() {
+        deviceRepository.device = device("DEACTIVATED", 0, LocalDateTime.now(clock));
+        deviceRepository.activeDevicesByUser = 6;
+
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        ApiResult<DeviceOpsView> result;
+        try {
+            result = service.activateE5Device(
+                    1L, true, "idem-e5-force",
+                    new DeviceE5ActionRequest("force activate after repair", "superadmin"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("MAX_DEVICES_PER_USER_EXCEEDED");
+        verify(outboxService, never()).publish(eq("E5_DEVICE"), anyString(),
+                eq("admin.device_activated"), any());
+    }
+
+    @Test
+    void e5ForceActivateAndUnbindRequireA2ReplayEvenWithBusinessPermission() {
+        deviceRepository.device = device("DEACTIVATED", 0, LocalDateTime.now(clock));
+        ApiResult<DeviceOpsView> force = service.activateE5Device(
+                1L, true, "idem-e5-force-direct",
+                new DeviceE5ActionRequest("force activate after repair", "superadmin"));
+
+        deviceRepository.device = device("ONLINE", 0, null);
+        ApiResult<DeviceOpsView> unbind = service.deactivateE5Device(
+                1L, true, "idem-e5-unbind-direct",
+                new DeviceE5ActionRequest("unbind compromised device", "superadmin"));
+
+        assertThat(force.getCode()).isEqualTo(409);
+        assertThat(force.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(unbind.getCode()).isEqualTo(409);
+        assertThat(unbind.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        verify(idempotencyService, never()).execute(eq("E5_DEVICE_FORCE_ACTIVATE"), anyString(),
+                anyString(), eq(ApiResult.class), any());
+        verify(idempotencyService, never()).execute(eq("E5_DEVICE_UNBIND"), anyString(),
+                anyString(), eq(ApiResult.class), any());
+    }
+
+    @Test
+    void e5DeactivateUsesItsOwnCanonicalAdminEvent() {
+        deviceRepository.device = device("ONLINE", 0, null);
+
+        ApiResult<DeviceOpsView> result = service.deactivateE5Device(
+                1L, false, "idem-e5-deactivate",
+                new DeviceE5ActionRequest("deactivate device for maintenance", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("DEACTIVATED");
+        verify(outboxService).publish(eq("E5_DEVICE"), eq("1"),
+                eq("admin.device_deactivated"), argThat(payload -> payload instanceof Map<?, ?> map
+                        && "manual".equals(map.get("mode"))));
+        verify(auditLogService).recordRequired(argThat(audit ->
+                "admin.device_deactivated".equals(audit.getAction())));
+    }
+
+    @Test
+    void e5UnbindUsesDeactivatedEventAndAuditSemantics() {
+        deviceRepository.device = device("ONLINE", 0, null);
+
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        ApiResult<DeviceOpsView> result;
+        try {
+            result = service.deactivateE5Device(
+                    1L, true, "idem-e5-unbind",
+                    new DeviceE5ActionRequest("unbind compromised device", "superadmin"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("UNBOUND");
+        verify(outboxService).publish(eq("E5_DEVICE"), eq("1"),
+                eq("admin.device_deactivated"), argThat(payload -> payload instanceof Map<?, ?> map
+                        && "unbind".equals(map.get("mode"))));
+        verify(auditLogService).recordRequired(argThat(audit ->
+                "admin.device_deactivated".equals(audit.getAction())));
+    }
+
+    @Test
+    void e5ReasonMustContainBetweenEightAndTwoHundredCharacters() {
+        deviceRepository.device = device("INVENTORY", 0, null);
+        String overlong = "x".repeat(201);
+
+        ApiResult<DeviceOpsView> shortReason = service.activateE5Device(
+                1L, false, "idem-short", new DeviceE5ActionRequest("short", "superadmin"));
+        ApiResult<DeviceOpsView> longReason = service.activateE5Device(
+                1L, false, "idem-long", new DeviceE5ActionRequest(overlong, "superadmin"));
+
+        assertThat(shortReason.getMessage()).isEqualTo("REASON_LENGTH_INVALID");
+        assertThat(longReason.getMessage()).isEqualTo("REASON_LENGTH_INVALID");
+    }
+
+    @Test
+    void e5BatchPauseIsScopedByUserAndEmitsCanonicalEvent() {
+        deviceRepository.device = device("OFFLINE", 0, null);
+        ApiResult<Map<String, Object>> result = service.batchE5Devices(
+                true, "idem-e5-pause",
+                new DeviceE5BatchRequest(1001L, "pause user fleet for maintenance", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("userId", 1001L).containsEntry("changedCount", 1);
+        assertThat(deviceRepository.pausedUserId).isEqualTo(1001L);
+        verify(outboxService).publish(eq("E5_DEVICE_BATCH"), eq("1001"),
+                eq("admin.device_paused"), argThat(payload ->
+                        payload instanceof Map<?, ?> map
+                                && Integer.valueOf(1).equals(map.get("changed_count"))
+                                && List.of(1L).equals(map.get("device_ids"))));
+    }
+
+    @Test
+    void updateE3ConfigRejectsRetiredLifecycleAndSalvageKeys() {
+        for (String key : List.of(
+                "E.device.degradeEarly", "E.device.degradeMid", "E.device.degradeLate",
+                "E.device.minEfficiency", "E.tradein.salvagePct", "E.tradein.minHoldingMonths")) {
+            ApiResult<Map<String, Object>> result = service.updateE3Config(
+                    "idem-retired-" + key, new E3ConfigUpdateRequest(key, "1", "retired key guard", "superadmin"));
+            assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+            assertThat(result.getMessage()).isEqualTo("E3_CONFIG_KEY_RETIRED");
+        }
+    }
+
+    @Test
+    void updateE3ConfigRejectsNoopWithoutAuditOrOutboxNoise() {
+        deviceRepository.config.put("promoCooldownDays", "14");
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config(
+                "idem-e3-noop",
+                new E3ConfigUpdateRequest("E.tradein.promo.cooldownDays", "14", "same value check", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("E3_VALUE_UNCHANGED");
+        verify(auditLogService, never()).recordRequired(any());
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void updateE3ConfigUsesDurableIdempotencyRequiredAuditAndA4Outbox() {
+        deviceRepository.config.put("promoCooldownDays", "14");
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config(
+                "idem-e3-durable",
+                new E3ConfigUpdateRequest("E.tradein.promo.cooldownDays", "21", "holiday rhythm", "forged"));
+
+        assertThat(result.getCode()).isZero();
+        verify(idempotencyService).execute(eq("E3_CONFIG_UPDATE"), eq("idem-e3-durable"), anyString(), eq(ApiResult.class), any());
+        verify(auditLogService).recordRequired(argThat(audit ->
+                "admin.tradein_config_changed".equals(audit.getAction())
+                        && "superadmin".equals(audit.getActorUsername()) == false));
+        verify(outboxService).publish(eq("E3_CONFIG"), eq("promoCooldownDays"),
+                eq("admin.tradein_config_changed"), any());
+    }
+
+    @Test
+    void updateE3ConfigBlocksAmplifyingChangeBelowB1CoverageRedline() {
+        deviceRepository.config.put("promoMult", "1");
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(90), BigDecimal.valueOf(100), true));
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config(
+                "idem-e3-b1",
+                new E3ConfigUpdateRequest("E.tradein.promoMult", "1.5", "amplify promotion", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(deviceRepository.config).containsEntry("promoMult", "1");
+        verify(auditLogService, never()).recordRequired(any());
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void updateE3ConfigBlocksCapacityScheduleChangesThatIncreaseAnyFuturePayoutBelowB1Redline() {
+        deviceRepository.config.put("capacityBand1DeltaPct", "-3");
+        deviceRepository.config.put("capacityBand2DeltaPct", "-6");
+        deviceRepository.config.put("capacityBand3DeltaPct", "-23.7");
+        deviceRepository.config.put("capacityFloorPct", "22");
+        deviceRepository.config.put("stageEarlyEnd", "3");
+        deviceRepository.config.put("stageMidEnd", "8");
+        deviceRepository.config.put("cycleMonths", "12");
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(90), BigDecimal.valueOf(100), true));
+
+        for (var change : List.of(
+                Map.entry("E.tradein.stageEarlyEnd", "4"),
+                Map.entry("E.tradein.stageMidEnd", "9"))) {
+            ApiResult<Map<String, Object>> result = service.updateE3Config(
+                    "idem-e3-b1-" + change.getKey(),
+                    new E3ConfigUpdateRequest(change.getKey(), change.getValue(), "capacity curve outflow", "superadmin"));
+
+            assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        }
+        assertThat(deviceRepository.config)
+                .containsEntry("stageEarlyEnd", "3")
+                .containsEntry("stageMidEnd", "8");
+        verify(auditLogService, never()).recordRequired(any());
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void updateE3ConfigAllowsPureChartHorizonChangeBelowB1Redline() {
+        deviceRepository.config.put("stageEarlyEnd", "3");
+        deviceRepository.config.put("stageMidEnd", "8");
+        deviceRepository.config.put("cycleMonths", "12");
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(90), BigDecimal.valueOf(100), true));
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config(
+                "idem-e3-chart-window",
+                new E3ConfigUpdateRequest("E.tradein.cycleMonths", "13", "widen chart view", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(deviceRepository.config).containsEntry("cycleMonths", "13");
+        verify(auditLogService).recordRequired(any());
+        verify(outboxService).publish(eq("E3_CONFIG"), eq("cycleMonths"),
+                eq("admin.tradein_config_changed"), any());
+    }
+
+    @Test
+    void updateE3ConfigUsesActualCapacityPayoutWhenParticipationSwitchChangesBelowB1Redline() {
+        deviceRepository.config.putAll(Map.of(
+                "capacityBand1DeltaPct", "-3", "capacityBand2DeltaPct", "-6",
+                "capacityBand3DeltaPct", "-23.7", "capacityFloorPct", "22",
+                "stageEarlyEnd", "3", "stageMidEnd", "8", "cycleMonths", "12",
+                "capacityApplyToS1", "true"));
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(90), BigDecimal.valueOf(100), true));
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config(
+                "idem-e3-disable-decay",
+                new E3ConfigUpdateRequest("E.device.capacity.applyTo.stellarbox-s1", "false", "exempt S1", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(deviceRepository.config).containsEntry("capacityApplyToS1", "true");
+    }
+
+    @Test
+    void updateE3ConfigBlocksPositiveGrowthParticipationButAllowsExemptionBelowB1Redline() {
+        deviceRepository.config.putAll(Map.of(
+                "capacityBand1DeltaPct", "3", "capacityBand2DeltaPct", "6",
+                "capacityBand3DeltaPct", "10", "capacityFloorPct", "22",
+                "stageEarlyEnd", "3", "stageMidEnd", "8", "cycleMonths", "12",
+                "capacityApplyToS1", "false"));
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(90), BigDecimal.valueOf(100), true));
+
+        ApiResult<Map<String, Object>> blocked = service.updateE3Config(
+                "idem-e3-enable-growth",
+                new E3ConfigUpdateRequest("E.device.capacity.applyTo.stellarbox-s1", "true", "enable growth", "superadmin"));
+        assertThat(blocked.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+
+        deviceRepository.config.put("capacityApplyToS1", "true");
+        ApiResult<Map<String, Object>> allowed = service.updateE3Config(
+                "idem-e3-disable-growth",
+                new E3ConfigUpdateRequest("E.device.capacity.applyTo.stellarbox-s1", "false", "disable growth", "superadmin"));
+        assertThat(allowed.getCode()).as("message=%s", allowed.getMessage()).isZero();
+    }
+
+    @Test
+    void updateE3ConfigBlocksLadderBoundaryExpansionBelowB1Redline() {
+        deviceRepository.config.putAll(Map.of(
+                "tradeinLadderCut1", "25", "tradeinLadderCut2", "50",
+                "tradeinLadderCut3", "75", "tradeinLadderCut4", "100",
+                "tradeinLadderCredit1", "75", "tradeinLadderCredit2", "60",
+                "tradeinLadderCredit3", "45", "tradeinLadderCredit4", "30",
+                "tradeinLadderCredit5", "15"));
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(90), BigDecimal.valueOf(100), true));
+
+        ApiResult<Map<String, Object>> result = service.updateE3Config(
+                "idem-e3-ladder-cut",
+                new E3ConfigUpdateRequest("E.tradein.ladder.cut1", "30", "expand top credit band", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(deviceRepository.config).containsEntry("tradeinLadderCut1", "25");
+    }
+
+    @Test
+    void e1GenerationGateRejectsLegacyDiscountWrites() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 1, "P1", new BigDecimal("300"), true, 0, false, "active"));
+
+        ApiResult<Map<String, Object>> result = service.updateE1GenerationGate(
+                "idem-gate-discount",
+                new E3ConfigUpdateRequest(
+                        "E.gen.stellarbox-test.discount", "100", "禁止旧折扣字段写入", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("E1_GATE_KEY_INVALID");
+        assertThat(service.e1GenerationGates().getData().toString())
+                .doesNotContain("discount")
+                .doesNotContain("tradeinDiscount");
+        assertThat(catalogRepository.generationGates.get("stellarbox-test").discount()).isEqualByComparingTo("300");
     }
 
     @Test
@@ -315,8 +689,8 @@ class OpsDeviceServiceTest {
         assertThat(deviceRepository.lastTradeinOperation).isEqualTo("replace");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("E3_TRADEIN_REPLACE");
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("admin.tradein_action_executed");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("operation", "replace")
                 .containsEntry("deviceId", 1L)
@@ -357,6 +731,11 @@ class OpsDeviceServiceTest {
 
     @Test
     void pauseDatacenterRequiresReasonAndUsesRepository() {
+        DeviceDatacenterUpsertRequest seed = new DeviceDatacenterUpsertRequest(
+                "HK-1", "Hong Kong", "active", 10,
+                "seed data center", "superadmin", "Hong Kong", "Hong Kong DC");
+        deviceRepository.datacenters.put("HK-1", FakeDeviceOpsRepository.dcView(
+                seed, LocalDateTime.now(clock), LocalDateTime.now(clock)));
         DatacenterOpsRequest request = new DatacenterOpsRequest("maintenance", "superadmin");
 
         ApiResult<Map<String, Object>> result = service.pauseDatacenter("HK-1", "idem-dc", request);
@@ -367,7 +746,7 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void datacenterCrudRequiresCommandAndAudits() {
+    void datacenterCrudUsesDurableIdempotencyRequiredAuditAndCanonicalEvents() {
         DeviceDatacenterUpsertRequest createRequest = new DeviceDatacenterUpsertRequest(
                 "us-east-2",
                 "美国 · 弗吉尼亚",
@@ -400,22 +779,35 @@ class OpsDeviceServiceTest {
         assertThat(deviceRepository.datacenters).doesNotContainKey("us-east-2");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService, times(3)).record(captor.capture());
+        verify(idempotencyService).execute(eq("E5_DATACENTER_CREATE"), eq("idem-dc-create"),
+                anyString(), eq(ApiResult.class), any());
+        verify(idempotencyService).execute(eq("E5_DATACENTER_UPDATE"), eq("idem-dc-update"),
+                anyString(), eq(ApiResult.class), any());
+        verify(idempotencyService).execute(eq("E5_DATACENTER_DELETE"), eq("idem-dc-delete"),
+                anyString(), eq(ApiResult.class), any());
+        verify(auditLogService, times(3)).recordRequired(captor.capture());
         assertThat(captor.getAllValues()).extracting(AuditLogWriteRequest::getAction)
-                .containsExactly("E5_DATACENTER_CREATED", "E5_DATACENTER_UPDATED", "E5_DATACENTER_DELETED");
+                .containsExactly("admin.datacenter_created", "admin.datacenter_updated", "admin.datacenter_deleted");
+        verify(outboxService).publish(eq("E5_DATACENTER"), eq("us-east-2"),
+                eq("admin.datacenter_created"), argThat(payload -> payload instanceof Map<?, ?> map
+                        && "美国 · 弗吉尼亚".equals(map.get("display_name"))));
+        verify(outboxService).publish(eq("E5_DATACENTER"), eq("us-east-2"),
+                eq("admin.datacenter_updated"), any());
+        verify(outboxService).publish(eq("E5_DATACENTER"), eq("us-east-2"),
+                eq("admin.datacenter_deleted"), any());
     }
 
     @Test
     void createDatacenterRejectsInvalidInput() {
         ApiResult<DeviceDatacenterView> missingKey = service.createDatacenter(
                 "",
-                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "active", 10, "seed", "superadmin"));
+                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "active", 10, "seed data center", "superadmin"));
         ApiResult<DeviceDatacenterView> missingRegion = service.createDatacenter(
                 "idem-dc",
-                new DeviceDatacenterUpsertRequest("us-east-2", "", "active", 10, "seed", "superadmin"));
+                new DeviceDatacenterUpsertRequest("us-east-2", "", "active", 10, "seed data center", "superadmin"));
         ApiResult<DeviceDatacenterView> invalidStatus = service.createDatacenter(
                 "idem-dc",
-                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "online", 10, "seed", "superadmin"));
+                new DeviceDatacenterUpsertRequest("us-east-2", "美国 · 弗吉尼亚", "online", 10, "seed data center", "superadmin"));
 
         assertThat(missingKey.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
         assertThat(missingRegion.getMessage()).isEqualTo("DATACENTER_REGION_LABEL_REQUIRED");
@@ -434,7 +826,7 @@ class OpsDeviceServiceTest {
         assertThat(catalogRepository.sku.status()).isEqualTo("pending");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E1_SKU_CREATED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-sku");
     }
@@ -528,6 +920,352 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void executeTradeinActionUsesDurableIdempotencyRequiredAuditAndA4Outbox() {
+        deviceRepository.device = device("ONLINE", 0, null);
+
+        ApiResult<DeviceOpsView> result = service.executeTradeinAction(
+                "replace", "idem-tradein-durable",
+                new DeviceTradeinActionRequest(1L, "ops replacement", "forged"));
+
+        assertThat(result.getCode()).isZero();
+        verify(idempotencyService).execute(eq("E3_TRADEIN_REPLACE"), eq("idem-tradein-durable"), anyString(), eq(ApiResult.class), any());
+        verify(auditLogService).recordRequired(argThat(audit ->
+                "admin.tradein_action_executed".equals(audit.getAction())
+                        && "superadmin".equals(audit.getActorUsername()) == false));
+        verify(outboxService).publish(eq("E3_TRADEIN"), eq("1"),
+                eq("admin.tradein_action_executed"), any());
+    }
+
+    @Test
+    void createSkuDefaultsMissingGenerationForReplayCompatibility() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+
+        ApiResult<DeviceSkuView> result = service.createSku(
+                "idem-generation-default",
+                skuRequest("stellarbox-no-generation", "NexionBox Compatible", "pending", "Entry", "HK-1", null, "active", "P1"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.generation()).isEqualTo(1);
+    }
+
+    @Test
+    void skuListingRequiresActiveEligibleReachedAndReleasedGate() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "启动期", 20));
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "pending", "1");
+
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 1, "1", BigDecimal.ZERO, false, 0, false, "active"));
+        ApiResult<DeviceSkuView> ineligible = service.updateSkuStatus(
+                "stellarbox-test", "idem-list-ineligible", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 1, "2", BigDecimal.ZERO, true, 0, false, "active"));
+        ApiResult<DeviceSkuView> phaseBlocked = service.updateSkuStatus(
+                "stellarbox-test", "idem-list-phase", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 2, "1", BigDecimal.ZERO, true, 0, false, "active"));
+        ApiResult<DeviceSkuView> monthBlocked = service.updateSkuStatus(
+                "stellarbox-test", "idem-list-month", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+
+        assertThat(ineligible.getMessage()).isEqualTo("E1_SKU_E5_ELIGIBILITY_REQUIRED");
+        assertThat(phaseBlocked.getMessage()).isEqualTo("E1_SKU_H1_PHASE_NOT_REACHED");
+        assertThat(monthBlocked.getMessage()).isEqualTo("E1_SKU_RELEASE_MONTH_NOT_REACHED");
+
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 1, "1", BigDecimal.ZERO, true, 0, false, "active"));
+        ApiResult<DeviceSkuView> listed = service.updateSkuStatus(
+                "stellarbox-test", "idem-list-ok", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+
+        assertThat(listed.getCode()).isZero();
+        verify(outboxService).publish("DEVICE_SKU", "stellarbox-test", "admin.product_listed", Map.of(
+                "sku_key", "stellarbox-test",
+                "before_status", "pending",
+                "after_status", "on",
+                "operator", "superadmin",
+                "reason", "发布商品门槛校验"));
+    }
+
+    @Test
+    void skuWithoutActiveGateCanBeListed() {
+        catalogRepository.sku = sku("cloud-share", "Nexion Cloud Share", "pending", "");
+
+        ApiResult<DeviceSkuView> listed = service.updateSkuStatus(
+                "cloud-share", "idem-list-no-gate", new DeviceSkuStatusRequest("on", "无需阶段商品上架", "superadmin"));
+
+        assertThat(listed.getCode()).isZero();
+        assertThat(listed.getData().status()).isEqualTo("on");
+        verify(outboxService).publish("DEVICE_SKU", "cloud-share", "admin.product_listed", Map.of(
+                "sku_key", "cloud-share",
+                "before_status", "pending",
+                "after_status", "on",
+                "operator", "superadmin",
+                "reason", "无需阶段商品上架"));
+    }
+
+    @Test
+    void skuWithoutActiveGateCannotListBeforeItsUnlockPhaseIsReached() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "启动期", 20));
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+        catalogRepository.sku = sku("future-box", "Future Box", "pending", "2");
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "future-box", "idem-list-future-no-gate",
+                new DeviceSkuStatusRequest("on", "未来阶段商品不可提前上架", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_H1_PHASE_NOT_REACHED");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void skuWithoutActiveGateCanListAfterItsConfiguredUnlockPhaseIsReached() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "启动期", 20));
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+        catalogRepository.sku = sku("current-phase-box", "Current Phase Box", "pending", "1");
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "current-phase-box", "idem-list-current-phase-no-gate",
+                new DeviceSkuStatusRequest("on", "当前阶段商品满足上架条件", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("on");
+    }
+
+    @Test
+    void skuWithoutActiveGateRequiresAConfiguredUnlockPhaseWhenOneIsDeclared() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+        catalogRepository.sku = sku("orphan-phase-box", "Orphan Phase Box", "pending", "unknown-phase");
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "orphan-phase-box", "idem-list-invalid-phase-no-gate",
+                new DeviceSkuStatusRequest("on", "未配置阶段商品不可直接上架", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_UNLOCK_PHASE_INVALID");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+    }
+
+    @Test
+    void archivedGateFallsBackToSkuUnlockPhaseInsteadOfBypassingH1() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "启动期", 20));
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+        catalogRepository.sku = sku("archived-gate-box", "Archived Gate Box", "pending", "2");
+        catalogRepository.generationGates.put(
+                "archived-gate-box",
+                gate("archived-gate-box", "Archived Gate Box", 1, "2", BigDecimal.ZERO, true, 0, true, "archived"));
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "archived-gate-box", "idem-list-archived-gate",
+                new DeviceSkuStatusRequest("on", "已归档门槛不能绕过阶段限制", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_H1_PHASE_NOT_REACHED");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+    }
+
+    @Test
+    void activeGateCannotDivergeFromTheSkuUnlockPhase() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "启动期", 20));
+        configFacade.values.put("H1.rhythm.currentMonth", "12");
+        catalogRepository.sku = sku("split-phase-box", "Split Phase Box", "pending", "1");
+        catalogRepository.generationGates.put(
+                "split-phase-box",
+                gate("split-phase-box", "Split Phase Box", 1, "2", BigDecimal.ZERO, true, 0, false, "active"));
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "split-phase-box", "idem-list-split-phase",
+                new DeviceSkuStatusRequest("on", "商品阶段与门槛阶段必须保持一致", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_GATE_PHASE_MISMATCH");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+    }
+
+    @Test
+    void skuPriceAndUnlistChangesUseExistingOutbox() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "P1");
+        BigDecimal beforePrice = catalogRepository.sku.price();
+        DeviceSkuUpsertRequest repriced = withPriceAndStatus(
+                skuRequest("stellarbox-test", "NexionBox Test", "on"), beforePrice.add(BigDecimal.ONE), "on");
+
+        ApiResult<DeviceSkuView> priceResult = service.updateSku("stellarbox-test", "idem-price-change", repriced);
+        ApiResult<DeviceSkuView> offResult = service.updateSkuStatus(
+                "stellarbox-test", "idem-unlist", new DeviceSkuStatusRequest("off", "商品下架运营处理", "superadmin"));
+
+        assertThat(priceResult.getCode()).isZero();
+        assertThat(offResult.getCode()).isZero();
+        verify(outboxService).publish(
+                eq("DEVICE_SKU"), eq("stellarbox-test"), eq("admin.product_price_changed"), argThat(payload ->
+                        payload instanceof Map<?, ?> event
+                                && "stellarbox-test".equals(event.get("sku_key"))
+                                && "price".equals(event.get("scope"))
+                                && "price".equals(event.get("field"))
+                                && beforePrice.equals(event.get("before"))
+                                && beforePrice.add(BigDecimal.ONE).equals(event.get("after"))
+                                && "2026-06-17T00:00".equals(event.get("effective_at"))
+                                && "superadmin".equals(event.get("operator"))
+                                && "catalog update".equals(event.get("reason"))));
+        verify(outboxService).publish("DEVICE_SKU", "stellarbox-test", "admin.product_unlisted", Map.of(
+                "sku_key", "stellarbox-test",
+                "before_status", "on",
+                "after_status", "off",
+                "operator", "superadmin",
+                "reason", "商品下架运营处理"));
+    }
+
+    @Test
+    void authenticatedE1SkuWritesIgnoreForgedBodyOperatorEverywhere() {
+        authenticateAs("superadmin");
+        String skuId = "trusted-actor-share";
+        DeviceSkuUpsertRequest forgedCreate = withOperator(
+                skuRequest(skuId, "Trusted Actor Share", "on", "Share", "HK-1", 2, "active", ""),
+                "forged-client");
+
+        ApiResult<DeviceSkuView> created = service.createSku("idem-actor-create", forgedCreate);
+        DeviceSkuUpsertRequest forgedPrice = withOperator(
+                withPriceAndStatus(forgedCreate, forgedCreate.price().add(BigDecimal.ONE), "on"),
+                "forged-client");
+        ApiResult<DeviceSkuView> repriced = service.updateSku(skuId, "idem-actor-price", forgedPrice);
+        ApiResult<DeviceSkuView> unlisted = service.updateSkuStatus(
+                skuId, "idem-actor-unlist",
+                new DeviceSkuStatusRequest("off", "可信主体执行商品下架", "forged-client"));
+        ApiResult<DeviceSkuView> relisted = service.updateSkuStatus(
+                skuId, "idem-actor-status",
+                new DeviceSkuStatusRequest("on", "可信主体执行商品上架", "forged-client"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(repriced.getCode()).isZero();
+        assertThat(unlisted.getCode()).isZero();
+        assertThat(relisted.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.operator()).isEqualTo("superadmin");
+
+        ArgumentCaptor<String> eventType = ArgumentCaptor.forClass(String.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(outboxService, times(4)).publish(
+                eq("DEVICE_SKU"), eq(skuId), eventType.capture(), payload.capture());
+        assertThat(eventType.getAllValues()).containsExactly(
+                "admin.product_listed",
+                "admin.product_price_changed",
+                "admin.product_unlisted",
+                "admin.product_listed");
+        assertThat(payload.getAllValues())
+                .allSatisfy(event -> assertThat(event)
+                        .containsEntry("operator", "superadmin")
+                        .doesNotContainValue("forged-client"));
+
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService, times(4)).recordRequired(audit.capture());
+        assertThat(audit.getAllValues())
+                .extracting(AuditLogWriteRequest::getActorUsername)
+                .containsOnly("superadmin");
+    }
+
+    @Test
+    void authenticatedA2ReplayUsesSecurityContextActorInsteadOfReplayFallback() {
+        authenticateAs("superadmin");
+        catalogRepository.sku = sku("a2-actor-box", "A2 Actor Box", "on");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e1_sku_status", Map.of(
+                        "skuId", "a2-actor-box",
+                        "status", "off")),
+                new AuditReplayContext("stale-replay-actor", "A2 回放可信主体校验", "idem-a2-actor"));
+
+        assertThat(result.getCode()).isZero();
+        verify(outboxService).publish(
+                eq("DEVICE_SKU"), eq("a2-actor-box"), eq("admin.product_unlisted"), argThat(payload ->
+                        payload instanceof Map<?, ?> event
+                                && "superadmin".equals(event.get("operator"))
+                                && !event.containsValue("stale-replay-actor")));
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("superadmin");
+    }
+
+    @Test
+    void unauthenticatedInternalA2ReplayUsesItsTrustedActorFallback() {
+        catalogRepository.sku = sku("a2-internal-box", "A2 Internal Box", "on");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e1_sku_status", Map.of(
+                        "skuId", "a2-internal-box",
+                        "status", "off")),
+                new AuditReplayContext("trusted-a2-executor", "内部回放可信主体回退", "idem-a2-internal"));
+
+        assertThat(result.getCode()).isZero();
+        verify(outboxService).publish(
+                eq("DEVICE_SKU"), eq("a2-internal-box"), eq("admin.product_unlisted"), argThat(payload ->
+                        payload instanceof Map<?, ?> event
+                                && "trusted-a2-executor".equals(event.get("operator"))));
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("trusted-a2-executor");
+    }
+
+    @Test
+    void authenticatedE1ConfigPersistenceIgnoresForgedBodyOperator() {
+        authenticateAs("superadmin");
+
+        ApiResult<Map<String, Object>> result = service.updateE1EarlyAccess(
+                "idem-actor-persistence",
+                new DeviceEarlyAccessUpdateRequest(true, 14, "可信主体写入提前购买配置", "forged-client"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(deviceRepository.lastConfigOperator).isEqualTo("superadmin");
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("superadmin");
+    }
+
+    @Test
+    void e1EarlyAccessUpdatesBothKeysAndSupportsDedicatedReplay() {
+        DeviceEarlyAccessUpdateRequest request =
+                new DeviceEarlyAccessUpdateRequest(true, 14, "开启提前购买配置", "superadmin");
+
+        ApiResult<Map<String, Object>> direct = service.updateE1EarlyAccess("idem-early-direct", request);
+        ApiResult<?> replay = service.replay(
+                new AuditReplayCommand("E", "e1_early_access_update", Map.of("enabled", false, "leadDays", 30)),
+                new AuditReplayContext("superadmin", "关闭提前购买配置", "idem-early-replay"));
+        ApiResult<Map<String, Object>> invalid = service.updateE1EarlyAccess(
+                "idem-early-invalid",
+                new DeviceEarlyAccessUpdateRequest(true, 15, "错误提前购买配置", "superadmin"));
+
+        assertThat(direct.getCode()).isZero();
+        assertThat(replay.getCode()).isZero();
+        assertThat(deviceRepository.config)
+                .containsEntry("earlyAccessEnabled", "false")
+                .containsEntry("earlyAccessLeadDays", "30");
+        assertThat(invalid.getMessage()).isEqualTo("E1_EARLY_ACCESS_LEAD_DAYS_INVALID");
+        verify(auditLogService, times(2)).recordRequired(any());
+    }
+
+    @Test
+    void legacySetCurrentPhaseReplayIsDisabled() {
+        configFacade.values.put("growth.phase.current", "3");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e1_phase_current", Map.of("phaseId", "2")),
+                new AuditReplayContext("superadmin", "禁止手工切换阶段", "idem-phase-current-disabled"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("UNKNOWN_REPLAY_OP:e1_phase_current");
+        assertThat(configFacade.values).containsEntry("growth.phase.current", "3");
+    }
+
+    @Test
     void skusReturnEmptyWhenCatalogIsEmpty() {
         ApiResult<PageResult<DeviceSkuView>> result =
                 service.skus(new DeviceSkuQueryRequest(null, null, 1L, 100L));
@@ -579,7 +1317,7 @@ class OpsDeviceServiceTest {
         assertThat(skuResult.getData().unlockPhase()).isEqualTo(generatedPhaseId);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService, times(2)).record(captor.capture());
+        verify(auditLogService, times(2)).recordRequired(captor.capture());
         assertThat(captor.getAllValues().stream().map(AuditLogWriteRequest::getAction))
                 .contains("E1_PHASE_CREATED", "E1_SKU_CREATED");
     }
@@ -596,7 +1334,7 @@ class OpsDeviceServiceTest {
         ApiResult<Map<String, Object>> result = service.patchE1Phase(
                 "1",
                 "idem-phase-rename",
-                new DevicePhaseUpsertRequest(null, "代际第一代", "L0+", "Entry", 10, "active", "改成业务命名", "superadmin"));
+                new DevicePhaseUpsertRequest(null, "代际第一代", "L0+", "Entry", 10, "active", "修改成为业务阶段命名", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(catalogRepository.phases).containsKey("1");
@@ -607,27 +1345,27 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void e1CurrentPhaseCanBeSetManually() {
-        catalogRepository.phases.put("1", phase("1", "代际第一代", 10));
-        catalogRepository.phases.put("2", phase("2", "代际第二代", 20));
-        configFacade.values.put("growth.phase.current", "1");
+    void e1CurrentPhaseIgnoresLegacyOverrideAndFollowsH1Month() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "启动期", 20));
+        catalogRepository.phases.put("3", phase("3", "增长期", 30));
+        catalogRepository.phases.put("4", phase("4", "扩张期", 40));
+        catalogRepository.phases.put("5", phase("5", "稳定期", 50));
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "3");
+        configFacade.values.put("growth.phase.current", "3");
 
-        ApiResult<Map<String, Object>> result = service.setE1CurrentPhase(
-                "2",
-                "idem-phase-current",
-                new DevicePhaseCurrentRequest("手动切换当前阶段", "superadmin"));
+        ApiResult<Map<String, Object>> result = service.e1GenerationGates();
 
-        assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.phase.current", "2");
-        assertThat(result.getData()).containsEntry("phaseCurrent", "2");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("E1_PHASE_CURRENT_CHANGED");
+        assertThat(result.getData()).containsEntry("phaseCurrent", "1");
+        assertThat(result.getData().get("h1Rhythm"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("currentPhase", "1")
+                .containsEntry("currentMonth", 3);
     }
 
     @Test
-    void e1GenerationGatesReadH1RhythmForCurrentPhaseAndPacing() {
+    void e1GenerationGatesReadCanonicalH1RhythmForCurrentPhase() {
         catalogRepository.phases.put("P1", phase("P1", "拉新", 10));
         catalogRepository.phases.put("P2", phase("P2", "激活", 20));
         catalogRepository.phases.put("P3", phase("P3", "扩张", 30));
@@ -635,20 +1373,20 @@ class OpsDeviceServiceTest {
         catalogRepository.phases.put("P5", phase("P5", "收紧", 50));
         catalogRepository.phases.put("P6", phase("P6", "软退场", 60));
         configFacade.values.put("H1.rhythm.currentMonth", "10");
+        configFacade.values.put("H1.rhythm.phaseProgressPct", "35");
         configFacade.values.put("growth.phase.current", "P5");
-        configFacade.values.put("growth.phase.device_release_pacing_pct", "0.35");
 
         ApiResult<Map<String, Object>> result = service.e1GenerationGates();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
                 .containsEntry("platformMonth", 10)
-                .containsEntry("phaseCurrent", "P5")
-                .containsEntry("h1DeviceReleasePacingPct", new BigDecimal("35"));
+                .containsEntry("phaseCurrent", "P5");
         assertThat(result.getData().get("h1Rhythm"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("currentPhase", "P5")
-                .containsEntry("currentMonth", 10);
+                .containsEntry("currentMonth", 10)
+                .containsEntry("phaseProgressPct", 35);
     }
 
     @Test
@@ -688,6 +1426,141 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e1ReasonMustBeEightToTwoHundredCodePointsAfterTrim() {
+        ApiResult<Map<String, Object>> tooShort = service.createE1Phase(
+                "idem-short-reason",
+                new DevicePhaseUpsertRequest(null, "P1", "", "", 10, "active", "  1234567  ", "superadmin"));
+        ApiResult<Map<String, Object>> tooLong = service.createE1Phase(
+                "idem-long-reason",
+                new DevicePhaseUpsertRequest(null, "P2", "", "", 20, "active", "x".repeat(201), "superadmin"));
+
+        assertThat(tooShort.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(tooShort.getMessage()).isEqualTo("REASON_LENGTH_INVALID");
+        assertThat(tooLong.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(tooLong.getMessage()).isEqualTo("REASON_LENGTH_INVALID");
+        assertThat(catalogRepository.phases).isEmpty();
+        verify(idempotencyService, never()).execute(anyString(), anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void e1CommandUsesStablePayloadHashForDurableIdempotency() {
+        DevicePhaseUpsertRequest request =
+                new DevicePhaseUpsertRequest(null, "代际第一代", "L0+", "Entry", 10, "active", "新增阶段配置原因", "superadmin");
+
+        service.createE1Phase("same-key", request);
+        service.createE1Phase("same-key", request);
+        service.createE1Phase(
+                "same-key",
+                new DevicePhaseUpsertRequest(null, "代际第二代", "L1+", "Pro", 20, "active", "新增阶段配置原因", "superadmin"));
+
+        ArgumentCaptor<String> scope = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> hashes = ArgumentCaptor.forClass(String.class);
+        verify(idempotencyService, times(3)).execute(
+                scope.capture(), anyString(), hashes.capture(), any(), any());
+        assertThat(scope.getAllValues()).containsOnly("E1_PHASE_CREATE");
+        assertThat(hashes.getAllValues().get(0)).isEqualTo(hashes.getAllValues().get(1));
+        assertThat(hashes.getAllValues().get(2)).isNotEqualTo(hashes.getAllValues().get(0));
+    }
+
+    @Test
+    void e1AuditFailureIsNotSwallowed() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        org.mockito.Mockito.doThrow(new IllegalStateException("audit unavailable"))
+                .when(auditLogService).recordRequired(any());
+
+        assertThatThrownBy(() -> service.createSku(
+                        "idem-required-audit",
+                        skuRequest("stellarbox-audit", "NexionBox Audit", "pending")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
+        verify(auditLogService).recordRequired(any());
+    }
+
+    @Test
+    void patchPhaseCannotArchiveAReferencedPhase() {
+        catalogRepository.phases.put("1", phase("1", "P1", 10));
+        catalogRepository.phases.put("2", phase("2", "P2", 20));
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 3, "2", BigDecimal.ZERO, true, 0, false, "active"));
+        configFacade.values.put("growth.phase.current", "1");
+
+        ApiResult<Map<String, Object>> result = service.patchE1Phase(
+                "2",
+                "idem-phase-status-archive",
+                new DevicePhaseUpsertRequest(null, "P2", null, null, null, "archived", "归档阶段配置原因", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("E1_PHASE_IN_USE");
+        assertThat(catalogRepository.phases.get("2").status()).isEqualTo("active");
+    }
+
+    @Test
+    void forceUnlockRequiresEligibilityReachedPhaseAndFinePermission() {
+        catalogRepository.phases.put("1", phase("1", "P1", 10));
+        catalogRepository.phases.put("2", phase("2", "P2", 20));
+        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "1");
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+
+        ApiResult<Map<String, Object>> ineligible = service.createE1GenerationGate(
+                "idem-force-ineligible",
+                gateRequest("stellarbox-test", "1", false, true));
+        ApiResult<Map<String, Object>> phaseNotReached = service.createE1GenerationGate(
+                "idem-force-phase",
+                gateRequest("stellarbox-test", "2", true, true));
+        ApiResult<Map<String, Object>> forbidden = service.createE1GenerationGate(
+                "idem-force-forbidden",
+                gateRequest("stellarbox-test", "1", true, true));
+
+        assertThat(ineligible.getMessage()).isEqualTo("E1_FORCE_UNLOCK_ELIGIBILITY_REQUIRED");
+        assertThat(phaseNotReached.getMessage()).isEqualTo("E1_FORCE_UNLOCK_PHASE_NOT_REACHED");
+        assertThat(forbidden.getCode()).isEqualTo(403);
+        assertThat(forbidden.getMessage()).isEqualTo("E1_FORCE_UNLOCK_FORBIDDEN");
+
+        authenticate("device_e1_generation_gate_force_unlock");
+        ApiResult<Map<String, Object>> allowed = service.createE1GenerationGate(
+                "idem-force-allowed",
+                gateRequest("stellarbox-test", "1", true, true));
+        assertThat(allowed.getCode()).isZero();
+        assertThat(catalogRepository.generationGates.get("stellarbox-test").forceUnlock()).isTrue();
+
+        ApiResult<Map<String, Object>> lockForbidden = service.patchE1GenerationGate(
+                "stellarbox-test",
+                "idem-force-lock-forbidden",
+                new DeviceGenerationGatePatchRequest(
+                        null, null, null, null, null, false, null, "关闭强制解锁配置", "superadmin"));
+        assertThat(lockForbidden.getCode()).isEqualTo(403);
+        assertThat(lockForbidden.getMessage()).isEqualTo("E1_FORCE_LOCK_FORBIDDEN");
+
+        authenticate("device_e1_generation_gate_force_lock");
+        ApiResult<Map<String, Object>> locked = service.patchE1GenerationGate(
+                "stellarbox-test",
+                "idem-force-lock-allowed",
+                new DeviceGenerationGatePatchRequest(
+                        null, null, null, null, null, false, null, "关闭强制解锁配置", "superadmin"));
+        assertThat(locked.getCode()).isZero();
+        assertThat(catalogRepository.generationGates.get("stellarbox-test").forceUnlock()).isFalse();
+    }
+
+    @Test
+    void patchGenerationGateRejectsExistingOrphanPhaseReference() {
+        catalogRepository.phases.put("1", phase("1", "P1", 10));
+        catalogRepository.generationGates.put(
+                "stellarbox-test",
+                gate("stellarbox-test", "NexionBox Test", 3, "missing", BigDecimal.ZERO, true, 0, false, "active"));
+
+        ApiResult<Map<String, Object>> result = service.patchE1GenerationGate(
+                "stellarbox-test",
+                "idem-fix-orphan",
+                new DeviceGenerationGatePatchRequest(
+                        "NexionBox Test", null, null, null, null, null, null, "修复孤儿引用原因", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("E1_GATE_PHASE_INVALID");
+    }
+
+    @Test
     void updateSkuStatusRejectsUnsupportedStatus() {
         catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on");
 
@@ -714,13 +1587,13 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().status()).isEqualTo("hidden");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E1_REVIEW_STATUS_CHANGED");
     }
 
     @Test
     void tasksReturnEmptyWhenPrimaryListIsEmpty() {
-        ApiResult<PageResult<DeviceTaskView>> result = service.tasks(new DeviceTaskQueryRequest(null, null, 1L, 20L));
+        ApiResult<PageResult<DeviceTaskView>> result = service.tasks(new DeviceTaskQueryRequest(null, null, null, 1L, 20L));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().getTotal()).isZero();
@@ -757,7 +1630,7 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().dailyNex()).isEqualByComparingTo("11");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E2_PHONE_TIER_REWARD_CHANGED");
     }
 
@@ -774,7 +1647,7 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().price()).isEqualByComparingTo("0.60");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E2_TASK_PRICE_CHANGED");
     }
 
@@ -804,7 +1677,7 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().name()).isEqualTo("手机端 Embedding");
         assertThat(result.getData().unit()).isEqualTo("/1k");
         assertThat(result.getData().requirement()).isEqualTo("手机+");
-        assertThat(result.getData().taskClass()).isEqualTo("embedding");
+        assertThat(result.getData().taskClass()).isEqualTo("EM");
         assertThat(result.getData().model()).isEqualTo("BGE-M3");
         assertThat(result.getData().minReward()).isEqualByComparingTo("0.06");
         assertThat(result.getData().maxReward()).isEqualByComparingTo("0.22");
@@ -812,7 +1685,7 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().killInit()).isEqualTo("派发中");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E2_TASK_UPDATED");
     }
 
@@ -882,25 +1755,46 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().state()).isEqualTo("refunded");
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        Map<String, Object> entry = ledgerPostingFacade.entries.get(0);
-        assertThat(entry)
-                .containsEntry("bizNo", "E4-REFUND-OD-1")
+        assertThat(refundSettlementFacade.entries).hasSize(1);
+        assertThat(refundSettlementFacade.entries.get(0))
+                .containsEntry("orderNo", "OD-1")
                 .containsEntry("userId", 1L)
-                .containsEntry("bizType", "REFUND")
-                .containsEntry("asset", "USDT")
-                .containsEntry("direction", "IN")
-                .containsEntry("status", "SUCCESS");
-        assertThat((BigDecimal) entry.get("amount")).isEqualByComparingTo("1299");
+                .containsEntry("channel", "WALLET");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_REFUNDED");
+        verify(outboxService).publish(eq("E4_ORDER"), eq("OD-1"), eq("order.refunded"),
+                argThat(payload -> payload instanceof Map<?, ?> map
+                        && "OD-1".equals(map.get("orderId"))
+                        && "WALLET".equals(map.get("refundChannel"))
+                        && new BigDecimal("1299").compareTo((BigDecimal) map.get("cumulativeDepositAdjusted")) == 0));
+        verify(outboxService).publish(eq("E4_ORDER"), eq("OD-1"), eq("admin.order_refunded"),
+                argThat(payload -> payload instanceof Map<?, ?> map
+                        && "superadmin".equals(map.get("operator"))
+                        && "customer refund approved".equals(map.get("reason"))));
+    }
+
+    @Test
+    void refundOrderUsesCanonicalB1RedlineErrorContract() {
+        catalogRepository.order = order("OD-1", "paid");
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
+
+        ApiResult<DeviceOrderView> result = service.refundOrder(
+                "OD-1",
+                "idem-order-refund-blocked",
+                new DeviceOrderActionRequest(null, "coverage blocks refund", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(refundSettlementFacade.entries).isEmpty();
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
     }
 
     @Test
     void terminalOrderWritesAudit() {
-        catalogRepository.order = order("OD-1", "failed");
+        catalogRepository.order = order("OD-1", "provisioning");
 
         ApiResult<DeviceOrderView> result = service.terminalOrder(
                 "OD-1",
@@ -911,7 +1805,7 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().state()).isEqualTo("provisioning_failed");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_TERMINALIZED");
     }
 
@@ -922,37 +1816,36 @@ class OpsDeviceServiceTest {
         ApiResult<DeviceOrderView> result = service.updateOrderState(
                 "OD-1",
                 "idem-order-state",
-                new DeviceOrderStateRequest("allocating", "manual advance", "superadmin"));
+                new DeviceOrderStateRequest("provisioning", "manual advance", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().state()).isEqualTo("allocating");
+        assertThat(result.getData().state()).isEqualTo("provisioning");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_STATE_CHANGED");
     }
 
     @Test
-    void updateOrderStateAllowsFailedRetryToAllocating() {
-        catalogRepository.order = order("OD-1", "failed");
+    void updateOrderStateRejectsFailedRetryToProvisioning() {
+        catalogRepository.order = order("OD-1", "provisioning_failed");
 
         ApiResult<DeviceOrderView> result = service.updateOrderState(
                 "OD-1",
                 "idem-order-retry",
-                new DeviceOrderStateRequest("allocating", "retry allocation", "superadmin"));
+                new DeviceOrderStateRequest("provisioning", "retry allocation", "superadmin"));
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().state()).isEqualTo("allocating");
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
 
     @Test
     void updateOrderStateRejectsSkippingMainPath() {
-        catalogRepository.order = order("OD-1", "created");
+        catalogRepository.order = order("OD-1", "placed");
 
         ApiResult<DeviceOrderView> result = service.updateOrderState(
                 "OD-1",
                 "idem-order-skip",
-                new DeviceOrderStateRequest("active", "skip flow", "superadmin"));
+                new DeviceOrderStateRequest("activated", "skip flow", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         verify(auditLogService, never()).record(any());
@@ -967,6 +1860,11 @@ class OpsDeviceServiceTest {
         assertThat(r.getData().flags().get(0).enabled()).isFalse();
         assertThat(r.getData().gpuTiers()).hasSize(6);
         assertThat(r.getData().gpuTiers().get(0).tops()).isEqualTo("40");
+        assertThat(r.getData().gpuTiers().get(0).keywords().get(0))
+                .extracting(
+                        ComputeConfigView.KeywordView::slot,
+                        ComputeConfigView.KeywordView::value)
+                .containsExactly("keyword1", "gtx 1650");
         assertThat(r.getData().download().url()).isEmpty();
     }
 
@@ -995,23 +1893,53 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void updateComputeConfigParamWritesAndAudits() {
+    void updateComputeConfigParamRejectsUnknownPrefixedKeyAndZeroCoefficient() {
+        ApiResult<ComputeConfigParamResponse> unknown = service.updateComputeConfigParam(
+                "E.compute.gpuTier.G7.tops", "idem-e6-unknown",
+                new ComputeConfigParamUpdateRequest("100", "reject unknown tier", "superadmin"));
+        ApiResult<ComputeConfigParamResponse> zero = service.updateComputeConfigParam(
+                ComputeConfigRegistry.coeffKey("h5BaseFactor"), "idem-e6-zero",
+                new ComputeConfigParamUpdateRequest("0", "reject zero coefficient", "superadmin"));
+
+        assertThat(unknown.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(unknown.getMessage()).isEqualTo("COMPUTE_PARAM_KEY_INVALID");
+        assertThat(zero.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(zero.getMessage()).isEqualTo("COMPUTE_COEFF_INVALID");
+    }
+
+    @Test
+    void directComputeConfigMutationRequiresA2Confirmation() {
         String paramKey = ComputeConfigRegistry.flagKey("computeShareEnabled");
         ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "enable share", "superadmin");
+
+        ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(paramKey, "idem-e6", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(configFacade.values).doesNotContainKey(paramKey);
+        verify(auditLogService, never()).record(any());
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
+    @Test
+    void replayComputeConfigFlagIsIdempotentAuditedAndPublished() {
+        String paramKey = ComputeConfigRegistry.flagKey("computeShareEnabled");
+        ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "enable share", "spoofed-client");
+        authenticate("device_e6_flag_toggle");
+        A2ReplayContext.enterReplay();
 
         ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(paramKey, "idem-e6", request);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().paramKey()).isEqualTo(paramKey);
         assertThat(result.getData().value()).isEqualTo("on");
-        // upsert 写入断言:FakePlatformConfigFacade.values 是可读回的 map(activeValue 也读它)
-        assertThat(configFacade.activeValue(paramKey)).contains("on");
         assertThat(configFacade.values).containsEntry(paramKey, "on");
+        verify(idempotencyService).execute(eq("E6_COMPUTE_CONFIG_UPDATE"), eq("idem-e6"), anyString(), eq(ApiResult.class), any());
+        verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq(paramKey), eq("compute.flag_toggled"), any());
 
-        // auditLogService 是 Mockito mock,可 verify
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("E6_COMPUTE_CONFIG_CHANGED");
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("compute.flag_toggled");
         assertThat(captor.getValue().getResourceType()).isEqualTo("E6_COMPUTE_CONFIG");
         assertThat(captor.getValue().getResourceId()).isEqualTo(paramKey);
         assertThat(detailMap(captor.getValue().getDetail()))
@@ -1019,6 +1947,54 @@ class OpsDeviceServiceTest {
                 .containsEntry("before", "")
                 .containsEntry("after", "on")
                 .containsEntry("idempotencyKey", "idem-e6");
+    }
+
+    @Test
+    void replayComputeConfigNonCoefficientUsesStringParamEventContract() {
+        String paramKey = ComputeConfigRegistry.gpuTierKey("G3", "label");
+        authenticate("device_e6_write");
+        A2ReplayContext.enterReplay();
+
+        ApiResult<ComputeConfigParamResponse> result = service.updateComputeConfigParam(
+                paramKey, "idem-e6-param",
+                new ComputeConfigParamUpdateRequest("专业显卡", "rename tier", "spoofed-client"));
+
+        assertThat(result.getCode()).isZero();
+        verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq(paramKey), eq("compute.param_changed"), any());
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("compute.param_changed");
+    }
+
+    @Test
+    void replayComputeConfigBatchValidatesEverythingBeforeAtomicWrite() {
+        String labelKey = ComputeConfigRegistry.gpuTierKey("G3", "label");
+        String topsKey = ComputeConfigRegistry.gpuTierKey("G3", "tops");
+        configFacade.values.put(labelKey, "进阶显卡");
+        configFacade.values.put(topsKey, "160");
+        A2ReplayContext.enterReplay();
+
+        ApiResult<ComputeConfigBatchResponse> rejected = service.updateComputeConfigBatch(
+                "idem-e6-batch-invalid",
+                new ComputeConfigBatchUpdateRequest(
+                        Map.of(labelKey, "专业显卡", topsKey, "0"),
+                        "reject partial write", "superadmin"));
+
+        assertThat(rejected.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(configFacade.values)
+                .containsEntry(labelKey, "进阶显卡")
+                .containsEntry(topsKey, "160");
+
+        ApiResult<ComputeConfigBatchResponse> updated = service.updateComputeConfigBatch(
+                "idem-e6-batch-valid",
+                new ComputeConfigBatchUpdateRequest(
+                        Map.of(labelKey, "专业显卡", topsKey, "180"),
+                        "atomic tier update", "superadmin"));
+
+        assertThat(updated.getCode()).isZero();
+        assertThat(updated.getData().values()).containsEntry(labelKey, "专业显卡").containsEntry(topsKey, "180");
+        assertThat(configFacade.values).containsEntry(labelKey, "专业显卡").containsEntry(topsKey, "180");
+        verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq("batch"), eq("compute.config_changed"), any());
     }
 
     @Test
@@ -1037,7 +2013,7 @@ class OpsDeviceServiceTest {
         assertThat(catalogRepository.sku.status()).isEqualTo("off");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E1_SKU_STATUS_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("fromStatus", "on")
@@ -1057,18 +2033,25 @@ class OpsDeviceServiceTest {
         assertThat(result.getData()).isInstanceOf(DeviceOrderView.class);
         assertThat(((DeviceOrderView) result.getData()).state()).isEqualTo("refunded");
         assertThat(catalogRepository.order.state()).isEqualTo("refunded");
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        assertThat(ledgerPostingFacade.entries.get(0))
-                .containsEntry("bizNo", "E4-REFUND-OD-1")
-                .containsEntry("bizType", "REFUND")
-                .containsEntry("direction", "IN")
-                .containsEntry("status", "SUCCESS");
+        assertThat(refundSettlementFacade.entries).hasSize(1);
+        assertThat(refundSettlementFacade.entries.get(0)).containsEntry("orderNo", "OD-1");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_REFUNDED");
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("idempotencyKey", "idem-replay-e4-refund");
+    }
+
+    @Test
+    void e4OrderDetailOnlyAdvertisesExecutableRefundChannel() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        var result = service.order("OD-1");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().refundAllowed()).isTrue();
+        assertThat(result.getData().refundChannels()).containsExactly("WALLET");
     }
 
     @Test
@@ -1098,6 +2081,35 @@ class OpsDeviceServiceTest {
                 .containsEntry("capacityApplyToPhone", "true")
                 .containsEntry("tradeinEnabled", "false")
                 .containsEntry("earlyAccessEnabled", "true");
+    }
+
+    @Test
+    void replayE3ConfigBatchUsesEffectiveLadderAndAllowsNonAmplifyingBoundaryCreditCombination() {
+        deviceRepository.config.putAll(Map.of(
+                "tradeinLadderCut1", "25", "tradeinLadderCut2", "50",
+                "tradeinLadderCut3", "75", "tradeinLadderCut4", "100",
+                "tradeinLadderCredit1", "75", "tradeinLadderCredit2", "60",
+                "tradeinLadderCredit3", "45", "tradeinLadderCredit4", "30",
+                "tradeinLadderCredit5", "15"));
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(90), BigDecimal.valueOf(100), true));
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("E.tradein.ladder.cut1", "30");
+        values.put("E.tradein.ladder.credit1", "60");
+        values.put("E.tradein.ladder.credit2", "50");
+        values.put("E.tradein.ladder.credit3", "40");
+        values.put("E.tradein.ladder.credit4", "25");
+        values.put("E.tradein.ladder.credit5", "10");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e3_config_batch", Map.of("values", values)),
+                new AuditReplayContext("superadmin", "reduce effective ladder", "idem-replay-e3-ladder-safe"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(deviceRepository.config)
+                .containsEntry("tradeinLadderCut1", "30")
+                .containsEntry("tradeinLadderCredit1", "60")
+                .containsEntry("tradeinLadderCredit5", "10");
     }
 
     @Test
@@ -1239,6 +2251,113 @@ class OpsDeviceServiceTest {
                 "superadmin");
     }
 
+    @Test
+    void e2TaskPricingReturnsCanonicalSixClassesAndFiveTeaserTiers() {
+        for (String taskClass : List.of("IG", "VG", "LL", "FT", "EM", "SP")) {
+            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 8);
+            catalogRepository.tasks.put(row.taskId(), row);
+        }
+        configFacade.values.put("E.task.queueSaturation", "0.35");
+
+        ApiResult<Map<String, Object>> result = service.e2TaskPricing();
+
+        assertThat(result.getCode()).isZero();
+        assertThat((List<?>) result.getData().get("taskClasses")).hasSize(6);
+        assertThat((List<?>) result.getData().get("teaser")).hasSize(5);
+        assertThat((BigDecimal) result.getData().get("queueSaturation")).isEqualByComparingTo("0.35");
+    }
+
+    @Test
+    void e2TaskPricingUpdateRequiresEightCharacterReasonAndPublishesGovernedEvent() {
+        DeviceTaskView row = taskWithClass("TK-IG", "IG", 12);
+        catalogRepository.tasks.put(row.taskId(), row);
+        ApiResult<Map<String, Object>> shortReason = service.updateE2TaskPricing(
+                "idem-e2-short", new E2TaskPricingUpdateRequest("IG", null, new BigDecimal("0.05"),
+                        null, null, null, "short", "forged"));
+        assertThat(shortReason.getCode()).isEqualTo(422);
+        assertThat(shortReason.getMessage()).isEqualTo("REASON_LENGTH_INVALID");
+
+        authenticateAs("trusted-admin", "device_e2_write");
+        ApiResult<Map<String, Object>> updated = service.updateE2TaskPricing(
+                "idem-e2-price", new E2TaskPricingUpdateRequest("IG", null, new BigDecimal("0.05"),
+                        null, null, null, "raise image pricing", "forged"));
+
+        assertThat(updated.getCode()).isZero();
+        assertThat(catalogRepository.tasks.get("TK-IG").maxReward()).isEqualByComparingTo("0.05");
+        verify(outboxService).publish(eq("E2_TASK_PRICING"), eq("IG"),
+                eq("admin.task_pricing_changed"), any());
+        verify(auditLogService).recordRequired(argThat(audit ->
+                "admin.task_pricing_changed".equals(audit.getAction())
+                        && "forged".equals(audit.getActorUsername()) == false));
+    }
+
+    @Test
+    void e2QueueSaturationRejectsOutOfRangeAndPersistsValidValue() {
+        ApiResult<Map<String, Object>> invalid = service.updateE2TaskPricing(
+                "idem-e2-sat-bad", new E2TaskPricingUpdateRequest(null, null, null, null, null,
+                        new BigDecimal("1.01"), "calibrate gpu queue", "superadmin"));
+        assertThat(invalid.getCode()).isEqualTo(400);
+
+        ApiResult<Map<String, Object>> valid = service.updateE2TaskPricing(
+                "idem-e2-sat", new E2TaskPricingUpdateRequest(null, null, null, null, null,
+                        new BigDecimal("0.42"), "calibrate gpu queue", "superadmin"));
+        assertThat(valid.getCode()).isZero();
+        assertThat(configFacade.values.get("E.task.queueSaturation")).isEqualTo("0.42");
+    }
+
+    private static DeviceGenerationGateUpsertRequest gateRequest(
+            String skuId, String phaseId, boolean eligibility, boolean forceUnlock) {
+        return new DeviceGenerationGateUpsertRequest(
+                skuId,
+                "NexionBox Test",
+                3,
+                phaseId,
+                eligibility,
+                0,
+                forceUnlock,
+                "active",
+                "调整代际解锁配置",
+                "superadmin");
+    }
+
+    private static DeviceSkuUpsertRequest withPriceAndStatus(
+            DeviceSkuUpsertRequest source, BigDecimal price, String status) {
+        return new DeviceSkuUpsertRequest(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
+                source.hashRate(), source.power(), source.datacenter(), price, source.dailyEarn(), source.dailyEarnNex(),
+                source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
+                source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
+                source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), status, source.reason(), source.operator());
+    }
+
+    private static DeviceSkuUpsertRequest withOperator(DeviceSkuUpsertRequest source, String operator) {
+        return new DeviceSkuUpsertRequest(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
+                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
+                source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
+                source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), operator);
+    }
+
+    private static void authenticateAs(String username, String... authorities) {
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                "admin-id", "n/a",
+                java.util.Arrays.stream(authorities).map(SimpleGrantedAuthority::new).toList());
+        authentication.setDetails(Map.of("subjectType", "ADMIN", "username", username));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+    }
+
+    private static void authenticate(String... authorities) {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "superadmin",
+                "n/a",
+                java.util.Arrays.stream(authorities).map(SimpleGrantedAuthority::new).toList()));
+    }
+
     private static DevicePhaseView phase(String phaseId, String label, int sortOrder) {
         LocalDateTime now = LocalDateTime.of(2026, 6, 17, 0, 0);
         return new DevicePhaseView(phaseId, label, "", "", sortOrder, "active", now, now);
@@ -1252,7 +2371,7 @@ class OpsDeviceServiceTest {
                 requirement,
                 new BigDecimal("0.50"),
                 "active",
-                "embedding",
+                "EM",
                 "BGE-M3",
                 new BigDecimal("0.06"),
                 new BigDecimal("0.22"),
@@ -1271,6 +2390,11 @@ class OpsDeviceServiceTest {
     }
 
     private static DeviceSkuView sku(String skuId, String name, String status, String unlockPhase, String aiUnlocks) {
+        return sku(skuId, name, status, unlockPhase, aiUnlocks, new BigDecimal("1299"));
+    }
+
+    private static DeviceSkuView sku(
+            String skuId, String name, String status, String unlockPhase, String aiUnlocks, BigDecimal price) {
         return new DeviceSkuView(
                 skuId,
                 name,
@@ -1282,7 +2406,7 @@ class OpsDeviceServiceTest {
                 "100 MH/s",
                 "1200W",
                 "HK-1",
-                new BigDecimal("1299"),
+                price,
                 new BigDecimal("12.3"),
                 new BigDecimal("24"),
                 null,
@@ -1361,7 +2485,7 @@ class OpsDeviceServiceTest {
                 "S1+",
                 new BigDecimal("0.50"),
                 status,
-                "embedding",
+                "EM",
                 "BGE-M3",
                 new BigDecimal("0.06"),
                 new BigDecimal("0.22"),
@@ -1369,6 +2493,13 @@ class OpsDeviceServiceTest {
                 "派发中",
                 null,
                 null);
+    }
+
+    private static DeviceTaskView taskWithClass(String taskId, String taskClass, int minVram) {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 17, 0, 0);
+        return new DeviceTaskView(taskId, taskClass + " task", new BigDecimal("0.10"), "/job", "手机+",
+                new BigDecimal("0.35"), "active", taskClass, taskClass + " model",
+                new BigDecimal("0.01"), new BigDecimal("0.04"), minVram + "GB", "派发中", now, now);
     }
 
     private static DeviceOrderView order(String orderNo, String state) {
@@ -1396,6 +2527,9 @@ class OpsDeviceServiceTest {
         private LocalDateTime lastTradeinMonthStart;
         private int lastTradeinCliffMonth;
         private String lastConfigValueType;
+        private String lastConfigOperator;
+        private long activeDevicesByUser;
+        private Long pausedUserId;
 
         @Override
         public Map<String, Object> overviewCounters() {
@@ -1459,6 +2593,42 @@ class OpsDeviceServiceTest {
         public void upsertE3Config(String key, String value, String valueType, String operator) {
             config.put(key, value);
             lastConfigValueType = valueType;
+            lastConfigOperator = operator;
+        }
+
+        @Override
+        public long countActiveDevicesByUser(Long userId) {
+            return activeDevicesByUser;
+        }
+
+        @Override
+        public Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
+            device = device("OFFLINE", 0, null);
+            return Optional.of(device);
+        }
+
+        @Override
+        public Optional<DeviceOpsView> deactivateE5Device(Long deviceId, boolean unbind, LocalDateTime now) {
+            device = device(unbind ? "UNBOUND" : "DEACTIVATED", 0, now);
+            return Optional.of(device);
+        }
+
+        @Override
+        public List<Long> lockE5BatchCandidateIds(Long userId, boolean pause, int limit) {
+            return device == null ? List.of() : List.of(device.id());
+        }
+
+        @Override
+        public int pauseDevicesByUser(Long userId, String reason, LocalDateTime now) {
+            pausedUserId = userId;
+            // MySQL reports two affected rows for one ON DUPLICATE KEY UPDATE row.
+            return 2;
+        }
+
+        @Override
+        public int resumeDevicesByUser(Long userId, LocalDateTime now) {
+            pausedUserId = null;
+            return 1;
         }
 
         @Override
@@ -1602,7 +2772,7 @@ class OpsDeviceServiceTest {
         @Override
         public DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
             lastSkuRequest = request;
-            sku = sku(skuId, request.name(), request.status(), request.unlockPhase());
+            sku = sku(skuId, request.name(), request.status(), request.unlockPhase(), request.aiUnlocks(), request.price());
             skus.put(skuId, sku);
             return sku;
         }
@@ -1617,7 +2787,7 @@ class OpsDeviceServiceTest {
                 return Optional.empty();
             }
             lastSkuRequest = request;
-            sku = sku(skuId, request.name(), request.status(), request.unlockPhase());
+            sku = sku(skuId, request.name(), request.status(), request.unlockPhase(), request.aiUnlocks(), request.price());
             skus.put(skuId, sku);
             return Optional.of(sku);
         }
@@ -1631,7 +2801,7 @@ class OpsDeviceServiceTest {
             if (current == null) {
                 return Optional.empty();
             }
-            sku = sku(current.skuId(), current.name(), status, current.unlockPhase());
+            sku = sku(current.skuId(), current.name(), status, current.unlockPhase(), current.aiUnlocks(), current.price());
             skus.put(skuId, sku);
             return Optional.of(sku);
         }
@@ -2195,12 +3365,46 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public Optional<DeviceOrderView> updateOrderState(String orderNo, String state, LocalDateTime now) {
+        public Optional<DeviceOrderFacts> findOrderFacts(String orderNo) {
             if (order == null || !order.orderNo().equals(orderNo)) {
+                return Optional.empty();
+            }
+            return Optional.of(new DeviceOrderFacts(orderNo, 1L, 1, "SINGLE",
+                    order.amount(), BigDecimal.ZERO, order.amount(), null, "USDT_WALLET",
+                    "PAID", "PAID", "WAITING_PROVISIONING", 1L, order.skuId(), order.skuName(),
+                    null, null, order.dcLocation(), null, null, null, null));
+        }
+
+        @Override
+        public List<DeviceOrderHistoryView> listOrderHistory(String orderNo) {
+            return List.of();
+        }
+
+        @Override
+        public List<DeviceOrderFundingView> listOrderFunding(String orderNo) {
+            return List.of();
+        }
+
+        @Override
+        public Optional<DeviceOrderView> updateOrderState(
+                String orderNo, String expectedState, String state, LocalDateTime now) {
+            if (order == null || !order.orderNo().equals(orderNo)) {
+                return Optional.empty();
+            }
+            if (!expectedState.equals(order.state())) {
                 return Optional.empty();
             }
             order = order(order.orderNo(), state);
             return Optional.of(order);
+        }
+
+        @Override
+        public void recordOrderHistory(String orderNo, String fromState, String toState, String reason,
+                                       String operator, String idempotencyKey, LocalDateTime now) {
+        }
+
+        @Override
+        public void rollbackOrderAssets(String orderNo, LocalDateTime now) {
         }
     }
 
@@ -2246,6 +3450,19 @@ class OpsDeviceServiceTest {
                     "amount", amount,
                     "status", status,
                     "remark", remark));
+        }
+    }
+
+    private static final class FakeE4OrderRefundSettlementFacade implements E4OrderRefundSettlementFacade {
+        private final List<Map<String, Object>> entries = new ArrayList<>();
+
+        @Override
+        public Settlement settle(String orderNo, Long userId, BigDecimal amount, String refundChannel,
+                                 String reason, String operator, String idempotencyKey) {
+            String channel = refundChannel == null ? "WALLET" : refundChannel;
+            entries.add(Map.of("orderNo", orderNo, "userId", userId, "amount", amount, "channel", channel));
+            return new Settlement(channel, "E4-REFUND-" + orderNo, "E4-BILL-" + orderNo,
+                    BigDecimal.ZERO, amount, amount, BigDecimal.ZERO);
         }
     }
 }

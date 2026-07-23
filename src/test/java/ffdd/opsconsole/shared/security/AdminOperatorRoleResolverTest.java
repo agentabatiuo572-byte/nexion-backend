@@ -44,13 +44,14 @@ class AdminOperatorRoleResolverTest {
     }
 
     @Test
-    void resolvesMissingRoleRelationAsAuditorLikeTheAuthenticationSession() {
+    void missingRoleRelationFailsClosedInsteadOfGrantingAuditorVisibility() {
         authenticate("61");
         AdminEntity admin = activeAdmin(61L, 0);
         when(adminMapper.selectById(61L)).thenReturn(admin);
         when(roleRelationMapper.activeRoleCode(61L)).thenReturn(null);
 
-        assertThat(resolver.resolve()).isEqualTo("审计");
+        assertThat(resolver.resolveCode()).isNull();
+        assertThat(resolver.resolve()).isEqualTo("认证运营员");
     }
 
     @Test

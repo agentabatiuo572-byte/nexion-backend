@@ -27,19 +27,13 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     private static final Set<String> E3_CONFIG_KEYS = Set.of(
-            "degradeEarly",
-            "degradeMid",
-            "degradeLate",
             "stageEarlyEnd",
             "stageMidEnd",
             "cycleMonths",
-            "minEfficiency",
             "taskLockS1",
             "taskLockPro",
             "taskLockRack",
-            "salvagePct",
             "eligibility",
-            "minHoldingMonths",
             "promoMult",
             "promoCooldownDays",
             "promoMaxPerSession",
@@ -56,7 +50,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             "tradeinLadderCredit1", "tradeinLadderCredit2", "tradeinLadderCredit3", "tradeinLadderCredit4", "tradeinLadderCredit5",
             "tradeinRequireHigherPrice", "tradeinMaxDevicesPerOrder", "earlyAccessEnabled", "earlyAccessLeadDays");
     private static final Map<String, String> E3_RHYTHM_DEFAULTS = Map.ofEntries(
-            Map.entry("capacityBand1DeltaPct", "-4"), Map.entry("capacityBand2DeltaPct", "-6"), Map.entry("capacityBand3DeltaPct", "-23.7"),
+            Map.entry("capacityBand1DeltaPct", "-3"), Map.entry("capacityBand2DeltaPct", "-6"), Map.entry("capacityBand3DeltaPct", "-23.7"),
             Map.entry("stageEarlyEnd", "3"), Map.entry("stageMidEnd", "8"), Map.entry("cycleMonths", "12"),
             Map.entry("capacityFloorPct", "22"), Map.entry("capacitySubsidyDays", "30"),
             Map.entry("capacityApplyToPhone", "false"), Map.entry("capacityApplyToCloudShare", "false"), Map.entry("capacityApplyToPcGpu", "false"),
@@ -67,6 +61,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             Map.entry("tradeinLadderCredit1", "75"), Map.entry("tradeinLadderCredit2", "60"), Map.entry("tradeinLadderCredit3", "45"),
             Map.entry("tradeinLadderCredit4", "30"), Map.entry("tradeinLadderCredit5", "15"),
             Map.entry("tradeinRequireHigherPrice", "true"), Map.entry("tradeinMaxDevicesPerOrder", "3"),
+            Map.entry("eligibility", "L4+ 持有者"), Map.entry("promoMult", "1.5"),
+            Map.entry("promoCooldownDays", "14"), Map.entry("promoMaxPerSession", "3"),
+            Map.entry("promoDelaySeconds", "6"), Map.entry("promoMinAgeDays", "30"),
+            Map.entry("promoRoutes", "/me/devices"), Map.entry("inventorySoftMax", "0"),
+            Map.entry("taskLockS1", "30"), Map.entry("taskLockPro", "150"), Map.entry("taskLockRack", "480"),
             Map.entry("earlyAccessEnabled", "false"), Map.entry("earlyAccessLeadDays", "30"));
     private final DeviceOpsMapper mapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
@@ -89,11 +88,14 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         String status = request == null ? null : normalizeUpper(request.status());
         String dcLocation = request == null ? null : normalize(request.dcLocation());
         String keyword = request == null ? null : normalize(request.keyword());
+        Long userId = request == null || request.userId() == null || request.userId() <= 0 ? null : request.userId();
+        String kind = request == null ? null : normalizeUpper(request.kind());
+        String heartbeat = request == null ? null : normalize(request.heartbeat());
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
         long offset = (pageNum - 1) * pageSize;
-        long total = mapper.countDevices(status, dcLocation, keyword);
-        List<DeviceOpsView> records = mapper.pageDevices(status, dcLocation, keyword, pageSize, offset);
+        long total = mapper.countDevices(status, dcLocation, keyword, userId, kind, heartbeat);
+        List<DeviceOpsView> records = mapper.pageDevices(status, dcLocation, keyword, userId, kind, heartbeat, pageSize, offset);
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -118,6 +120,44 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
+    public long countActiveDevicesByUser(Long userId) {
+        return mapper.countActiveDevicesByUser(userId);
+    }
+
+    @Override
+    public Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
+        if (mapper.activateE5Device(deviceId, activatedAt) != 1) {
+            return Optional.empty();
+        }
+        mapper.restoreDeviceRuntime(deviceId, activatedAt);
+        return findDevice(deviceId);
+    }
+
+    @Override
+    public Optional<DeviceOpsView> deactivateE5Device(Long deviceId, boolean unbind, LocalDateTime now) {
+        if (mapper.deactivateE5Device(deviceId, unbind ? 1 : 0, now) != 1) {
+            return Optional.empty();
+        }
+        mapper.markRuntimeOffline(deviceId, now, unbind ? "unbind" : "deactivate");
+        return findDevice(deviceId);
+    }
+
+    @Override
+    public List<Long> lockE5BatchCandidateIds(Long userId, boolean pause, int limit) {
+        return mapper.lockE5BatchCandidateIds(userId, pause ? 1 : 0, limit);
+    }
+
+    @Override
+    public int pauseDevicesByUser(Long userId, String reason, LocalDateTime now) {
+        return mapper.pauseDevicesByUser(userId, reason, now);
+    }
+
+    @Override
+    public int resumeDevicesByUser(Long userId, LocalDateTime now) {
+        return mapper.resumeDevicesByUser(userId);
+    }
+
+    @Override
     public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth) {
         DeviceOpsMapper.TradeinOverviewMetrics metrics = mapper.tradeinOverviewMetrics(cliffMonth);
         List<DeviceTradeinTxView> txStats = new ArrayList<>();
@@ -129,7 +169,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
                 metrics.cliffDeviceCount(),
                 mapper.countTradeinApplicationsSince(monthStart),
                 safe(mapper.sumTradeinDiscountSince(monthStart)),
-                mapper.countK2ArbitrageHits(cliffMonth),
+                mapper.countK2ArbitrageHits(),
                 txStats);
     }
 
@@ -160,26 +200,9 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     @Override
     public Map<String, String> e3Config() {
         Map<String, String> config = new LinkedHashMap<>();
-        mapper.defaultLifecycleRules().forEach(row -> {
-            int startMonth = row.startMonth() == null ? 0 : row.startMonth();
-            if (startMonth == 1) {
-                config.put("degradeEarly", decayToPercent(row.monthlyDecayRate()));
-                config.put("stageEarlyEnd", String.valueOf(row.endMonth()));
-            } else if (startMonth == 4) {
-                config.put("degradeMid", decayToPercent(row.monthlyDecayRate()));
-                config.put("stageMidEnd", String.valueOf(row.endMonth()));
-            } else if (startMonth >= 9) {
-                config.put("degradeLate", decayToPercent(row.monthlyDecayRate()));
-            }
-            config.put("minEfficiency", rateToPercent(row.floorEfficiency()));
-        });
         mapper.e3ConfigRows().stream()
                 .filter(row -> E3_CONFIG_KEYS.contains(row.configKey()))
                 .forEach(row -> config.put(row.configKey(), row.configValue()));
-        config.putIfAbsent("capacityBand1DeltaPct", config.getOrDefault("degradeEarly", "0"));
-        config.putIfAbsent("capacityBand2DeltaPct", config.getOrDefault("degradeMid", "-10"));
-        config.putIfAbsent("capacityBand3DeltaPct", config.getOrDefault("degradeLate", "-20"));
-        config.putIfAbsent("capacityFloorPct", config.getOrDefault("minEfficiency", "50"));
         E3_RHYTHM_DEFAULTS.forEach(config::putIfAbsent);
         return config;
     }
@@ -207,17 +230,27 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-        mapper.insertDatacenter(request.dcLocation(), request.regionLabel(), request.status(), request.sortOrder(), operator);
+        mapper.insertDatacenter(request.dcLocation(), request.regionLabel(), request.location(), request.displayName(),
+                request.status(), request.sortOrder(), operator);
         return findDatacenter(request.dcLocation()).orElseThrow();
     }
 
     @Override
     public Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-        int updated = mapper.updateDatacenter(dcLocation, request.regionLabel(), request.status(), request.sortOrder(), operator);
+        boolean renamed = !dcLocation.equals(request.dcLocation());
+        int updated = renamed
+                ? mapper.renameDatacenter(dcLocation, request.dcLocation(), request.regionLabel(), request.location(),
+                        request.displayName(), request.status(), request.sortOrder(), operator)
+                : mapper.updateDatacenter(dcLocation, request.regionLabel(), request.location(), request.displayName(),
+                        request.status(), request.sortOrder(), operator);
         if (updated == 0) {
             return Optional.empty();
         }
-        return findDatacenter(dcLocation);
+        if (renamed) {
+            mapper.renameDatacenterState(dcLocation, request.dcLocation());
+            mapper.renameDatacenterDevices(dcLocation, request.dcLocation());
+        }
+        return findDatacenter(request.dcLocation());
     }
 
     @Override
@@ -263,7 +296,9 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
                 row.pausedAt(),
                 row.resumedAt(),
                 row.createdAt(),
-                row.updatedAt());
+                row.updatedAt(),
+                row.location(),
+                row.displayName());
     }
 
     private String decayToPercent(BigDecimal value) {
@@ -336,19 +371,18 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     private int sortForConfig(String key) {
         return switch (key) {
-            case "degradeEarly" -> 10;
-            case "degradeMid" -> 20;
-            case "degradeLate" -> 30;
+            case "capacityBand1DeltaPct" -> 10;
+            case "capacityBand2DeltaPct" -> 20;
+            case "capacityBand3DeltaPct" -> 30;
             case "stageEarlyEnd" -> 40;
             case "stageMidEnd" -> 50;
             case "cycleMonths" -> 60;
-            case "minEfficiency" -> 70;
+            case "capacityFloorPct" -> 70;
+            case "capacitySubsidyDays" -> 75;
             case "taskLockS1" -> 80;
             case "taskLockPro" -> 90;
             case "taskLockRack" -> 100;
-            case "salvagePct" -> 110;
             case "eligibility" -> 120;
-            case "minHoldingMonths" -> 130;
             case "promoMult" -> 140;
             case "promoCooldownDays" -> 150;
             case "promoMaxPerSession" -> 160;

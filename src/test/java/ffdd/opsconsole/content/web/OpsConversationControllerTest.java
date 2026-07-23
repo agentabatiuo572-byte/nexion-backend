@@ -2,12 +2,16 @@ package ffdd.opsconsole.content.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.content.application.OpsConversationService;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
+import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
 import ffdd.opsconsole.content.dto.ConversationFallbackRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
@@ -25,7 +29,15 @@ import org.junit.jupiter.api.Test;
 class OpsConversationControllerTest {
     private final OpsConversationService conversationService = mock(OpsConversationService.class);
     private final org.springframework.context.ApplicationEventPublisher eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
-    private final OpsConversationController controller = new OpsConversationController(conversationService, eventPublisher);
+    private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService = idempotencyService();
+    private final OpsConversationController controller = new OpsConversationController(conversationService, eventPublisher, idempotencyService);
+
+    private ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService() {
+        var service = mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
+        doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get())
+                .when(service).execute(any(), any(), any(), any(), any());
+        return service;
+    }
 
     @Test
     void overviewDelegatesToService() {
@@ -75,6 +87,20 @@ class OpsConversationControllerTest {
         assertThat(controller.archive("CV-1", "idem-i9-archive", request).getCode()).isZero();
 
         verify(conversationService).archive("CV-1", "idem-i9-archive", request);
+    }
+
+    @Test
+    void archiveBatchMapsTransactionalStateConflictTo409() {
+        ConversationArchiveBatchRequest request = new ConversationArchiveBatchRequest(
+                List.of("CV-1", "CV-2"), "archive resolved sessions", "agent-1");
+        doThrow(new OpsConversationService.ConversationStateConflictException())
+                .when(conversationService).archiveBatch("idem-i9-batch", request);
+
+        ApiResult<List<ffdd.opsconsole.content.domain.ContentConversationView>> result =
+                controller.archiveBatch("idem-i9-batch", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("INVALID_STATE_TRANSITION");
     }
 
     @Test

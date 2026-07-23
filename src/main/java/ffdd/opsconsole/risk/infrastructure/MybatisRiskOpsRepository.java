@@ -27,6 +27,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
 import ffdd.opsconsole.risk.application.K4RiskScorer;
+import ffdd.opsconsole.risk.application.K4ScoreBackfillInitializer;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringModelDraftRequest;
@@ -93,6 +94,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         ensureK1Params();
         mapper.createKycReviewTicketTable();
         mapper.createKycReviewSourceTable();
+        mapper.createK4KycReviewTriggerStateTable();
         tryAlter(mapper::addKycTicketAmountColumn);
         tryAlter(mapper::addKycTicketDueAtColumn);
         tryAlter(mapper::addKycTicketVersionColumn);
@@ -241,6 +243,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public void recordSignal(String signalNo, Long userId, String signalType, String severity, String evidence, String operator) {
         mapper.insertSignal(signalNo, userId, signalType, severity, evidence, operator);
+    }
+
+    @Override
+    public boolean recordSignalIfAbsent(
+            String signalNo, Long userId, String signalType, String severity, String evidence, String operator) {
+        return mapper.insertSignalIfAbsent(signalNo, userId, signalType, severity, evidence, operator) > 0;
     }
 
     private void ensureWithdrawRuleColumns() {
@@ -448,6 +456,29 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public void refreshE3TradeinArbitrageProjection() {
+        mapper.retireE3TradeinArbitrageRows();
+        mapper.upsertE3TradeinArbitrageRows();
+    }
+
+    @Override
+    public List<TrialCycleDetection> refreshTrialCycleArbitrageProjection(int minimumCycles, int windowDays) {
+        int safeMinimum = Math.max(1, Math.min(minimumCycles, 100));
+        int safeWindow = Math.max(1, Math.min(windowDays, 365));
+        mapper.retireH2TrialCycleRows();
+        mapper.upsertH2TrialCycleRows(safeMinimum, safeWindow);
+        return mapper.trialCycleDetections(safeMinimum, safeWindow).stream()
+                .map(row -> new TrialCycleDetection(
+                        row.rowId(), row.userId(), row.clusterId(), row.cycleCount()))
+                .toList();
+    }
+
+    @Override
+    public List<Long> arbitrageSubjectUserIds(String rowId) {
+        return mapper.arbitrageSubjectUserIds(rowId);
+    }
+
+    @Override
     public List<RiskArbitrageRowView> arbitrageRows() {
         return mapper.arbitrageRows().stream().map(this::toArbitrageRow).toList();
     }
@@ -587,12 +618,39 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public Optional<RiskScoreUserView> findScoreUser(String userNo) {
         RiskOpsMapper.ScoreUserRecord row = mapper.findScoreUser(userNo);
+        return mapScoreUser(row);
+    }
+
+    @Override
+    public Optional<RiskScoreUserView> findCurrentScoreUser(String userNo) {
+        RiskOpsMapper.ScoreUserRecord row = mapper.findCurrentScoreUser(userNo);
+        RiskOpsMapper.ScoreModelRecord active = mapper.activeScoreModel();
+        if (row == null || active == null
+                || !java.util.Objects.equals(row.modelVersion(), "k4-v" + active.modelVersion())
+                || active.bandLowMax() == null || active.bandHighMin() == null
+                || active.autoEscalateScore() == null
+                || active.bandLowMax() < 0 || active.bandLowMax() >= active.bandHighMin()
+                || active.bandHighMin() > 100
+                || active.autoEscalateScore() < 0 || active.autoEscalateScore() > 100) {
+            return Optional.empty();
+        }
+        return mapScoreUser(row, new RiskScoreConfigView(
+                inputSourceLabel(parseMap(active.inputSourcesJson(),
+                        new TypeReference<Map<String, Boolean>>() {}, K4_DEFAULT_SOURCES)),
+                active.bandLowMax(), active.bandHighMin(), active.autoEscalateScore()));
+    }
+
+    private Optional<RiskScoreUserView> mapScoreUser(RiskOpsMapper.ScoreUserRecord row) {
+        return mapScoreUser(row, scoringConfig());
+    }
+
+    private Optional<RiskScoreUserView> mapScoreUser(
+            RiskOpsMapper.ScoreUserRecord row, RiskScoreConfigView config) {
         if (row == null) {
             return Optional.empty();
         }
         Optional<RiskScoreOverrideView> override = Optional.ofNullable(mapper.activeScoreOverride(row.userNo()));
         int effectiveScore = override.map(RiskScoreOverrideView::overrideScore).orElse(row.modelScore());
-        RiskScoreConfigView config = scoringConfig();
         return Optional.of(new RiskScoreUserView(
                 row.userNo(),
                 row.modelScore(),
@@ -708,11 +766,27 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     public Optional<RiskScoreUserView> recomputeScore(
             String userNo, long expectedVersion, RiskScoreModelView model, int modelScore,
             List<RiskScoreContributionView> contributions) {
+        return updateScoreProjection(userNo, expectedVersion, model, modelScore, contributions, true);
+    }
+
+    @Override
+    public Optional<RiskScoreUserView> refreshScoreProjection(
+            String userNo, long expectedVersion, RiskScoreModelView model, int modelScore,
+            List<RiskScoreContributionView> contributions) {
+        return updateScoreProjection(userNo, expectedVersion, model, modelScore, contributions, false);
+    }
+
+    private Optional<RiskScoreUserView> updateScoreProjection(
+            String userNo, long expectedVersion, RiskScoreModelView model, int modelScore,
+            List<RiskScoreContributionView> contributions, boolean clearManualOverride) {
+        RiskScoreOverrideView activeOverride = mapper.activeScoreOverride(userNo);
         if (mapper.updateScoreUserModelIfVersion(
                 userNo, expectedVersion, modelScore, "k4-v" + model.version()) == 0) {
             return Optional.empty();
         }
-        mapper.deactivateScoreOverrides(userNo);
+        if (clearManualOverride) {
+            mapper.deactivateScoreOverrides(userNo);
+        }
         mapper.retireScoreContributions(userNo);
         for (int index = 0; index < contributions.size(); index++) {
             RiskScoreContributionView contribution = contributions.get(index);
@@ -720,9 +794,17 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                     userNo, model.version(), contribution.dimKey(), contribution.name(), Boolean.TRUE.equals(contribution.hit()),
                     contribution.evidence(), contribution.subScore(), contribution.weightPct(), contribution.points(), index);
         }
+        int effectiveScore = !clearManualOverride && activeOverride != null
+                ? activeOverride.overrideScore()
+                : modelScore;
+        boolean overridePreserved = !clearManualOverride && activeOverride != null;
         mapper.insertScoreHistory(
-                userNo, model.version(), modelScore, modelScore, "model-scored",
-                json(contributions), "模型重算", "system:k4");
+                userNo, model.version(), modelScore, effectiveScore,
+                overridePreserved ? "manually-overridden" : "model-scored",
+                json(contributions),
+                overridePreserved ? "事实源刷新（保留人工覆盖）" : "模型重算",
+                "system:k4");
+        mapper.advanceScoreAsOfToLatestSource(userNo);
         return findScoreUser(userNo);
     }
 
@@ -1018,6 +1100,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public Optional<KycReviewTicketContext> findOpenKycReviewTicketByUserForUpdate(String userNo) {
+        return Optional.ofNullable(mapper.findOpenKycReviewTicketByUserForUpdate(userNo))
+                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson(), row.version()));
+    }
+
+    @Override
     public boolean mergeOpenKycReviewTicket(String ticketId, long expectedVersion, String reason, String operator) {
         boolean merged = mapper.mergeOpenKycReviewTicket(ticketId, expectedVersion, reason, operator) > 0;
         if (merged) {
@@ -1152,12 +1240,43 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public void recordWithdrawRuleDecision(
+            ffdd.opsconsole.risk.facade.WithdrawalRiskContext context,
+            ffdd.opsconsole.risk.facade.WithdrawalRiskDecision decision) {
+        if (context == null || decision == null || !decision.held()) return;
+        String ruleCodes = decision.matchedRules().stream()
+                .map(RiskRuleView::ruleId)
+                .filter(StringUtils::hasText)
+                .collect(java.util.stream.Collectors.joining(","));
+        int riskScore = switch (decision.action()) {
+            case "freeze" -> 90;
+            case "manual" -> 70;
+            default -> 40;
+        };
+        mapper.upsertWithdrawRuleDecision(
+                "K3-" + context.withdrawalNo(), context.userId(), context.withdrawalNo(),
+                decision.action().toUpperCase(java.util.Locale.ROOT),
+                "K3 " + decision.action() + " by " + decision.primaryRuleId(),
+                riskScore, ruleCodes,
+                "{\"action\":\"" + escapeJson(decision.action()) + "\",\"primaryRuleId\":\""
+                        + escapeJson(decision.primaryRuleId()) + "\"}");
+    }
+
+    @Override
     public boolean hasOpenKycReviewTicket(String userNo) {
         return mapper.countOpenKycTicketsByUser(userNo) > 0;
     }
 
     @Override
     public void createScoreTriggeredKycReviewTicket(String ticketId, String userNo, int score, int threshold, String reason, String operator) {
+        createScoreTriggeredKycReviewTicket(
+                ticketId, userNo, score, threshold, "K4_SCORE_OVERRIDE", reason, operator);
+    }
+
+    @Override
+    public void createScoreTriggeredKycReviewTicket(
+            String ticketId, String userNo, int score, int threshold,
+            String source, String reason, String operator) {
         mapper.insertKycReviewTicket(
                 ticketId,
                 "风险分触发",
@@ -1169,10 +1288,40 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 "in-review",
                 0.02,
                 "剩 7 天",
-                "[[\"触发原因\",\"K4有效风险分 " + score + " >= " + threshold + "\"],[\"触发方式\",\"K4风险分人工覆盖\"],[\"覆盖理由\",\"" + escapeJson(reason) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"]]",
-                "[[\"刚刚\",\"K4风险分过线 · 自动进入复审队列\",\"\"]]",
+                "[[\"触发原因\",\"K4有效风险分 " + score + " >= " + threshold + "\"],[\"触发方式\",\"" + escapeJson(source) + "\"],[\"触发说明\",\"" + escapeJson(reason) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"]]",
+                "[[\"刚刚\",\"" + escapeJson(source) + " · 自动进入复审队列\",\"\"]]",
                 kycDueAt());
         thresholdAlert(ticketId, userNo, "K4 风险分过线");
+    }
+
+    @Override
+    public boolean transitionK4KycReviewTriggerState(
+            String userNo, int effectiveScore, int threshold, String transitionId) {
+        boolean above = effectiveScore >= threshold;
+        RiskOpsMapper.K4KycTriggerStateRecord state = mapper.findK4KycTriggerStateForUpdate(userNo);
+        if (state == null) {
+            try {
+                mapper.insertK4KycTriggerState(
+                        userNo, above, effectiveScore, threshold, transitionId, above ? 1L : 0L);
+                return above;
+            } catch (org.springframework.dao.DuplicateKeyException race) {
+                state = mapper.findK4KycTriggerStateForUpdate(userNo);
+                if (state == null) throw race;
+            }
+        }
+        boolean crossed = !Boolean.TRUE.equals(state.aboveThreshold()) && above;
+        int updated = mapper.updateK4KycTriggerState(
+                userNo, above, effectiveScore, threshold, transitionId, crossed ? 1 : 0, state.version());
+        if (updated != 1) {
+            throw new IllegalStateException("K4_K5_TRIGGER_STATE_CONCURRENT_UPDATE");
+        }
+        return crossed;
+    }
+
+    @Override
+    public List<String> scoreUserNosNeedingKycTriggerThresholdSync(int threshold, int limit) {
+        return mapper.scoreUserNosNeedingKycTriggerThresholdSync(
+                threshold, Math.max(1, Math.min(limit, K4ScoreBackfillInitializer.CHUNK_SIZE)));
     }
 
     @Override
@@ -1225,6 +1374,33 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 kycDueAt());
         linkKycReviewSource(ticketId, "G2", exchangeNo);
         thresholdAlert(ticketId, userNo, "G2 大额兑换");
+    }
+
+    @Override
+    public void createCumulativeExchangeKycReviewTicket(
+            String ticketId, String userNo, BigDecimal amountUsdt, BigDecimal cumulativeUsdt,
+            BigDecimal thresholdUsdt, String exchangeNo, String kycStatus, String reason, String operator) {
+        mapper.insertKycReviewTicket(
+                ticketId,
+                "累计过线",
+                userNo,
+                money(amountUsdt),
+                amountUsdt,
+                "$" + money(cumulativeUsdt),
+                kycText(kycStatus),
+                "in-review",
+                0.02,
+                "剩 7 天",
+                "[[\"触发原因\",\"G2 终身累计兑换 $" + money(cumulativeUsdt) + " >= $" + money(thresholdUsdt) + "\"],"
+                        + "[\"本次兑换\",\"$" + money(amountUsdt) + "\"],"
+                        + "[\"兑换单\",\"" + escapeJson(exchangeNo) + " · K5 复审 hold\"],"
+                        + "[\"sourceDomain\",\"G2\"],[\"sourceNo\",\"" + escapeJson(exchangeNo) + "\"],"
+                        + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
+                        + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
+                "[[\"刚刚\",\"G2 累计兑换达线触发 K5 复审\",\"warn\"]]",
+                kycDueAt());
+        linkKycReviewSource(ticketId, "G2", exchangeNo);
+        thresholdAlert(ticketId, userNo, "G2 累计兑换");
     }
 
     private int normalizePageNum(Integer pageNum) {

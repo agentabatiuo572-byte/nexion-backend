@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
+import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
@@ -12,6 +13,7 @@ import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -30,6 +32,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsGrowthController {
     private final OpsGrowthService growthService;
+    private final OpsGrowthCommandBoundary commandBoundary;
 
     @GetMapping("/phases")
     @PreAuthorize("hasAuthority('growth_h1_read')")
@@ -55,7 +58,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateRhythmParam(idempotencyKey, paramKey, request);
+        return commandBoundary.execute("H1", "RHYTHM_PARAM_UPDATE", paramKey, idempotencyKey, request,
+                () -> growthService.updateRhythmParam(idempotencyKey, paramKey, request));
     }
 
     @GetMapping("/trials")
@@ -70,7 +74,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String paramKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateTrialParam(idempotencyKey, paramKey, request);
+        return commandBoundary.execute("H2", "TRIAL_PARAM_UPDATE", paramKey, idempotencyKey, request,
+                () -> growthService.updateTrialParam(idempotencyKey, paramKey, request));
     }
 
     @PostMapping("/trials/sessions/{sessionId}/cancel")
@@ -80,7 +85,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String sessionId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.cancelTrialSession(idempotencyKey, sessionId, request);
+        return commandBoundary.execute("H2", "TRIAL_SESSION_CANCEL", sessionId, idempotencyKey, request,
+                () -> growthService.cancelTrialSession(idempotencyKey, sessionId, request));
     }
 
     @PostMapping("/trials/sessions/{sessionId}/charge")
@@ -90,7 +96,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String sessionId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.chargeTrialSession(idempotencyKey, sessionId, request);
+        return commandBoundary.execute("H2", "TRIAL_SESSION_CHARGE", sessionId, idempotencyKey, request,
+                () -> growthService.chargeTrialSession(idempotencyKey, sessionId, request));
     }
 
     @PostMapping("/trials/auto-push/kill")
@@ -98,13 +105,26 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> killTrialAutoPush(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.killTrialAutoPush(idempotencyKey, request);
+        return commandBoundary.execute("H2", "AUTO_PUSH_KILL", "AUTO_PUSH", idempotencyKey, request,
+                () -> growthService.killTrialAutoPush(idempotencyKey, request));
     }
 
     @GetMapping("/quest-events")
-    @PreAuthorize("hasAuthority('growth_h3_read')")
+    @PreAuthorize("hasAuthority('growth_h3_read') and hasAuthority('growth_h4_read')")
     public ApiResult<Map<String, Object>> questEvents() {
         return growthService.questEvents();
+    }
+
+    @GetMapping("/quest-events/tasks")
+    @PreAuthorize("hasAuthority('growth_h3_read')")
+    public ApiResult<Map<String, Object>> questTasks() {
+        return growthService.questTasks();
+    }
+
+    @GetMapping("/quest-events/events-overview")
+    @PreAuthorize("hasAuthority('growth_h4_read')")
+    public ApiResult<Map<String, Object>> questEventOverview() {
+        return growthService.questEventOverview();
     }
 
     @PatchMapping("/quest-events/config/{configKey}")
@@ -113,15 +133,17 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String configKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateQuestConfig(idempotencyKey, configKey, request);
+        return commandBoundary.execute("H3", "QUEST_CONFIG_UPDATE", configKey, idempotencyKey, request,
+                () -> growthService.updateQuestConfig(idempotencyKey, configKey, request));
     }
 
     @PostMapping("/quest-events/events")
-    @PreAuthorize("hasAuthority('growth_h3_write')")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
     public ApiResult<Map<String, Object>> createQuestEvent(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthQuestEventRequest request) {
-        return growthService.createQuestEvent(idempotencyKey, request);
+        return commandBoundary.execute("H4", "EVENT_CREATE", request == null ? "EVENT" : request.id(), idempotencyKey, request,
+                () -> growthService.createQuestEvent(idempotencyKey, request));
     }
 
     @PostMapping("/quest-events/missions")
@@ -129,7 +151,8 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> createMission(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthMissionRequest request) {
-        return growthService.createMission(idempotencyKey, request);
+        return commandBoundary.execute("H3", "MISSION_CREATE", request == null ? "MISSION" : request.missionCode(), idempotencyKey, request,
+                () -> growthService.createMission(idempotencyKey, request));
     }
 
     @PostMapping("/quest-events/monthly-missions")
@@ -137,52 +160,87 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> createMonthlyMission(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthMonthlyMissionRequest request) {
-        return growthService.createMonthlyMission(idempotencyKey, request);
+        return commandBoundary.execute("H3", "MONTHLY_MISSION_CREATE", request == null ? "MISSION" : request.challengeCode(), idempotencyKey, request,
+                () -> growthService.createMonthlyMission(idempotencyKey, request));
     }
 
     @PostMapping("/quest-events/wheel-tiers")
     // 转盘档位属 H4 活动中心（按业务内容归 H4，非路径所在 H3）
-    @PreAuthorize("hasAuthority('growth_h4_write')")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
     public ApiResult<Map<String, Object>> createWheelTier(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthWheelTierRequest request) {
-        return growthService.createWheelTier(idempotencyKey, request);
+        return commandBoundary.execute("H4", "WHEEL_TIER_CREATE", request == null ? "TIER" : request.tierName(), idempotencyKey, request,
+                () -> growthService.createWheelTier(idempotencyKey, request));
     }
 
     @PostMapping("/quest-events/wheel-guards")
     // 转盘护栏属 H4 活动中心（按业务内容归 H4，非路径所在 H3）
-    @PreAuthorize("hasAuthority('growth_h4_write')")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
     public ApiResult<Map<String, Object>> createWheelGuard(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthWheelGuardRequest request) {
-        return growthService.createWheelGuard(idempotencyKey, request);
+        return commandBoundary.execute("H4", "WHEEL_GUARD_CREATE", request == null ? "GUARD" : request.guardKey(), idempotencyKey, request,
+                () -> growthService.createWheelGuard(idempotencyKey, request));
+    }
+
+    @PatchMapping("/quest-events/wheel-tiers/probabilities")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
+    public ApiResult<Map<String, Object>> updateWheelProbabilities(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthWheelProbabilityBatchRequest request) {
+        return commandBoundary.execute("H4", "WHEEL_PROBABILITIES_UPDATE", "ACTIVE_POOL", idempotencyKey, request,
+                () -> growthService.updateWheelProbabilities(idempotencyKey, request));
+    }
+
+    @PatchMapping("/quest-events/wheel-tiers/{tierName}")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
+    public ApiResult<Map<String, Object>> updateWheelTier(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String tierName,
+            @RequestBody GrowthWheelTierRequest request) {
+        return commandBoundary.execute("H4", "WHEEL_TIER_UPDATE", tierName, idempotencyKey, request,
+                () -> growthService.updateWheelTier(idempotencyKey, tierName, request));
+    }
+
+    @DeleteMapping("/quest-events/wheel-tiers/{tierName}")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
+    public ApiResult<Map<String, Object>> deleteWheelTier(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String tierName,
+            @RequestBody GrowthConfigUpdateRequest request) {
+        return commandBoundary.execute("H4", "WHEEL_TIER_DELETE", tierName, idempotencyKey, request,
+                () -> growthService.deleteWheelTier(idempotencyKey, tierName, request));
     }
 
     @PatchMapping("/quest-events/events/{eventId}/reward")
-    @PreAuthorize("hasAuthority('growth_h3_write')")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
     public ApiResult<Map<String, Object>> updateQuestEventReward(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String eventId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateQuestEventReward(idempotencyKey, eventId, request);
+        return commandBoundary.execute("H4", "EVENT_REWARD_UPDATE", eventId, idempotencyKey, request,
+                () -> growthService.updateQuestEventReward(idempotencyKey, eventId, request));
     }
 
     @PatchMapping("/quest-events/events/{eventId}/status")
-    @PreAuthorize("hasAuthority('growth_h3_write')")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
     public ApiResult<Map<String, Object>> updateQuestEventStatus(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String eventId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateQuestEventStatus(idempotencyKey, eventId, request);
+        return commandBoundary.execute("H4", "EVENT_STATUS_UPDATE", eventId, idempotencyKey, request,
+                () -> growthService.updateQuestEventStatus(idempotencyKey, eventId, request));
     }
 
     @PatchMapping("/quest-events/events/{eventId}/featured")
-    @PreAuthorize("hasAuthority('growth_h3_write')")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
     public ApiResult<Map<String, Object>> updateQuestEventFeatured(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String eventId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateQuestEventFeatured(idempotencyKey, eventId, request);
+        return commandBoundary.execute("H4", "EVENT_FEATURED_UPDATE", eventId, idempotencyKey, request,
+                () -> growthService.updateQuestEventFeatured(idempotencyKey, eventId, request));
     }
 
     @PatchMapping("/phases/dials/{dialKey}")
@@ -191,7 +249,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String dialKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updatePhaseDial(idempotencyKey, dialKey, request);
+        return commandBoundary.execute("H1", "PHASE_DIAL_UPDATE", dialKey, idempotencyKey, request,
+                () -> growthService.updatePhaseDial(idempotencyKey, dialKey, request));
     }
 
     @PatchMapping("/phases/months/{month}/dials/{dialKey}")
@@ -201,7 +260,8 @@ public class OpsGrowthController {
             @PathVariable int month,
             @PathVariable String dialKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updatePhaseMonthDial(idempotencyKey, month, dialKey, request);
+        return commandBoundary.execute("H1", "PHASE_MONTH_DIAL_UPDATE", month + ":" + dialKey, idempotencyKey, request,
+                () -> growthService.updatePhaseMonthDial(idempotencyKey, month, dialKey, request));
     }
 
     @PatchMapping("/phases/controls/{controlKey}")
@@ -211,7 +271,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String controlKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updatePhaseControl(idempotencyKey, controlKey, request);
+        return commandBoundary.execute("H1", "PHASE_CONTROL_UPDATE", controlKey, idempotencyKey, request,
+                () -> growthService.updatePhaseControl(idempotencyKey, controlKey, request));
     }
 
     @PatchMapping("/phases/overrides/{overrideId}")
@@ -221,7 +282,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String overrideId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updatePhaseOverride(idempotencyKey, overrideId, request);
+        return commandBoundary.execute("H1", "PHASE_OVERRIDE_UPDATE", overrideId, idempotencyKey, request,
+                () -> growthService.updatePhaseOverride(idempotencyKey, overrideId, request));
     }
 
     @GetMapping("/check-in")
@@ -235,7 +297,8 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> updateCheckIn(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateCheckIn(idempotencyKey, request);
+        return commandBoundary.execute("H5", "CHECKIN_UPDATE", "CHECKIN", idempotencyKey, request,
+                () -> growthService.updateCheckIn(idempotencyKey, request));
     }
 
     @PatchMapping("/check-in/rules/{ruleKey}")
@@ -245,7 +308,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String ruleKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateCheckInRule(idempotencyKey, ruleKey, request);
+        return commandBoundary.execute("H5", "CHECKIN_RULE_UPDATE", ruleKey, idempotencyKey, request,
+                () -> growthService.updateCheckInRule(idempotencyKey, ruleKey, request));
     }
 
     @PatchMapping("/check-in/streak-milestones/{milestoneId}")
@@ -254,7 +318,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable int milestoneId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateStreakMilestone(idempotencyKey, milestoneId, request);
+        return commandBoundary.execute("H5", "STREAK_MILESTONE_UPDATE", String.valueOf(milestoneId), idempotencyKey, request,
+                () -> growthService.updateStreakMilestone(idempotencyKey, milestoneId, request));
     }
 
     @PatchMapping("/check-in/power-ups/{powerUpId}")
@@ -263,7 +328,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable int powerUpId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updatePowerUp(idempotencyKey, powerUpId, request);
+        return commandBoundary.execute("H5", "POWER_UP_UPDATE", String.valueOf(powerUpId), idempotencyKey, request,
+                () -> growthService.updatePowerUp(idempotencyKey, powerUpId, request));
     }
 
     @PatchMapping("/earn-milestones/tick-interval")
@@ -272,7 +338,8 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> updateEarnMilestoneTickInterval(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateEarnMilestoneTickInterval(idempotencyKey, request);
+        return commandBoundary.execute("H5", "EARN_MILESTONE_INTERVAL_UPDATE", "TICK_INTERVAL", idempotencyKey, request,
+                () -> growthService.updateEarnMilestoneTickInterval(idempotencyKey, request));
     }
 
     @PatchMapping("/earn-milestones/{milestoneKey}")
@@ -282,7 +349,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String milestoneKey,
             @RequestBody GrowthEarnMilestoneUpdateRequest request) {
-        return growthService.updateEarnMilestone(idempotencyKey, milestoneKey, request);
+        return commandBoundary.execute("H5", "EARN_MILESTONE_UPDATE", milestoneKey, idempotencyKey, request,
+                () -> growthService.updateEarnMilestone(idempotencyKey, milestoneKey, request));
     }
 
     @GetMapping("/withdraw-gate")
@@ -298,7 +366,8 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> updateWithdrawGate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateWithdrawGate(idempotencyKey, request);
+        return commandBoundary.execute("H5", "WITHDRAW_GATE_UPDATE", "WITHDRAW_GATE", idempotencyKey, request,
+                () -> growthService.updateWithdrawGate(idempotencyKey, request));
     }
 
     @GetMapping("/vouchers")
@@ -312,7 +381,8 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> createVoucher(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthVoucherRequest request) {
-        return growthService.createVoucher(idempotencyKey, request);
+        return commandBoundary.execute("H7", "VOUCHER_CREATE", request == null ? "VOUCHER" : request.id(), idempotencyKey, request,
+                () -> growthService.createVoucher(idempotencyKey, request));
     }
 
     @PatchMapping("/vouchers/{voucherId}")
@@ -321,7 +391,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String voucherId,
             @RequestBody GrowthVoucherRequest request) {
-        return growthService.updateVoucher(idempotencyKey, voucherId, request);
+        return commandBoundary.execute("H7", "VOUCHER_UPDATE", voucherId, idempotencyKey, request,
+                () -> growthService.updateVoucher(idempotencyKey, voucherId, request));
     }
 
     @PatchMapping("/vouchers/{voucherId}/status")
@@ -330,7 +401,8 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String voucherId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.updateVoucherStatus(idempotencyKey, voucherId, request);
+        return commandBoundary.execute("H7", "VOUCHER_STATUS_UPDATE", voucherId, idempotencyKey, request,
+                () -> growthService.updateVoucherStatus(idempotencyKey, voucherId, request));
     }
 
     @DeleteMapping("/vouchers/{voucherId}")
@@ -339,6 +411,7 @@ public class OpsGrowthController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String voucherId,
             @RequestBody GrowthConfigUpdateRequest request) {
-        return growthService.deleteVoucher(idempotencyKey, voucherId, request);
+        return commandBoundary.execute("H7", "VOUCHER_DELETE", voucherId, idempotencyKey, request,
+                () -> growthService.deleteVoucher(idempotencyKey, voucherId, request));
     }
 }

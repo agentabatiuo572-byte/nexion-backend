@@ -217,6 +217,7 @@ public interface NovaMapper extends BaseMapper<Object> {
                        SELECT COUNT(1)
                          FROM nx_notification n
                         WHERE n.is_deleted = 0
+                          AND n.type = 'NOVA_SOCIAL'
                           AND DATE(COALESCE(n.pushed_at, n.updated_at, n.created_at)) = CURRENT_DATE()
                           AND UPPER(COALESCE(n.push_status, '')) IN ('SENT', 'DELIVERED', 'READ', 'SUCCESS')
                    ), 0) AS todayDelivered,

@@ -24,4 +24,6 @@ public class SupportTicketEntity extends BaseEntity {
     private Integer messageCount;
     private LocalDateTime lastMessageAt;
     private LocalDateTime closedAt;
+    private Boolean archived;
+    private LocalDateTime archivedAt;
 }

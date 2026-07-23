@@ -2,6 +2,9 @@ package ffdd.opsconsole.content.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -16,14 +19,27 @@ import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.Arrays;
+import java.util.List;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsNovaControllerTest {
     private final OpsNovaService novaService = mock(OpsNovaService.class);
-    private final OpsNovaController controller = new OpsNovaController(novaService);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final OpsNovaController controller = new OpsNovaController(novaService, idempotencyService);
+
+    @BeforeEach
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void executeIdempotentCommand() {
+        when(idempotencyService.execute(
+                anyString(), anyString(), anyString(), eq(ApiResult.class), any(Supplier.class)))
+                .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+    }
 
     @Test
     void overviewDelegatesToService() {
@@ -42,6 +58,8 @@ class OpsNovaControllerTest {
         assertThat(controller.createChannel("idem-i2-create", request).getCode()).isZero();
 
         verify(novaService).createChannel("idem-i2-create", request);
+        verify(idempotencyService).execute(
+                eq("I2_NOVA_CHANNEL_CREATE"), eq("idem-i2-create"), anyString(), eq(ApiResult.class), any());
     }
 
     @Test
@@ -160,6 +178,29 @@ class OpsNovaControllerTest {
     void adminControllerDoesNotExposeArbitrarySocialEventCreation() {
         assertThat(Arrays.stream(OpsNovaController.class.getDeclaredMethods()).map(method -> method.getName()))
                 .doesNotContain("createSocialEvent", "updateSocialEventContent");
+    }
+
+    @Test
+    void controllerSeparatesReadAndWriteAuthorities() {
+        assertThat(authority("overview")).isEqualTo("hasAuthority('content_i2_read')");
+        assertThat(authority("socialEvents")).isEqualTo("hasAuthority('content_i2_read')");
+        assertThat(authority("sampleSocialEvent")).isEqualTo("hasAuthority('content_i2_read')");
+
+        assertThat(List.of(
+                "createChannel", "updateChannel", "updateChannelStatus", "deleteChannel",
+                "createTemplate", "updateTemplate", "deleteTemplate", "updateTemplateStatus",
+                "updateDistribution", "syncSocialEvents", "updateSocialEventStatus",
+                "deleteSocialEvent", "expireSocialEvents"))
+                .allSatisfy(method -> assertThat(authority(method)).isEqualTo("hasAuthority('content_i2_write')"));
+    }
+
+    private static String authority(String methodName) {
+        return Arrays.stream(OpsNovaController.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(methodName))
+                .findFirst()
+                .map(method -> method.getAnnotation(PreAuthorize.class))
+                .map(PreAuthorize::value)
+                .orElse(null);
     }
 
     private static NovaChannelUpsertRequest channelRequest() {

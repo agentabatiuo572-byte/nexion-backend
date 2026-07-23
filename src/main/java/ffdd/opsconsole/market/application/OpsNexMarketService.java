@@ -114,6 +114,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("platformDailyCap", "finprod_g2_cap_platform_write"),
             Map.entry("fee", "finprod_g2_fee_rate_write"),
             Map.entry("feeMin", "finprod_g2_fee_rate_write"),
+            Map.entry("kycThreshold", "finprod_g2_write"),
             Map.entry("queueMode", "finprod_g2_write"));
     /** updateStakingPoolParam paramKey→精确权限码。对照 OpsStakingController updatePoolParam。 */
     private static final Map<String, String> STAKING_PARAM_PERMISSION = Map.ofEntries(
@@ -122,7 +123,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("min", "finprod_g1_min_write"));
     /** updateRepurchaseParam paramKey→精确权限码。对照 OpsNexMarketController updateRepurchaseParam。 */
     private static final Map<String, String> REPURCHASE_PARAM_PERMISSION = Map.ofEntries(
-            Map.entry("apy", "finprod_g7_apy_write"),
+             Map.entry("apy", "finprod_g7_apy_write"),
+             Map.entry("lockDays", "finprod_g7_apy_write"),
             Map.entry("nurture", "finprod_g7_nurture_write"),
             Map.entry("lottery", "finprod_g7_write"),
             Map.entry("penalty", "finprod_g7_write"),
@@ -429,6 +431,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         long pendingCount = marketRepository.stakingPositionCountByStatus("PENDING_LOCK");
         long activeCount = marketRepository.stakingPositionCountByStatus("ACTIVE");
         long matureCount = marketRepository.stakingPositionCountByStatus("MATURE_UNCLAIMED");
+        long claimedCount = marketRepository.stakingPositionCountByStatus("CLAIMED");
+        long slashedCount = marketRepository.stakingPositionCountByStatus("SLASHED");
+        long refundedCount = marketRepository.stakingPositionCountByStatus("REFUNDED");
         long earlyWithdrawnMonth = marketRepository.stakingEarlyWithdrawnCountSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
         long killedCount = pools.stream()
                 .filter(pool -> Boolean.TRUE.equals(pool.get("killed")))
@@ -442,7 +447,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "usdtPoolUsd", usdtPoolUsd,
                 "nexPoolUsd", nexPoolUsd,
                 "interestUsd", marketRepository.stakingEstimatedInterestUsdt(),
-                "positionCount", activeCount + matureCount,
+                "positionCount", pendingCount + activeCount + matureCount + claimedCount + earlyWithdrawnMonth + slashedCount + refundedCount,
                 "activeCount", activeCount,
                 "matureCount", matureCount,
                 "pendingCount", pendingCount,
@@ -452,7 +457,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("gate", map(
                 "enabled", stakingGateOn(),
                 "configKey", STAKING_KILLSWITCH_KEY,
-                "blockedBy", disclosureGateActive("staking") ? "I5_DISCLOSURE_GATE" : null,
                 "linkedDomain", "J1"));
         response.put("disclosureGate", map("staking", disclosureGateActive("staking")));
         response.put("pools", pools);
@@ -523,7 +527,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             }
         }
         configFacade.upsertAdminValue(def.configKey(), newValue, def.valueType(), "market", "G1 staking pool parameter");
-        audit("G1_STAKING_POOL_PARAM_CHANGED", "STAKING_POOL_PARAM", def.configKey(), request.operator(), map(
+        auditRequired("G1_STAKING_POOL_PARAM_CHANGED", "STAKING_POOL_PARAM", def.configKey(), request.operator(), map(
                 "tierKey", pool.tierKey(),
                 "product", pool.product(),
                 "paramKey", def.key(),
@@ -564,9 +568,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         String configKey = STAKING_PREFIX + "enabled." + pool.tierKey();
         boolean before = stakingPoolEnabled(pool);
         if (enabled && !before) {
-            if (disclosureGateActive("staking")) {
-                return validation("G1_DISCLOSURE_GATE_REACK_REQUIRED");
-            }
             if (!stakingGateOn()) {
                 return ApiResult.fail(
                         OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -578,7 +579,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             }
         }
         configFacade.upsertAdminValue(configKey, enabled.toString(), "BOOLEAN", "market", "G1 staking pool sale status");
-        audit("G1_STAKING_POOL_SALE_STATUS_CHANGED", "STAKING_POOL", pool.tierKey(), request.operator(), map(
+        auditRequired("G1_STAKING_POOL_SALE_STATUS_CHANGED", "STAKING_POOL", pool.tierKey(), request.operator(), map(
                 "tierKey", pool.tierKey(),
                 "product", pool.product(),
                 "before", before,
@@ -615,24 +616,31 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (killed == null) {
             return validation("G1_STAKING_KILL_STATUS_INVALID");
         }
+        if (!killed) {
+            return validation("G1_RESTORE_MUST_USE_J1");
+        }
+        if (!StringUtils.hasText(request.triggerBasis())) {
+            return validation("G1_TRIGGER_BASIS_REQUIRED");
+        }
+        if (!StringUtils.hasText(request.dispositionPlan())
+                || request.dispositionPlan().trim().length() < 8
+                || request.dispositionPlan().trim().length() > 500) {
+            return validation("G1_DISPOSITION_PLAN_LENGTH_INVALID");
+        }
         String configKey = STAKING_PREFIX + pool.tierKey() + ".killed";
         boolean before = stakingPoolKilled(pool);
         if (killed && request.reason().trim().length() < 8) {
             return validation("G1_STAKING_KILL_PLAN_REQUIRED");
         }
-        if (!killed && before) {
-            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
-            if (redline != null) {
-                return redline;
-            }
-        }
         configFacade.upsertAdminValue(configKey, killed.toString(), "BOOLEAN", "market", "G1 staking pool kill status");
-        audit("G1_STAKING_POOL_KILL_STATUS_CHANGED", "STAKING_POOL", pool.tierKey(), request.operator(), map(
+        auditRequired("G1_STAKING_POOL_KILL_STATUS_CHANGED", "STAKING_POOL", pool.tierKey(), request.operator(), map(
                 "tierKey", pool.tierKey(),
                 "product", pool.product(),
                 "before", before,
                 "after", killed,
                 "reason", request.reason().trim(),
+                "triggerBasis", request.triggerBasis().trim(),
+                "dispositionPlan", request.dispositionPlan().trim(),
                 "linkedDomain", "J1",
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = stakingOverview().getData();
@@ -641,7 +649,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     public ApiResult<Map<String, Object>> repurchaseOverview() {
-        ensureRepurchaseDefaults();
         Optional<StakingProductView> product = marketRepository.repurchaseProduct();
         RepurchaseStatsView repurchaseStats = marketRepository.repurchaseStatsSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
         BigDecimal principalUsd = safeBig(repurchaseStats.principalUsd());
@@ -658,8 +665,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "principalUsd", principalUsd,
                 "matureUsd", principalUsd.add(estimatedInterestUsd).setScale(2, RoundingMode.HALF_UP),
                 "ticketsMonth", lotteryPerOrder.multiply(BigDecimal.valueOf(ordersMonth)).setScale(0, RoundingMode.HALF_UP),
-                "reinvestRate", repurchaseRate(product.orElse(null)),
+                "reinvestRate", BigDecimal.ZERO,
+                "reinvestRateAvailable", false,
                 "lockDays", product.map(StakingProductView::termDays).orElse(0)));
+        response.put("g4Capacity", map(
+                "monthlyCapacity", parseRepurchaseNumber(readText("G.genesis.lottery.monthlyCapacity", "100000"), BigDecimal.ZERO),
+                "ticketsIssuedThisMonth", lotteryPerOrder.multiply(BigDecimal.valueOf(ordersMonth)).setScale(0, RoundingMode.HALF_UP),
+                "source", "G.genesis.lottery.monthlyCapacity"));
         response.put("params", product.map(value -> repurchaseParamDefs().stream()
                 .map(def -> repurchaseParamRow(def, value))
                 .toList())
@@ -667,7 +679,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("phaseGate", map(
                 "key", "reinvestMultiplier",
                 "label", "H1 growth phase controls limited-time multiplier",
-                "value", readText("growth.reinvest.multiplier", "1x; month 5-6 can be 2x"),
+                "value", repurchasePhaseMultiplierView(),
                 "linkedDomain", "H1",
                 "readonly", true));
         response.put("statusBreakdown", repurchaseStatusBreakdown());
@@ -760,9 +772,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         BigDecimal royaltyPct = policy.map(GenesisPolicyView::royaltyPct).map(this::safeBig).orElse(BigDecimal.ZERO);
         long holdingCount = marketRepository.genesisHoldingCount();
         PageSpec nodePage = pageSpec(page, pageSize, holdingCount);
-        int sold = Math.max(
-                Math.max(0, series.soldSupply() == null ? 0 : series.soldSupply()),
-                Math.toIntExact(Math.min(Integer.MAX_VALUE, holdingCount)));
+        int sold = Math.toIntExact(Math.min(Integer.MAX_VALUE, Math.max(0L, holdingCount)));
         BigDecimal seriesSupply = BigDecimal.valueOf(series.totalSupply() == null || series.totalSupply() <= 0 ? 0 : series.totalSupply());
         supply = supply.max(seriesSupply).max(BigDecimal.valueOf(sold));
         BigDecimal dailyVolumeBase = safeBig(secondaryStats.volume24hUsdt());
@@ -851,6 +861,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateGenesisParam(
             String idempotencyKey,
             String paramKey,
@@ -897,6 +908,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "paramKey", def.key(),
                 "oldValue", oldValue,
                 "newValue", newValue,
+                "decisionRef", request.decisionRef(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = genesisOverview().getData();
@@ -904,6 +916,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateGenesisMarketStatus(
             String idempotencyKey,
             NexMarketValueUpdateRequest request) {
@@ -923,6 +936,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         Boolean enabled = parseBooleanValue(request.value());
         if (enabled == null) {
             return validation("G4_GENESIS_MARKET_STATUS_INVALID");
+        }
+        if (enabled) {
+            return validation("G4_RESTORE_ONLY_FROM_J1");
         }
         boolean before = genesisMarketOn();
         if (enabled && !before) {
@@ -944,6 +960,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> rerunGenesisDividendBatch(
             String idempotencyKey,
             String batchNo,
@@ -991,6 +1008,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     public ApiResult<Map<String, Object>> overview() {
         ensureNexMarketSeedData();
         List<NexMarketCurveFrame> frames = loadCurve();
+        if (frames.size() != 7) {
+            throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
+        }
         int activeDay = effectiveActiveDayIndex();
         NexMarketCurveFrame activeFrame = frameFor(frames, activeDay);
         Map<String, Object> response = new LinkedHashMap<>();
@@ -1006,13 +1026,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("overrides", overrides(activeFrame));
         response.put("coverage", coverage());
         response.put("sunsetExclusions", sunsetExclusions());
-        response.put("sources", List.of("nx_price_index:NEX_USDT", "nx_config_item:" + SUNSET_EXCLUSIONS_KEY));
+        response.put("serverCanonical", true);
+        response.put("sources", List.of("nx_config_item:" + WEEKLY_CURVE_KEY, "nx_price_index:NEX_USDT", "nx_config_item:" + SUNSET_EXCLUSIONS_KEY));
         return ApiResult.ok(response);
     }
 
     public ApiResult<Map<String, Object>> curveHistory() {
         ensureNexMarketSeedData();
-        List<NexPricePointView> points = latestPricePointsChronological(48);
+        LocalDateTime windowStart = LocalDateTime.now(clock).minusHours(24);
+        List<NexPricePointView> points = latestPricePointsChronological(200).stream()
+                .filter(point -> point.sampledAt() != null && !point.sampledAt().isBefore(windowStart))
+                .toList();
         int intervalMinutes = intervalMinutes(points);
         List<Map<String, Object>> samples = new ArrayList<>();
         for (int i = 0; i < points.size(); i++) {
@@ -1041,18 +1065,27 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
-        // service 层二次校验:周曲线整体改写(含 targetPrice+pumpProb),controller 多态(curve_target_price/curve_pump_prob),
-        // 收紧到 target_price 主码——pumpProb-only 角色不应能改含 price 的整条曲线
-        ApiResult<Map<String, Object>> curvePermissionGuard = requirePermission("finprod_g3_curve_target_price_write");
-        if (curvePermissionGuard != null) {
-            return curvePermissionGuard;
+        List<NexMarketCurveFrame> before = loadCurve();
+        if (before.size() != 7) {
+            return ApiResult.fail(503, "G3_WEEKLY_CURVE_INVALID");
+        }
+        List<NexMarketCurveFrame> frames = normalizeFrames(request.frames());
+        if (curveFieldChanged(before, frames, "targetPrice")) {
+            ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_curve_target_price_write");
+            if (permission != null) return permission;
+        }
+        if (curveFieldChanged(before, frames, "pumpProbability")) {
+            ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_curve_pump_prob_write");
+            if (permission != null) return permission;
+        }
+        if (curveFieldChanged(before, frames, "volatilityPct")) {
+            ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_write");
+            if (permission != null) return permission;
         }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("G", "nex_market_curve", "weekly") > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        List<NexMarketCurveFrame> before = loadCurve();
-        List<NexMarketCurveFrame> frames = normalizeFrames(request.frames());
         if (curveRaisesLiability(before, frames)) {
             TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
             if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
@@ -1356,16 +1389,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private List<NexMarketCurveFrame> loadCurve() {
-        List<NexPricePointView> points = latestPricePointsChronological(7);
-        List<NexMarketCurveFrame> frames = new ArrayList<>();
-        for (int i = 0; i < points.size(); i++) {
-            frames.add(new NexMarketCurveFrame(
-                    i,
-                    safeBig(points.get(i).priceUsdt()).setScale(8, RoundingMode.HALF_UP),
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO));
-        }
-        return frames;
+        return configFacade.activeValue(WEEKLY_CURVE_KEY)
+                .filter(StringUtils::hasText)
+                .map(this::readCurve)
+                .filter(frames -> frames.size() == 7)
+                .orElse(List.of());
     }
 
     private List<NexPricePointView> latestPricePointsChronological(int limit) {
@@ -1443,6 +1471,28 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 new NexMarketCurveFrame(4, new BigDecimal("0.18400000"), new BigDecimal("0.65"), new BigDecimal("5.0000")),
                 new NexMarketCurveFrame(5, new BigDecimal("0.18200000"), new BigDecimal("0.58"), new BigDecimal("4.0000")),
                 new NexMarketCurveFrame(6, new BigDecimal("0.17900000"), new BigDecimal("0.52"), new BigDecimal("3.0000")));
+    }
+
+    private boolean curveFieldChanged(List<NexMarketCurveFrame> before, List<NexMarketCurveFrame> after, String field) {
+        if (before.size() != after.size()) return true;
+        for (int index = 0; index < before.size(); index++) {
+            NexMarketCurveFrame oldFrame = before.get(index);
+            NexMarketCurveFrame newFrame = after.get(index);
+            BigDecimal oldValue = switch (field) {
+                case "targetPrice" -> oldFrame.targetPrice();
+                case "pumpProbability" -> oldFrame.pumpProbability();
+                case "volatilityPct" -> oldFrame.volatilityPct();
+                default -> throw new IllegalArgumentException("unsupported curve field");
+            };
+            BigDecimal newValue = switch (field) {
+                case "targetPrice" -> newFrame.targetPrice();
+                case "pumpProbability" -> newFrame.pumpProbability();
+                case "volatilityPct" -> newFrame.volatilityPct();
+                default -> throw new IllegalArgumentException("unsupported curve field");
+            };
+            if (oldFrame.dayIndex() != newFrame.dayIndex() || oldValue.compareTo(newValue) != 0) return true;
+        }
+        return false;
     }
 
     private boolean curveRaisesLiability(List<NexMarketCurveFrame> before, List<NexMarketCurveFrame> after) {
@@ -1663,6 +1713,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         safeBig(product.minAmount()).setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(),
                         safeBig(product.lockedUsd()),
                         product.asset(),
+                        "ACTIVE".equalsIgnoreCase(product.status()),
                         product.termDays() != null && product.termDays() >= 180))
                 .toList();
     }
@@ -1787,7 +1838,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private boolean stakingGateOn() {
-        return !disclosureGateActive("staking") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+        return ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
                 controlValue(STAKING_KILLSWITCH_KEY),
                 controlValue(STAKING_LEGACY_KILLSWITCH_KEY));
     }
@@ -1795,7 +1846,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private boolean stakingPoolEnabled(StakingPoolDef pool) {
         return configFacade.activeValue(STAKING_PREFIX + "enabled." + pool.tierKey())
                 .map(this::parseSwitchEnabled)
-                .orElse(false);
+                .orElse(pool.defaultEnabled());
     }
 
     private boolean stakingPoolKilled(StakingPoolDef pool) {
@@ -1847,18 +1898,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private List<Map<String, Object>> stakingPositionGroups() {
-        long totalPositions = marketRepository.stakingPositionCountByStatus("PENDING_LOCK")
-                + marketRepository.stakingPositionCountByStatus("ACTIVE")
-                + marketRepository.stakingPositionCountByStatus("MATURE_UNCLAIMED")
-                + marketRepository.stakingEarlyWithdrawnCountSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
-        if (totalPositions <= 0) {
-            return List.of();
-        }
         return List.of(
                 stakingPositionGroup("pending_lock", "pending_lock 待确认", "支付或链上确认中,服务器确认后进入 active。", "PENDING_LOCK"),
                 stakingPositionGroup("active", "active 计息中", "按开仓时锁定 APY 线性计息,参数更新不追溯。", "ACTIVE"),
                 stakingPositionGroup("mature_unclaimed", "mature_unclaimed 到期未领", "到期后生成待领取本息,claim 写 D4 账单。", "MATURE_UNCLAIMED"),
-                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前赎回", "提前赎回按本金罚款并没收未领取利息。", "EARLY_WITHDRAWN"));
+                stakingPositionGroup("claimed", "claimed 已领取", "本息已原子入账并写 D4。", "CLAIMED"),
+                stakingPositionGroup("early_withdrawn", "本月 early_withdrawn 提前赎回", "提前赎回按本金罚款并没收未领取利息。", "EARLY_WITHDRAWN"),
+                stakingPositionGroup("slashed", "slashed 熔断处置", "G1 熔断按结构化处置方案终结持仓;恢复只能走 J1。", "SLASHED"),
+                stakingPositionGroup("refunded", "refunded 锁定失败退款", "开仓失败后本金已退回钱包。", "REFUNDED"));
     }
 
     private Map<String, Object> stakingPositionGroup(
@@ -1882,6 +1929,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "nickname", position.nickname(),
                 "tier", position.productName(),
                 "amount", displayUsd(safeBig(position.amountUsdt())),
+                "lockedApy", percentFromBps(position.apyBps()) + "%",
+                "earlyPenalty", percentFromBps(position.earlyPenaltyBps()) + "%",
+                "lockedAt", position.lockedAt(),
+                "unlockAt", position.unlockAt(),
+                "estimatedInterest", displayUsd(safeBig(position.estimatedInterestUsdt())),
                 "status", position.status(),
                 "statusLabel", position.statusLabel(),
                 "statusTone", position.statusTone(),
@@ -1906,15 +1958,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return 0;
         }
         return Math.max(0, ChronoUnit.DAYS.between(lockedAt.toLocalDate(), LocalDate.now(clock)));
-    }
-
-    private void ensureRepurchaseDefaults() {
-        upsertMissingConfig(
-                "growth.reinvest.multiplier",
-                "1x; month 5-6 can be 2x",
-                "STRING",
-                "growth",
-                "G7 readonly H1 reinvest multiplier seed");
     }
 
     private List<Map<String, Object>> repurchaseStatusBreakdown() {
@@ -1979,6 +2022,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private List<RepurchaseParamDef> repurchaseParamDefs() {
         return List.of(
                 repurchaseParamDef("apy"),
+                repurchaseParamDef("lockDays"),
                 repurchaseParamDef("nurture"),
                 repurchaseParamDef("lottery"),
                 repurchaseParamDef("penalty"),
@@ -1998,6 +2042,16 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "Raising APY amplifies future outflow and triggers B1 coverage redline check",
                     true,
                     RepurchaseParamKind.PERCENT);
+            case "lockDays" -> new RepurchaseParamDef(
+                    key,
+                    "nx_staking_product.term_days",
+                    "NUMBER",
+                    "90",
+                    "Lock term days",
+                    "Snapshotted for new repurchase orders",
+                    "Must be an integer day count greater than or equal to one",
+                    true,
+                    RepurchaseParamKind.DAYS);
             case "nurture" -> new RepurchaseParamDef(
                     key,
                     "nx_staking_product.reward_multiplier",
@@ -2016,7 +2070,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "Genesis ticket per order",
                     "Per repurchase order ticket issuance; G4 prize capacity must be checked",
                     "Updates ticket issuance rule and refreshes monthly issued ticket forecast",
-                    false,
+                    true,
                     RepurchaseParamKind.INTEGER);
             case "penalty" -> new RepurchaseParamDef(
                     key,
@@ -2026,7 +2080,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "Early withdrawal penalty",
                     "Principal penalty percent plus forfeited interest and ticket",
                     "Lowering penalty amplifies outflow and triggers B1 coverage redline check",
-                    false,
+                    true,
                     RepurchaseParamKind.PERCENT);
             case "presets" -> new RepurchaseParamDef(
                     key,
@@ -2070,13 +2124,18 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return null;
         }
         if (def.kind() == RepurchaseParamKind.INTEGER) {
-            if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(new BigDecimal("100")) > 0) {
+            if (value.stripTrailingZeros().scale() > 0 || value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(new BigDecimal("100")) > 0) {
                 return null;
             }
-            return value.setScale(0, RoundingMode.HALF_UP).toPlainString();
+            return value.toBigIntegerExact().toString();
+        }
+        if (def.kind() == RepurchaseParamKind.DAYS) {
+            if (value.stripTrailingZeros().scale() > 0 || value.compareTo(BigDecimal.ONE) < 0
+                    || value.compareTo(new BigDecimal("3650")) > 0) return null;
+            return value.toBigIntegerExact().toString();
         }
         if (def.kind() == RepurchaseParamKind.MULTIPLIER) {
-            if (value.compareTo(BigDecimal.ZERO) < 0 || value.compareTo(new BigDecimal("10")) > 0) {
+            if (value.compareTo(BigDecimal.ONE) < 0 || value.compareTo(new BigDecimal("10")) > 0) {
                 return null;
             }
             return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
@@ -2108,6 +2167,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         return switch (def.key()) {
             case "apy" -> percentFromBps(product.apyBps());
+            case "lockDays" -> String.valueOf(product.termDays());
             case "nurture" -> safeBig(product.rewardMultiplier()).stripTrailingZeros().toPlainString();
             case "lottery" -> String.valueOf(product.ticketPerOrder() == null ? 0 : product.ticketPerOrder());
             case "penalty" -> percentFromBps(product.earlyPenaltyBps());
@@ -2155,6 +2215,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     ? "principal " + value + "% + forfeit"
                     : value + "%";
             case MULTIPLIER -> "x" + value;
+            case DAYS -> value + " days";
             case INTEGER -> "+" + value + " / order";
             case TEXT -> value;
         };
@@ -2228,9 +2289,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.total_supply",
                     "NUMBER",
                     "1000",
-                    "Node supply",
-                    "Cannot be lower than minted/sold nodes",
-                    "Increasing future supply can amplify future dividend liability and triggers B1 coverage redline check",
+                    "节点总量",
+                    "不得低于服务端真实持有权益数",
+                    "提高供应上限会放大未来排放负债，并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.INTEGER);
             case "price" -> new GenesisParamDef(
@@ -2238,9 +2299,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.price_usdt",
                     "NUMBER",
                     "9999",
-                    "Primary sale price",
-                    "Applies to future primary purchases only",
-                    "Raising price raises the guaranteed daily accrual base and triggers B1 coverage redline check",
+                    "一级购买单价",
+                    "只影响后续一级购买，历史权益保留快照",
+                    "提高单价会提高未来排放基数，并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.MONEY);
             case "dividend" -> new GenesisParamDef(
@@ -2248,9 +2309,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.daily_dividend_rate_pct",
                     "NUMBER",
                     "0.1",
-                    "Daily dividend rate",
-                    "Baseline 0.1% per day; any upward deviation requires PM decision reference",
-                    "Raising the daily rate directly amplifies USDT outflow and triggers B1 coverage redline check",
+                    "每日排放率",
+                    "基准为每日 0.1%；向上偏离必须填写 PM/财务决议编号",
+                    "提高每日排放率会直接放大 USDT 流出，并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.PERCENT);
             case "royalty" -> new GenesisParamDef(
@@ -2258,9 +2319,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.royalty_bps",
                     "NUMBER",
                     "2.5",
-                    "Secondary royalty",
-                    "Deducted from seller side on secondary trade",
-                    "Applies to new secondary trades only",
+                    "内部转售版税",
+                    "平台内部 P2P 成交时从卖方金额中扣除",
+                    "只影响后续内部转售成交",
                     false,
                     GenesisParamKind.PERCENT);
             case "divBase" -> new GenesisParamDef(
@@ -2268,28 +2329,28 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "nx_genesis_series.dividend_base_formula",
                     "STRING",
                     "platform daily volume * 0.1% / 1000 slots",
-                    "Dividend base formula",
-                    "Controls daily pool basis and equal-split rule",
-                    "Changing the formula changes daily payout and triggers B1 coverage redline check",
+                    "排放基数公式",
+                    "控制服务端每日排放批次的基数与均分规则",
+                    "更改公式会改变每日派发并触发 B1 覆盖率红线预检",
                     true,
                     GenesisParamKind.TEXT);
             case "airdropPct" -> new GenesisParamDef(
                     key, GENESIS_AIRDROP_PCT_KEY, "NUMBER", "8",
-                    "Genesis emission allocation",
-                    "Protocol emission share reserved for Genesis nodes and their community umbrella",
-                    "Increasing the allocation amplifies future NEX emission liability and triggers B1 coverage redline check",
+                    "Genesis 排放分配占比",
+                    "为 Genesis 权益与其社区范围预留的协议排放份额",
+                    "提高占比会放大未来 NEX 排放负债并触发 B1 覆盖率预检",
                     true, GenesisParamKind.PERCENT);
             case "emissionCurve" -> new GenesisParamDef(
                     key, GENESIS_EMISSION_CURVE_KEY, "STRING", "TGE 10% · halve every 6 months",
-                    "Emission vesting curve",
-                    "Release cadence after Genesis emission gate opens",
-                    "Changing the curve changes liability timing and triggers B1 coverage redline check",
+                    "排放释放曲线",
+                    "H1 排放开阀后的服务端释放节奏",
+                    "修改曲线会改变负债时序并触发 B1 覆盖率预检",
                     true, GenesisParamKind.TEXT);
             case "airdropLockDays" -> new GenesisParamDef(
                     key, GENESIS_AIRDROP_LOCK_DAYS_KEY, "NUMBER", "180",
-                    "OG multiplier lock period",
-                    "Lock duration used by the Genesis emission priority multiplier",
-                    "Shortening the lock can accelerate emission eligibility and triggers B1 coverage redline check",
+                    "OG 倍率锁仓期",
+                    "Genesis 排放优先倍率使用的锁仓时长",
+                    "缩短锁仓会提前排放资格并触发 B1 覆盖率预检",
                     true, GenesisParamKind.DAYS);
             default -> null;
         };
@@ -2408,7 +2469,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private String genesisTodayBatch() {
-        return marketRepository.latestGenesisDividendRerunBatchNo().orElse("");
+        return LocalDate.now(clock).toString().replace("-", "");
     }
 
     private BigDecimal genesisDividendRerunAmount() {
@@ -2429,8 +2490,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return switch (def.kind()) {
             case INTEGER -> value + " slots";
             case MONEY -> displayUsd(parseRepurchaseNumber(value, BigDecimal.ZERO));
-            case PERCENT -> "dividend".equals(def.key()) ? value + "% / day" : value + "%";
-            case DAYS -> value + " days";
+            case PERCENT -> "dividend".equals(def.key()) ? value + "% / 日" : value + "%";
+            case DAYS -> value + " 天";
             case TEXT -> value;
         };
     }
@@ -2545,6 +2606,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         BigDecimal userCap = readDecimal(EXCHANGE_USER_DAILY_CAP_KEY, new BigDecimal("50"));
         BigDecimal feePct = readDecimal(EXCHANGE_FEE_PCT_KEY, BigDecimal.ZERO);
         BigDecimal feeMin = readDecimal(EXCHANGE_FEE_MIN_KEY, new BigDecimal("0.50"));
+        BigDecimal kycThreshold = readDecimal(EXCHANGE_KYC_THRESHOLD_KEY, new BigDecimal("100"));
         String queueMode = normalizeQueueMode(readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE"));
         return List.of(
                 cap("userDailyCap", "单用户日额度", "每人每天最多换出多少 USDT", userCap, displayUsd(userCap),
@@ -2555,6 +2617,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         "范围 0%-10% · 降费=放大流出过红线", true, null),
                 cap("feeMin", "最低手续费", "开费后小额兑换的保底费", feeMin, displayUsd(feeMin),
                         "范围 $0-5 · 随费率启用生效", true, null),
+                cap("kycThreshold", "累计实名触发线", "终身累计兑换达到该线由服务端触发 K5 复审", kycThreshold, displayUsd(kycThreshold),
+                        "范围 $1-1,000,000 · G2 权威 / K5 消费", false, null),
                 cap("queueMode", "超 cap 处置策略", "用户超 cap 时进次日队列还是直接拒绝", queueMode, displayQueueMode(queueMode),
                         "枚举: 排队 / 拒绝", "QUEUE".equals(queueMode), null));
     }
@@ -2612,6 +2676,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     key, EXCHANGE_FEE_PCT_KEY, "NUMBER", "0", "G2 exchange fee percent", ExchangeParamKind.PERCENT);
             case "feeMin" -> new ExchangeParamDef(
                     key, EXCHANGE_FEE_MIN_KEY, "NUMBER", "0.50", "G2 minimum exchange fee", ExchangeParamKind.DECIMAL);
+            case "kycThreshold" -> new ExchangeParamDef(
+                    key, EXCHANGE_KYC_THRESHOLD_KEY, "NUMBER", "100", "G2 lifetime KYC exchange threshold", ExchangeParamKind.DECIMAL);
             case "queueMode" -> new ExchangeParamDef(
                     key, EXCHANGE_QUEUE_MODE_KEY, "STRING", "QUEUE", "G2 over-cap queue strategy", ExchangeParamKind.QUEUE_MODE);
             default -> null;
@@ -2638,6 +2704,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if ("feeMin".equals(def.key()) && value.compareTo(new BigDecimal("5")) > 0) {
             return null;
         }
+        if ("kycThreshold".equals(def.key())
+                && (value.compareTo(BigDecimal.ONE) < 0 || value.compareTo(new BigDecimal("1000000")) > 0)) {
+            return null;
+        }
         return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
@@ -2662,8 +2732,26 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 controlValue(EXCHANGE_LEGACY_KILLSWITCH_KEY));
     }
 
+    private String repurchasePhaseMultiplierView() {
+        String rawMonth = readText("H1.rhythm.currentMonth", "");
+        BigDecimal monthValue = parseRepurchaseNumber(rawMonth, BigDecimal.ZERO);
+        int month;
+        try {
+            month = monthValue.intValueExact();
+        } catch (ArithmeticException ex) {
+            return "未配置";
+        }
+        if (month < 1 || month > 24) return "未配置";
+        String rawMultiplier = readText("growth.phase.month." + month + ".reinvestMultiplier", "");
+        BigDecimal multiplier = parseRepurchaseNumber(rawMultiplier, BigDecimal.ZERO);
+        if (multiplier.compareTo(BigDecimal.ONE) < 0 || multiplier.compareTo(BigDecimal.TEN) > 0) return "未配置";
+        return "×" + multiplier.stripTrailingZeros().toPlainString() + " · 月 " + month;
+    }
+
     private boolean disclosureGateActive(String domain) {
-        return controlValue(DISCLOSURE_GATE_PREFIX + domain)
+        String key = DISCLOSURE_GATE_PREFIX + domain;
+        return configFacade.activeValue(key)
+                .or(() -> controlValue(key))
                 .map(this::parseDisclosureGateActive)
                 .orElse(false);
     }
@@ -2718,12 +2806,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private BigDecimal readDecimal(String configKey, BigDecimal fallback) {
         return configFacade.activeValue(configKey)
                 .map(value -> parseDecimalLoose(value, fallback))
-                .orElse(BigDecimal.ZERO);
+                .orElse(fallback);
     }
 
     private BigDecimal parseDecimalLoose(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
-            return BigDecimal.ZERO;
+            return fallback;
         }
         String normalized = raw.trim()
                 .replace("$", "")
@@ -2735,7 +2823,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         try {
             return new BigDecimal(normalized.trim());
         } catch (RuntimeException ex) {
-            return BigDecimal.ZERO;
+            return fallback;
         }
     }
 
@@ -2788,6 +2876,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!StringUtils.hasText(reason)) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
+        int reasonLength = reason.trim().length();
+        if (reasonLength < 8 || reasonLength > 200) {
+            return ApiResult.fail(422, "REASON_LENGTH_INVALID");
+        }
         return null;
     }
 
@@ -2829,6 +2921,20 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private void audit(String action, String resourceType, String resourceId, String operator, Map<String, Object> detail) {
         auditLogService.record(AuditLogWriteRequest.builder()
+                .action(action)
+                .resourceType(resourceType)
+                .resourceId(resourceId)
+                .bizNo(resourceId)
+                .actorType("ADMIN")
+                .actorUsername(operator(operator))
+                .result("SUCCESS")
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
+    }
+
+    private void auditRequired(String action, String resourceType, String resourceId, String operator, Map<String, Object> detail) {
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)
@@ -2913,6 +3019,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private enum RepurchaseParamKind {
         PERCENT,
         MULTIPLIER,
+        DAYS,
         INTEGER,
         TEXT
     }
@@ -2944,6 +3051,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             String defaultMin,
             BigDecimal lockedUsd,
             String minAsset,
+            boolean defaultEnabled,
             boolean highYield) {
     }
 

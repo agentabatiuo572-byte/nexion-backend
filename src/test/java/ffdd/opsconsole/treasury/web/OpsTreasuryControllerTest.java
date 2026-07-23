@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryThresholdRequest;
 import java.math.BigDecimal;
@@ -81,5 +82,36 @@ class OpsTreasuryControllerTest {
         assertThat(controller.updateThresholds("idem-3", request).getData()).containsEntry("ok", true);
 
         verify(treasuryService).updateThresholds("idem-3", request);
+    }
+
+    @Test
+    void d3CanonicalEndpointsDelegateToTreasuryService() {
+        TreasuryForecastConfigRequest request = new TreasuryForecastConfigRequest(
+                null, null, "30d", true, false, "LINEAR", false,
+                1L, "调整未来三十天预测配置", "finance-lead");
+        when(treasuryService.reserve()).thenReturn(ApiResult.ok(Map.of("reserveTotalUsdt", BigDecimal.TEN)));
+        when(treasuryService.coverage()).thenReturn(ApiResult.ok(Map.of("coverageRatio", new BigDecimal("120"))));
+        when(treasuryService.liabilities(true)).thenReturn(ApiResult.ok(Map.of("hardLiabilityCategoryCount", 8)));
+        when(treasuryService.maturityForecast("30d")).thenReturn(ApiResult.ok(Map.of("window", "30d")));
+        when(treasuryService.netExposure("90d")).thenReturn(ApiResult.ok(Map.of("window", "90d")));
+        when(treasuryService.forecastConfig()).thenReturn(ApiResult.ok(Map.of("forecastWindow", "30d")));
+        when(treasuryService.updateForecastConfig("idem-d3-config", request))
+                .thenReturn(ApiResult.ok(Map.of("version", 2L)));
+
+        assertThat(controller.reserve().getData()).containsEntry("reserveTotalUsdt", BigDecimal.TEN);
+        assertThat(controller.coverage().getData()).containsEntry("coverageRatio", new BigDecimal("120"));
+        assertThat(controller.liabilities(true).getData()).containsEntry("hardLiabilityCategoryCount", 8);
+        assertThat(controller.maturityForecast("30d").getData()).containsEntry("window", "30d");
+        assertThat(controller.netExposure("90d").getData()).containsEntry("window", "90d");
+        assertThat(controller.forecastConfig().getData()).containsEntry("forecastWindow", "30d");
+        assertThat(controller.updateForecastConfig("idem-d3-config", request).getData()).containsEntry("version", 2L);
+
+        verify(treasuryService).reserve();
+        verify(treasuryService).coverage();
+        verify(treasuryService).liabilities(true);
+        verify(treasuryService).maturityForecast("30d");
+        verify(treasuryService).netExposure("90d");
+        verify(treasuryService).forecastConfig();
+        verify(treasuryService).updateForecastConfig("idem-d3-config", request);
     }
 }

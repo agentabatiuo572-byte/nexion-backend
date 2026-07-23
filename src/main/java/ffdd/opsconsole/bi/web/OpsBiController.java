@@ -49,10 +49,80 @@ public class OpsBiController {
         return biService.kpiOverview();
     }
 
+    @GetMapping("/kpi")
+    @PreAuthorize("hasAuthority('bi_l1_read')")
+    public ApiResult<Map<String, Object>> kpi(
+            @RequestParam(value = "window", required = false) String window,
+            @RequestParam(value = "cohort", required = false) String cohort,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "locale", required = false) String locale,
+            @RequestParam(value = "ref", required = false) String ref) {
+        return biService.kpiOverview(window, cohort, phase, locale, ref);
+    }
+
+    @GetMapping("/kpi/{kpiId}/drilldown")
+    @PreAuthorize("hasAuthority('bi_l1_read')")
+    public ApiResult<Map<String, Object>> kpiDrilldown(
+            @PathVariable int kpiId,
+            @RequestParam(value = "window", required = false) String window,
+            @RequestParam(value = "cohort", required = false) String cohort,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "locale", required = false) String locale,
+            @RequestParam(value = "ref", required = false) String ref) {
+        return biService.kpiDrilldown(kpiId, window, cohort, phase, locale, ref);
+    }
+
+    @GetMapping("/kpi/trend")
+    @PreAuthorize("hasAuthority('bi_l1_read')")
+    public ApiResult<Map<String, Object>> kpiTrend(
+            @RequestParam("kpiId") int kpiId,
+            @RequestParam(value = "window", required = false) String window,
+            @RequestParam(value = "cohort", required = false) String cohort,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "locale", required = false) String locale,
+            @RequestParam(value = "ref", required = false) String ref) {
+        return biService.kpiTrend(kpiId, window, cohort, phase, locale, ref);
+    }
+
     @GetMapping("/funnel/overview")
     @PreAuthorize("hasAuthority('bi_l2_read')")
     public ApiResult<Map<String, Object>> funnelOverview() {
         return biService.funnelOverview();
+    }
+
+    @GetMapping("/funnel/drilldown")
+    @PreAuthorize("hasAuthority('bi_l2_read')")
+    public ApiResult<Map<String, Object>> funnelDrilldown(
+            @RequestParam(value = "stage", required = false) String stage,
+            @RequestParam(value = "cohort", required = false) String cohort,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "locale", required = false) String locale,
+            @RequestParam(value = "ref", required = false) String ref) {
+        return biService.funnelDrilldown(stage, cohort, phase, locale, ref);
+    }
+
+    @GetMapping("/retention/cohort-matrix")
+    @PreAuthorize("hasAuthority('bi_l2_read')")
+    public ApiResult<Map<String, Object>> retentionCohortMatrix(
+            @RequestParam(value = "cohortRange", required = false) String cohortRange,
+            @RequestParam(value = "window", required = false) String window) {
+        return biService.retentionCohortMatrix(cohortRange, window);
+    }
+
+    @GetMapping("/retention/curve")
+    @PreAuthorize("hasAuthority('bi_l2_read')")
+    public ApiResult<Map<String, Object>> retentionCurve(
+            @RequestParam(value = "cohort", required = false) String cohort) {
+        return biService.retentionCurve(cohort);
+    }
+
+    @GetMapping("/funnel/cross")
+    @PreAuthorize("hasAuthority('bi_l2_read')")
+    public ApiResult<Map<String, Object>> funnelCross(
+            @RequestParam(value = "dim1", required = false) String dim1,
+            @RequestParam(value = "dim2", required = false) String dim2,
+            @RequestParam(value = "metric", required = false) String metric) {
+        return biService.funnelCross(dim1, dim2, metric);
     }
 
     @GetMapping("/finance/overview")
@@ -63,8 +133,56 @@ public class OpsBiController {
 
     @GetMapping("/operations/overview")
     @PreAuthorize("hasAuthority('bi_l4_read')")
-    public ApiResult<Map<String, Object>> operationsOverview() {
-        return biService.operationsOverview();
+    public ApiResult<Map<String, Object>> operationsOverview(
+            @RequestParam(value = "period", required = false) String period,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to) {
+        return biService.operationsOverview(period, phase, from, to);
+    }
+
+    @GetMapping("/devices")
+    @PreAuthorize("hasAuthority('bi_l4_read')")
+    public ApiResult<Map<String, Object>> operationsDevices(
+            @RequestParam(value = "period", required = false) String period,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
+            @RequestParam(value = "generation", required = false) String generation,
+            @RequestParam(value = "model", required = false) String model) {
+        return biService.operationsDevices(period, phase, from, to, generation, model);
+    }
+
+    @GetMapping("/tasks")
+    @PreAuthorize("hasAuthority('bi_l4_read')")
+    public ApiResult<Map<String, Object>> operationsTasks(
+            @RequestParam(value = "period", required = false) String period,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
+            @RequestParam(value = "tier", required = false) String tier) {
+        return biService.operationsTasks(period, phase, from, to, tier);
+    }
+
+    @GetMapping("/network")
+    @PreAuthorize("hasAuthority('bi_l4_read')")
+    public ApiResult<Map<String, Object>> operationsNetwork(
+            @RequestParam(value = "period", required = false) String period,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to) {
+        return biService.operationsNetwork(period, phase, from, to);
+    }
+
+    @GetMapping("/phase-effect")
+    @PreAuthorize("hasAuthority('bi_l4_read')")
+    public ApiResult<Map<String, Object>> operationsPhaseEffect(
+            @RequestParam(value = "period", required = false) String period,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
+            @RequestParam(value = "metric", required = false) String metric) {
+        return biService.operationsPhaseEffect(period, phase, from, to, metric);
     }
 
     @GetMapping("/export/overview")
@@ -87,7 +205,7 @@ public class OpsBiController {
     }
 
     @PostMapping("/reports")
-    @PreAuthorize("hasAuthority('bi_l5_write')")
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_regulatory_generate')")
     public ApiResult<Map<String, Object>> createReport(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody BiReportCreateRequest request) {
@@ -126,15 +244,16 @@ public class OpsBiController {
     }
 
     @GetMapping("/exports/{reportId}/download-token")
-    @PreAuthorize("hasAuthority('bi_l5_write')")
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','user_c4_export')")
     public ApiResult<Map<String, Object>> downloadToken(@PathVariable String reportId) {
         return biService.downloadToken(reportId);
     }
 
     @GetMapping("/exports/{reportId}/download")
-    @PreAuthorize("hasAuthority('bi_l5_write')")
-    public ResponseEntity<?> downloadFile(@PathVariable String reportId) {
-        ApiResult<BiReportDownloadFile> result = biService.downloadFile(reportId);
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','user_c4_export')")
+    public ResponseEntity<?> downloadFile(@PathVariable String reportId,
+                                          @RequestParam(value = "token", required = false) String downloadToken) {
+        ApiResult<BiReportDownloadFile> result = biService.downloadFile(reportId, downloadToken);
         if (result.getCode() != 0) {
             return ResponseEntity.status(result.getCode())
                     .contentType(MediaType.APPLICATION_JSON)
@@ -151,7 +270,7 @@ public class OpsBiController {
 
     @PostMapping("/reports/{reportId}/{action}")
     // action 路径变量多态：可能含 HIGH（放行/执行门槛 bi_l5_task_approve、解密导出 bi_l5_decrypt_export、生成监管报告 bi_l5_regulatory_generate），建议 OpsBiService 层按 action 取值做二次细粒度校验
-    @PreAuthorize("hasAnyAuthority('bi_l5_write','bi_l5_task_approve','bi_l5_decrypt_export','bi_l5_regulatory_generate')")
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_task_approve','bi_l5_decrypt_export','bi_l5_regulatory_generate')")
     public ApiResult<Map<String, Object>> reportAction(
             @PathVariable String reportId,
             @PathVariable String action,

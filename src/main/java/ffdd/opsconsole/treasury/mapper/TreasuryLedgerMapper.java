@@ -122,7 +122,11 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
               FROM nx_withdrawal_order
              WHERE is_deleted = 0
                AND asset = 'USDT'
-               AND status IN ('PENDING', 'REVIEWING', 'PENDING_CHAIN', 'CHAIN_SUBMITTED')
+               AND status IN (
+                    'SUBMITTED', 'REVIEW_PENDING', 'EXTENDED_HOLD', 'REVIEW_PASSED', 'PROCESSING', 'SENT',
+                    'FROZEN', 'REVIEW_REJECTED', 'ADDRESS_INVALID', 'TX_FAILED', 'TX_ORPHANED',
+                    'PENDING', 'REVIEWING', 'DELAYED', 'PENDING_CHAIN', 'CHAIN_SUBMITTED', 'DEAD'
+               )
             """)
     BigDecimal sumActiveWithdrawalQueueUsdt();
 
@@ -140,7 +144,11 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
               FROM nx_withdrawal_order
              WHERE is_deleted = 0
                AND asset = 'USDT'
-               AND status IN ('PENDING', 'REVIEWING', 'PENDING_CHAIN', 'CHAIN_SUBMITTED')
+               AND status IN (
+                    'SUBMITTED', 'REVIEW_PENDING', 'EXTENDED_HOLD', 'REVIEW_PASSED', 'PROCESSING', 'SENT',
+                    'FROZEN', 'REVIEW_REJECTED', 'ADDRESS_INVALID', 'TX_FAILED', 'TX_ORPHANED',
+                    'PENDING', 'REVIEWING', 'DELAYED', 'PENDING_CHAIN', 'CHAIN_SUBMITTED', 'DEAD'
+               )
             """)
     long countActiveWithdrawalQueue();
 
@@ -150,7 +158,11 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
              WHERE w.is_deleted = 0
                AND w.asset = 'USDT'
-               AND w.status IN ('PENDING', 'REVIEWING', 'PENDING_CHAIN', 'CHAIN_SUBMITTED')
+               AND w.status IN (
+                    'SUBMITTED', 'REVIEW_PENDING', 'EXTENDED_HOLD', 'REVIEW_PASSED', 'PROCESSING', 'SENT',
+                    'FROZEN', 'REVIEW_REJECTED', 'ADDRESS_INVALID', 'TX_FAILED', 'TX_ORPHANED',
+                    'PENDING', 'REVIEWING', 'DELAYED', 'PENDING_CHAIN', 'CHAIN_SUBMITTED', 'DEAD'
+               )
             """)
     BigDecimal avgActiveWithdrawalQueueRiskScore();
 
@@ -167,11 +179,10 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
 
     @Select("""
             <script>
-            SELECT COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END), 0)
-              FROM nx_wallet_ledger
+            SELECT COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount_usd ELSE -amount_usd END), 0)
+              FROM nx_treasury_reserve_ledger
              WHERE is_deleted = 0
-               AND asset = 'USDT'
-               AND status IN ('SUCCESS', 'PENDING')
+               AND status = 'CONFIRMED'
                AND created_at >= #{startAt}
                AND created_at &lt; #{endAt}
             </script>
@@ -211,35 +222,78 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     BigDecimal walletLedgerReconciliationGapUsdt();
 
     @Select("""
-            SELECT day,
-                   COALESCE(SUM(withdrawUsd), 0) AS withdrawUsd,
-                   COALESCE(SUM(interestUsd), 0) AS interestUsd
-              FROM (
-                    SELECT DATE_FORMAT(DATE(COALESCE(next_broadcast_at, chain_submitted_at, created_at)), '%Y-%m-%d') AS day,
-                           COALESCE(SUM(amount), 0) AS withdrawUsd,
-                           0 AS interestUsd
-                      FROM nx_withdrawal_order
-                     WHERE is_deleted = 0
-                       AND asset = 'USDT'
-                       AND status IN ('PENDING', 'REVIEWING', 'PENDING_CHAIN', 'CHAIN_SUBMITTED')
-                       AND COALESCE(next_broadcast_at, chain_submitted_at, created_at) >= #{startAt}
-                       AND COALESCE(next_broadcast_at, chain_submitted_at, created_at) < #{endAt}
-                     GROUP BY DATE_FORMAT(DATE(COALESCE(next_broadcast_at, chain_submitted_at, created_at)), '%Y-%m-%d')
-                    UNION ALL
-                    SELECT DATE_FORMAT(DATE(unlock_at), '%Y-%m-%d') AS day,
-                           0 AS withdrawUsd,
-                           COALESCE(SUM(estimated_interest_usdt), 0) AS interestUsd
-                      FROM nx_staking_position
-                     WHERE is_deleted = 0
-                       AND status IN ('ACTIVE', 'LOCKED')
-                       AND unlock_at >= #{startAt}
-                       AND unlock_at < #{endAt}
-                     GROUP BY DATE_FORMAT(DATE(unlock_at), '%Y-%m-%d')
-              ) buckets
-             GROUP BY day
+            <script>
+            WITH RECURSIVE calendar AS (
+                SELECT DATE(#{startAt}) AS day
+                UNION ALL
+                SELECT DATE_ADD(day, INTERVAL 1 DAY)
+                  FROM calendar
+                 WHERE DATE_ADD(day, INTERVAL 1 DAY) &lt; DATE(#{endAt})
+            ), withdrawals AS (
+                SELECT DATE(GREATEST(
+                           COALESCE(d2_hold_until, DATE_ADD(created_at, INTERVAL #{withdrawCooldownDays} DAY)),
+                           #{startAt}
+                       )) AS day,
+                       COALESCE(SUM(amount), 0) AS amount
+                  FROM nx_withdrawal_order
+                 WHERE is_deleted = 0
+                   AND asset = 'USDT'
+                   AND status IN (
+                        'SUBMITTED', 'REVIEW_PENDING', 'EXTENDED_HOLD', 'REVIEW_PASSED', 'PROCESSING', 'SENT',
+                        'FROZEN', 'REVIEW_REJECTED', 'ADDRESS_INVALID', 'TX_FAILED', 'TX_ORPHANED',
+                        'PENDING', 'REVIEWING', 'DELAYED', 'PENDING_CHAIN', 'CHAIN_SUBMITTED', 'DEAD'
+                   )
+                   AND COALESCE(d2_hold_until, DATE_ADD(created_at, INTERVAL #{withdrawCooldownDays} DAY)) &lt; #{endAt}
+                 GROUP BY DATE(GREATEST(
+                           COALESCE(d2_hold_until, DATE_ADD(created_at, INTERVAL #{withdrawCooldownDays} DAY)),
+                           #{startAt}
+                       ))
+            ), staking_interest AS (
+                SELECT c.day,
+                       COALESCE(SUM(CASE
+                           WHEN #{interestMode} = 'AT_MATURITY' AND DATE(s.unlock_at) = c.day
+                               THEN s.estimated_interest_usdt
+                           WHEN #{interestMode} = 'LINEAR'
+                                AND c.day &gt;= DATE(GREATEST(s.locked_at, #{startAt}))
+                                AND c.day &lt;= DATE(s.unlock_at)
+                               THEN s.estimated_interest_usdt / GREATEST(s.term_days, 1)
+                           ELSE 0 END), 0) AS amount
+                  FROM calendar c
+                  LEFT JOIN nx_staking_position s
+                    ON s.is_deleted = 0
+                   AND s.status IN ('ACTIVE', 'LOCKED')
+                   AND s.unlock_at &gt;= #{startAt}
+                   AND s.locked_at &lt; #{endAt}
+                 GROUP BY c.day
+            )
+            SELECT DATE_FORMAT(c.day, '%Y-%m-%d') AS day,
+                   COALESCE(w.amount, 0) AS withdrawUsd,
+                   COALESCE(si.amount, 0) AS interestUsd
+              FROM calendar c
+              LEFT JOIN withdrawals w ON w.day = c.day
+              LEFT JOIN staking_interest si ON si.day = c.day
+             ORDER BY c.day ASC
+            </script>
+            """)
+    List<Map<String, Object>> maturityBuckets(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt,
+            @Param("withdrawCooldownDays") int withdrawCooldownDays,
+            @Param("interestMode") String interestMode);
+
+    @Select("""
+            SELECT DATE_FORMAT(DATE(GREATEST(expires_at, #{startAt})), '%Y-%m-%d') AS day,
+                   COALESCE(SUM(daily_usdt * GREATEST(duration_days, 1)), 0) AS amountUsdt
+              FROM nx_trial_claim
+             WHERE is_deleted = 0
+               AND UPPER(status) NOT IN ('REDEEMED', 'CANCELLED', 'FAILED')
+               AND expires_at < #{endAt}
+             GROUP BY DATE_FORMAT(DATE(GREATEST(expires_at, #{startAt})), '%Y-%m-%d')
              ORDER BY day ASC
             """)
-    List<Map<String, Object>> maturityBuckets(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);
+    List<Map<String, Object>> trialStressBuckets(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
 
     @Select("""
             SELECT avgScore AS value
@@ -317,12 +371,103 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     List<Map<String, Object>> riskVolumeBuckets(@Param("since") LocalDateTime since);
 
     @Select("""
+            SELECT CONCAT('k4-v',m.model_version) AS modelVersion,
+                   m.band_low_max AS bandLowMax,
+                   m.band_high_min AS bandHighMin,
+                   m.auto_escalate_score AS autoEscalateScore,
+                   COUNT(s.id) AS totalUsers,
+                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.auto_escalate_score THEN 1 ELSE 0 END),0) AS autoEscalated,
+                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.band_high_min THEN 1 ELSE 0 END),0) AS highRisk,
+                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.band_low_max
+                                      AND COALESCE(o.override_score,s.model_score) < m.band_high_min THEN 1 ELSE 0 END),0) AS mediumRisk,
+                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) < m.band_low_max THEN 1 ELSE 0 END),0) AS lowRisk,
+                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.band_low_max THEN 1 ELSE 0 END),0) AS flaggedAccounts,
+                   COALESCE(SUM(CASE WHEN o.id IS NOT NULL THEN 1 ELSE 0 END),0) AS activeOverrides,
+                   (SELECT COUNT(*)
+                      FROM nx_admin_risk_score_user stale
+                      WHERE stale.is_deleted=0
+                        AND (stale.model_version<>CONCAT('k4-v',m.model_version)
+                             OR stale.as_of IS NULL
+                             OR stale.as_of < DATE_SUB(NOW(), INTERVAL 1 DAY))) AS staleScoreUsers
+               FROM (
+                    SELECT model_version,band_low_max,band_high_min,auto_escalate_score
+                      FROM nx_admin_risk_score_model
+                     WHERE state='active' AND is_deleted=0
+                     ORDER BY model_version DESC
+                     LIMIT 1
+              ) m
+              LEFT JOIN nx_admin_risk_score_user s
+                ON s.is_deleted=0
+               AND s.model_version=CONCAT('k4-v',m.model_version)
+               AND s.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+              LEFT JOIN nx_admin_risk_score_override o
+                ON o.user_no=s.user_no AND o.active=1 AND o.is_deleted=0
+             GROUP BY m.model_version,m.band_low_max,m.band_high_min,m.auto_escalate_score
+            """)
+    Map<String, Object> currentK4RiskScoreSnapshot();
+
+    @Select("""
+            SELECT event_key AS eventKey,
+                   tone,
+                   title,
+                   body,
+                   DATE_FORMAT(created_at,'%Y-%m-%d %H:%i') AS timeText,
+                   is_deleted AS isDeleted
+              FROM nx_admin_risk_kyc_alert
+             WHERE is_deleted=0
+               AND created_at>=#{since}
+               AND (event_key LIKE 'threshold-hit:%'
+                    OR event_key LIKE 'sla-breach:%'
+                    OR event_key LIKE 'large-withdraw-burst:%')
+             ORDER BY created_at DESC,id DESC
+             LIMIT #{limit}
+            """)
+    List<Map<String, Object>> recentK5KycAlerts(
+            @Param("since") LocalDateTime since, @Param("limit") int limit);
+
+    @Select("""
             SELECT COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount_usd ELSE -amount_usd END), 0)
               FROM nx_treasury_reserve_ledger
              WHERE is_deleted = 0
                AND status = 'CONFIRMED'
             """)
     BigDecimal currentReserveUsd();
+
+    @Select("""
+            SELECT COALESCE(SUM(amount_usd), 0)
+              FROM nx_treasury_reserve_ledger
+             WHERE is_deleted = 0
+               AND status = 'CONFIRMED'
+               AND direction = 'IN'
+               AND reserve_no LIKE 'RSV-D3-%'
+            """)
+    BigDecimal injectedCumulativeUsd();
+
+    @Select("""
+            SELECT COALESCE(SUM(h.acquired_price_usdt * s.daily_dividend_rate_pct / 100), 0)
+              FROM nx_genesis_holding h
+              JOIN nx_genesis_series s
+                ON s.series_code = h.series_code
+               AND s.is_deleted = 0
+             WHERE h.is_deleted = 0
+               AND UPPER(h.status) IN ('ACTIVE', 'HELD', 'LISTED')
+            """)
+    BigDecimal genesisDailyLiabilityUsd();
+
+    @Select("""
+            SELECT COALESCE(SUM(principal_usdt + accrued_interest_usdt), 0)
+              FROM nx_treasury_legacy_lock_liability
+             WHERE is_deleted = 0
+               AND status IN ('ACTIVE', 'LOCKED')
+            """)
+    BigDecimal legacyLockOtherLiabilityUsd();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_treasury_reserve_ledger
+             WHERE is_deleted = 0 AND voucher_no = #{voucherNo}
+            """)
+    long countReserveVoucher(@Param("voucherNo") String voucherNo);
 
     @Select("""
             SELECT price_usdt
@@ -353,14 +498,79 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             @Param("operator") String operator,
             @Param("idempotencyKey") String idempotencyKey);
 
+    @Insert("""
+            INSERT INTO nx_treasury_reserve_ledger (
+                reserve_no, voucher_no, direction, amount_usd, reason, operator,
+                idempotency_key, status, created_at, updated_at, is_deleted
+            ) VALUES (
+                #{reserveNo}, #{voucherNo}, #{direction}, #{amountUsd}, #{reason}, #{operator},
+                #{idempotencyKey}, 'CONFIRMED', NOW(), NOW(), 0
+            )
+            """)
+    int insertTopupReserveEntry(
+            @Param("reserveNo") String reserveNo,
+            @Param("voucherNo") String voucherNo,
+            @Param("direction") String direction,
+            @Param("amountUsd") BigDecimal amountUsd,
+            @Param("reason") String reason,
+            @Param("operator") String operator,
+            @Param("idempotencyKey") String idempotencyKey);
+
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_user_wallet
+               SET usdt_available = usdt_available + #{amount},
+                   pending_withdraw = pending_withdraw - #{amount},
+                   version = version + 1,
+                   updated_at = NOW()
+             WHERE user_id = #{userId}
+               AND is_deleted = 0
+               AND pending_withdraw >= #{amount}
+            """)
+    int releasePendingWithdrawal(@Param("userId") Long userId, @Param("amount") BigDecimal amount);
+
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_user_wallet
+               SET usdt_available = usdt_available + #{amount},
+                   nex_available = nex_available + #{nexBurned},
+                   pending_withdraw = pending_withdraw - #{amount},
+                   version = version + 1,
+                   updated_at = NOW()
+             WHERE user_id = #{userId}
+               AND is_deleted = 0
+               AND pending_withdraw >= #{amount}
+            """)
+    int releasePendingWithdrawalWithNex(
+            @Param("userId") Long userId,
+            @Param("amount") BigDecimal amount,
+            @Param("nexBurned") BigDecimal nexBurned);
+
     @Select("""
             <script>
             SELECT COUNT(1)
               FROM nx_wallet_ledger l
               LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0
              WHERE l.is_deleted = 0
-             <if test='type != null and type != ""'>AND l.biz_type = #{type}</if>
+             <if test='type != null and type != ""'>
+               <choose>
+                 <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
+                   AND (CASE
+                     WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' THEN 'bonus'
+                     WHEN UPPER(l.biz_type) LIKE '%TOPUP%' OR UPPER(l.biz_type) LIKE '%DEPOSIT%' OR UPPER(l.biz_type) LIKE '%RECHARGE%' THEN 'topup'
+                     WHEN UPPER(l.biz_type) LIKE '%WITHDRAW%' OR UPPER(l.biz_type) LIKE '%PAYOUT%' THEN 'withdraw'
+                     WHEN UPPER(l.biz_type) LIKE '%COMMISSION%' THEN 'commission'
+                     WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(l.biz_type) LIKE '%SWAP%' OR UPPER(l.biz_type) LIKE '%EXCHANGE%' OR UPPER(l.biz_type) LIKE '%CONVERT%' THEN 'swap'
+                     ELSE 'earning'
+                   END) = #{type}
+                 </when>
+                 <otherwise>AND UPPER(l.biz_type) = UPPER(#{type})</otherwise>
+               </choose>
+             </if>
              <if test='userId != null'>AND l.user_id = #{userId}</if>
+             <if test='bizNo != null and bizNo != ""'>AND l.biz_no = #{bizNo}</if>
+             <if test='status != null and status != ""'>AND UPPER(l.status) = #{status}</if>
+             <if test='from != null'>AND l.created_at &gt;= #{from}</if>
+             <if test='to != null'>AND l.created_at &lt; #{to}</if>
              <if test='keyword != null and keyword != ""'>
                AND (l.biz_no LIKE CONCAT('%', #{keyword}, '%')
                     OR l.remark LIKE CONCAT('%', #{keyword}, '%')
@@ -369,7 +579,10 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
              </if>
             </script>
             """)
-    long countLedgerBills(@Param("type") String type, @Param("userId") Long userId, @Param("keyword") String keyword);
+    long countLedgerBills(@Param("type") String type, @Param("userId") Long userId,
+                          @Param("keyword") String keyword, @Param("bizNo") String bizNo,
+                          @Param("status") String status, @Param("from") java.time.LocalDateTime from,
+                          @Param("to") java.time.LocalDateTime to);
 
     @Select("""
             <script>
@@ -390,8 +603,27 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
               FROM nx_wallet_ledger l
               LEFT JOIN nx_user u ON u.id = l.user_id AND u.is_deleted = 0
              WHERE l.is_deleted = 0
-             <if test='type != null and type != ""'>AND l.biz_type = #{type}</if>
+             <if test='type != null and type != ""'>
+               <choose>
+                 <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
+                   AND (CASE
+                     WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' THEN 'bonus'
+                     WHEN UPPER(l.biz_type) LIKE '%TOPUP%' OR UPPER(l.biz_type) LIKE '%DEPOSIT%' OR UPPER(l.biz_type) LIKE '%RECHARGE%' THEN 'topup'
+                     WHEN UPPER(l.biz_type) LIKE '%WITHDRAW%' OR UPPER(l.biz_type) LIKE '%PAYOUT%' THEN 'withdraw'
+                     WHEN UPPER(l.biz_type) LIKE '%COMMISSION%' THEN 'commission'
+                     WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(l.biz_type) LIKE '%SWAP%' OR UPPER(l.biz_type) LIKE '%EXCHANGE%' OR UPPER(l.biz_type) LIKE '%CONVERT%' THEN 'swap'
+                     ELSE 'earning'
+                   END) = #{type}
+                 </when>
+                 <otherwise>AND UPPER(l.biz_type) = UPPER(#{type})</otherwise>
+               </choose>
+             </if>
              <if test='userId != null'>AND l.user_id = #{userId}</if>
+             <if test='bizNo != null and bizNo != ""'>AND l.biz_no = #{bizNo}</if>
+             <if test='status != null and status != ""'>AND UPPER(l.status) = #{status}</if>
+             <if test='from != null'>AND l.created_at &gt;= #{from}</if>
+             <if test='to != null'>AND l.created_at &lt; #{to}</if>
              <if test='keyword != null and keyword != ""'>
                AND (l.biz_no LIKE CONCAT('%', #{keyword}, '%')
                     OR l.remark LIKE CONCAT('%', #{keyword}, '%')
@@ -403,8 +635,11 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             </script>
             """)
     List<TreasuryLedgerBillView> pageLedgerBills(@Param("type") String type, @Param("userId") Long userId,
-                                                 @Param("keyword") String keyword, @Param("pageSize") int pageSize,
-                                                 @Param("offset") int offset);
+                                                 @Param("keyword") String keyword, @Param("bizNo") String bizNo,
+                                                 @Param("status") String status,
+                                                 @Param("from") java.time.LocalDateTime from,
+                                                 @Param("to") java.time.LocalDateTime to,
+                                                 @Param("pageSize") int pageSize, @Param("offset") int offset);
 
     @Select("""
             SELECT l.id,
@@ -438,17 +673,25 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal currentUserBalance(@Param("userId") Long userId, @Param("asset") String asset);
 
-    @Insert("""
-            INSERT INTO nx_wallet_asset_adjustment (
-                adjustment_no, user_id, asset, direction, amount, reason_code, reason, maker, status, created_at, updated_at, is_deleted
-            ) VALUES (
-                #{adjustmentNo}, #{userId}, #{asset}, #{direction}, #{amount}, 'OPS_TREASURY_LEDGER_ADJUSTMENT',
-                CONCAT(#{reason}, ' | relatedBizNo=', COALESCE(#{relatedBizNo}, '')),
-                #{operator}, 'PENDING_REVIEW', NOW(), NOW(), 0
-            )
+    @Select("""
+            SELECT CASE UPPER(#{asset})
+                     WHEN 'USDT' THEN usdt_available
+                     WHEN 'NEX' THEN nex_available
+                     ELSE NULL
+                   END
+              FROM nx_user_wallet
+             WHERE is_deleted = 0 AND user_id = #{userId}
+             LIMIT 1
             """)
-    int insertLedgerAdjustment(@Param("adjustmentNo") String adjustmentNo, @Param("userId") Long userId,
-                               @Param("asset") String asset, @Param("direction") String direction,
-                               @Param("amount") BigDecimal amount, @Param("relatedBizNo") String relatedBizNo,
-                               @Param("reason") String reason, @Param("operator") String operator);
+    BigDecimal actualUserBalance(@Param("userId") Long userId, @Param("asset") String asset);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_admin_operation_mutex(lock_key, updated_at)
+            VALUES(#{lockKey}, NOW())
+            """)
+    int ensureLedgerMutex(@Param("lockKey") String lockKey);
+
+    @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key=#{lockKey} FOR UPDATE")
+    String lockLedgerMutex(@Param("lockKey") String lockKey);
+
 }

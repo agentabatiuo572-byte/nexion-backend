@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
 import ffdd.opsconsole.content.domain.SupportAgentOverview;
@@ -50,6 +51,9 @@ public class OpsSupportAgentController {
             @PathVariable Long adminId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentProfileUpdateRequest request) {
+        if (!supportAgentService.canManageSupportSeats()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
+        }
         return supportAgentService.updateProfile(adminId, idempotencyKey, request);
     }
 
@@ -60,6 +64,9 @@ public class OpsSupportAgentController {
             @PathVariable Long adminId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentSeatAssignmentRequest request) {
+        if (!supportAgentService.canManageSupportSeats()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
+        }
         return supportAgentService.assignSeat(adminId, idempotencyKey, request);
     }
 
@@ -70,6 +77,9 @@ public class OpsSupportAgentController {
             @PathVariable Long adminId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentAssignmentRequest request) {
+        if (!supportAgentService.canManageSupportSeats()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
+        }
         return supportAgentService.assignAdvisorUser(adminId, idempotencyKey, request);
     }
 
@@ -81,6 +91,9 @@ public class OpsSupportAgentController {
             @PathVariable Long assignmentId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentAssignmentRequest request) {
+        if (!supportAgentService.canManageSupportSeats()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
+        }
         return supportAgentService.deactivateAdvisorAssignment(adminId, assignmentId, idempotencyKey, request);
     }
 }

@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import ffdd.opsconsole.risk.facade.WithdrawalRiskContext;
+import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 
 public interface RiskOpsRepository {
     Map<String, Object> overview();
@@ -22,6 +24,12 @@ public interface RiskOpsRepository {
     void updateDecision(String caseNo, String decision, String reason, String operator);
 
     void recordSignal(String signalNo, Long userId, String signalType, String severity, String evidence, String operator);
+
+    default boolean recordSignalIfAbsent(
+            String signalNo, Long userId, String signalType, String severity, String evidence, String operator) {
+        recordSignal(signalNo, userId, signalType, severity, evidence, operator);
+        return true;
+    }
 
     default TamperProjection projectTamperSignal(
             String signalNo, Long userId, String userNo, String evidence, int eventCount,
@@ -60,11 +68,29 @@ public interface RiskOpsRepository {
 
     void recordWithdrawRuleHit(String withdrawalNo, String userNo, BigDecimal amount, RiskRuleView rule);
 
+    default void recordWithdrawRuleDecision(
+            WithdrawalRiskContext context, WithdrawalRiskDecision decision) {
+    }
+
     List<RiskArbitrageStatView> arbitrageStats();
 
     List<RiskArbitrageParamView> arbitrageParams();
 
     Optional<RiskArbitrageParamView> updateArbitrageParam(String key, long expectedVersion, String value);
+
+    /** Refreshes the K2 read model from current E3 trade-in plus gift/commission facts. */
+    default void refreshE3TradeinArbitrageProjection() {
+    }
+
+    /** Rebuilds the H2-backed trial-cycle projection and returns only authoritative detections. */
+    default List<TrialCycleDetection> refreshTrialCycleArbitrageProjection(int minimumCycles, int windowDays) {
+        return List.of();
+    }
+
+    /** Resolves affected users from canonical user/K1 relations, never from a browser-side selection. */
+    default List<Long> arbitrageSubjectUserIds(String rowId) {
+        return List.of();
+    }
 
     List<RiskArbitrageRowView> arbitrageRows();
 
@@ -116,6 +142,8 @@ public interface RiskOpsRepository {
 
     Optional<RiskScoreUserView> findScoreUser(String userNo);
 
+    Optional<RiskScoreUserView> findCurrentScoreUser(String userNo);
+
     default List<RiskScoreHistoryView> scoreHistory(String userNo, int limit) {
         return List.of();
     }
@@ -136,6 +164,16 @@ public interface RiskOpsRepository {
     }
 
     default Optional<RiskScoreUserView> recomputeScore(
+            String userNo,
+            long expectedVersion,
+            RiskScoreModelView model,
+            int modelScore,
+            List<RiskScoreContributionView> contributions) {
+        return Optional.empty();
+    }
+
+    /** Refreshes the model projection without clearing an active manual override. */
+    default Optional<RiskScoreUserView> refreshScoreProjection(
             String userNo,
             long expectedVersion,
             RiskScoreModelView model,
@@ -248,6 +286,10 @@ public interface RiskOpsRepository {
 
     Optional<KycReviewTicketContext> findOpenKycReviewTicketByUser(String userNo);
 
+    default Optional<KycReviewTicketContext> findOpenKycReviewTicketByUserForUpdate(String userNo) {
+        return findOpenKycReviewTicketByUser(userNo);
+    }
+
     boolean mergeOpenKycReviewTicket(String ticketId, long expectedVersion, String reason, String operator);
 
     void linkKycReviewSource(String ticketId, String sourceDomain, String sourceNo);
@@ -279,11 +321,36 @@ public interface RiskOpsRepository {
 
     void createScoreTriggeredKycReviewTicket(String ticketId, String userNo, int score, int threshold, String reason, String operator);
 
+    default void createScoreTriggeredKycReviewTicket(
+            String ticketId, String userNo, int score, int threshold,
+            String source, String reason, String operator) {
+        createScoreTriggeredKycReviewTicket(ticketId, userNo, score, threshold, reason, operator);
+    }
+
+    /**
+     * Atomically records whether the user's score is above the current K5 review line.
+     * Returns true only for the first observed high score or a persisted below-to-above crossing.
+     */
+    default boolean transitionK4KycReviewTriggerState(
+            String userNo, int effectiveScore, int threshold, String transitionId) {
+        return effectiveScore >= threshold;
+    }
+
+    default List<String> scoreUserNosNeedingKycTriggerThresholdSync(int threshold, int limit) {
+        return scoreUserNos().stream().limit(Math.max(0, limit)).toList();
+    }
+
     void createLargeWithdrawalKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String withdrawalNo,
                                               String kycStatus, String reason, String operator);
 
     void createLargeExchangeKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String exchangeNo,
                                             String kycStatus, String reason, String operator);
+
+    default void createCumulativeExchangeKycReviewTicket(
+            String ticketId, String userNo, BigDecimal amountUsdt, BigDecimal cumulativeUsdt,
+            BigDecimal thresholdUsdt, String exchangeNo, String kycStatus, String reason, String operator) {
+        throw new UnsupportedOperationException("K5_CUMULATIVE_EXCHANGE_REVIEW_NOT_IMPLEMENTED");
+    }
 
     record KycReviewSource(String sourceDomain, String sourceNo) {
     }
@@ -292,6 +359,13 @@ public interface RiskOpsRepository {
     }
 
     record TamperRadarSnapshot(long signalCount, long accountCount, String latestAt) {
+    }
+
+    record TrialCycleDetection(
+            String rowId,
+            long userId,
+            String clusterId,
+            int cycleCount) {
     }
 
     record MultiAccountSignalFact(

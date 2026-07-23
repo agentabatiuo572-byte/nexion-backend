@@ -25,6 +25,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -34,8 +35,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
+import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -60,9 +63,10 @@ public class OpsSessionTemplateService {
             new SessionCtaOption("锁仓 Staking", "/staking", "market"),
             new SessionCtaOption("创世节点", "/genesis", "market"));
     private static final List<String> SCRIPT_GROUPS = List.of("开场", "升级", "锁仓", "复投");
-    private static final List<String> SCRIPT_STATUS_OPTIONS = List.of("published", "draft");
+    private static final List<String> SCRIPT_STATUS_OPTIONS = List.of("draft", "published", "archived");
     private static final Set<String> SCRIPT_STATUSES = Set.copyOf(SCRIPT_STATUS_OPTIONS);
     private static final Set<String> TEMPLATE_TYPES = Set.of("advisor", "support");
+    private static final List<String> DEFAULT_AUDIENCE_OPTIONS = List.of("全量用户", "新注册用户", "高价值用户", "活跃设备用户");
     private static final DateTimeFormatter TEMPLATE_ID_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
     private final SessionTemplateRepository templateRepository;
@@ -95,6 +99,7 @@ public class OpsSessionTemplateService {
         return ApiResult.ok(templateRepository.pageReplyTemplates(request));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionCategoryView> updateCategory(String type, String idempotencyKey, SessionCategoryToggleRequest request) {
         SessionCategorySeed seed = categorySeed(type);
         if (seed == null) {
@@ -111,22 +116,31 @@ public class OpsSessionTemplateService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_CATEGORY_ENABLED_REQUIRED");
         }
         String key = categoryKey(seed.type());
+        boolean current = "on".equalsIgnoreCase(configValueForUpdate(key, seed.enabled() ? "on" : "off"));
+        if (request.expectedEnabled() != null && request.expectedEnabled() != current) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_CATEGORY_STALE");
+        }
+        if (request.enabled() == current) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
         String value = request.enabled() ? "on" : "off";
         configFacade.upsertAdminValue(key, value, "BOOLEAN", CONFIG_GROUP, request.reason().trim());
         SessionCategoryView updated = new SessionCategoryView(seed.type(), seed.name(), seed.roleKey(), request.enabled(), seed.managedBy(), false);
         audit("M5_SESSION_CATEGORY_UPDATED", seed.type(), request.operator(), detail(
-                "enabled", value,
+                "from", current ? "on" : "off",
+                "to", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionAdvisorPolicyView> updateAdvisorPolicy(
             String field,
             String idempotencyKey,
             SessionAdvisorPolicyUpdateRequest request) {
         String normalizedField = normalizeField(field);
-        if (!List.of("enabled", "delayMs", "cooldownHours", "maxPerSession").contains(normalizedField)) {
+        if (!List.of("enabled", "delayMs", "cooldownHours", "maxPerSession", "audience").contains(normalizedField)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_POLICY_FIELD_UNSUPPORTED");
         }
         ApiResult<SessionAdvisorPolicyView> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
@@ -135,18 +149,29 @@ public class OpsSessionTemplateService {
         }
         String value;
         try {
-            value = normalizePolicyValue(normalizedField, request.value());
+            value = "audience".equals(normalizedField)
+                    ? requireAudienceOption(request.value())
+                    : normalizePolicyValue(normalizedField, request.value());
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
+        String current = configValueForUpdate(policyKey(normalizedField), defaultPolicyValue(normalizedField));
+        if (StringUtils.hasText(request.expectedValue()) && !current.equals(request.expectedValue().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_POLICY_STALE");
+        }
+        if (current.equals(value)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
         configFacade.upsertAdminValue(policyKey(normalizedField), value, valueType(normalizedField), CONFIG_GROUP, request.reason().trim());
         audit("M5_SESSION_ADVISOR_POLICY_UPDATED", normalizedField, request.operator(), detail(
-                "value", value,
+                "from", current,
+                "to", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(advisorPolicy());
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionWorkbenchPolicyView> updateWorkbenchPolicy(
             String field,
             String idempotencyKey,
@@ -165,21 +190,31 @@ public class OpsSessionTemplateService {
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
+        String current = configValueForUpdate(workbenchKey(normalizedField), "off");
+        if (StringUtils.hasText(request.expectedValue()) && !current.equals(request.expectedValue().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_WORKBENCH_POLICY_STALE");
+        }
+        if (current.equals(value)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
         configFacade.upsertAdminValue(workbenchKey(normalizedField), value, "BOOLEAN", CONFIG_GROUP, request.reason().trim());
         audit("M3_SESSION_WORKBENCH_POLICY_UPDATED", normalizedField, request.operator(), detail(
-                "value", value,
+                "from", current,
+                "to", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(workbenchPolicy());
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionScriptView> createScript(String idempotencyKey, SessionScriptCreateRequest request) {
         ApiResult<SessionScriptView> guard = requireScriptCreate(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        String scriptId = "AS-" + LocalDateTime.now(clock).format(TEMPLATE_ID_TIME);
-        SessionScriptView created = templateRepository.createScript(scriptId, normalizeScriptRequest(request), LocalDateTime.now(clock));
+        LocalDateTime now = LocalDateTime.now(clock);
+        String scriptId = uniqueContentId("AS", now);
+        SessionScriptView created = templateRepository.createScript(scriptId, normalizeScriptRequest(request), now);
         audit("M5_SESSION_SCRIPT_CREATED", created.id(), request.operator(), detail(
                 "scriptGroup", created.scriptGroup(),
                 "ctaPath", created.ctaPath(),
@@ -190,6 +225,7 @@ public class OpsSessionTemplateService {
         return ApiResult.ok(created);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionScriptView> updateScriptStatus(String scriptId, String idempotencyKey, SessionScriptStatusRequest request) {
         if (!StringUtils.hasText(scriptId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_SCRIPT_ID_REQUIRED");
@@ -202,12 +238,18 @@ public class OpsSessionTemplateService {
         if (!SCRIPT_STATUSES.contains(status)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_SCRIPT_STATUS_UNSUPPORTED");
         }
-        SessionScriptView current = templateRepository.findScript(scriptId.trim()).orElse(null);
+        SessionScriptView current = templateRepository.findScriptForUpdate(scriptId.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "SESSION_SCRIPT_NOT_FOUND");
         }
+        if (StringUtils.hasText(request.expectedStatus()) && !current.status().equals(normalizeScriptStatus(request.expectedStatus()))) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_SCRIPT_STALE");
+        }
         if (status.equals(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if (!validPublicationTransition(current.status(), status)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_SCRIPT_STATUS_TRANSITION_INVALID");
         }
         templateRepository.updateScriptStatus(current.id(), status, LocalDateTime.now(clock));
         SessionScriptView updated = templateRepository.findScript(current.id()).orElse(current);
@@ -219,6 +261,7 @@ public class OpsSessionTemplateService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionScriptView> updateScriptAudience(String scriptId, String idempotencyKey, SessionScriptAudienceRequest request) {
         if (!StringUtils.hasText(scriptId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_SCRIPT_ID_REQUIRED");
@@ -227,10 +270,21 @@ public class OpsSessionTemplateService {
         if (guard != null) {
             return guard;
         }
-        String audience = normalizeAudience(request.audience());
-        SessionScriptView current = templateRepository.findScript(scriptId.trim()).orElse(null);
+        String audience;
+        try {
+            audience = requireAudienceOption(request.audience());
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
+        SessionScriptView current = templateRepository.findScriptForUpdate(scriptId.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "SESSION_SCRIPT_NOT_FOUND");
+        }
+        if (StringUtils.hasText(request.expectedAudience()) && !current.audience().equals(request.expectedAudience().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_SCRIPT_AUDIENCE_STALE");
+        }
+        if (current.audience().equals(audience)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         templateRepository.updateScriptAudience(current.id(), audience, LocalDateTime.now(clock));
         SessionScriptView updated = templateRepository.findScript(current.id()).orElse(current);
@@ -241,13 +295,15 @@ public class OpsSessionTemplateService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionReplyTemplateView> createReplyTemplate(String idempotencyKey, SessionReplyTemplateCreateRequest request) {
         ApiResult<SessionReplyTemplateView> guard = requireReplyTemplateCreate(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        String templateId = "RT-" + LocalDateTime.now(clock).format(TEMPLATE_ID_TIME);
-        SessionReplyTemplateView created = templateRepository.createReplyTemplate(templateId, normalizeReplyTemplateRequest(request), LocalDateTime.now(clock));
+        LocalDateTime now = LocalDateTime.now(clock);
+        String templateId = uniqueContentId("RT", now);
+        SessionReplyTemplateView created = templateRepository.createReplyTemplate(templateId, normalizeReplyTemplateRequest(request), now);
         audit("M5_SESSION_REPLY_TEMPLATE_CREATED", created.id(), request.operator(), detail(
                 "type", created.type(),
                 "status", created.status(),
@@ -256,6 +312,7 @@ public class OpsSessionTemplateService {
         return ApiResult.ok(created);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SessionReplyTemplateView> updateReplyTemplateStatus(
             String templateId,
             String idempotencyKey,
@@ -271,12 +328,18 @@ public class OpsSessionTemplateService {
         if (!SCRIPT_STATUSES.contains(status)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SESSION_REPLY_TEMPLATE_STATUS_UNSUPPORTED");
         }
-        SessionReplyTemplateView current = templateRepository.findReplyTemplate(templateId.trim()).orElse(null);
+        SessionReplyTemplateView current = templateRepository.findReplyTemplateForUpdate(templateId.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "SESSION_REPLY_TEMPLATE_NOT_FOUND");
         }
+        if (StringUtils.hasText(request.expectedStatus()) && !current.status().equals(normalizeScriptStatus(request.expectedStatus()))) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_REPLY_TEMPLATE_STALE");
+        }
         if (status.equals(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if (!validPublicationTransition(current.status(), status)) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_REPLY_TEMPLATE_STATUS_TRANSITION_INVALID");
         }
         templateRepository.updateReplyTemplateStatus(current.id(), status, LocalDateTime.now(clock));
         SessionReplyTemplateView updated = templateRepository.findReplyTemplate(current.id()).orElse(current);
@@ -290,10 +353,10 @@ public class OpsSessionTemplateService {
 
     private SessionAdvisorPolicyView advisorPolicy() {
         return new SessionAdvisorPolicyView(
-                "on".equalsIgnoreCase(configValue(policyKey("enabled"), "")),
-                intConfig(policyKey("delayMs"), 0),
-                intConfig(policyKey("cooldownHours"), 0),
-                intConfig(policyKey("maxPerSession"), 0),
+                "on".equalsIgnoreCase(configValue(policyKey("enabled"), "on")),
+                intConfig(policyKey("delayMs"), 1500),
+                intConfig(policyKey("cooldownHours"), 24),
+                intConfig(policyKey("maxPerSession"), 1),
                 advisorPolicyAudience());
     }
 
@@ -302,7 +365,7 @@ public class OpsSessionTemplateService {
     }
 
     private SessionCategoryView categoryView(SessionCategorySeed seed) {
-        boolean enabled = "on".equalsIgnoreCase(configValue(categoryKey(seed.type()), ""));
+        boolean enabled = "on".equalsIgnoreCase(configValue(categoryKey(seed.type()), seed.enabled() ? "on" : "off"));
         return new SessionCategoryView(seed.type(), seed.name(), seed.roleKey(), enabled, seed.managedBy(), seed.readOnly());
     }
 
@@ -315,8 +378,11 @@ public class OpsSessionTemplateService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 8) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (reason.trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
         }
         return null;
     }
@@ -355,10 +421,13 @@ public class OpsSessionTemplateService {
         String text = requireText(request.text(), "SESSION_SCRIPT_TEXT_REQUIRED", 400);
         rejectJsonOrUrlText(text, "SESSION_SCRIPT_TEXT_INVALID");
         String ctaPath = requireCtaPath(request.ctaPath());
-        String audience = normalizeAudience(request.audience());
+        String audience = requireAudienceOption(request.audience());
         String status = normalizeScriptStatus(request.status());
         if (!SCRIPT_STATUSES.contains(status)) {
             throw new IllegalArgumentException("SESSION_SCRIPT_STATUS_UNSUPPORTED");
+        }
+        if (!"draft".equals(status)) {
+            throw new IllegalArgumentException("SESSION_SCRIPT_INITIAL_STATUS_MUST_BE_DRAFT");
         }
         return new SessionScriptCreateRequest(group, text, ctaPath, audience, status, operator(request.operator()), request.reason().trim());
     }
@@ -377,6 +446,9 @@ public class OpsSessionTemplateService {
         if (!SCRIPT_STATUSES.contains(status)) {
             throw new IllegalArgumentException("SESSION_REPLY_TEMPLATE_STATUS_UNSUPPORTED");
         }
+        if (!"draft".equals(status)) {
+            throw new IllegalArgumentException("SESSION_REPLY_TEMPLATE_INITIAL_STATUS_MUST_BE_DRAFT");
+        }
         return new SessionReplyTemplateCreateRequest(type, text, status, operator(request.operator()), request.reason().trim());
     }
 
@@ -391,21 +463,30 @@ public class OpsSessionTemplateService {
     }
 
     private String advisorPolicyAudience() {
-        return templateRepository.listScripts().stream()
-                .map(SessionScriptView::audience)
-                .filter(StringUtils::hasText)
-                .distinct()
-                .findFirst()
-                .orElse("");
+        return configValue(policyKey("audience"), DEFAULT_AUDIENCE_OPTIONS.get(0));
     }
 
     private List<String> audienceOptions() {
-        return templateRepository.listScripts().stream()
-                .map(SessionScriptView::audience)
-                .filter(StringUtils::hasText)
-                .map(String::trim)
-                .distinct()
-                .toList();
+        return DEFAULT_AUDIENCE_OPTIONS;
+    }
+
+    private String requireAudienceOption(String value) {
+        String normalized = requireText(value, "SESSION_POLICY_AUDIENCE_REQUIRED", 80);
+        return audienceOptions().stream()
+                .filter(option -> option.equals(normalized))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("SESSION_POLICY_AUDIENCE_UNSUPPORTED"));
+    }
+
+    private String defaultPolicyValue(String field) {
+        return switch (field) {
+            case "enabled" -> "on";
+            case "delayMs" -> "1500";
+            case "cooldownHours" -> "24";
+            case "maxPerSession" -> "1";
+            case "audience" -> DEFAULT_AUDIENCE_OPTIONS.get(0);
+            default -> "";
+        };
     }
 
     private String normalizeWorkbenchPolicyValue(String field, String value) {
@@ -435,10 +516,6 @@ public class OpsSessionTemplateService {
                 .orElseThrow(() -> new IllegalArgumentException(message));
     }
 
-    private String normalizeAudience(String value) {
-        return requireText(value, "SESSION_SCRIPT_AUDIENCE_REQUIRED", 80);
-    }
-
     private String requireText(String value, String message, int maxLength) {
         if (!StringUtils.hasText(value)) {
             throw new IllegalArgumentException(message);
@@ -458,8 +535,12 @@ public class OpsSessionTemplateService {
     }
 
     private String normalizeScriptStatus(String status) {
-        String normalized = StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "draft";
-        return "archived".equals(normalized) ? "draft" : normalized;
+        return StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "draft";
+    }
+
+    private boolean validPublicationTransition(String current, String target) {
+        return ("draft".equals(current) && "published".equals(target))
+                || ("published".equals(current) && "archived".equals(target));
     }
 
     private String normalizeField(String field) {
@@ -509,7 +590,13 @@ public class OpsSessionTemplateService {
     private String configValue(String key, String fallback) {
         return configFacade.activeValue(key)
                 .filter(StringUtils::hasText)
-                .orElse("");
+                .orElse(fallback);
+    }
+
+    private String configValueForUpdate(String key, String fallback) {
+        return configFacade.activeValueForUpdate(key)
+                .filter(StringUtils::hasText)
+                .orElse(fallback);
     }
 
     private String categoryKey(String type) {
@@ -524,15 +611,21 @@ public class OpsSessionTemplateService {
         return "I.session.workbench." + field;
     }
 
+    private String uniqueContentId(String prefix, LocalDateTime now) {
+        return prefix + "-" + now.format(TEMPLATE_ID_TIME) + "-"
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
     private String valueType(String field) {
         return switch (field) {
             case "enabled" -> "BOOLEAN";
+            case "audience" -> "STRING";
             default -> "NUMBER";
         };
     }
 
     private String operator(String operator) {
-        return StringUtils.hasText(operator) ? operator.trim() : "system";
+        return AdminActorResolver.resolve(StringUtils.hasText(operator) ? operator.trim() : "system");
     }
 
     private Map<String, Object> detail(Object... pairs) {
@@ -544,7 +637,7 @@ public class OpsSessionTemplateService {
     }
 
     private void audit(String action, String resourceId, String operator, Map<String, Object> detail) {
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("SESSION_TEMPLATE")
                 .resourceId(resourceId)

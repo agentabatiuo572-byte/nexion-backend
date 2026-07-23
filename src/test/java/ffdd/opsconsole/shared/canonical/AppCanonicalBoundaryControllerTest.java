@@ -6,6 +6,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -13,7 +14,9 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 
 class AppCanonicalBoundaryControllerTest {
     private final AppCanonicalBoundaryService service = mock(AppCanonicalBoundaryService.class);
-    private final AppCanonicalBoundaryController controller = new AppCanonicalBoundaryController(service);
+    private final AppTrialLifecycleService trialLifecycleService = mock(AppTrialLifecycleService.class);
+    private final AppCanonicalBoundaryController controller =
+            new AppCanonicalBoundaryController(service, trialLifecycleService);
 
     @Test
     void productionDevFlagLiteralOneIsForwardedAsTamperAttempt() {
@@ -34,7 +37,18 @@ class AppCanonicalBoundaryControllerTest {
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_SUBJECT_REQUIRED");
-        verify(service, never()).trialEligibility(42L, "CLAIMED");
+        verify(trialLifecycleService, never()).state(42L);
+    }
+
+    @Test
+    void orderHistoryUsesAuthenticatedUserSubjectOnly() {
+        UsernamePasswordAuthenticationToken user = auth("42", "USER");
+        when(service.orders(42L)).thenReturn(ApiResult.ok(Map.of("orders", java.util.List.of())));
+
+        ApiResult<Map<String, Object>> result = controller.orders(user);
+
+        assertThat(result.getCode()).isZero();
+        verify(service).orders(42L);
     }
 
     private UsernamePasswordAuthenticationToken auth(String id, String subjectType) {

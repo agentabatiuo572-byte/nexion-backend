@@ -39,7 +39,11 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        if (!properties.isEnabled() || path == null || "/api/admin".equals(path) || path.startsWith("/api/admin/")) {
+        if (!properties.isEnabled() || path == null
+                || "/api/admin".equals(path) || path.startsWith("/api/admin/")
+                // C2 impersonation is an authenticated admin support surface, not an app-user request.
+                // Its server-signed, read-only token is enforced by the security chain below this filter.
+                || path.startsWith("/api/impersonation/")) {
             return true;
         }
         return !(path.startsWith("/api/")

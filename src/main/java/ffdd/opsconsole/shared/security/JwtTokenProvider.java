@@ -21,8 +21,40 @@ public class JwtTokenProvider {
     }
 
     public String createToken(Long subjectId, String subjectType, String username, Collection<String> authorities, String sessionId) {
+        return createToken(subjectId, subjectType, username, authorities, sessionId, expiration());
+    }
+
+    /** Issues a token with a server-resolved policy TTL instead of the static bootstrap default. */
+    public String createToken(
+            Long subjectId,
+            String subjectType,
+            String username,
+            Collection<String> authorities,
+            String sessionId,
+            Duration ttl) {
+        Duration safeTtl = ttl == null || ttl.isZero() || ttl.isNegative() ? expiration() : ttl;
+        return createTokenInternal(subjectId, subjectType, username, authorities, sessionId, safeTtl);
+    }
+
+    public String createImpersonationToken(Long userId, String username, String sessionNo, int ttlMinutes) {
+        return createTokenInternal(
+                userId,
+                "IMPERSONATION",
+                username,
+                java.util.List.of("impersonate_readonly"),
+                sessionNo,
+                Duration.ofMinutes(ttlMinutes));
+    }
+
+    private String createTokenInternal(
+            Long subjectId,
+            String subjectType,
+            String username,
+            Collection<String> authorities,
+            String sessionId,
+            Duration ttl) {
         Date now = new Date();
-        Date expiresAt = new Date(now.getTime() + expiration().toMillis());
+        Date expiresAt = new Date(now.getTime() + ttl.toMillis());
         var builder = Jwts.builder()
                 .subject(String.valueOf(subjectId))
                 .claim("subjectType", subjectType)

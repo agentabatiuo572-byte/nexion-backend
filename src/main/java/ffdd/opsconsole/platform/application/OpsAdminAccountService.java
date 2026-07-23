@@ -1186,6 +1186,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return;
         }
         String roleCode = roleCode(role);
+        if (roleRelationMapper.lockActiveRoleIdByCode(roleCode) == null) {
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "ROLE_NO_LONGER_AVAILABLE");
+        }
         roleRelationMapper.disableOtherPrimaryRoles(adminId, roleCode);
         roleRelationMapper.ensurePrimaryRole(adminId, roleCode);
     }
@@ -1245,6 +1248,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return "unassigned";
         }
         String normalized = roleKey(role);
+        if ("unassigned".equals(normalized)) {
+            return normalized;
+        }
         return roleKeys().contains(normalized) ? normalized : null;
     }
 

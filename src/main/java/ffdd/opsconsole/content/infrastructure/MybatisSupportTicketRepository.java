@@ -18,6 +18,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 @RequiredArgsConstructor
 public class MybatisSupportTicketRepository implements SupportTicketRepository {
+    private static final int LAST_MESSAGE_MAX_CODE_POINTS = 512;
     private final SupportTicketMapper ticketMapper;
     private final SupportTicketMessageMapper messageMapper;
 
@@ -83,26 +84,28 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         entity.setPriority(priority);
         entity.setStatus("OPEN");
         entity.setTitle(title);
-        entity.setLastMessage(body);
+        entity.setLastMessage(headerSummary(body));
         entity.setAssignedAdminId(assignedAdminId);
         entity.setAssignedAdminName(assignedAdminName);
         entity.setUserUnreadCount(0);
         entity.setOpsUnreadCount(1);
         entity.setMessageCount(1);
         entity.setLastMessageAt(now);
+        entity.setArchived(false);
+        entity.setArchivedAt(null);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         ticketMapper.insert(entity);
         insertMessage(entity.getId(), ticketNo, userId, "user", "用户", body, now);
         return findByTicketNo(ticketNo).orElseGet(() -> new SupportTicketView(
-                entity.getId(), ticketNo, entity.getUserId(), category, priority, "OPEN", title, body,
-                assignedAdminId, assignedAdminName, 0, 1, 1, now, null, now, now));
+                entity.getId(), ticketNo, entity.getUserId(), category, priority, "OPEN", title, headerSummary(body),
+                assignedAdminId, assignedAdminName, 0, 1, 1, now, null, now, now, false, null));
     }
 
     @Override
     public void appendReply(SupportTicketView ticket, String body, String operator, LocalDateTime now) {
-        ticketMapper.appendReplyHeader(ticket.ticketNo(), body, now);
+        ticketMapper.appendReplyHeader(ticket.ticketNo(), headerSummary(body), now);
         insertMessage(ticket.id(), ticket.ticketNo(), null, "agent", operator, body, now);
     }
 
@@ -119,6 +122,17 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
     @Override
     public void assign(SupportTicketView ticket, Long assignedAdminId, String assignedAdminName, LocalDateTime now) {
         ticketMapper.assign(ticket.ticketNo(), assignedAdminId, assignedAdminName, now);
+    }
+
+    @Override
+    public void archive(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now) {
+        ticketMapper.archive(ticket.ticketNo(), archived, now);
+    }
+
+    @Override
+    public void appendSystemTrace(SupportTicketView ticket, String body, LocalDateTime now) {
+        ticketMapper.appendSystemTraceHeader(ticket.ticketNo(), headerSummary(body), now);
+        insertMessage(ticket.id(), ticket.ticketNo(), null, "system", "系统", body, now);
     }
 
     private void insertMessage(Long ticketId, String ticketNo, Long senderId, String senderType, String senderName, String content, LocalDateTime now) {
@@ -148,6 +162,18 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
 
     private String trim(String value) {
         return value == null ? null : value.trim();
+    }
+
+    private String headerSummary(String body) {
+        if (body == null) {
+            return null;
+        }
+        int codePoints = body.codePointCount(0, body.length());
+        if (codePoints <= LAST_MESSAGE_MAX_CODE_POINTS) {
+            return body;
+        }
+        int end = body.offsetByCodePoints(0, LAST_MESSAGE_MAX_CODE_POINTS - 1);
+        return body.substring(0, end) + "…";
     }
 
     private String normalizeScope(String value) {

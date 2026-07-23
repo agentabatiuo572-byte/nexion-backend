@@ -2,9 +2,13 @@ package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
 import ffdd.opsconsole.content.domain.SupportAgentOverview;
 import ffdd.opsconsole.content.domain.SupportAgentPageView;
@@ -19,6 +23,7 @@ import ffdd.opsconsole.platform.dto.AdminAccountOverview;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.Instant;
@@ -29,6 +34,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -37,16 +43,21 @@ class OpsSupportAgentServiceTest {
     private final SupportAgentRepository repository = new FakeSupportAgentRepository();
     private final OpsAdminAccountService accountService = mock(OpsAdminAccountService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-27T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsSupportAgentService service = new OpsSupportAgentService(
             repository,
             accountService,
             auditLogService,
+            idempotencyService,
             OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
             clock);
 
     @BeforeEach
     void setUp() {
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotencyService)
+                .execute(anyString(), anyString(), anyString(), any(), any());
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
                 operator("1", "Root Admin", "super", "enabled"),
                 operator("2", "Support Agent", "support", "enabled"),
@@ -121,7 +132,7 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getData().maxConcurrent()).isEqualTo(16);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("M5_SUPPORT_AGENT_PROFILE_CHANGED");
         assertThat(captor.getValue().getResourceId()).isEqualTo("2");
     }
@@ -140,7 +151,7 @@ class OpsSupportAgentServiceTest {
                 true,
                 false,
                 "superadmin",
-                "调整接派单配置");
+                "调整客服接派单配置");
 
         var result = service.updateProfile(2L, "idem-profile-seat-guard", request);
 
@@ -149,6 +160,36 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getData().position()).isEqualTo("专属客服");
         assertThat(result.getData().serviceTypes()).contains("advisor");
         assertThat(fake.findProfile(2L).orElseThrow().seatType()).isEqualTo("DEDICATED");
+    }
+
+    @Test
+    void supportMutationReasonUsesEightToTwoHundredCharacterBoundary() {
+        SupportAgentProfileUpdateRequest tooShortRequest = new SupportAgentProfileUpdateRequest(
+                "通用客服",
+                List.of("support"),
+                List.of("夜班"),
+                14,
+                true,
+                true,
+                false,
+                "superadmin",
+                "1234567");
+        SupportAgentProfileUpdateRequest tooLongRequest = new SupportAgentProfileUpdateRequest(
+                "通用客服",
+                List.of("support"),
+                List.of("夜班"),
+                14,
+                true,
+                true,
+                false,
+                "superadmin",
+                "x".repeat(201));
+
+        var tooShort = service.updateProfile(2L, "idem-profile-short", tooShortRequest);
+        var tooLong = service.updateProfile(2L, "idem-profile-long", tooLongRequest);
+
+        assertThat(tooShort.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(tooLong.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
     }
 
     @Test
@@ -213,7 +254,7 @@ class OpsSupportAgentServiceTest {
                 .contains(1001L);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getAllValues()).extracting(AuditLogWriteRequest::getAction)
                 .contains("M1_SUPPORT_SEAT_ASSIGNED");
     }

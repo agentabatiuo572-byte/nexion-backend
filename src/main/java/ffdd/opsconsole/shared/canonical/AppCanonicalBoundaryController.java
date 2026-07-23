@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.math.BigDecimal;
 import java.util.Map;
@@ -7,21 +8,32 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequiredArgsConstructor
 public class AppCanonicalBoundaryController {
     private final AppCanonicalBoundaryService service;
+    private final AppTrialLifecycleService trialLifecycleService;
 
     @GetMapping("/api/trial/eligibility")
     public ApiResult<Map<String, Object>> trialEligibility(
             @RequestParam(required = false) String clientStatus, Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.trialEligibility(userId, clientStatus);
+        if (userId == null) return forbidden();
+        ApiResult<Map<String, Object>> result = trialLifecycleService.state(userId);
+        if (clientStatus != null && result.getData() != null) {
+            String serverState = String.valueOf(result.getData().get("state"));
+            if (!serverState.equalsIgnoreCase(clientStatus.trim())) {
+                return ApiResult.fail(409, "TRIAL_STATE_CONFLICT");
+            }
+        }
+        return result;
     }
 
     @GetMapping("/api/kyc/status")
@@ -29,6 +41,12 @@ public class AppCanonicalBoundaryController {
             @RequestParam(required = false) Boolean clientWalletPaired, Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden() : service.kycStatus(userId, clientWalletPaired);
+    }
+
+    @GetMapping("/api/kyc/status/{userId}")
+    @PreAuthorize("hasAuthority('user_c4_read')")
+    public ApiResult<Map<String, Object>> adminKycStatus(@PathVariable Long userId) {
+        return service.kycStatus(userId, null);
     }
 
     @GetMapping("/api/security/state")
@@ -96,7 +114,13 @@ public class AppCanonicalBoundaryController {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
                 : service.createOrder(userId, request.orderNo(), request.productId(), request.productNo(),
-                        request.quantity(), idempotencyKey);
+                        request.quantity(), request.voucherId(), idempotencyKey);
+    }
+
+    @GetMapping("/api/orders")
+    public ApiResult<Map<String, Object>> orders(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.orders(userId);
     }
 
     @PostMapping("/api/trial/charge")
@@ -107,7 +131,10 @@ public class AppCanonicalBoundaryController {
         Long userId = userId(authentication);
         if (userId == null) return forbidden();
         TrialChargeRequest body = request == null ? new TrialChargeRequest(null, null) : request;
-        return service.chargeTrial(userId, body.chargeSucceeded(), body.chargeFailRate(), idempotencyKey);
+        if (body.chargeSucceeded() != null || body.chargeFailRate() != null) {
+            return ApiResult.fail(409, "CLIENT_CHARGE_OUTCOME_REJECTED");
+        }
+        return trialLifecycleService.charge(userId, idempotencyKey);
     }
 
     private Long userId(Authentication authentication) {
@@ -132,7 +159,8 @@ public class AppCanonicalBoundaryController {
     public record OtpVerifyRequest(String challengeNo, String code, Boolean clientRegexAccepted) {
     }
 
-    public record OrderCreateRequest(String orderNo, Long productId, String productNo, Integer quantity) {
+    public record OrderCreateRequest(
+            String orderNo, Long productId, String productNo, Integer quantity, String voucherId) {
     }
 
     public record TrialChargeRequest(Boolean chargeSucceeded, BigDecimal chargeFailRate) {

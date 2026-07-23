@@ -19,6 +19,7 @@ import ffdd.opsconsole.content.domain.CopyFrameworkParamView;
 import ffdd.opsconsole.content.domain.CopyPositionView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
 import ffdd.opsconsole.content.domain.CopyVersionOptionView;
+import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
@@ -54,6 +55,7 @@ class OpsCopyAbServiceTest {
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-18T09:30:00Z"), ZoneOffset.UTC);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final I18nLearningRepository i18nLearningRepository = mock(I18nLearningRepository.class);
     private final Map<String, Object> idempotencyCache = new LinkedHashMap<>();
     private final OpsCopyAbService service;
 
@@ -71,7 +73,8 @@ class OpsCopyAbServiceTest {
                 clock,
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                 idempotencyService,
-                objectMapper);
+                objectMapper,
+                i18nLearningRepository);
     }
 
     @Test
@@ -163,11 +166,51 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
+    void positionMutationsReplayWithoutDuplicatingWritesOrAudit() {
+        var createRequest = new CopyPositionCreateRequest(
+                "earn.secondary", "Earn Secondary", "earn", 30,
+                "Marina K.", "新增次级文案位置配置");
+        var firstCreate = service.createPosition("idem-i1-position-replay-create", createRequest);
+        var replayCreate = service.createPosition("idem-i1-position-replay-create", createRequest);
+
+        assertThat(firstCreate.getData()).isEqualTo(replayCreate.getData());
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(
+                org.mockito.ArgumentMatchers.argThat(request ->
+                        "I1_COPY_POSITION_CREATED".equals(request.getAction())));
+
+        var updateRequest = new CopyPositionUpdateRequest(
+                "Earn Secondary Banner", "earn", 31, "ACTIVE",
+                "Marina K.", "调整次级文案位置排序");
+        var firstUpdate = service.updatePosition(
+                "earn.secondary", "idem-i1-position-replay-update", updateRequest);
+        var replayUpdate = service.updatePosition(
+                "earn.secondary", "idem-i1-position-replay-update", updateRequest);
+
+        assertThat(firstUpdate.getData()).isEqualTo(replayUpdate.getData());
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(
+                org.mockito.ArgumentMatchers.argThat(request ->
+                        "I1_COPY_POSITION_UPDATED".equals(request.getAction())));
+
+        var deleteRequest = new CopyActionRequest(
+                "Marina K.", "删除未引用次级文案位置");
+        var firstDelete = service.deletePosition(
+                "earn.secondary", "idem-i1-position-replay-delete", deleteRequest);
+        var replayDelete = service.deletePosition(
+                "earn.secondary", "idem-i1-position-replay-delete", deleteRequest);
+
+        assertThat(firstDelete.getCode()).isZero();
+        assertThat(replayDelete.getCode()).isZero();
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(
+                org.mockito.ArgumentMatchers.argThat(request ->
+                        "I1_COPY_POSITION_DELETED".equals(request.getAction())));
+    }
+
+    @Test
     void createCopyRequiresCatalogVersion() {
         var request = new CopyCreateRequest(
                 "home.newBanner", "新增横幅", "Home", "home.newBanner", null,
                 "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
-                "Marina K.", "新增文案首版");
+                "Marina K.", "新增首版三语文案");
 
         var result = service.createCopy("idem-i1-create-version", request);
 
@@ -180,7 +223,7 @@ class OpsCopyAbServiceTest {
         var request = new CopyCreateRequest(
                 "home.newBanner", "新增横幅", "Home", "home.newBanner", "v5",
                 "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
-                "Marina K.", "新增文案首版");
+                "Marina K.", "新增首版三语文案");
 
         var result = service.createCopy("idem-i1-create-version", request);
 
@@ -202,7 +245,7 @@ class OpsCopyAbServiceTest {
                 "v8", "Home", "全量", "50", "测试",
                 "赚取 {amount} USDT 和 {nex} NEX", "Earn {amount} USDT",
                 "Kiếm {amount} USDT và {nex} NEX", "home.hero",
-                "Marina K.", "发布文案新版");
+                "Marina K.", "发布新版三语文案");
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub", request);
 
@@ -219,7 +262,7 @@ class OpsCopyAbServiceTest {
         assertThat(repository.copies.get("home.conversionBanner").version()).isEqualTo("v8");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I1_COPY_VERSION_PUBLISHED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("CONTENT_COPY");
     }
@@ -231,7 +274,7 @@ class OpsCopyAbServiceTest {
                 "完成 {amount} USDT 复投并获得 {nex} NEX 奖励",
                 "Reinvest {amount} USDT and earn {nex} NEX",
                 "Tái đầu tư {amount} USDT và nhận {nex} NEX", "home.hero",
-                "Marina K.", "发布独立版本");
+                "Marina K.", "发布独立文案版本");
 
         var result = service.publishVersion("home.conversionBanner", "idem-i1-pub-current", request);
 
@@ -409,7 +452,7 @@ class OpsCopyAbServiceTest {
         var request = new CopyCreateRequest(
                 "home.newBanner", "新增横幅", "Home", "home.newBanner", "v5",
                 "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
-                "Marina K.", "新增文案首版");
+                "Marina K.", "新增首版三语文案");
 
         var result = service.createCopy("idem-i1-create-race", request);
 
@@ -422,7 +465,7 @@ class OpsCopyAbServiceTest {
         var request = new CopyCreateRequest(
                 "home.newBanner", "新增横幅", "Home", "home.newBanner", "v5",
                 "全量", "50", "新增首版", "新增文案", "New copy", "Bản sao mới", "home.hero",
-                "Marina K.", "新增文案首版");
+                "Marina K.", "新增首版三语文案");
 
         var first = service.createCopy("idem-i1-create-replay", request);
         var replay = service.createCopy("idem-i1-create-replay", request);
@@ -654,11 +697,51 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
+    void highSensitivityCopyActionsRequireEightToTwoHundredCharacterReasons() {
+        var shortPublish = service.publishVersion(
+                "home.conversionBanner",
+                "idem-i1-short-publish",
+                publishRequest("v8", "1234567"));
+        var longArchive = service.archiveCurrent(
+                "home.conversionBanner",
+                "idem-i1-long-archive",
+                new CopyActionRequest("Marina K.", "x".repeat(201), null, 1L));
+
+        assertThat(shortPublish.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(shortPublish.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+        assertThat(longArchive.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        assertThat(longArchive.getMessage()).isEqualTo(OpsErrorCode.REASON_REQUIRED.name());
+    }
+
+    @Test
     void rollbackArchivedVersionPublishesIt() {
         var result = service.rollbackVersion("home.conversionBanner", "v6", "idem-i1-rollback", actionRequest());
+        var replay = service.rollbackVersion("home.conversionBanner", "v6", "idem-i1-rollback", actionRequest());
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v6");
+        assertThat(replay.getCode()).isZero();
+        assertThat(replay.getData()).isEqualTo(result.getData());
+        verify(i18nLearningRepository, org.mockito.Mockito.times(1)).saveMessagePair(
+                anyString(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(
+                org.mockito.ArgumentMatchers.argThat(request ->
+                        "I1_COPY_VERSION_ROLLED_BACK".equals(request.getAction())));
+    }
+
+    @Test
+    void archiveCurrentReplaysTheOriginalSuccessWithoutASecondMutation() {
+        var first = service.archiveCurrent(
+                "home.conversionBanner", "idem-i1-archive-replay", actionRequest());
+        var replay = service.archiveCurrent(
+                "home.conversionBanner", "idem-i1-archive-replay", actionRequest());
+
+        assertThat(first.getCode()).isZero();
+        assertThat(replay.getCode()).isZero();
+        assertThat(replay.getData()).isEqualTo(first.getData());
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequired(
+                org.mockito.ArgumentMatchers.argThat(request ->
+                        "I1_COPY_VERSION_ARCHIVED".equals(request.getAction())));
     }
 
     @Test
@@ -721,6 +804,10 @@ class OpsCopyAbServiceTest {
     }
 
     private static CopyVersionPublishRequest publishRequest(String version) {
+        return publishRequest(version, "发布新版三语文案");
+    }
+
+    private static CopyVersionPublishRequest publishRequest(String version, String reason) {
         return new CopyVersionPublishRequest(
                 version,
                 "Home",
@@ -732,7 +819,7 @@ class OpsCopyAbServiceTest {
                 "Tái đầu tư {amount} USDT và nhận {nex} NEX",
                 "home.hero",
                 "Marina K.",
-                "发布文案新版");
+                reason);
     }
 
     private static CopyDraftSaveRequest draftRequest() {
@@ -751,7 +838,7 @@ class OpsCopyAbServiceTest {
                 "Tái đầu tư {amount} USDT và nhận {nex} NEX",
                 "home.hero",
                 "Marina K.",
-                "保存草稿版本");
+                "保存当前文案草稿");
     }
 
     private static CopyActionRequest actionRequest() {

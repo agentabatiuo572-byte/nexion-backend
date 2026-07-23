@@ -10,4 +10,10 @@ public interface AdminRoleMapper extends BaseMapper<AdminRoleEntity> {
 
     @Select("SELECT COUNT(*) FROM nx_admin_role WHERE role_code = #{roleCode} AND is_deleted = 0")
     boolean existsByRoleCode(@Param("roleCode") String roleCode);
+
+    @Select("SELECT * FROM nx_admin_role WHERE role_code = #{roleCode} LIMIT 1 FOR UPDATE")
+    AdminRoleEntity selectByRoleCodeForUpdate(@Param("roleCode") String roleCode);
+
+    @Select("SELECT * FROM nx_admin_role WHERE id = #{roleId} AND is_deleted = 0 FOR UPDATE")
+    AdminRoleEntity selectActiveForUpdate(@Param("roleId") Long roleId);
 }

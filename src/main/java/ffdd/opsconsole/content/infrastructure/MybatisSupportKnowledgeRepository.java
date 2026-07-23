@@ -43,7 +43,7 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
         entity.setTitle(request.question().trim());
         entity.setContent(request.answer().trim());
         entity.setCategory(request.category().trim().toLowerCase(Locale.ROOT));
-        entity.setLevel("support");
+        entity.setLevel(request.language());
         entity.setFormat("faq");
         entity.setSurface(request.surface().trim());
         entity.setDurationMin(3);
@@ -52,8 +52,9 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
         entity.setFeatured(0);
         entity.setEmoji("?");
         entity.setTint("#c6ff3a");
-        entity.setSortOrder(helpArticleMapper.maxFaqSortOrder() + 10);
+        entity.setSortOrder(request.sortOrder());
         entity.setStatus(toDbStatus(request.status()));
+        entity.setVersionNo(1);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
@@ -65,6 +66,9 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
                 entity.getContent(),
                 toViewStatus(entity.getStatus()),
                 entity.getSurface(),
+                entity.getLevel(),
+                entity.getSortOrder(),
+                entity.getVersionNo(),
                 now));
     }
 
@@ -77,6 +81,8 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
                 request.question().trim(),
                 request.answer().trim(),
                 toDbStatus(request.status()),
+                request.language(),
+                request.sortOrder(),
                 now);
     }
 
@@ -130,7 +136,11 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
     }
 
     private SupportFaqUpsertRequest faq(String category, String surface, String question, String answer) {
-        return new SupportFaqUpsertRequest(category, surface, question, answer, "PUBLISHED", "system", "seed support knowledge");
+        return new SupportFaqUpsertRequest(category, surface, question, answer, "PUBLISHED", "zh-CN", maxSortOrder(), "system", "seed support knowledge");
+    }
+
+    private int maxSortOrder() {
+        return helpArticleMapper.maxFaqSortOrder() + 10;
     }
 
     private SupportSlaUpdateRequest sla(Integer firstResponseMins, Integer resolutionHours, String queue, String escalation) {

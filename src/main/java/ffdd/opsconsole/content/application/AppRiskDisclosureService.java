@@ -10,10 +10,12 @@ import ffdd.opsconsole.content.dto.AppRiskDisclosureAckRequest;
 import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.content.infrastructure.DisclosureAckStatusEntity;
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
+import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper.UserAttribution;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -24,6 +26,8 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,18 +45,21 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
     private final RiskDisclosureAckProperties ackProperties;
     private final AuditLogService auditLogService;
     private final TamperDetectionPublisher tamperDetectionPublisher;
+    private final EventOutboxService eventOutboxService;
     private final SecureRandom secureRandom = new SecureRandom();
 
+    @Transactional
     public ApiResult<AppRiskDisclosureView> current(Long userId) {
-        return loadCurrent(userId, null, true);
+        return currentAndPublish(userId, null);
     }
 
     /**
      * Reserved for a trusted edge integration. Controllers must not pass a client-provided country header here.
      * Verified KYC remains authoritative; trusted IP is only a fallback when KYC has no approved country.
      */
+    @Transactional
     ApiResult<AppRiskDisclosureView> currentWithTrustedIpCountry(Long userId, String trustedIpCountry) {
-        return loadCurrent(userId, trustedIpCountry, true);
+        return currentAndPublish(userId, trustedIpCountry);
     }
 
     @Transactional
@@ -85,6 +92,13 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         }
         ackMapper.acknowledge(userId, disclosure.jurisdiction(), disclosure.version(), now());
         auditAcknowledgment(userId, disclosure);
+        publishUserEvent(
+                userId,
+                "DISCLOSURE_ACK", userId + ":" + disclosure.jurisdiction(), "disclosure.acked",
+                Map.of(
+                        "jurisdiction", disclosure.jurisdiction(),
+                        "version", disclosure.version(),
+                        "dual_gate_satisfied", true));
         return loadCurrent(userId, null, false);
     }
 
@@ -113,7 +127,8 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, null, false);
         if (current.getCode() != 0) return ApiResult.fail(current.getCode(), current.getMessage());
         if (!current.getData().acknowledged()) {
-            recordBlockedOnce(userId, current.getData().jurisdiction(), action.key(), businessFlowId);
+            recordBlockedOnce(userId, current.getData().jurisdiction(), current.getData().version(),
+                    action.key(), businessFlowId);
             return ApiResult.fail(409, "RISK_DISCLOSURE_ACK_REQUIRED");
         }
         return ApiResult.ok(null);
@@ -139,8 +154,24 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                 jurisdiction.code(), jurisdiction.name(), disclosure.version(), disclosure.languageScope(),
                 disclosure.effectiveDate(), acknowledged, acknowledged ? ack.getAcknowledgedAt() : null,
                 repository.listChapters(jurisdiction.code(), disclosure.version()),
-                token == null ? null : token.rawToken(), token == null ? null : token.expiresAt(),
+                token == null ? null : token.rawToken(),
+                token == null ? null : token.expiresAt().atZone(clock.getZone()).toOffsetDateTime(),
                 ackProperties.boundedMinReadSeconds()));
+    }
+
+    private ApiResult<AppRiskDisclosureView> currentAndPublish(Long userId, String trustedIpCountry) {
+        ApiResult<AppRiskDisclosureView> current = loadCurrent(userId, trustedIpCountry, true);
+        if (current.getCode() == 0) {
+            AppRiskDisclosureView disclosure = current.getData();
+            publishUserEvent(
+                    userId,
+                    "DISCLOSURE_VIEW", userId + ":" + disclosure.jurisdiction(), "disclosure.viewed",
+                    Map.of(
+                            "jurisdiction", disclosure.jurisdiction(),
+                            "version", disclosure.version(),
+                            "gated_action_context", "direct"));
+        }
+        return current;
     }
 
     private JurisdictionResolution resolveJurisdiction(Long userId, String trustedIpCountry) {
@@ -187,12 +218,38 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         throw new IllegalStateException("RISK_DISCLOSURE_READ_TOKEN_ISSUE_FAILED");
     }
 
-    private void recordBlockedOnce(Long userId, String jurisdiction, String actionKey, String businessFlowId) {
+    private void recordBlockedOnce(
+            Long userId, String jurisdiction, String version, String actionKey, String businessFlowId) {
         if (!StringUtils.hasText(businessFlowId)) return;
         String normalizedFlowId = businessFlowId.trim();
         if (ackMapper.recordBlockedIfAbsent(userId, jurisdiction, actionKey, normalizedFlowId, now()) == 1) {
             ackMapper.incrementBlocked(jurisdiction, now());
+            publishUserEvent(
+                    userId,
+                    "DISCLOSURE_GATE", normalizedFlowId, "disclosure.gated_action_blocked",
+                    Map.of(
+                            "jurisdiction", jurisdiction,
+                            "version", version,
+                            "gated_action", actionKey,
+                            "business_flow_id", normalizedFlowId));
         }
+    }
+
+    private void publishUserEvent(
+            Long userId, String aggregateType, String aggregateId, String eventName, Map<String, Object> payload) {
+        UserAttribution attribution = ackMapper.userAttribution(userId);
+        if (attribution == null || attribution.accountAgeMonths() == null
+                || !StringUtils.hasText(attribution.cohort())) {
+            throw new IllegalStateException("DISCLOSURE_USER_ATTRIBUTION_MISSING");
+        }
+        String phase = StringUtils.hasText(attribution.phase())
+                ? attribution.phase().trim().toUpperCase(Locale.ROOT) : "";
+        if (!phase.matches("^P[1-6]$")) {
+            throw new IllegalStateException("DISCLOSURE_USER_PHASE_INVALID");
+        }
+        eventOutboxService.publishUserEvent(
+                aggregateType, aggregateId, eventName, userId, phase,
+                attribution.accountAgeMonths(), attribution.cohort(), payload);
     }
 
     private String hashToken(String token) {

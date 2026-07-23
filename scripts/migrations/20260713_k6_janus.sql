@@ -314,6 +314,16 @@ FROM nx_admin_role role JOIN nx_admin_permission permission
 WHERE role.role_code='SUPER_ADMIN' AND role.is_deleted=0
 ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();
 
+-- K6 publish/rollback is deliberately limited to the platform super administrator.
+-- Re-running this migration must also repair a previously over-granted role relation.
+UPDATE nx_admin_role_permission relation
+JOIN nx_admin_role role ON role.id=relation.role_id AND role.is_deleted=0
+JOIN nx_admin_permission permission ON permission.id=relation.permission_id AND permission.is_deleted=0
+SET relation.is_deleted=1,relation.updated_at=NOW()
+WHERE permission.permission_code='risk_k6_admin'
+  AND role.role_code<>'SUPER_ADMIN'
+  AND relation.is_deleted=0;
+
 INSERT INTO nx_admin_role_permission(role_id,permission_id,created_at,updated_at,is_deleted)
 SELECT role.id,permission.id,NOW(),NOW(),0
 FROM nx_admin_role role JOIN nx_admin_permission permission

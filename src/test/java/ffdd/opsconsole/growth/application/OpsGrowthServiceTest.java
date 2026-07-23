@@ -39,6 +39,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -173,12 +174,33 @@ class OpsGrowthServiceTest {
                     Optional.empty(),
                     Optional.of(questEventMapper),
                     Optional.empty(),
-                    lockMapper);
+                    lockMapper,
+                    Optional.empty());
 
     @BeforeEach
     void stubLocksNoActive() {
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,常规写方法直通,replay 路径也无阻塞
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+        when(questEventMapper.lockGrowthMutation(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(questEventMapper.lockWheelMutation()).thenReturn("H4_WHEEL");
+        when(questEventMapper.lockTrialSession(anyString())).thenAnswer(invocation -> {
+            Map<String, Object> row = findRow(trialSessions, "sid", invocation.getArgument(0));
+            if (row == null) return null;
+            row.putIfAbsent("userId", 9921L);
+            row.putIfAbsent("claimNo", row.get("sid"));
+            row.putIfAbsent("chargeAmount", new BigDecimal("1299"));
+            return row;
+        });
+        doAnswer(invocation -> {
+            Map<String, Object> row = findRow(trialSessions, "sid", invocation.getArgument(0));
+            if (row == null || Set.of("cancelled", "redeemed").contains(String.valueOf(row.get("state")))) return 0;
+            row.put("state", invocation.getArgument(1, String.class).toLowerCase());
+            return 1;
+        }).when(questEventMapper).transitionTrialSessionStatus(anyString(), anyString());
+        when(questEventMapper.lockWalletUsdt(anyLong())).thenReturn(new BigDecimal("5000"));
+        when(questEventMapper.debitWalletUsdt(anyLong(), any(BigDecimal.class))).thenReturn(1);
+        when(questEventMapper.insertTrialChargeLedger(anyLong(), anyString(), any(BigDecimal.class), any(BigDecimal.class), anyString())).thenReturn(1);
+        when(questEventMapper.countActiveWheelTiers()).thenAnswer(ignored -> (long) wheelTiers.size());
     }
 
     @Test
@@ -192,7 +214,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getData())
                 .containsEntry("rewardAsset", "NEX")
                 .containsEntry("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
-        assertThat(result.getData().get("disabledOutputs").toString()).contains("Points ledger writes");
+        assertThat(result.getData().get("disabledOutputs").toString()).contains("已退役积分账本写入");
         assertThat(result.getData().get("rules")).asList().hasSize(6);
         assertThat(result.getData().get("streakMilestones")).asList().hasSize(7);
         assertThat(result.getData().get("streakDistribution")).asList().isEmpty();
@@ -206,7 +228,7 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void trialsMasksServerOnlyFailureRateAndReturnsRuntimeRows() {
+    void trialsMasksServerOnlyChargeFailureRateAndReturnsRuntimeRows() {
         seedTrialPolicies();
 
         ApiResult<Map<String, Object>> result = service.trials();
@@ -218,12 +240,12 @@ class OpsGrowthServiceTest {
         assertThat(result.getData().toString()).doesNotContain("4.1");
         assertThat(result.getData().get("params")).asList().hasSize(5);
         assertThat(result.getData().get("sessions")).asList().isEmpty();
-        assertThat(result.getData().get("serverOnlyFields")).asList().contains("failRate");
+        assertThat(result.getData().get("serverOnlyFields")).asList().contains("chargeFailRate");
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> params = (List<Map<String, Object>>) result.getData().get("params");
         assertThat(params)
-                .filteredOn(param -> "failRate".equals(param.get("key")))
+                .filteredOn(param -> "chargeFailRate".equals(param.get("key")))
                 .singleElement()
                 .extracting(param -> param.get("cur"))
                 .isEqualTo("•••(server only)");
@@ -234,19 +256,19 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void updateTrialParamWritesConfigAuditsAndStillMasksFailureRate() {
+    void updateTrialParamWritesBusinessTableAuditsAndStillMasksChargeFailureRate() {
         seedTrialPolicies();
         ApiResult<Map<String, Object>> result = service.updateTrialParam(
                 "idem-h2-param",
-                "failRate",
-                new GrowthConfigUpdateRequest("failRate", "6.5", "tune failure", "superadmin"));
+                "chargeFailRate",
+                new GrowthConfigUpdateRequest("chargeFailRate", "6.5", "tune failure", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).doesNotContainKey("growth.trial.param.failRate");
+        assertThat(configFacade.values).doesNotContainKey("growth.trial.param.chargeFailRate");
         assertThat(result.getData().toString()).doesNotContain("6.5");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_PARAM_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("serverOnly", true);
     }
@@ -300,7 +322,7 @@ class OpsGrowthServiceTest {
         assertThat(findRow(trialSessions, "sid", "usr_9921")).containsEntry("state", "cancelled");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_SESSION_CANCELLED");
     }
 
@@ -328,16 +350,10 @@ class OpsGrowthServiceTest {
                 new GrowthConfigUpdateRequest("charge", "redeemed", "force charge", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        Map<String, Object> entry = ledgerPostingFacade.entries.get(0);
-        assertThat(entry)
-                .containsEntry("bizNo", "H2-TRIAL-CHARGE-usr_9921")
-                .containsEntry("userId", 9921L)
-                .containsEntry("bizType", "TRIAL_CHARGE")
-                .containsEntry("asset", "USDT")
-                .containsEntry("direction", "OUT")
-                .containsEntry("status", "SUCCESS");
-        assertThat((BigDecimal) entry.get("amount")).isEqualByComparingTo("1299");
+        verify(questEventMapper).debitWalletUsdt(9921L, new BigDecimal("1299"));
+        verify(questEventMapper).insertTrialChargeLedger(
+                9921L, "H2-TRIAL-CHARGE-usr_9921", new BigDecimal("1299"), new BigDecimal("3701"), "usr_9921");
+        assertThat(findRow(trialSessions, "sid", "usr_9921")).containsEntry("state", "redeemed");
     }
 
     @Test
@@ -385,7 +401,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getData()).containsEntry("autoPushKilled", true);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_AUTO_PUSH_KILLED");
     }
 
@@ -556,7 +572,7 @@ class OpsGrowthServiceTest {
         assertThat(configFacade.values).containsEntry("growth.quest.weekly.mult.P3", "1.3×");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H3_QUEST_CONFIG_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-h3-config");
     }
@@ -589,7 +605,7 @@ class OpsGrowthServiceTest {
         verify(questEventMapper).updateStatus(anyString(), anyInt(), any());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H4_EVENT_STATUS_CHANGED");
     }
 
@@ -626,6 +642,7 @@ class OpsGrowthServiceTest {
         seedQuestEvents(
                 "{\"id\":\"current-featured\",\"name\":\"Current\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":true}",
                 "{\"id\":\"ref-5\",\"name\":\"Referral\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":false}");
+        when(questEventMapper.featuredOngoingEventIdsForUpdate("ref-5")).thenReturn(List.of(101L));
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventFeatured(
                 "idem-h4-featured",
@@ -662,7 +679,7 @@ class OpsGrowthServiceTest {
         assertThat(configFacade.values).containsEntry("growth.wheel.guard.kill", "关");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H4_WHEEL_GUARD_CHANGED");
     }
 
@@ -705,7 +722,7 @@ class OpsGrowthServiceTest {
         assertThat(findRow(streakMilestones, "id", "1")).containsEntry("reward", "+20 NEX");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H5_STREAK_MILESTONE_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-h5-ms");
     }
@@ -724,7 +741,7 @@ class OpsGrowthServiceTest {
         assertThat(findRow(powerUps, "id", "2")).containsEntry("day", 35);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H5_POWER_UP_CHANGED");
     }
 
@@ -763,8 +780,8 @@ class OpsGrowthServiceTest {
                 .containsEntry("nex", new BigDecimal("300").stripTrailingZeros());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("H6_EARN_MILESTONE_CHANGED");
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H5_EARN_MILESTONE_CHANGED");
     }
 
     @Test
@@ -782,8 +799,8 @@ class OpsGrowthServiceTest {
         assertThat(configFacade.values).containsEntry("growth.earn_milestone.tick_interval_seconds", "8");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("H6_TICK_INTERVAL_CHANGED");
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("H5_TICK_INTERVAL_CHANGED");
     }
 
     @Test
@@ -800,7 +817,7 @@ class OpsGrowthServiceTest {
                 .containsEntry("withdrawal.nex_gate.min_balance_nex", "150");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H1_WITHDRAW_NEX_GATE_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-h1");
     }
@@ -850,7 +867,7 @@ class OpsGrowthServiceTest {
         assertThat(configFacade.values)
                 .doesNotContainKeys(
                         "platform.phase.config",
-                        "growth.phase.month.7.withdrawNexMinBalance",
+                        "growth.phase.month.7.withdrawPenaltyFeeRate",
                         "growth.withdraw_nex_gate.min_balance_nex");
     }
 
@@ -867,10 +884,10 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void updateRhythmCurrentMonthMirrorsH1PhaseForDownstreamReaders() {
+    void updateRhythmCurrentMonthMirrorsCanonicalH1DialsForDownstreamReaders() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "10");
-        configFacade.values.put("growth.phase.month.11.genesisEmissionsOpen", "1");
+        configFacade.values.put("growth.phase.month.11.complianceHoldEnabled", "1");
 
         ApiResult<Map<String, Object>> result = service.updateRhythmParam(
                 "idem-h1-rhythm",
@@ -882,8 +899,8 @@ class OpsGrowthServiceTest {
                 .containsEntry("H1.rhythm.currentMonth", "11")
                 .containsEntry("growth.phase.current_month", "11")
                 .containsEntry("growth.phase.current", "P6")
-                .containsEntry("growth.phase.genesis_emissions_open", "1")
-                .containsEntry("withdrawal.nex_gate.hold_days", "21");
+                .containsEntry("growth.phase.compliance_hold_enabled", "1")
+                .containsEntry("growth.phase.withdraw_cooldown_days", "45");
         GrowthRhythmSnapshot snapshot = GrowthRhythmSnapshot.from(configFacade, OpsReadTimeSeedPolicy.enabledForDirectConstruction());
         assertThat(snapshot.currentMonth()).isEqualTo(11);
         assertThat(snapshot.currentPhase()).isEqualTo("P6");
@@ -902,7 +919,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                lockMapper);
+                lockMapper,
+                Optional.empty());
 
         ApiResult<Map<String, Object>> rhythm = realOnlyService.rhythm();
         ApiResult<Map<String, Object>> phases = realOnlyService.phases();
@@ -937,7 +955,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                lockMapper);
+                lockMapper,
+                Optional.empty());
 
         ApiResult<Map<String, Object>> trials = realOnlyService.trials();
         ApiResult<Map<String, Object>> checkIn = realOnlyService.checkIn();
@@ -962,55 +981,54 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void updateCurrentMonthDialWritesMonthlyCellActiveDialMirrorAndAudit() {
+    void updateCurrentMonthDialWritesCanonicalMonthlyCellActiveDialMirrorAndAudit() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "7");
 
         ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
                 "idem-h1-cell",
                 7,
-                "withdrawNexMinBalance",
-                new GrowthConfigUpdateRequest("withdrawNexMinBalance", "150", "tighten current month", "superadmin"));
+                "withdrawPenaltyFeeRate",
+                new GrowthConfigUpdateRequest("withdrawPenaltyFeeRate", "0.35", "tighten current month", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values)
-                .containsEntry("growth.phase.month.7.withdrawNexMinBalance", "150")
-                .containsEntry("growth.withdraw_nex_gate.min_balance_nex", "150")
-                .containsEntry("withdrawal.nex_gate.min_balance_nex", "150");
+                .containsEntry("growth.phase.month.7.withdrawPenaltyFeeRate", "0.35")
+                .containsEntry("growth.phase.withdraw_penalty_fee_rate", "0.35");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H1_MONTH_DIAL_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("month", 7);
     }
 
     @Test
-    void advancingMonthSynchronizesGenesisGateOpenAndClosedFromConfiguredCells() {
+    void advancingMonthSynchronizesComplianceHoldFromConfiguredCells() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "6");
-        configFacade.values.put("growth.phase.genesis_emissions_open", "0");
-        configFacade.values.put("growth.phase.month.7.genesisEmissionsOpen", "1");
-        configFacade.values.put("growth.phase.month.8.genesisEmissionsOpen", "0");
+        configFacade.values.put("growth.phase.compliance_hold_enabled", "0");
+        configFacade.values.put("growth.phase.month.7.complianceHoldEnabled", "0");
+        configFacade.values.put("growth.phase.month.8.complianceHoldEnabled", "1");
 
         ApiResult<Map<String, Object>> open = service.updateRhythmParam(
                 "idem-month-seven", "currentMonth",
                 new GrowthConfigUpdateRequest("currentMonth", "7", "advance to listing month", "superadmin"));
         assertThat(open.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.phase.genesis_emissions_open", "1");
+        assertThat(configFacade.values).containsEntry("growth.phase.compliance_hold_enabled", "0");
 
         ApiResult<Map<String, Object>> close = service.updateRhythmParam(
                 "idem-month-eight", "currentMonth",
                 new GrowthConfigUpdateRequest("currentMonth", "8", "advance beyond listing month", "superadmin"));
         assertThat(close.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.phase.genesis_emissions_open", "0");
+        assertThat(configFacade.values).containsEntry("growth.phase.compliance_hold_enabled", "1");
     }
 
     @Test
-    void advancingMonthCannotOpenGenesisGateBelowCoverageRedline() {
+    void movingMonthCannotDisableComplianceHoldBelowCoverageRedline() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
-        configFacade.values.put("H1.rhythm.currentMonth", "6");
-        configFacade.values.put("growth.phase.genesis_emissions_open", "0");
-        configFacade.values.put("growth.phase.month.7.genesisEmissionsOpen", "1");
+        configFacade.values.put("H1.rhythm.currentMonth", "8");
+        configFacade.values.put("growth.phase.compliance_hold_enabled", "1");
+        configFacade.values.put("growth.phase.month.7.complianceHoldEnabled", "0");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> result = service.updateRhythmParam(
@@ -1019,38 +1037,39 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         assertThat(configFacade.values)
-                .containsEntry("H1.rhythm.currentMonth", "6")
-                .containsEntry("growth.phase.genesis_emissions_open", "0");
+                .containsEntry("H1.rhythm.currentMonth", "8")
+                .containsEntry("growth.phase.compliance_hold_enabled", "1");
     }
 
     @Test
-    void updateGenesisEmissionsDialAcceptsOperatorBooleanLabel() {
+    void updateComplianceHoldDialAcceptsOperatorBooleanLabel() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
-        configFacade.values.put("H1.rhythm.currentMonth", "7");
+        configFacade.values.put("H1.rhythm.currentMonth", "8");
 
         ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
                 "idem-h1-emissions",
-                7,
-                "genesisEmissionsOpen",
-                new GrowthConfigUpdateRequest("genesisEmissionsOpen", "是", "open emissions at listing", "superadmin"));
+                8,
+                "complianceHoldEnabled",
+                new GrowthConfigUpdateRequest("complianceHoldEnabled", "是", "enable compliance hold", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values)
-                .containsEntry("growth.phase.month.7.genesisEmissionsOpen", "1")
-                .containsEntry("growth.phase.genesis_emissions_open", "1");
+                .containsEntry("growth.phase.month.8.complianceHoldEnabled", "1")
+                .containsEntry("growth.phase.compliance_hold_enabled", "1");
     }
 
     @Test
-    void openingGenesisEmissionsBelowCoverageRedlineReturns422() {
+    void disablingComplianceHoldBelowCoverageRedlineReturns422() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
-        configFacade.values.put("growth.phase.month.7.genesisEmissionsOpen", "0");
+        configFacade.values.put("H1.rhythm.currentMonth", "8");
+        configFacade.values.put("growth.phase.month.8.complianceHoldEnabled", "1");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
                 "idem-h1-emissions-redline",
-                7,
-                "genesisEmissionsOpen",
-                new GrowthConfigUpdateRequest("genesisEmissionsOpen", "是", "open emissions at listing", "superadmin"));
+                8,
+                "complianceHoldEnabled",
+                new GrowthConfigUpdateRequest("complianceHoldEnabled", "否", "disable compliance hold", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
     }
@@ -1062,11 +1081,11 @@ class OpsGrowthServiceTest {
         ApiResult<Map<String, Object>> result = service.updatePhaseMonthDial(
                 "idem-h1-month-18",
                 18,
-                "campaignRewardNex",
-                new GrowthConfigUpdateRequest("campaignRewardNex", "80", "configure month eighteen", "superadmin"));
+                "binaryDailyCap",
+                new GrowthConfigUpdateRequest("binaryDailyCap", "1800", "configure month eighteen", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("growth.phase.month.18.campaignRewardNex", "80");
+        assertThat(configFacade.values).containsEntry("growth.phase.month.18.binaryDailyCap", "1800");
     }
 
     @Test
@@ -1082,16 +1101,16 @@ class OpsGrowthServiceTest {
         Map<String, Object> month24 = detailMap(monthlyDials.get(23));
         assertThat(month24).containsEntry("month", 24);
         assertThat(detailMap(month24.get("dials")))
-                .containsEntry("genesisEmissionsOpen", "是")
-                .containsEntry("withdrawNexHoldDays", 21);
+                .containsEntry("complianceHoldEnabled", "是")
+                .containsEntry("withdrawCooldownDays", 45);
     }
 
     @Test
     void shorteningRhythmChecksCoverageBeforeClampingAndSyncsActiveDials() {
         configFacade.values.put("H1.rhythm.totalMonths", "18");
         configFacade.values.put("H1.rhythm.currentMonth", "18");
-        configFacade.values.put("growth.phase.campaign_reward_nex", "10");
-        configFacade.values.put("growth.phase.month.12.campaignRewardNex", "80");
+        configFacade.values.put("growth.phase.compliance_hold_enabled", "1");
+        configFacade.values.put("growth.phase.month.12.complianceHoldEnabled", "0");
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> rejected = service.updateRhythmParam(
@@ -1111,7 +1130,7 @@ class OpsGrowthServiceTest {
         assertThat(accepted.getCode()).isZero();
         assertThat(configFacade.values)
                 .containsEntry("H1.rhythm.currentMonth", "12")
-                .containsEntry("growth.phase.campaign_reward_nex", "80");
+                .containsEntry("growth.phase.compliance_hold_enabled", "0");
     }
 
     @Test
@@ -1125,7 +1144,7 @@ class OpsGrowthServiceTest {
         assertThat(configFacade.values).containsEntry("growth.phase.control.pin", "P3 until launch");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H1_PHASE_CONTROL_CHANGED");
     }
 
@@ -1140,7 +1159,7 @@ class OpsGrowthServiceTest {
         assertThat(configFacade.values).containsEntry("growth.phase.override.2026-W18.disabled", "true");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H1_PHASE_OVERRIDE_CHANGED");
     }
 
@@ -1180,7 +1199,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.of(voucherMapper),
-                lockMapper);
+                lockMapper,
+                Optional.empty());
 
         ApiResult<Map<String, Object>> vouchers = voucherService.vouchers();
 
@@ -1203,7 +1223,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.of(voucherMapper),
-                lockMapper);
+                lockMapper,
+                Optional.empty());
         Map<String, Object> createdRow = voucherDbRow("vc-test-25", "active");
         Map<String, Object> pausedRow = voucherDbRow("vc-test-25", "paused");
         when(voucherMapper.listVouchers()).thenReturn(
@@ -1277,17 +1298,12 @@ class OpsGrowthServiceTest {
                 new AuditReplayContext("superadmin", "replay trial charge", "idem-replay-h2-charge"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(ledgerPostingFacade.entries).hasSize(1);
-        Map<String, Object> entry = ledgerPostingFacade.entries.get(0);
-        assertThat(entry)
-                .containsEntry("bizNo", "H2-TRIAL-CHARGE-usr_9921")
-                .containsEntry("bizType", "TRIAL_CHARGE")
-                .containsEntry("asset", "USDT")
-                .containsEntry("direction", "OUT")
-                .containsEntry("status", "SUCCESS");
+        verify(questEventMapper).debitWalletUsdt(9921L, new BigDecimal("1299"));
+        verify(questEventMapper).insertTrialChargeLedger(
+                9921L, "H2-TRIAL-CHARGE-usr_9921", new BigDecimal("1299"), new BigDecimal("3701"), "usr_9921");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_SESSION_CHARGED");
     }
 
@@ -1303,7 +1319,7 @@ class OpsGrowthServiceTest {
         assertThat(findRow(checkInRules, "key", "baseline")).containsEntry("cur", "3");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H5_CHECKIN_RULE_CHANGED");
     }
 
@@ -1351,7 +1367,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                lockMapper);
+                lockMapper,
+                Optional.empty());
     }
 
     @SuppressWarnings("unchecked")
@@ -1456,8 +1473,8 @@ class OpsGrowthServiceTest {
         trialPolicies.add(row("key", "trialDays", "name", "trialDays", "sub", "", "cur", "3", "hot", false, "section", "newonly", "serverOnly", false));
         trialPolicies.add(row("key", "graceDays", "name", "graceDays", "sub", "", "cur", "7", "hot", false, "section", "newonly", "serverOnly", false));
         trialPolicies.add(row("key", "extensionDays", "name", "extensionDays", "sub", "", "cur", "3", "hot", false, "section", "newonly", "serverOnly", false));
-        trialPolicies.add(row("key", "price", "name", "price", "sub", "", "cur", "$1,299", "hot", true, "section", "newonly", "serverOnly", false));
-        trialPolicies.add(row("key", "failRate", "name", "failRate", "sub", "", "cur", "4.1", "hot", true, "section", "live", "serverOnly", true));
+        trialPolicies.add(row("key", "trialPriceUSD", "name", "trialPriceUSD", "sub", "", "cur", "1299", "hot", true, "section", "newonly", "serverOnly", false));
+        trialPolicies.add(row("key", "chargeFailRate", "name", "chargeFailRate", "sub", "", "cur", "4.1", "hot", true, "section", "live", "serverOnly", true));
     }
 
     private void seedTrialSession(String sid, String state) {

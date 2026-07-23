@@ -15,6 +15,7 @@ import ffdd.opsconsole.content.domain.CopyExperimentRow;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantMetric;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantView;
 import ffdd.opsconsole.content.domain.CopyVersionRow;
+import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
 import ffdd.opsconsole.content.dto.CopyExperimentVariantRequest;
@@ -38,12 +39,13 @@ class OpsCopyExperimentCreationServiceTest {
     private final CopyAbRepository repository = mock(CopyAbRepository.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+    private final I18nLearningRepository i18nLearningRepository = mock(I18nLearningRepository.class);
     private final Map<String, Object> idempotencyCache = new LinkedHashMap<>();
     private final OpsCopyAbService service = new OpsCopyAbService(
             repository, audit,
             Clock.fixed(Instant.parse("2026-07-12T03:00:00Z"), ZoneOffset.UTC),
             OpsReadTimeSeedPolicy.enabledForDirectConstruction(), idempotency,
-            new ObjectMapper().findAndRegisterModules());
+            new ObjectMapper().findAndRegisterModules(), i18nLearningRepository);
 
     @BeforeEach
     void setUp() {
@@ -54,6 +56,7 @@ class OpsCopyExperimentCreationServiceTest {
         });
         CopyContentRow copy = mockCopy();
         when(repository.findCopyForUpdate(COPY_KEY)).thenReturn(Optional.of(copy));
+        when(repository.findCopy(COPY_KEY)).thenReturn(Optional.of(copy));
         when(repository.findVersion(COPY_KEY, "v6")).thenReturn(Optional.of(version("v6", "archived", audience())));
         when(repository.findVersion(COPY_KEY, "v7")).thenReturn(Optional.of(version("v7", "published", audience())));
     }
@@ -175,6 +178,9 @@ class OpsCopyExperimentCreationServiceTest {
         verify(repository, org.mockito.Mockito.times(1))
                 .adoptExperimentWinner("EXP-ADOPT", COPY_KEY, "v7", "Marina K.",
                         Instant.parse("2026-07-12T03:00:00Z").atZone(ZoneOffset.UTC).toLocalDateTime());
+        verify(i18nLearningRepository).saveMessagePair(
+                COPY_KEY, "zh", "en", "vi", "published",
+                Instant.parse("2026-07-12T03:00:00Z").atZone(ZoneOffset.UTC).toLocalDateTime());
         verify(audit, org.mockito.Mockito.times(1)).recordRequired(any());
     }
 
@@ -276,6 +282,8 @@ class OpsCopyExperimentCreationServiceTest {
     private static CopyContentRow mockCopy() {
         CopyContentRow copy = mock(CopyContentRow.class);
         when(copy.key()).thenReturn(COPY_KEY);
+        when(copy.i18nKey()).thenReturn(COPY_KEY);
+        when(copy.version()).thenReturn("v7");
         return copy;
     }
 

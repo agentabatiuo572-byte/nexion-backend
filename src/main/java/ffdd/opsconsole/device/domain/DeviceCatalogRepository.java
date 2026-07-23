@@ -77,7 +77,25 @@ public interface DeviceCatalogRepository {
 
     Optional<DeviceOrderView> findOrder(String orderNo);
 
-    Optional<DeviceOrderView> updateOrderState(String orderNo, String state, LocalDateTime now);
+    Optional<DeviceOrderFacts> findOrderFacts(String orderNo);
+
+    List<DeviceOrderHistoryView> listOrderHistory(String orderNo);
+
+    List<DeviceOrderFundingView> listOrderFunding(String orderNo);
+
+    Optional<DeviceOrderView> updateOrderState(
+            String orderNo, String expectedState, String state, LocalDateTime now);
+
+    void recordOrderHistory(
+            String orderNo,
+            String fromState,
+            String toState,
+            String reason,
+            String operator,
+            String idempotencyKey,
+            LocalDateTime now);
+
+    void rollbackOrderAssets(String orderNo, LocalDateTime now);
 
     List<DevicePhaseView> listPhases(String scope, boolean includeArchived);
 

@@ -24,7 +24,11 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -36,6 +40,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -74,6 +79,7 @@ public class OpsNotificationCampaignService {
     private final AuditObjectLockMapper lockMapper;
     private final PlatformConfigFacade configFacade;
     private final NotificationCampaignDispatchExecutor dispatchExecutor;
+    private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<NotificationCampaignOverview> overview() {
         List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns();
@@ -95,15 +101,18 @@ public class OpsNotificationCampaignService {
         if (guard != null) {
             return guard;
         }
-        NotificationCampaignCreateRequest normalized = normalizeCreate(request);
-        long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
-        String campaignNo = nextCampaignNo(normalized.name());
-        NotificationCampaignRow created = campaignRepository.createCampaign(campaignNo, normalized, estimatedAudience, now());
-        audit("I3_NOTIFICATION_CAMPAIGN_CREATED", created.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "tier", created.tier(),
-                "audience", created.audience(),
-                "status", created.status()));
-        return ApiResult.ok(created);
+        return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_CREATE", idempotencyKey,
+                requestHash("create", operator(request.operator()), request), () -> {
+                    NotificationCampaignCreateRequest normalized = normalizeCreate(request);
+                    long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
+                    String campaignNo = nextCampaignNo(normalized.name());
+                    NotificationCampaignRow created = campaignRepository.createCampaign(campaignNo, normalized, estimatedAudience, now());
+                    audit("I3_NOTIFICATION_CAMPAIGN_CREATED", created.id(), normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
+                            "tier", created.tier(),
+                            "audience", created.audience(),
+                            "status", created.status()));
+                    return ApiResult.ok(created);
+                });
     }
 
     public ApiResult<NotificationCampaignRow> updateDraft(String campaignNo, String idempotencyKey, NotificationCampaignDraftRequest request) {
@@ -111,22 +120,33 @@ public class OpsNotificationCampaignService {
         if (guard != null) {
             return guard;
         }
-        NotificationCampaignRow current = findCampaign(campaignNo);
-        if (current == null) {
-            return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
-        }
-        if (!"draft".equals(current.status())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        NotificationCampaignDraftRequest normalized = normalizeDraft(request);
-        long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
-        campaignRepository.updateDraft(current.id(), normalized, estimatedAudience, now());
-        NotificationCampaignRow updated = findCampaign(current.id());
-        audit("I3_NOTIFICATION_CAMPAIGN_DRAFT_SAVED", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "fromStatus", current.status(),
-                "toStatus", updated.status(),
-                "tier", updated.tier()));
-        return ApiResult.ok(updated);
+        return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_DRAFT_UPDATE", idempotencyKey,
+                requestHash("draft", campaignNo, operator(request.operator()), request), () -> {
+                    NotificationCampaignRow current = findCampaign(campaignNo);
+                    if (current == null) {
+                        return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
+                    }
+                    if (!"draft".equals(current.status())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    long expectedRevision = request.expectedRevision();
+                    if (expectedRevision != current.revision()) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    NotificationCampaignDraftRequest normalized = normalizeDraft(request);
+                    long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
+                    if (!campaignRepository.updateDraft(current.id(), normalized, estimatedAudience, expectedRevision, now())) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    NotificationCampaignRow updated = findCampaign(current.id());
+                    audit("I3_NOTIFICATION_CAMPAIGN_DRAFT_SAVED", current.id(), normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
+                            "fromStatus", current.status(),
+                            "toStatus", updated.status(),
+                            "tier", updated.tier(),
+                            "fromRevision", current.revision(),
+                            "toRevision", updated.revision()));
+                    return ApiResult.ok(updated);
+                });
     }
 
     public ApiResult<NotificationCampaignRow> scheduleCampaign(String campaignNo, String idempotencyKey, NotificationCampaignActionRequest request) {
@@ -134,40 +154,54 @@ public class OpsNotificationCampaignService {
         if (guard != null) {
             return guard;
         }
-        NotificationCampaignRow current = findCampaign(campaignNo);
-        if (current == null) {
-            return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
-        }
-        if (!"draft".equals(current.status())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
-        if (criticalGuard != null) {
-            return criticalGuard;
-        }
-        if (!PHASES.contains(currentPhase())) {
-            return ApiResult.fail(503, "NOTIFICATION_CURRENT_PHASE_UNAVAILABLE");
-        }
-        if (campaignRepository.estimateAudience(current.audienceTarget(), currentPhase(), now()) <= 0) {
-            return ApiResult.fail(422, "AUDIENCE_EMPTY");
-        }
-        if (!StringUtils.hasText(request.schedule())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_SCHEDULE_REQUIRED");
-        }
-        LocalDateTime scheduledAt;
-        try {
-            scheduledAt = LocalDateTime.parse(request.schedule().trim());
-        } catch (DateTimeParseException ex) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_SCHEDULE_INVALID");
-        }
-        if (!scheduledAt.isAfter(now())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_SCHEDULE_MUST_BE_FUTURE");
-        }
-        String schedule = scheduledAt.format(SCHEDULE_TIME);
-        campaignRepository.updateStatus(current.id(), "SCHEDULED", schedule, request.operator(), now());
-        NotificationCampaignRow updated = findCampaign(current.id());
-        audit("I3_NOTIFICATION_CAMPAIGN_SCHEDULED", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of("schedule", updated.schedule()));
-        return ApiResult.ok(updated);
+        return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_SCHEDULE", idempotencyKey,
+                requestHash("schedule", campaignNo, operator(request.operator()), request), () -> {
+                    NotificationCampaignRow current = findCampaign(campaignNo);
+                    if (current == null) {
+                        return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
+                    }
+                    if (!"draft".equals(current.status())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    long expectedRevision = request.expectedRevision();
+                    if (expectedRevision != current.revision()) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
+                    if (criticalGuard != null) {
+                        return criticalGuard;
+                    }
+                    String phase = currentPhase();
+                    if (!PHASES.contains(phase)) {
+                        return ApiResult.fail(503, "NOTIFICATION_CURRENT_PHASE_UNAVAILABLE");
+                    }
+                    if (campaignRepository.estimateAudience(current.audienceTarget(), phase, now()) <= 0) {
+                        return ApiResult.fail(422, "AUDIENCE_EMPTY");
+                    }
+                    if (!StringUtils.hasText(request.schedule())) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_SCHEDULE_REQUIRED");
+                    }
+                    LocalDateTime scheduledAt;
+                    try {
+                        scheduledAt = LocalDateTime.parse(request.schedule().trim());
+                    } catch (DateTimeParseException ex) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_SCHEDULE_INVALID");
+                    }
+                    if (!scheduledAt.isAfter(now())) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_SCHEDULE_MUST_BE_FUTURE");
+                    }
+                    String schedule = scheduledAt.format(SCHEDULE_TIME);
+                    String authenticatedOperator = operator(request.operator());
+                    if (!campaignRepository.scheduleDraft(current.id(), schedule, authenticatedOperator, expectedRevision, now())) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    NotificationCampaignRow updated = findCampaign(current.id());
+                    audit("I3_NOTIFICATION_CAMPAIGN_SCHEDULED", current.id(), authenticatedOperator, idempotencyKey, request.reason(), Map.of(
+                            "schedule", updated.schedule(),
+                            "fromRevision", current.revision(),
+                            "toRevision", updated.revision()));
+                    return ApiResult.ok(updated);
+                });
     }
 
     public ApiResult<NotificationCampaignRow> sendNow(String campaignNo, String idempotencyKey, NotificationCampaignActionRequest request) {
@@ -175,38 +209,55 @@ public class OpsNotificationCampaignService {
         if (guard != null) {
             return guard;
         }
-        NotificationCampaignRow current = findCampaign(campaignNo);
-        if (current == null) {
-            return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
-        }
-        if (!Set.of("draft", "scheduled").contains(current.status())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
-        if (criticalGuard != null) {
-            return criticalGuard;
-        }
-        if (!PHASES.contains(currentPhase())) {
-            return ApiResult.fail(503, "NOTIFICATION_CURRENT_PHASE_UNAVAILABLE");
-        }
-        LocalDateTime dispatchTime = now();
-        try {
-            dispatchExecutor.dispatchImmediate(
-                    current.id(),
-                    "i3:send:" + idempotencyKey.trim(),
-                    currentPhase(),
-                    request.operator(),
-                    idempotencyKey.trim(),
-                    request.reason().trim(),
-                    dispatchTime);
-        } catch (NotificationCampaignDispatchExecutor.AudienceEmptyException ex) {
-            return ApiResult.fail(422, "AUDIENCE_EMPTY");
-        } catch (NotificationCampaignDispatchExecutor.ConcurrentDispatchException ex) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        } catch (RuntimeException ex) {
-            return ApiResult.fail(500, "NOTIFICATION_CAMPAIGN_DISPATCH_FAILED");
-        }
-        return ApiResult.ok(findCampaign(current.id()));
+        return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_SEND_NOW", idempotencyKey,
+                requestHash("send-now", campaignNo, operator(request.operator()), request), () -> {
+                    NotificationCampaignRow current = findCampaign(campaignNo);
+                    if (current == null) {
+                        return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
+                    }
+                    if (!Set.of("draft", "scheduled").contains(current.status())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    long expectedRevision = request.expectedRevision();
+                    if (expectedRevision != current.revision()) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
+                    if (criticalGuard != null) {
+                        return criticalGuard;
+                    }
+                    String phase = currentPhase();
+                    if (!PHASES.contains(phase)) {
+                        return ApiResult.fail(503, "NOTIFICATION_CURRENT_PHASE_UNAVAILABLE");
+                    }
+                    // Reject a deterministically empty audience before the REQUIRED dispatch
+                    // transaction performs its CAS claim. If AudienceEmptyException is caught
+                    // after that claim, Spring has already marked the shared idempotency
+                    // transaction rollback-only and the intended 422 is replaced by a 500 at
+                    // commit time. The executor keeps its own check as the race-condition guard.
+                    if (campaignRepository.estimateAudience(current.audienceTarget(), phase, now()) <= 0) {
+                        return ApiResult.fail(422, "AUDIENCE_EMPTY");
+                    }
+                    LocalDateTime dispatchTime = now();
+                    try {
+                        dispatchExecutor.dispatchImmediate(
+                                current.id(),
+                                "i3:send:" + idempotencyKey.trim(),
+                                phase,
+                                operator(request.operator()),
+                                idempotencyKey.trim(),
+                                request.reason().trim(),
+                                expectedRevision,
+                                dispatchTime);
+                    } catch (NotificationCampaignDispatchExecutor.AudienceEmptyException ex) {
+                        return ApiResult.fail(422, "AUDIENCE_EMPTY");
+                    } catch (NotificationCampaignDispatchExecutor.ConcurrentDispatchException ex) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    } catch (RuntimeException ex) {
+                        return ApiResult.fail(500, "NOTIFICATION_CAMPAIGN_DISPATCH_FAILED");
+                    }
+                    return ApiResult.ok(findCampaign(current.id()));
+                });
     }
 
     public ApiResult<NotificationCampaignRow> cancelScheduled(String campaignNo, String idempotencyKey, NotificationCampaignActionRequest request) {
@@ -214,23 +265,34 @@ public class OpsNotificationCampaignService {
         if (guard != null) {
             return guard;
         }
-        NotificationCampaignRow current = findCampaign(campaignNo);
-        if (current == null) {
-            return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
-        }
-        if (!"scheduled".equals(current.status())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
-        if (criticalGuard != null) {
-            return criticalGuard;
-        }
-        if (!campaignRepository.cancelScheduled(current.id(), request.operator(), now())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        NotificationCampaignRow updated = findCampaign(current.id());
-        audit("I3_NOTIFICATION_CAMPAIGN_CANCELLED", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of("fromStatus", current.status()));
-        return ApiResult.ok(updated);
+        return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_CANCEL", idempotencyKey,
+                requestHash("cancel", campaignNo, operator(request.operator()), request), () -> {
+                    NotificationCampaignRow current = findCampaign(campaignNo);
+                    if (current == null) {
+                        return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
+                    }
+                    if (!"scheduled".equals(current.status())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    long expectedRevision = request.expectedRevision();
+                    if (expectedRevision != current.revision()) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
+                    if (criticalGuard != null) {
+                        return criticalGuard;
+                    }
+                    String authenticatedOperator = operator(request.operator());
+                    if (!campaignRepository.cancelScheduled(current.id(), authenticatedOperator, expectedRevision, now())) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    NotificationCampaignRow updated = findCampaign(current.id());
+                    audit("I3_NOTIFICATION_CAMPAIGN_CANCELLED", current.id(), authenticatedOperator, idempotencyKey, request.reason(), Map.of(
+                            "fromStatus", current.status(),
+                            "fromRevision", current.revision(),
+                            "toRevision", updated.revision()));
+                    return ApiResult.ok(updated);
+                });
     }
 
     public ApiResult<Void> deleteDraft(String campaignNo, String idempotencyKey, NotificationCampaignActionRequest request) {
@@ -238,19 +300,28 @@ public class OpsNotificationCampaignService {
         if (guard != null) {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
         }
-        NotificationCampaignRow current = findCampaign(campaignNo);
-        if (current == null) {
-            return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
-        }
-        if (!Set.of("draft", "cancelled").contains(current.status())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        if (!campaignRepository.deleteDraft(current.id(), now())) {
-            return ApiResult.fail(409, OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        audit("I3_NOTIFICATION_CAMPAIGN_DELETED", current.id(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "fromStatus", current.status()));
-        return ApiResult.ok(null);
+        return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_DELETE", idempotencyKey,
+                requestHash("delete", campaignNo, operator(request.operator()), request), () -> {
+                    NotificationCampaignRow current = findCampaign(campaignNo);
+                    if (current == null) {
+                        return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
+                    }
+                    if (!Set.of("draft", "cancelled").contains(current.status())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    long expectedRevision = request.expectedRevision();
+                    if (expectedRevision != current.revision()) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    if (!campaignRepository.deleteDraft(current.id(), expectedRevision, now())) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
+                    }
+                    String authenticatedOperator = operator(request.operator());
+                    audit("I3_NOTIFICATION_CAMPAIGN_DELETED", current.id(), authenticatedOperator, idempotencyKey, request.reason(), Map.of(
+                            "fromStatus", current.status(),
+                            "fromRevision", current.revision()));
+                    return ApiResult.ok(null);
+                });
     }
 
     public ApiResult<NotificationAudienceEstimateView> estimateAudience(NotificationAudienceEstimateRequest request) {
@@ -301,27 +372,31 @@ public class OpsNotificationCampaignService {
         if (!validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("I", "notification_cap", normalizedTier) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        NotificationCapRuleView current = campaignRepository.findCapRule(normalizedTier).orElse(null);
-        if (current == null) {
-            return ApiResult.fail(404, "NOTIFICATION_CAP_NOT_FOUND");
-        }
-        if (current.locked()) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOTIFICATION_CAP_LOCKED");
-        }
-        if (normalizedCap.equals(current.cap())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        campaignRepository.updateCapRule(normalizedTier, normalizedCap, request.operator(), now());
-        campaignRepository.applyRetention(now());
-        NotificationCapRuleView updated = campaignRepository.findCapRule(normalizedTier).orElseThrow();
-        auditRequired("I3_NOTIFICATION_CAP_CHANGED", normalizedTier, request.operator(), idempotencyKey, request.reason(), Map.of(
-                "from", current.cap(),
-                "to", updated.cap()));
-        return ApiResult.ok(updated);
+        return executeIdempotent("I3_NOTIFICATION_CAP_UPDATE", idempotencyKey,
+                requestHash("cap", normalizedTier, operator(request.operator()), request), () -> {
+                    if (!A2ReplayContext.isReplaying()
+                            && lockMapper.countActiveByTarget("I", "notification_cap", normalizedTier) > 0) {
+                        return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                    }
+                    NotificationCapRuleView current = campaignRepository.findCapRule(normalizedTier).orElse(null);
+                    if (current == null) {
+                        return ApiResult.fail(404, "NOTIFICATION_CAP_NOT_FOUND");
+                    }
+                    if (current.locked()) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOTIFICATION_CAP_LOCKED");
+                    }
+                    if (normalizedCap.equals(current.cap())) {
+                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                    }
+                    String authenticatedOperator = operator(request.operator());
+                    campaignRepository.updateCapRule(normalizedTier, normalizedCap, authenticatedOperator, now());
+                    campaignRepository.applyRetention(now());
+                    NotificationCapRuleView updated = campaignRepository.findCapRule(normalizedTier).orElseThrow();
+                    auditRequired("I3_NOTIFICATION_CAP_CHANGED", normalizedTier, authenticatedOperator, idempotencyKey, request.reason(), Map.of(
+                            "from", current.cap(),
+                            "to", updated.cap()));
+                    return ApiResult.ok(updated);
+                });
     }
 
     private ApiResult<NotificationCampaignRow> requireCreate(String idempotencyKey, NotificationCampaignCreateRequest request) {
@@ -372,6 +447,9 @@ public class OpsNotificationCampaignService {
                 || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyZh()) || !StringUtils.hasText(request.bodyVi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_DRAFT_REQUIRED");
         }
+        if (request.expectedRevision() == null) {
+            return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_REVISION_REQUIRED");
+        }
         if (!TIERS.contains(normalizeTier(request.tier()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_TIER_UNSUPPORTED");
         }
@@ -405,6 +483,9 @@ public class OpsNotificationCampaignService {
         }
         if (request == null || !validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (request.expectedRevision() == null) {
+            return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_REVISION_REQUIRED");
         }
         return null;
     }
@@ -633,12 +714,54 @@ public class OpsNotificationCampaignService {
         return LocalDateTime.now(clock);
     }
 
-    private String operator(String operator) {
-        return StringUtils.hasText(operator) ? operator.trim() : "system";
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> executeIdempotent(
+            String scope,
+            String idempotencyKey,
+            String requestHash,
+            Supplier<ApiResult<T>> action) {
+        return (ApiResult<T>) idempotencyService.execute(
+                scope,
+                idempotencyKey.trim(),
+                requestHash,
+                ApiResult.class,
+                (Supplier) action);
+    }
+
+    private String requestHash(Object... values) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (Object value : values) {
+                digest.update(String.valueOf(value == null ? "<null>" : value).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
+    }
+
+    private String operator(String claimedOperator) {
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.isAuthenticated()) {
+            if (authentication.getDetails() instanceof Map<?, ?> details
+                    && "ADMIN".equalsIgnoreCase(String.valueOf(details.get("subjectType")))) {
+                Object username = details.get("username");
+                if (username != null && StringUtils.hasText(String.valueOf(username))) {
+                    return String.valueOf(username).trim();
+                }
+            }
+            if (authentication.getPrincipal() != null
+                    && StringUtils.hasText(authentication.getName())
+                    && !"anonymousUser".equals(authentication.getName())) {
+                return authentication.getName().trim();
+            }
+        }
+        return StringUtils.hasText(claimedOperator) ? claimedOperator.trim() : "system";
     }
 
     private void audit(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {
-        auditLogService.record(auditRequest(action, resourceId, operator, idempotencyKey, reason, extra));
+        auditLogService.recordRequired(auditRequest(action, resourceId, operator, idempotencyKey, reason, extra));
     }
 
     private void auditRequired(String action, String resourceId, String operator, String idempotencyKey, String reason, Map<String, Object> extra) {

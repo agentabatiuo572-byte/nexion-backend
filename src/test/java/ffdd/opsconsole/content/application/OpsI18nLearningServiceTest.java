@@ -39,9 +39,13 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsI18nLearningServiceTest {
     private final FakeI18nLearningRepository repository = new FakeI18nLearningRepository();
@@ -60,6 +64,27 @@ class OpsI18nLearningServiceTest {
     void stubLockGuard() {
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,updateCourseReward 直通
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
+
+    @Test
+    void authenticatedActorOverridesSpoofedRequestOperator() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("1", null, List.of());
+        authentication.setDetails(Map.of("username", "superadmin", "subjectType", "ADMIN"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        service.saveLocalizedDraft("milestones.earnCross", "idem-i6-authenticated-actor",
+                new I18nLocalizedCopyRequest("中文 {amount}", "English {amount}", "Vietnamese {amount}",
+                        "spoofed-attacker", "验证认证主体覆盖客户端操作者"));
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("superadmin");
     }
 
     @Test
@@ -98,7 +123,7 @@ class OpsI18nLearningServiceTest {
         assertThat(result.getData().status()).isEqualTo("published");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService, times(2)).record(captor.capture());
+        verify(auditLogService, times(2)).recordRequired(captor.capture());
         assertThat(captor.getAllValues().get(1).getAction()).isEqualTo("I6_I18N_MESSAGE_PUBLISHED");
     }
 
@@ -188,7 +213,7 @@ class OpsI18nLearningServiceTest {
         verify(versionRepository, never()).activateCourseVersion(
                 anyString(), anyString(), anyString(), anyString(), anyLong(), any(LocalDateTime.class));
         ArgumentCaptor<AuditLogWriteRequest> auditCaptor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(auditCaptor.capture());
+        verify(auditLogService).recordRequired(auditCaptor.capture());
         assertThat(auditCaptor.getValue().getResult()).isEqualTo("REJECTED");
         assertThat(((java.util.Map<?, ?>) auditCaptor.getValue().getDetail()).get("coverageRatio"))
                 .isEqualTo(new BigDecimal("88"));
@@ -254,7 +279,7 @@ class OpsI18nLearningServiceTest {
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("LEARNING_COURSE_CURRENT_VERSION_CONFLICT");
-        verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
     }
 
     @Test

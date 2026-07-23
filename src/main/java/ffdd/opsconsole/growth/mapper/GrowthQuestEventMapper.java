@@ -252,6 +252,19 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     Map<String, Object> trialSession(@Param("sessionId") String sessionId);
 
+    @Select("""
+            SELECT id,
+                   user_id AS userId,
+                   claim_no AS claimNo,
+                   LOWER(status) AS state,
+                   GREATEST(price_usdt - LEAST(offset_cap_usdt, daily_usdt * GREATEST(1, duration_days)), 0) AS chargeAmount
+              FROM nx_trial_claim
+             WHERE is_deleted = 0
+               AND (CONCAT('trial-', claim_no) = #{sessionId} OR claim_no = #{sessionId})
+             LIMIT 1 FOR UPDATE
+            """)
+    Map<String, Object> lockTrialSession(@Param("sessionId") String sessionId);
+
     @Update("""
             UPDATE nx_trial_claim
                SET status = #{status},
@@ -261,6 +274,44 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     int updateTrialSessionStatus(@Param("sessionId") String sessionId,
                                  @Param("status") String status);
+
+    @Update("""
+            UPDATE nx_trial_claim
+               SET status = #{status}, updated_at = NOW()
+             WHERE is_deleted = 0
+               AND UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED')
+               AND (CONCAT('trial-', claim_no) = #{sessionId} OR claim_no = #{sessionId})
+            """)
+    int transitionTrialSessionStatus(@Param("sessionId") String sessionId,
+                                     @Param("status") String status);
+
+    @Select("""
+            SELECT usdt_available FROM nx_user_wallet
+             WHERE user_id = #{userId} AND is_deleted = 0 LIMIT 1 FOR UPDATE
+            """)
+    BigDecimal lockWalletUsdt(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_wallet
+               SET usdt_available = usdt_available - #{amount}, version = version + 1, updated_at = NOW()
+             WHERE user_id = #{userId} AND is_deleted = 0 AND usdt_available >= #{amount}
+            """)
+    int debitWalletUsdt(@Param("userId") Long userId, @Param("amount") BigDecimal amount);
+
+    @Insert("""
+            INSERT INTO nx_wallet_ledger (
+              user_id, biz_no, biz_type, asset, direction, amount, balance_after,
+              status, remark, created_at, updated_at, is_deleted
+            ) VALUES (
+              #{userId}, #{bizNo}, 'TRIAL_CHARGE', 'USDT', 'OUT', #{amount}, #{balanceAfter},
+              'SUCCESS', CONCAT('H2 forced trial charge | sessionId=', #{sessionId}), NOW(), NOW(), 0
+            )
+            """)
+    int insertTrialChargeLedger(@Param("userId") Long userId,
+                                @Param("bizNo") String bizNo,
+                                @Param("amount") BigDecimal amount,
+                                @Param("balanceAfter") BigDecimal balanceAfter,
+                                @Param("sessionId") String sessionId);
 
     @Select("""
             SELECT COUNT(1) AS activeSessions,
@@ -297,6 +348,24 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
              ORDER BY id ASC
             """)
     List<Map<String, Object>> missionRows(@Param("missionType") String missionType);
+
+    @Select("""
+            SELECT reward_points
+              FROM nx_mission
+             WHERE id = #{displayId} + 1
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    Integer missionRewardByDisplayId(@Param("displayId") int displayId);
+
+    @Update("""
+            UPDATE nx_mission
+               SET reward_points = #{rewardPoints}, updated_at = NOW()
+             WHERE id = #{displayId} + 1
+               AND is_deleted = 0
+            """)
+    int updateMissionRewardByDisplayId(@Param("displayId") int displayId,
+                                       @Param("rewardPoints") int rewardPoints);
 
     @Select("""
             SELECT challenge_code AS id,
@@ -384,6 +453,54 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
              ORDER BY sort_order ASC, id ASC
             """)
     List<Map<String, Object>> wheelTiers();
+
+    @Select("""
+            SELECT COALESCE(SUM(probability_pct), 0)
+              FROM nx_growth_wheel_tier
+             WHERE is_deleted = 0
+               AND status = 1
+            """)
+    BigDecimal activeWheelProbabilitySum();
+
+    @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key = 'H4_WHEEL' FOR UPDATE")
+    String lockWheelMutation();
+
+    @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key = #{lockKey} FOR UPDATE")
+    String lockGrowthMutation(@Param("lockKey") String lockKey);
+
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_growth_wheel_tier
+               SET probability_pct = #{probability}, updated_at = NOW()
+             WHERE tier_name = #{tierName} AND is_deleted = 0 AND status = 1
+            """)
+    int updateWheelTierProbability(@Param("tierName") String tierName,
+                                   @Param("probability") BigDecimal probability);
+
+    @Select("""
+            SELECT id
+              FROM nx_event_quest
+             WHERE is_deleted = 0
+             ORDER BY id
+             FOR UPDATE
+            """)
+    List<Long> lockEventRowsForUpdate();
+
+    /**
+     * Current locking read used after H4_EVENT mutex acquisition. A plain SELECT
+     * under MySQL REPEATABLE READ can otherwise miss the command that just released
+     * the mutex and allow two ongoing featured events.
+     */
+    @Select("""
+            SELECT id
+              FROM nx_event_quest
+             WHERE is_deleted = 0
+               AND status = 1
+               AND badge_achievement_code = 'FEATURED'
+               AND quest_code <> #{eventId}
+             ORDER BY id
+             FOR UPDATE
+            """)
+    List<Long> featuredOngoingEventIdsForUpdate(@Param("eventId") String eventId);
 
     @Select("""
             SELECT guard_key AS `key`,
@@ -714,6 +831,33 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             SELECT COUNT(1) FROM nx_growth_wheel_tier WHERE tier_name = #{tierName} AND is_deleted = 0
             """)
     long countByTierName(@Param("tierName") String tierName);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_wheel_tier WHERE is_deleted = 0 AND status = 1
+            """)
+    long countActiveWheelTiers();
+
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_growth_wheel_tier
+               SET reward_name = #{rewardName},
+                   probability_pct = #{probabilityPct},
+                   real_outflow = #{realOutflow},
+                   reward_kind = #{rewardKind},
+                   updated_at = NOW()
+             WHERE tier_name = #{tierName} AND is_deleted = 0 AND status = 1
+            """)
+    int updateWheelTier(@Param("tierName") String tierName,
+                        @Param("rewardName") String rewardName,
+                        @Param("probabilityPct") BigDecimal probabilityPct,
+                        @Param("realOutflow") int realOutflow,
+                        @Param("rewardKind") String rewardKind);
+
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_growth_wheel_tier
+               SET is_deleted = 1, status = 0, updated_at = NOW()
+             WHERE tier_name = #{tierName} AND is_deleted = 0 AND status = 1
+            """)
+    int softDeleteWheelTier(@Param("tierName") String tierName);
 
     @Insert("""
             INSERT INTO nx_growth_wheel_guard (

@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.ZoneId;
 import java.time.LocalDateTime;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,19 @@ class DateTimeFormatConfigTest {
 
         assertThat(value).isEqualTo(LocalDateTime.of(2026, 5, 1, 0, 0, 0));
         assertThat(config.localDateTimeToStringConverter().convert(value)).isEqualTo("2026-05-01 00:00:00");
+    }
+
+    @Test
+    void convertsHtmlDateTimeLocalRequestParamsIncludingMinuteAndFractionalSecondPrecision() {
+        assertThat(config.stringToLocalDateTimeConverter().convert("2026-07-17T09:00"))
+                .isEqualTo(LocalDateTime.of(2026, 7, 17, 9, 0));
+        assertThat(config.stringToLocalDateTimeConverter().convert("2026-07-17T11:00:59.999"))
+                .isEqualTo(LocalDateTime.of(2026, 7, 17, 11, 0, 59, 999_000_000));
+    }
+
+    @Test
+    void applicationClockUsesTheSameUtcPlusEightZoneAsDatabaseSessions() {
+        assertThat(config.systemClock().getZone()).isEqualTo(ZoneId.of("Asia/Shanghai"));
     }
 
     private record TimePayload(LocalDateTime createdAt) {

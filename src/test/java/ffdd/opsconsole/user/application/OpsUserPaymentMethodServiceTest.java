@@ -15,6 +15,7 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.user.dto.UserPaymentMethodCommandRequest;
 import ffdd.opsconsole.user.mapper.UserPaymentMethodMapper;
 import java.util.Map;
+import java.util.List;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +44,17 @@ class OpsUserPaymentMethodServiceTest {
     }
 
     @Test
+    void recordsRequiredAuditWhenPaymentMethodsAreViewed() {
+        when(mapper.userExists(42L)).thenReturn(true);
+        when(mapper.listMethods(42L, false, 0, 10)).thenReturn(List.of());
+
+        Map<String, Object> result = service.list(42L, false, 1, 10);
+
+        assertThat(result).containsEntry("total", 0L);
+        verify(audit).recordRequired(any());
+    }
+
+    @Test
     void unbindsWithOptimisticLockAndQueuesNotification() {
         when(mapper.findMethod(42L, 8L)).thenReturn(new UserPaymentMethodMapper.PaymentMethodRow(
                 8L, 42L, "VISA", "4242", "12/29", "stripe", true, "BOUND", false, null, 3L, null, null));
@@ -67,5 +79,13 @@ class OpsUserPaymentMethodServiceTest {
 
         assertThat(result.get("nickname").toString()).startsWith("Nexion-").hasSize(15);
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void rejectsOperationReasonLongerThanTwoHundredCharacters() {
+        assertThatThrownBy(() -> service.resetNickname(42L, "idem-long-reason",
+                new UserPaymentMethodCommandRequest("x".repeat(201), null, "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("OPERATION_REASON_TOO_LONG");
     }
 }

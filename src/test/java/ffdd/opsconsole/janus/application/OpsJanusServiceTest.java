@@ -177,7 +177,8 @@ class OpsJanusServiceTest {
     @Test
     void seniorOperatorCannotBypassUiAndPublishStrategyDirectly() {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                "operator-1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"))));
+                "senior-1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"),
+                new SimpleGrantedAuthority("risk_k6_senior"))));
         when(repository.findStrategy("K6-1")).thenReturn(Optional.of(strategy("draft", 2)));
 
         ApiResult<JanusStrategyView> result = service.lifecycle("K6-1", "publish", "idem-publish",
@@ -187,6 +188,104 @@ class OpsJanusServiceTest {
         assertThat(result.getMessage()).isEqualTo("ROLE_FORBIDDEN");
         verify(repository, never()).updateStrategyLifecycle(any(), anyLong(), any(), anyInt(), any());
         verify(outbox, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void seniorOperatorCannotBypassUiAndRollbackStrategyDirectly() {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "senior-1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"),
+                new SimpleGrantedAuthority("risk_k6_senior"))));
+
+        ApiResult<JanusStrategyView> result = service.rollback("K6-1", "idem-rollback",
+                new JanusStrategyActionRequest("回滚复核通过", "回滚复核通过", 1, 2L, null, null));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("ROLE_FORBIDDEN");
+        verify(repository, never()).findStrategy(any());
+        verify(repository, never()).replaceStrategyFromSnapshot(any(), anyLong(), anyInt(), any(), any());
+        verify(outbox, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void writeOnlyAuthorityCannotCreateStrategyOrReserveIdempotency() throws Exception {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "operator-1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"))));
+        var request = strategyRequest(objectMapper.readTree("""
+                        {"mode":"ALL","rules":[{"field":"maturityScore","op":">=","value":60,"label":"成熟度达标"}]}
+                        """), objectMapper.createObjectNode(), objectMapper.createObjectNode(),
+                objectMapper.createObjectNode());
+
+        ApiResult<JanusStrategyView> result = service.createStrategy("idem-writer-create", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("ROLE_FORBIDDEN");
+        verify(repository, never()).reserveCommand(any(), any(), any(), any(), any());
+        verify(repository, never()).createStrategy(any(), any());
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void writeOnlyAuthorityCannotPauseStrategyOrTouchPersistence() {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "operator-1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"))));
+
+        ApiResult<JanusStrategyView> result = service.lifecycle("K6-1", "pause", "idem-writer-pause",
+                new JanusStrategyActionRequest("暂停策略复核", "暂停策略复核", null, 2L, null, null));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("ROLE_FORBIDDEN");
+        verify(repository, never()).findStrategy(any());
+        verify(repository, never()).reserveCommand(any(), any(), any(), any(), any());
+        verify(repository, never()).updateStrategyLifecycle(any(), anyLong(), any(), anyInt(), any());
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void viewerCannotCreateStrategyOrReserveIdempotency() throws Exception {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "viewer-1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_read"))));
+        var request = strategyRequest(objectMapper.readTree("""
+                        {"mode":"ALL","rules":[{"field":"maturityScore","op":">=","value":60,"label":"成熟度达标"}]}
+                        """), objectMapper.createObjectNode(), objectMapper.createObjectNode(),
+                objectMapper.createObjectNode());
+
+        ApiResult<JanusStrategyView> result = service.createStrategy("idem-viewer-create", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("ROLE_FORBIDDEN");
+        verify(repository, never()).reserveCommand(any(), any(), any(), any(), any());
+        verify(repository, never()).createStrategy(any(), any());
+    }
+
+    @Test
+    void explicitSeniorAuthorityCanCreateAndPauseStrategies() throws Exception {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "senior-1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"),
+                new SimpleGrantedAuthority("risk_k6_senior"))));
+        var request = strategyRequest(objectMapper.readTree("""
+                        {"mode":"ALL","rules":[{"field":"maturityScore","op":">=","value":60,"label":"成熟度达标"}]}
+                        """), objectMapper.createObjectNode(), objectMapper.createObjectNode(),
+                objectMapper.createObjectNode());
+        JanusStrategyView created = strategy("draft", 1);
+        JanusStrategyView active = strategy("active", 2);
+        JanusStrategyView paused = new JanusStrategyView(active.strategyId(), active.name(), active.description(),
+                "paused", active.version(), active.priority(), active.owner(), active.scope(), active.ruleTree(),
+                active.action(), active.safeguards(), active.rollout(), active.healthConfig(), active.templateKey(),
+                active.versions(), active.createdAt(), active.publishedAt(), 3L);
+        when(repository.createStrategy(any(), eq(request))).thenReturn(created);
+        when(repository.findStrategy("K6-1")).thenReturn(Optional.of(active), Optional.of(paused));
+        when(repository.updateStrategyLifecycle("K6-1", 2L, "paused", active.version(), active.publishedAt()))
+                .thenReturn(true);
+
+        ApiResult<JanusStrategyView> createResult = service.createStrategy("idem-senior-create", request);
+        ApiResult<JanusStrategyView> pauseResult = service.lifecycle("K6-1", "pause", "idem-senior-pause",
+                new JanusStrategyActionRequest("暂停策略复核", "暂停策略复核", null, 2L, null, null));
+
+        assertThat(createResult.getCode()).isZero();
+        assertThat(pauseResult.getCode()).isZero();
+        assertThat(pauseResult.getData().status()).isEqualTo("paused");
     }
 
     @Test
@@ -205,6 +304,19 @@ class OpsJanusServiceTest {
 
         assertThat(otherActor.getCode()).isEqualTo(409);
         assertThat(otherActor.getMessage()).isEqualTo("IDEMPOTENCY_CONFLICT");
+
+        String differentPayloadKey = "idem-different-payload";
+        when(repository.reserveCommand(eq(differentPayloadKey), any(), any(), any(), any())).thenReturn(false);
+        when(repository.findCommand(differentPayloadKey)).thenReturn(Optional.of(java.util.Map.of(
+                "commandType", "STRATEGY_CREATE",
+                "targetId", "K6-" + sha256(objectMapper.writeValueAsString(differentPayloadKey)).substring(0, 12).toUpperCase(),
+                "requestHash", "different-request-hash",
+                "actorId", "superadmin", "state", "ACKED", "payloadJson", "{}")));
+
+        ApiResult<JanusStrategyView> differentPayload = service.createStrategy(differentPayloadKey, request);
+
+        assertThat(differentPayload.getCode()).isEqualTo(409);
+        assertThat(differentPayload.getMessage()).isEqualTo("IDEMPOTENCY_CONFLICT");
 
         String processingKey = "idem-processing";
         when(repository.reserveCommand(eq(processingKey), any(), any(), any(), any())).thenReturn(false);
@@ -254,7 +366,7 @@ class OpsJanusServiceTest {
     void authenticatedDeviceReportUpsertsAuthoritativeBusinessRow() {
         long now = System.currentTimeMillis();
         JanusDeviceReportRequest report = new JanusDeviceReportRequest("R-1", "DEVICE-1", now, now - 1_000,
-                now - 10_000, null, "official", null, "OBSERVING", false, "ua", "Android", "Pixel",
+                now - 10_000, null, "official", null, "OBSERVING", false, "ua", "android", "Pixel",
                 "Android 15", "Chrome", 10, 20, 30, 40, maturity(0),
                 environment(), null, null, null, null, objectMapper.createArrayNode());
         when(repository.findDevice(any())).thenReturn(Optional.of(device("OBSERVING", 1)));
@@ -269,8 +381,27 @@ class OpsJanusServiceTest {
         assertThat(saved.getValue().maturityScore()).isZero();
         assertThat(saved.getValue().recommendationScore()).isEqualTo(15);
         assertThat(saved.getValue().environmentRiskScore()).isZero();
+        assertThat(saved.getValue().platform()).isEqualTo("Android");
         assertThat(saved.getValue().hitStrategy()).isNull();
         assertThat(saved.getValue().latestDecision().path("reportId").asText()).isEqualTo("R-1");
+    }
+
+    @Test
+    void unknownDevicePlatformIsRejectedBeforeAnyReadOrWrite() {
+        long now = System.currentTimeMillis();
+        JanusDeviceReportRequest report = new JanusDeviceReportRequest("R-PLATFORM", "DEVICE-1", now,
+                now - 1_000, now - 10_000, null, "official", null, null, false, "ua", "future-os",
+                "Device", "Future OS", "Browser", 0, 0, 0, 0, maturity(0), environment(),
+                null, null, null, null, objectMapper.createArrayNode());
+
+        ApiResult<JanusDeviceView> result = service.reportDevice(42L, report);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("PLATFORM_INVALID");
+        verify(repository, never()).findDevice(any());
+        verify(repository, never()).insertEvaluation(any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), anyInt(), any());
+        verify(repository, never()).upsertDeviceReport(anyLong(), any(), any());
     }
 
     @Test
@@ -585,7 +716,8 @@ class OpsJanusServiceTest {
     @Test
     void numericJwtPrincipalStillRecognizesSeededSuperAdminUsername() {
         var auth = new UsernamePasswordAuthenticationToken(
-                "1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write")));
+                "1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"),
+                new SimpleGrantedAuthority("risk_k6_senior")));
         auth.setDetails(java.util.Map.of("subjectType", "ADMIN", "username", "superadmin"));
         SecurityContextHolder.getContext().setAuthentication(auth);
         JanusStrategyView before = strategy("active", 2);
@@ -609,7 +741,8 @@ class OpsJanusServiceTest {
     @Test
     void multiVersionStrategyAuditKeepsRootSnapshotsReasonAndRealUsernameUnderSanitizerLimit() throws Exception {
         var auth = new UsernamePasswordAuthenticationToken(
-                "1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write")));
+                "1", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"),
+                new SimpleGrantedAuthority("risk_k6_senior")));
         auth.setDetails(java.util.Map.of("subjectType", "ADMIN", "username", "ops-user"));
         SecurityContextHolder.getContext().setAuthentication(auth);
         JanusStrategyView before = strategyWithHistory("active", 8, 400);

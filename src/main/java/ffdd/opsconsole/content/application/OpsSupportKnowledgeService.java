@@ -13,6 +13,7 @@ import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -21,7 +22,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -31,6 +34,7 @@ public class OpsSupportKnowledgeService {
     private static final Set<String> SLA_CATEGORIES = Set.of("account", "withdrawal", "deposit", "kyc", "hardware", "earnings", "genesis", "technical", "other");
     private static final Set<String> SURFACES = Set.of("Help Center", "Ticket Create", "Nova");
     private static final Set<String> STATUSES = Set.of("PUBLISHED", "DRAFT");
+    private static final Set<String> LANGUAGES = Set.of("zh-CN", "en-US", "vi-VN");
     private static final DateTimeFormatter FAQ_ID_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
     private final SupportKnowledgeRepository knowledgeRepository;
@@ -52,13 +56,15 @@ public class OpsSupportKnowledgeService {
                 List.of("nx_help_article", "nx_support_sla_rule")));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportFaqView> createFaq(String idempotencyKey, SupportFaqUpsertRequest request) {
         ensureSeedData();
         ApiResult<SupportFaqView> guard = requireFaqCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        String faqId = "FAQ-" + LocalDateTime.now(clock).format(FAQ_ID_TIME);
+        String faqId = "FAQ-" + LocalDateTime.now(clock).format(FAQ_ID_TIME)
+                + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         SupportFaqView created = knowledgeRepository.createFaq(faqId, normalizeFaqRequest(request), LocalDateTime.now(clock));
         audit("M4_SUPPORT_FAQ_CREATED", created.id(), request.operator(), Map.of(
                 "category", created.category(),
@@ -69,6 +75,7 @@ public class OpsSupportKnowledgeService {
         return ApiResult.ok(created);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportFaqView> updateFaq(String faqId, String idempotencyKey, SupportFaqUpsertRequest request) {
         ensureSeedData();
         if (!StringUtils.hasText(faqId)) {
@@ -92,6 +99,7 @@ public class OpsSupportKnowledgeService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportFaqView> updateFaqStatus(String faqId, String idempotencyKey, SupportFaqStatusRequest request) {
         ensureSeedData();
         if (!StringUtils.hasText(faqId)) {
@@ -124,6 +132,7 @@ public class OpsSupportKnowledgeService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Void> deleteFaq(String faqId, String idempotencyKey, SupportKnowledgeDeleteRequest request) {
         ensureSeedData();
         if (!StringUtils.hasText(faqId)) {
@@ -147,6 +156,7 @@ public class OpsSupportKnowledgeService {
         return ApiResult.ok();
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportSlaView> updateSla(String category, String idempotencyKey, SupportSlaUpdateRequest request) {
         ensureSeedData();
         String normalizedCategory = normalizeCategory(category);
@@ -233,6 +243,12 @@ public class OpsSupportKnowledgeService {
         if (!STATUSES.contains(normalizeStatus(request.status()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_FAQ_STATUS_UNSUPPORTED");
         }
+        if (!LANGUAGES.contains(normalizeLanguage(request.language()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_FAQ_LANGUAGE_UNSUPPORTED");
+        }
+        if (request.sortOrder() == null || request.sortOrder() < 0 || request.sortOrder() > 999999) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_FAQ_SORT_ORDER_INVALID");
+        }
         if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
@@ -250,6 +266,8 @@ public class OpsSupportKnowledgeService {
                 request.question().trim(),
                 request.answer().trim(),
                 normalizeStatus(request.status()),
+                normalizeLanguage(request.language()),
+                request.sortOrder(),
                 operator(request.operator()),
                 request.reason().trim());
     }
@@ -273,8 +291,16 @@ public class OpsSupportKnowledgeService {
                 .orElse(trimmed);
     }
 
+    private String normalizeLanguage(String language) {
+        if (!StringUtils.hasText(language)) {
+            return "zh-CN";
+        }
+        String trimmed = language.trim();
+        return LANGUAGES.stream().filter(item -> item.equalsIgnoreCase(trimmed)).findFirst().orElse(trimmed);
+    }
+
     private String operator(String operator) {
-        return StringUtils.hasText(operator) ? operator.trim() : "system";
+        return AdminActorResolver.resolve(StringUtils.hasText(operator) ? operator.trim() : "system");
     }
 
     private void audit(String action, String resourceId, String operator, Map<String, Object> detail) {

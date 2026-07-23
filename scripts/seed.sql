@@ -197,3 +197,12 @@ ON DUPLICATE KEY UPDATE
   remark = VALUES(remark),
   status = VALUES(status),
   is_deleted = 0;
+-- I3 canonical notification retention rules (server authority).
+INSERT INTO nx_notification_cap_rule
+  (tier, cap_label, policy, locked, sort_order, status, last_operator, created_at, updated_at, is_deleted)
+VALUES
+  ('critical', 'Infinity', '合规/风控紧急通知永久保留，不执行数量或 TTL 淘汰', 1, 10, 1, 'seed:i3', NOW(), NOW(), 0),
+  ('high', '50 条', '每用户按当前 CAP 保留最新高优通知，超出部分按 LIFO 淘汰', 0, 20, 1, 'seed:i3', NOW(), NOW(), 0),
+  ('normal', '200 条', '每用户按当前 CAP 保留最新常规通知，超出部分按 LIFO 淘汰', 0, 30, 1, 'seed:i3', NOW(), NOW(), 0),
+  ('low', '30 条', '每用户按当前 CAP 保留最新低优通知，且超过 48 小时自动淘汰', 0, 40, 1, 'seed:i3', NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE tier=VALUES(tier);

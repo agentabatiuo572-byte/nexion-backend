@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,12 +27,16 @@ class JwtAuthenticationFilterTest {
     private final GatewaySecurityProperties gatewayProperties = new GatewaySecurityProperties();
     private final AdminSessionRegistry adminSessionRegistry = mock(AdminSessionRegistry.class);
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
+    private final ImpersonationSessionVerifier impersonationSessionVerifier = mock(ImpersonationSessionVerifier.class);
+    private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
     private final JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
             tokenProvider,
             authSessionMapper,
             gatewayProperties,
             adminSessionRegistry,
-            permissionCache);
+            permissionCache,
+            impersonationSessionVerifier,
+            configFacade);
 
     @AfterEach
     void tearDown() {
@@ -126,6 +131,39 @@ class JwtAuthenticationFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
 
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    void authenticatesActiveImpersonationWithReadOnlyClaim() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        when(impersonationSessionVerifier.isActive(7L, "IMP-READONLY-1")).thenReturn(true);
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createImpersonationToken(
+                7L, "U00000007", "IMP-READONLY-1", 15));
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> invoked.set(true));
+
+        assertThat(invoked).isTrue();
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(authentication.getAuthorities())
+                .extracting(GrantedAuthority::getAuthority)
+                .containsExactly("impersonate_readonly");
+        assertThat(authentication.getDetails()).isEqualTo(Map.of(
+                "subjectType", "IMPERSONATION",
+                "username", "U00000007",
+                "sessionId", "IMP-READONLY-1"));
+    }
+
+    @Test
+    void userSessionMustBeWithinConfiguredIdleWindowAndIsTouchedAtomically() throws Exception {
+        when(configFacade.activeValue("auth.session.idle_ttl_days")).thenReturn(java.util.Optional.of("14"));
+        when(authSessionMapper.touchActiveUserSession("user-session-1", 42L, 14)).thenReturn(1);
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
+                42L, "USER", "user-42", List.of(), "user-session-1"));
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+        org.mockito.Mockito.verify(authSessionMapper).touchActiveUserSession("user-session-1", 42L, 14);
     }
 
     @Test

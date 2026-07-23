@@ -18,6 +18,7 @@ import ffdd.opsconsole.content.domain.SupportTicketDetail;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
+import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
 import ffdd.opsconsole.content.dto.ConversationFallbackRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
@@ -42,6 +43,7 @@ import ffdd.opsconsole.risk.domain.RiskCaseView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.user.application.OpsUserService;
 import ffdd.opsconsole.user.domain.UserAccountView;
 import java.math.BigDecimal;
@@ -74,6 +76,15 @@ public class OpsConversationService {
     private static final String TIMEOUT_FALLBACK_CONFIG_KEY = "I.session.workbench.timeoutFallback";
     private static final int TRANSFER_TIMEOUT_MINUTES = 30;
     private static final int AUTO_FALLBACK_BATCH_SIZE = 50;
+    private static final int REASON_MIN_LENGTH = 8;
+    private static final int REASON_MAX_LENGTH = 200;
+
+    /** Escapes the transactional proxy so a partially claimed batch is rolled back before becoming HTTP 409. */
+    public static final class ConversationStateConflictException extends RuntimeException {
+        public ConversationStateConflictException() {
+            super(OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+    }
 
     private final ConversationRepository conversationRepository;
     private final SupportTicketRepository ticketRepository;
@@ -475,6 +486,7 @@ public class OpsConversationService {
         return ApiResult.ok(supportAgentService.transferTargets());
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> transfer(
             String conversationNo,
             String idempotencyKey,
@@ -484,7 +496,7 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
@@ -493,9 +505,19 @@ public class OpsConversationService {
         }
         String targetType = normalizeTargetType(request.targetType());
         String targetId = requireText(request.targetId(), "targetId is required");
-        String targetName = StringUtils.hasText(request.targetName()) ? request.targetName().trim() : targetId;
+        Map<String, Object> canonicalTarget = supportAgentService.transferTargets().stream()
+                .filter(target -> targetType.equalsIgnoreCase(String.valueOf(target.get("targetType"))))
+                .filter(target -> targetId.equals(String.valueOf(target.get("targetId"))))
+                .findFirst()
+                .orElse(null);
+        if (canonicalTarget == null && !("standby".equals(targetType) && "standby-pool".equals(targetId))) {
+            return ApiResult.fail(404, "CONVERSATION_TRANSFER_TARGET_NOT_AVAILABLE");
+        }
+        String targetName = canonicalTarget == null
+                ? "备勤池"
+                : String.valueOf(canonicalTarget.getOrDefault("targetName", targetId));
         LocalDateTime now = LocalDateTime.now(clock);
-        conversationRepository.transferToPending(
+        boolean claimed = conversationRepository.transferToPending(
                 conversation,
                 targetType,
                 targetId,
@@ -503,6 +525,9 @@ public class OpsConversationService {
                 request.reason().trim(),
                 operator(request.operator()),
                 now);
+        if (!claimed) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_TRANSFERRED", conversation.conversationNo(), request.operator(), Map.of(
                 "fromAgentId", conversation.ownerAgentId(),
@@ -515,6 +540,7 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> acceptTransfer(
             String conversationNo,
             String idempotencyKey,
@@ -524,23 +550,34 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
         if (!"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
-        conversationRepository.acceptTransfer(conversation, operator(request.operator()), LocalDateTime.now(clock));
+        String actor = operator(request.operator());
+        var acceptingAgent = supportAgentService.currentAssignableSupportAgent().orElse(null);
+        if (acceptingAgent == null
+                || !"agent".equalsIgnoreCase(conversation.transferToType())
+                || !(String.valueOf(acceptingAgent.adminId()).equals(conversation.transferToId())
+                    || acceptingAgent.id().equals(conversation.transferToId()))) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "CONVERSATION_TRANSFER_ACCEPT_FORBIDDEN");
+        }
+        if (!conversationRepository.acceptTransfer(conversation, acceptingAgent.id(), acceptingAgent.name(), actor, LocalDateTime.now(clock))) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_TRANSFER_ACCEPTED", conversation.conversationNo(), request.operator(), Map.of(
                 "fromAgentId", conversation.transferFromAgentId(),
-                "acceptedBy", operator(request.operator()),
+                "acceptedBy", actor,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> returnTransfer(
             String conversationNo,
             String idempotencyKey,
@@ -550,14 +587,16 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
         if (!"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
-        conversationRepository.returnTransfer(conversation, request.reason().trim(), operator(request.operator()), LocalDateTime.now(clock));
+        if (!conversationRepository.returnTransfer(conversation, request.reason().trim(), operator(request.operator()), LocalDateTime.now(clock))) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_TRANSFER_RETURNED", conversation.conversationNo(), request.operator(), Map.of(
                 "returnToAgentId", conversation.transferFromAgentId(),
@@ -567,6 +606,7 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> waitTransfer(
             String conversationNo,
             String idempotencyKey,
@@ -576,7 +616,7 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
@@ -584,7 +624,9 @@ public class OpsConversationService {
             return invalidState();
         }
         String actor = operator(request.operator());
-        conversationRepository.waitTransfer(conversation, request.reason().trim(), actor, LocalDateTime.now(clock));
+        if (!conversationRepository.waitTransfer(conversation, request.reason().trim(), actor, LocalDateTime.now(clock))) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_TRANSFER_WAITED", conversation.conversationNo(), actor, Map.of(
                 "fromAgentId", conversation.transferFromAgentId(),
@@ -594,6 +636,7 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> reply(
             String conversationNo,
             String idempotencyKey,
@@ -603,7 +646,7 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
@@ -613,7 +656,9 @@ public class OpsConversationService {
         String body = request.body().trim();
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        conversationRepository.reply(conversation, body, actor, now);
+        if (!conversationRepository.reply(conversation, body, actor, now)) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_REPLIED", conversation.conversationNo(), actor, Map.of(
                 "bodyLength", body.length(),
@@ -622,6 +667,7 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<List<String>> addCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
         ensureSeedData();
         ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
@@ -649,6 +695,7 @@ public class OpsConversationService {
         return ApiResult.ok(customerProfileRepository.findCustomTags(userId));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<List<String>> removeCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
         ensureSeedData();
         ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
@@ -673,6 +720,7 @@ public class OpsConversationService {
         return ApiResult.ok(customerProfileRepository.findCustomTags(userId));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ConversationCustomerProfile.CustomerNote> addNote(String conversationNo, String idempotencyKey, CustomerNoteRequest request) {
         ensureSeedData();
         ApiResult<ConversationCustomerProfile.CustomerNote> guard = requireProfileNoteCommand(conversationNo, idempotencyKey, request);
@@ -696,6 +744,7 @@ public class OpsConversationService {
         return ApiResult.ok(created);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Void> removeNote(String conversationNo, Long noteId, String idempotencyKey, CustomerNoteRemoveRequest request) {
         ensureSeedData();
         ApiResult<Void> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
@@ -717,6 +766,7 @@ public class OpsConversationService {
         return ApiResult.ok(null);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> updateStatus(
             String conversationNo,
             String idempotencyKey,
@@ -726,16 +776,21 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
         String targetStatus = normalizeStatus(request.status());
+        if (!matchesExpectedStatus(request.expectedStatus(), conversation.status())) {
+            return invalidState();
+        }
         if (!canDirectStatusChange(conversation.status(), targetStatus)) {
             return invalidState();
         }
         String actor = operator(request.operator());
-        conversationRepository.updateStatus(conversation, targetStatus, actor, LocalDateTime.now(clock));
+        if (!conversationRepository.updateStatus(conversation, targetStatus, actor, LocalDateTime.now(clock))) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_STATUS_CHANGED", conversation.conversationNo(), actor, Map.of(
                 "from", conversation.status(),
@@ -745,6 +800,7 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> archive(
             String conversationNo,
             String idempotencyKey,
@@ -754,11 +810,14 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
         boolean archived = request == null || request.archived() == null || request.archived();
+        if (!matchesExpectedStatus(request.expectedStatus(), conversation.status())) {
+            return invalidState();
+        }
         if (archived && "TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
@@ -767,7 +826,9 @@ public class OpsConversationService {
         }
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        conversationRepository.archive(conversation, archived, actor, now);
+        if (!conversationRepository.archive(conversation, archived, actor, now)) {
+            return invalidState();
+        }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit(archived ? "I9_CONVERSATION_ARCHIVED" : "I9_CONVERSATION_UNARCHIVED", conversation.conversationNo(), actor, Map.of(
                 "from", conversation.status(),
@@ -777,7 +838,53 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<List<ContentConversationView>> archiveBatch(
+            String idempotencyKey,
+            ConversationArchiveBatchRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null || request.conversationNos() == null || request.conversationNos().isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_ARCHIVE_BATCH_EMPTY");
+        }
+        if (invalidReason(request.reason())) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        List<String> ids = request.conversationNos().stream().filter(StringUtils::hasText).map(String::trim).distinct().toList();
+        if (ids.isEmpty() || ids.size() > 100) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_ARCHIVE_BATCH_SIZE_INVALID");
+        }
+        Map<String, ContentConversationView> lockedRows = new LinkedHashMap<>();
+        // Stable order prevents deadlocks between overlapping batch requests.
+        for (String id : ids.stream().sorted().toList()) {
+            ContentConversationView row = conversationRepository.findByConversationNoForUpdate(id).orElse(null);
+            if (row == null) return ApiResult.fail(404, "CONVERSATION_NOT_FOUND:" + id);
+            if (!"RESOLVED".equalsIgnoreCase(row.status())) return invalidBatchState();
+            lockedRows.put(id, row);
+        }
+        List<ContentConversationView> rows = ids.stream().map(lockedRows::get).toList();
+        String actor = operator(request.operator());
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<ContentConversationView> updatedRows = new ArrayList<>();
+        for (ContentConversationView row : rows) {
+            if (!conversationRepository.archive(row, true, actor, now)) {
+                // Must escape the transactional proxy; returning 409 here would commit earlier rows.
+                throw new ConversationStateConflictException();
+            }
+            audit("I9_CONVERSATION_ARCHIVED", row.conversationNo(), actor, Map.of(
+                    "from", row.status(), "to", "CLOSED", "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim(), "batchSize", rows.size()));
+            updatedRows.add(conversationRepository.findByConversationNo(row.conversationNo()).orElse(row));
+        }
+        return ApiResult.ok(updatedRows);
+    }
+
+    private ApiResult<List<ContentConversationView>> invalidBatchState() {
+        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> fallbackTransfer(
             String conversationNo,
             String idempotencyKey,
@@ -787,7 +894,7 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
@@ -809,7 +916,7 @@ public class OpsConversationService {
         return ApiResult.ok(updated);
     }
 
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public int runTimeoutFallback() {
         if (!timeoutFallbackEnabled()) {
             return 0;
@@ -820,22 +927,33 @@ public class OpsConversationService {
         List<ContentConversationView> overdue = conversationRepository.overdueTransferredConversations(cutoff, AUTO_FALLBACK_BATCH_SIZE);
         int changed = 0;
         for (ContentConversationView conversation : overdue) {
+            ContentConversationView locked = conversationRepository
+                    .findByConversationNoForUpdate(conversation.conversationNo())
+                    .orElse(null);
+            if (locked == null
+                    || !"TRANSFERRED".equalsIgnoreCase(locked.status())
+                    || "standby".equalsIgnoreCase(locked.transferToType())
+                    || locked.transferredAt() == null
+                    || locked.transferredAt().isAfter(cutoff)) {
+                continue;
+            }
             String reason = "Transfer pending over " + TRANSFER_TIMEOUT_MINUTES + " minutes; server fallback to standby pool";
-            if (!conversationRepository.fallbackTransfer(conversation, reason, "system", now)) {
+            if (!conversationRepository.fallbackTransfer(locked, reason, "system", now)) {
                 continue;
             }
             changed += 1;
-            audit("I9_CONVERSATION_TRANSFER_AUTO_FALLBACK", conversation.conversationNo(), "system", auditDetail(
-                    "fromTargetId", conversation.transferToId(),
+            audit("I9_CONVERSATION_TRANSFER_AUTO_FALLBACK", locked.conversationNo(), "system", auditDetail(
+                    "fromTargetId", locked.transferToId(),
                     "toTargetId", "standby-pool",
-                    "transferredAt", conversation.transferredAt(),
+                    "transferredAt", locked.transferredAt(),
                     "timeoutMinutes", TRANSFER_TIMEOUT_MINUTES,
                     "reason", reason,
-                    "idempotencyKey", "system:auto-timeout-fallback:" + conversation.conversationNo() + ":" + now));
+                    "idempotencyKey", "system:auto-timeout-fallback:" + locked.conversationNo() + ":" + now));
         }
         return changed;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ConversationTicketResult> convertToTicket(
             String conversationNo,
             String idempotencyKey,
@@ -845,7 +963,7 @@ public class OpsConversationService {
         if (guard != null) {
             return guard;
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(conversationNo.trim()).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
@@ -861,9 +979,16 @@ public class OpsConversationService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_TICKET_PRIORITY_UNSUPPORTED");
         }
         String actor = operator(request.operator());
+        if (request.assignedAdminId() != null && request.assignedAdminId() > 0
+                && supportAgentService.assignableSupportAgent(request.assignedAdminId()).isEmpty()) {
+            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_ASSIGNABLE");
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         List<ContentConversationMessageView> messages = conversationRepository.messages(conversation.conversationNo());
         String ticketNo = "TK-" + now.format(TICKET_NO_TIME);
+        if (!conversationRepository.markConvertedToTicket(conversation, ticketNo, actor, now)) {
+            return ApiResult.fail(409, "CONVERSATION_ALREADY_CONVERTED_TO_TICKET");
+        }
         SupportTicketView created = ticketRepository.createTicket(
                 ticketNo,
                 conversation.userId(),
@@ -871,11 +996,10 @@ public class OpsConversationService {
                 priority,
                 titleOrDefault(request.title(), conversation),
                 transcriptBody(conversation, messages),
-                request.assignedAdminId(),
-                assignedName(request.assignedAdminName(), actor),
+                request.assignedAdminId() != null && request.assignedAdminId() > 0 ? request.assignedAdminId() : null,
+                request.assignedAdminId() != null && request.assignedAdminId() > 0 ? assignedName(request.assignedAdminName(), actor) : "Unassigned",
                 actor,
                 now);
-        conversationRepository.markConvertedToTicket(conversation, created.ticketNo(), actor, now);
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         SupportTicketDetail ticketDetail = new SupportTicketDetail(created, ticketRepository.messages(created.ticketNo()));
         audit("I9_CONVERSATION_CONVERTED_TO_TICKET", conversation.conversationNo(), actor, auditDetail(
@@ -887,6 +1011,7 @@ public class OpsConversationService {
         return ApiResult.ok(new ConversationTicketResult(updated, ticketDetail));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationView> initiate(
             String idempotencyKey,
             ConversationInitiateRequest request) {
@@ -985,7 +1110,7 @@ public class OpsConversationService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (request == null || invalidReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         if (!StringUtils.hasText(request.targetId())) {
@@ -1004,7 +1129,7 @@ public class OpsConversationService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (request == null || invalidReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -1026,6 +1151,9 @@ public class OpsConversationService {
         if (request.body().trim().length() > 2000) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REPLY_BODY_TOO_LONG");
         }
+        if (invalidReason(request.reason())) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
         return null;
     }
 
@@ -1045,7 +1173,7 @@ public class OpsConversationService {
         if (!DIRECT_STATUS_TARGETS.contains(normalizeStatus(request.status()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "STATUS_UNSUPPORTED");
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (invalidReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -1067,7 +1195,7 @@ public class OpsConversationService {
         if (!CONVERSATION_TYPES.contains(type)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_TYPE_UNSUPPORTED");
         }
-        if (request.userId() == null && (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6)) {
+        if (request.userId() == null && invalidReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -1080,13 +1208,13 @@ public class OpsConversationService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
+        if (invalidReason(reason)) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
     }
 
-    /** 标签写命令校验:复用 reason≥6 + 幂等头 + tag 非空且 ≤64。 */
+    /** 标签写命令校验:复用 reason 8..200 + 幂等头 + tag 非空且 ≤64。 */
     private <T> ApiResult<T> requireProfileTagCommand(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
         ApiResult<T> reasonGuard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (reasonGuard != null) {
@@ -1101,7 +1229,7 @@ public class OpsConversationService {
         return null;
     }
 
-    /** 备注写命令校验:复用 reason≥6 + 幂等头 + text 非空且 ≤2000。 */
+    /** 备注写命令校验:复用 reason 8..200 + 幂等头 + text 非空且 ≤2000。 */
     private <T> ApiResult<T> requireProfileNoteCommand(String conversationNo, String idempotencyKey, CustomerNoteRequest request) {
         ApiResult<T> reasonGuard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (reasonGuard != null) {
@@ -1148,6 +1276,19 @@ public class OpsConversationService {
         return StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : "";
     }
 
+    private boolean matchesExpectedStatus(String expectedStatus, String actualStatus) {
+        return !StringUtils.hasText(expectedStatus)
+                || normalizeStatus(expectedStatus).equals(normalizeStatus(actualStatus));
+    }
+
+    private boolean invalidReason(String reason) {
+        if (!StringUtils.hasText(reason)) {
+            return true;
+        }
+        int length = reason.trim().length();
+        return length < REASON_MIN_LENGTH || length > REASON_MAX_LENGTH;
+    }
+
     private String normalizeTicketCategory(String category) {
         return StringUtils.hasText(category) ? category.trim().toLowerCase(Locale.ROOT) : "account";
     }
@@ -1158,13 +1299,30 @@ public class OpsConversationService {
 
     private boolean canDirectStatusChange(String currentStatus, String targetStatus) {
         String current = normalizeStatus(currentStatus);
-        if ("TRANSFERRED".equals(current)) {
-            return false;
-        }
-        if ("CLOSED".equals(current) && !"CLOSED".equals(targetStatus)) {
-            return false;
-        }
-        return DIRECT_STATUS_TARGETS.contains(targetStatus);
+        if (current.equals(targetStatus)) return true;
+        return switch (current) {
+            case "OPEN" -> "RESOLVED".equals(targetStatus);
+            case "RESOLVED" -> "OPEN".equals(targetStatus) || "CLOSED".equals(targetStatus);
+            default -> false;
+        };
+    }
+
+    private String statusLabel(String status) {
+        return switch (normalizeStatus(status)) {
+            case "OPEN" -> "进行中";
+            case "TRANSFERRED" -> "转入待处理";
+            case "RESOLVED" -> "已解决";
+            case "CLOSED" -> "已关闭";
+            default -> "未知";
+        };
+    }
+
+    private String senderLabel(String senderType) {
+        return switch (StringUtils.hasText(senderType) ? senderType.trim().toUpperCase(Locale.ROOT) : "") {
+            case "USER" -> "用户";
+            case "AGENT" -> "坐席";
+            default -> "系统";
+        };
     }
 
     private String requireText(String value, String message) {
@@ -1175,7 +1333,7 @@ public class OpsConversationService {
     }
 
     private String operator(String operator) {
-        return StringUtils.hasText(operator) ? operator.trim() : "system";
+        return AdminActorResolver.resolve(StringUtils.hasText(operator) ? operator.trim() : "system");
     }
 
     private String reasonOrDefault(String reason, String fallback) {
@@ -1207,18 +1365,18 @@ public class OpsConversationService {
     private String titleOrDefault(String title, ContentConversationView conversation) {
         String value = StringUtils.hasText(title)
                 ? title.trim()
-                : "Conversation " + conversation.conversationNo() + " follow-up";
+                : "会话 " + conversation.conversationNo() + " 后续跟进";
         return value.length() > 160 ? value.substring(0, 160) : value;
     }
 
     private String transcriptBody(ContentConversationView conversation, List<ContentConversationMessageView> messages) {
         StringBuilder body = new StringBuilder();
-        body.append("Conversation: ").append(conversation.conversationNo()).append('\n');
-        body.append("User: ").append(conversation.userId()).append('\n');
-        body.append("Status: ").append(conversation.status()).append('\n');
+        body.append("会话号: ").append(conversation.conversationNo()).append('\n');
+        body.append("用户: ").append(conversation.userId()).append('\n');
+        body.append("状态: ").append(statusLabel(conversation.status())).append('\n');
         for (ContentConversationMessageView message : messages) {
             body.append('[')
-                    .append(message.senderType())
+                    .append(senderLabel(message.senderType()))
                     .append("] ")
                     .append(message.senderName())
                     .append(": ")
@@ -1229,7 +1387,7 @@ public class OpsConversationService {
             }
         }
         if (messages.isEmpty() && StringUtils.hasText(conversation.lastMessage())) {
-            body.append("[last] ").append(conversation.lastMessage());
+            body.append("[最后消息] ").append(conversation.lastMessage());
         }
         String result = body.toString().trim();
         return result.length() > 2000 ? result.substring(0, 1997) + "..." : result;

@@ -17,6 +17,13 @@ public class WithdrawalOrderEntity extends BaseEntity {
     private String chain;
     private BigDecimal amount;
     private BigDecimal fee;
+    private BigDecimal d2PenaltyFeeRate;
+    private BigDecimal d2GrossFee;
+    private BigDecimal d2NexBurned;
+    private BigDecimal d2NexFeeOffsetRate;
+    private BigDecimal d2FeeWaived;
+    private BigDecimal d2ActualFee;
+    private BigDecimal d2NetReceive;
     private String targetAddress;
     private Long riskDecisionId;
     private String chainTxHash;

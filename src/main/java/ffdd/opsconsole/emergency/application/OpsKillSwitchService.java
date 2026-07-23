@@ -57,6 +57,7 @@ public class OpsKillSwitchService {
     private static final String GROUP_KILL_SWITCH = "admin_killswitch";
     private static final String GROUP_EMERGENCY = "admin_emergency";
     private static final String GROUP_AUTORULE = "admin_emergency_autorule";
+    private static final String TAMPER_ALERT_THRESHOLD_CONFIG_KEY = "emergency.tamper.alert.threshold";
     private static final DateTimeFormatter CHANGE_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     private static final List<GateSeed> GATE_SEEDS = List.of(
@@ -916,11 +917,16 @@ public class OpsKillSwitchService {
         // 四条自动触发规则是固定目录,不应因 DB 未配阈值而消失;DB 有值则覆盖,否则落回 seed 自带阈值。
         return AUTO_RULE_SEEDS.stream()
                 .map(seed -> {
-            String threshold = "withdrawSurge".equals(seed.id())
-                    ? emergencySignalFacade.bankRunRedlinePct().stripTrailingZeros().toPlainString()
-                    : activeValue(autoRuleConfigKey(seed.id()))
-                    .filter(StringUtils::hasText)
-                    .orElse(seed.threshold());
+            String threshold = switch (seed.id()) {
+                case "withdrawSurge" -> emergencySignalFacade.bankRunRedlinePct()
+                        .stripTrailingZeros().toPlainString();
+                case "tamperCluster" -> activeValue(TAMPER_ALERT_THRESHOLD_CONFIG_KEY)
+                        .filter(StringUtils::hasText)
+                        .orElse(seed.threshold());
+                default -> activeValue(autoRuleConfigKey(seed.id()))
+                        .filter(StringUtils::hasText)
+                        .orElse(seed.threshold());
+            };
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
             row.put("nm", seed.name());
@@ -937,9 +943,11 @@ public class OpsKillSwitchService {
             row.put("adjustable", seed.adjustable());
             row.put("refNote", seed.refNote());
             row.put("refTitle", seed.refTitle());
-            row.put("configKey", "withdrawSurge".equals(seed.id())
-                    ? TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY
-                    : autoRuleConfigKey(seed.id()));
+            row.put("configKey", switch (seed.id()) {
+                case "withdrawSurge" -> TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY;
+                case "tamperCluster" -> TAMPER_ALERT_THRESHOLD_CONFIG_KEY;
+                default -> autoRuleConfigKey(seed.id());
+            });
             return row;
         }).toList();
     }

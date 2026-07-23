@@ -1,11 +1,17 @@
 package ffdd.opsconsole.content.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsSessionTemplateService;
+import ffdd.opsconsole.content.application.OpsSupportAgentService;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
 import ffdd.opsconsole.content.dto.SessionCategoryToggleRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
@@ -14,11 +20,33 @@ import ffdd.opsconsole.content.dto.SessionScriptAudienceRequest;
 import ffdd.opsconsole.content.dto.SessionScriptCreateRequest;
 import ffdd.opsconsole.content.dto.SessionScriptStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import java.util.Arrays;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsSessionTemplateControllerTest {
     private final OpsSessionTemplateService templateService = mock(OpsSessionTemplateService.class);
-    private final OpsSessionTemplateController controller = new OpsSessionTemplateController(templateService);
+    private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final OpsSessionTemplateController controller = new OpsSessionTemplateController(
+            templateService,
+            supportAgentService,
+            idempotencyService,
+            auditLogService);
+
+    @BeforeEach
+    void setUp() {
+        when(supportAgentService.canManageSupportSeats()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotencyService)
+                .execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
+    }
 
     @Test
     void overviewDelegates() {
@@ -101,5 +129,44 @@ class OpsSessionTemplateControllerTest {
 
         verify(templateService).createReplyTemplate("idem-m5-template", create);
         verify(templateService).updateReplyTemplateStatus("RT-S1", "idem-m5-template-status", status);
+    }
+
+    @Test
+    void controllerHasIdempotencyAndLeadLevelAuthorizationGuards() throws Exception {
+        assertThat(Arrays.stream(OpsSessionTemplateController.class.getDeclaredFields())
+                .anyMatch(field -> field.getType().equals(AdminIdempotencyService.class))).isTrue();
+        assertThat(Arrays.stream(OpsSessionTemplateController.class.getDeclaredFields())
+                .anyMatch(field -> field.getType().equals(OpsSupportAgentService.class))).isTrue();
+
+        PreAuthorize workbenchPermission = OpsSessionTemplateController.class
+                .getMethod("updateWorkbenchPolicy", String.class, String.class, SessionAdvisorPolicyUpdateRequest.class)
+                .getAnnotation(PreAuthorize.class);
+        assertThat(workbenchPermission.value()).contains("service_m3_write");
+    }
+
+    @Test
+    void ordinarySupportAgentCannotMutateM5Configuration() {
+        when(supportAgentService.canManageSupportSeats()).thenReturn(false);
+        SessionCategoryToggleRequest request = new SessionCategoryToggleRequest(false, "Marina K.", "暂停顾问会话入口");
+
+        var result = controller.updateCategory("advisor", "idem-m5-cat", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("M5_CONFIGURATION_MANAGEMENT_FORBIDDEN");
+        verify(templateService, never()).updateCategory(anyString(), anyString(), any());
+        verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void rejectedValidationAndStaleResultsAreAuditedOutsideTheBusinessTransaction() {
+        SessionAdvisorPolicyUpdateRequest request = new SessionAdvisorPolicyUpdateRequest(
+                "48", "24", "Marina K.", "基于过期页面调整冷却时间");
+        when(templateService.updateAdvisorPolicy("cooldownHours", "idem-m5-stale", request))
+                .thenReturn(ApiResult.fail(409, "SESSION_POLICY_STALE"));
+
+        var result = controller.updateAdvisorPolicy("cooldownHours", "idem-m5-stale", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
     }
 }

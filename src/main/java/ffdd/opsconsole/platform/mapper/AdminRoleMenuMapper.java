@@ -14,6 +14,25 @@ public interface AdminRoleMenuMapper extends BaseMapper<AdminRoleMenuEntity> {
     @Select("SELECT menu_id FROM nx_admin_role_menu WHERE role_id = #{roleId} AND is_deleted = 0")
     List<Long> selectActiveMenuIdsByRole(Long roleId);
 
+    @Select("""
+            <script>
+            SELECT id
+              FROM nx_admin_menu
+             WHERE status = 1
+               AND is_deleted = 0
+               AND id IN
+               <foreach collection="menuIds" item="mid" open="(" separator="," close=")">
+                 #{mid}
+               </foreach>
+             ORDER BY id
+             FOR UPDATE
+            </script>
+            """)
+    List<Long> selectActiveMenuIds(@Param("menuIds") Collection<Long> menuIds);
+
+    @Select("SELECT COUNT(*) FROM nx_admin_role_menu WHERE menu_id = #{menuId} AND is_deleted = 0")
+    long countActiveByMenuId(@Param("menuId") Long menuId);
+
     @Update("""
             <script>
             UPDATE nx_admin_role_menu
@@ -65,7 +84,4 @@ public interface AdminRoleMenuMapper extends BaseMapper<AdminRoleMenuEntity> {
     @Update("UPDATE nx_admin_role_menu SET is_deleted = 1, updated_at = NOW() WHERE role_id = #{roleId} AND is_deleted = 0")
     int disableAllRoleMenus(Long roleId);
 
-    /** 菜单删除时级联软删所有引用该菜单的绑定。 */
-    @Update("UPDATE nx_admin_role_menu SET is_deleted = 1, updated_at = NOW() WHERE menu_id = #{menuId} AND is_deleted = 0")
-    int softDeleteByMenuId(Long menuId);
 }

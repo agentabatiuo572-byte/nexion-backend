@@ -121,6 +121,23 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     ContentConversationView findByConversationNo(@Param("conversationNo") String conversationNo);
 
     @Select("""
+            SELECT id
+              FROM nx_conversation
+             WHERE conversation_no=#{conversationNo} AND is_deleted=0
+             FOR UPDATE
+            """)
+    Long lockConversationHeader(@Param("conversationNo") String conversationNo);
+
+    @Select("""
+            SELECT id
+              FROM nx_conversation_transfer
+             WHERE conversation_no=#{conversationNo} AND status='PENDING' AND is_deleted=0
+             ORDER BY id ASC
+             FOR UPDATE
+            """)
+    List<Long> lockPendingTransfers(@Param("conversationNo") String conversationNo);
+
+    @Select("""
             SELECT
               c.id,
               c.conversation_no AS conversationNo,
@@ -156,7 +173,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Update("""
             UPDATE nx_conversation
                SET status='TRANSFERRED', owner_agent_id=#{targetId}, owner_agent_name=#{targetName}, updated_at=#{now}
-             WHERE conversation_no=#{conversationNo} AND is_deleted=0
+             WHERE conversation_no=#{conversationNo} AND status='OPEN' AND is_deleted=0
             """)
     int markTransferred(@Param("conversationNo") String conversationNo, @Param("targetId") String targetId,
                         @Param("targetName") String targetName, @Param("now") LocalDateTime now);
@@ -170,6 +187,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                    last_message_at=#{now},
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
+               AND status='TRANSFERRED'
             """)
     int fallbackConversation(@Param("conversationNo") String conversationNo, @Param("targetId") String targetId,
                              @Param("targetName") String targetName, @Param("now") LocalDateTime now);
@@ -187,10 +205,12 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("""
             UPDATE nx_conversation
-               SET status='OPEN', owner_agent_id=#{operator}, owner_agent_name=#{operator}, updated_at=#{now}
-             WHERE conversation_no=#{conversationNo} AND is_deleted=0
+               SET status='OPEN', owner_agent_id=#{ownerAgentId}, owner_agent_name=#{ownerAgentName}, updated_at=#{now}
+             WHERE conversation_no=#{conversationNo} AND status='TRANSFERRED' AND is_deleted=0
             """)
-    int acceptConversation(@Param("conversationNo") String conversationNo, @Param("operator") String operator,
+    int acceptConversation(@Param("conversationNo") String conversationNo,
+                           @Param("ownerAgentId") String ownerAgentId,
+                           @Param("ownerAgentName") String ownerAgentName,
                            @Param("now") LocalDateTime now);
 
     @Update("""
@@ -204,7 +224,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Update("""
             UPDATE nx_conversation
                SET status='OPEN', owner_agent_id=#{fromAgentId}, owner_agent_name=#{fromAgentName}, updated_at=#{now}
-             WHERE conversation_no=#{conversationNo} AND is_deleted=0
+             WHERE conversation_no=#{conversationNo} AND status='TRANSFERRED' AND is_deleted=0
             """)
     int returnConversation(@Param("conversationNo") String conversationNo, @Param("fromAgentId") String fromAgentId,
                            @Param("fromAgentName") String fromAgentName, @Param("now") LocalDateTime now);
@@ -223,6 +243,11 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                    last_message_at=#{now},
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
+               AND status='TRANSFERRED'
+               AND EXISTS (
+                   SELECT 1 FROM nx_conversation_transfer t
+                    WHERE t.conversation_no=#{conversationNo} AND t.status='PENDING' AND t.is_deleted=0
+               )
             """)
     int markTransferWait(@Param("conversationNo") String conversationNo, @Param("message") String message,
                          @Param("now") LocalDateTime now);
@@ -252,25 +277,31 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                    last_message_at=#{now},
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
+               AND status=#{expectedStatus}
             """)
     int replyConversation(@Param("conversationNo") String conversationNo, @Param("body") String body,
+                          @Param("expectedStatus") String expectedStatus,
                           @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_conversation
                SET status=#{status}, updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
+               AND status=#{expectedStatus}
             """)
     int updateConversationStatus(@Param("conversationNo") String conversationNo, @Param("status") String status,
+                                 @Param("expectedStatus") String expectedStatus,
                                  @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_conversation
-               SET status='RESOLVED',
+               SET status='CLOSED',
                    last_message=#{message},
                    last_message_at=#{now},
                    updated_at=#{now}
-             WHERE conversation_no=#{conversationNo} AND is_deleted=0
+             WHERE conversation_no=#{conversationNo}
+               AND status<>'CLOSED'
+               AND is_deleted=0
             """)
     int markConvertedToTicket(@Param("conversationNo") String conversationNo, @Param("message") String message,
                               @Param("now") LocalDateTime now);

@@ -13,6 +13,27 @@ import org.apache.ibatis.annotations.Update;
 
 public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
     @Select("""
+            SELECT article_code AS id, title AS scriptGroup, content AS text,
+                   COALESCE(surface, '—') AS ctaPath,
+                   CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
+                   COALESCE(level, '全量用户') AS audience, updated_at AS updatedAt
+              FROM nx_help_article
+             WHERE article_code=#{scriptId} AND format='session_script' AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    SessionScriptView lockSessionScript(@Param("scriptId") String scriptId);
+
+    @Select("""
+            SELECT article_code AS id, level AS type, content AS text,
+                   CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
+                   updated_at AS updatedAt
+              FROM nx_help_article
+             WHERE article_code=#{templateId} AND format='session_reply_template' AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    SessionReplyTemplateView lockSessionReplyTemplate(@Param("templateId") String templateId);
+
+    @Select("""
             SELECT *
               FROM nx_help_article
              WHERE article_code LIKE CONCAT('learn.%.', #{courseId})
@@ -38,6 +59,9 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               content AS answer,
               CASE status WHEN 1 THEN 'PUBLISHED' ELSE 'DRAFT' END AS status,
               COALESCE(surface, 'Help Center') AS surface,
+              CASE WHEN level IN ('zh-CN','en-US','vi-VN') THEN level ELSE 'zh-CN' END AS language,
+              COALESCE(sort_order, 0) AS sortOrder,
+              COALESCE(version_no, 1) AS version,
               updated_at AS updatedAt
             FROM nx_help_article
             WHERE is_deleted=0 AND format='faq'
@@ -53,6 +77,9 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               content AS answer,
               CASE status WHEN 1 THEN 'PUBLISHED' ELSE 'DRAFT' END AS status,
               COALESCE(surface, 'Help Center') AS surface,
+              CASE WHEN level IN ('zh-CN','en-US','vi-VN') THEN level ELSE 'zh-CN' END AS language,
+              COALESCE(sort_order, 0) AS sortOrder,
+              COALESCE(version_no, 1) AS version,
               updated_at AS updatedAt
             FROM nx_help_article
             WHERE is_deleted=0 AND format='faq' AND article_code=#{faqId}
@@ -70,6 +97,9 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
                    category=#{category},
                    surface=#{surface},
                    status=#{status},
+                   level=#{language},
+                   sort_order=#{sortOrder},
+                   version_no=COALESCE(version_no, 1) + 1,
                    updated_at=#{now}
              WHERE article_code=#{faqId} AND format='faq' AND is_deleted=0
             """)
@@ -80,11 +110,13 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
             @Param("question") String question,
             @Param("answer") String answer,
             @Param("status") int status,
+            @Param("language") String language,
+            @Param("sortOrder") int sortOrder,
             @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_help_article
-               SET status=#{status}, updated_at=#{now}
+               SET status=#{status}, version_no=COALESCE(version_no, 1) + 1, updated_at=#{now}
              WHERE article_code=#{faqId} AND format='faq' AND is_deleted=0
             """)
     int updateFaqStatus(@Param("faqId") String faqId, @Param("status") int status, @Param("now") LocalDateTime now);
@@ -102,7 +134,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               title AS scriptGroup,
               content AS text,
               COALESCE(surface, '—') AS ctaPath,
-              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
               COALESCE(level, '全量') AS audience,
               updated_at AS updatedAt
             FROM nx_help_article
@@ -117,7 +149,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               FROM nx_help_article
              WHERE is_deleted=0 AND format='session_script'
              <if test='status != null'>
-               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+               AND status = CASE #{status} WHEN 'published' THEN 1 WHEN 'archived' THEN 2 ELSE 0 END
              </if>
              <if test='keyword != null'>
                AND (
@@ -138,13 +170,13 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               title AS scriptGroup,
               content AS text,
               COALESCE(surface, '—') AS ctaPath,
-              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
               COALESCE(level, '全量') AS audience,
               updated_at AS updatedAt
             FROM nx_help_article
             WHERE is_deleted=0 AND format='session_script'
              <if test='status != null'>
-               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+               AND status = CASE #{status} WHEN 'published' THEN 1 WHEN 'archived' THEN 2 ELSE 0 END
              </if>
              <if test='keyword != null'>
                AND (
@@ -170,7 +202,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               title AS scriptGroup,
               content AS text,
               COALESCE(surface, '—') AS ctaPath,
-              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
               COALESCE(level, '全量') AS audience,
               updated_at AS updatedAt
             FROM nx_help_article
@@ -201,7 +233,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               article_code AS id,
               COALESCE(level, title, 'support') AS type,
               content AS text,
-              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
               updated_at AS updatedAt
             FROM nx_help_article
             WHERE is_deleted=0 AND format='session_reply_template'
@@ -218,7 +250,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
                AND COALESCE(level, title, 'support') = #{type}
              </if>
              <if test='status != null'>
-               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+               AND status = CASE #{status} WHEN 'published' THEN 1 WHEN 'archived' THEN 2 ELSE 0 END
              </if>
              <if test='keyword != null'>
                AND (
@@ -240,7 +272,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               article_code AS id,
               COALESCE(level, title, 'support') AS type,
               content AS text,
-              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
               updated_at AS updatedAt
             FROM nx_help_article
             WHERE is_deleted=0 AND format='session_reply_template'
@@ -248,7 +280,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
                AND COALESCE(level, title, 'support') = #{type}
              </if>
              <if test='status != null'>
-               AND status = CASE #{status} WHEN 'published' THEN 1 ELSE 0 END
+               AND status = CASE #{status} WHEN 'published' THEN 1 WHEN 'archived' THEN 2 ELSE 0 END
              </if>
              <if test='keyword != null'>
                AND (
@@ -273,7 +305,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
               article_code AS id,
               COALESCE(level, title, 'support') AS type,
               content AS text,
-              CASE status WHEN 1 THEN 'published' ELSE 'draft' END AS status,
+              CASE status WHEN 1 THEN 'published' WHEN 2 THEN 'archived' ELSE 'draft' END AS status,
               updated_at AS updatedAt
             FROM nx_help_article
             WHERE is_deleted=0 AND format='session_reply_template' AND article_code=#{templateId}

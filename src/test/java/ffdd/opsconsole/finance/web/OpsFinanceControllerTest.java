@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -18,6 +19,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsFinanceControllerTest {
     private final OpsFinanceService financeService = mock(OpsFinanceService.class);
@@ -64,13 +66,29 @@ class OpsFinanceControllerTest {
     }
 
     @Test
-    void updateWithdrawalParamDelegatesWithIdempotencyHeader() {
+    void binLockEndpointAuthorizesLockAndUnlockDirectionsSeparately() throws Exception {
+        PreAuthorize guard = OpsFinanceController.class
+                .getMethod("setTopupBinLock", String.class, String.class, TopupCommandRequest.class)
+                .getAnnotation(PreAuthorize.class);
+
+        assertThat(guard.value())
+                .contains("#request.enabled == true")
+                .contains("finance_d1_bin_lock")
+                .contains("#request.enabled == false")
+                .contains("finance_d1_bin_unlock");
+    }
+
+    @Test
+    void legacyWithdrawalParamPatchIsGoneAndCannotReachTheOldWriteService() {
         WithdrawalParamUpdateRequest request = new WithdrawalParamUpdateRequest("networkFee", "3", "tighten", "superadmin");
-        when(financeService.updateWithdrawalParam("idem-param", request)).thenReturn(ApiResult.ok(Map.of("ok", true)));
 
-        assertThat(controller.updateWithdrawalParam("idem-param", request).getData()).containsEntry("ok", true);
+        var response = controller.updateWithdrawalParam("idem-param", request);
 
-        verify(financeService).updateWithdrawalParam("idem-param", request);
+        assertThat(response.getStatusCode().value()).isEqualTo(410);
+        assertThat(response.getBody())
+                .containsEntry("code", "LEGACY_D5_WRITE_DISABLED")
+                .containsEntry("redirect", "/api/admin/withdraw/limits");
+        verifyNoInteractions(financeService);
     }
 
     @Test

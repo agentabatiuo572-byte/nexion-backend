@@ -24,13 +24,15 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Select("""
             SELECT COUNT(1) > 0
-              FROM nx_user u
-              JOIN nx_user_profile p ON p.user_id = u.id AND p.is_deleted = 0
-             WHERE u.id = #{userId} AND u.is_deleted = 0
-               AND UPPER(u.kyc_status) = 'APPROVED'
-               AND p.wallet_address IS NOT NULL AND TRIM(p.wallet_address) <> ''
+              FROM nx_kyc_profile k
+             WHERE k.user_id = #{userId} AND k.is_deleted = 0
+               AND UPPER(k.status) = 'APPROVED'
+               AND k.paired_address IS NOT NULL AND TRIM(k.paired_address) <> ''
             """)
     boolean walletPaired(@Param("userId") Long userId);
+
+    @Select("SELECT status FROM nx_kyc_profile WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
+    String kycStatus(@Param("userId") Long userId);
 
     @Select("""
             SELECT COALESCE((
@@ -54,6 +56,21 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Select("SELECT id FROM nx_user WHERE id = #{userId} AND is_deleted = 0 FOR UPDATE")
     Long lockUser(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COALESCE((
+                       SELECT config_value
+                         FROM nx_config_item
+                        WHERE config_key = 'growth.phase.current' AND status = 1 AND is_deleted = 0
+                        LIMIT 1
+                   ), 'P1') AS phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, NOW()), 0) AS accountAgeMonths,
+                   DATE_FORMAT(u.created_at, '%x-W%v') AS cohort
+              FROM nx_user u
+             WHERE u.id = #{userId} AND u.is_deleted = 0
+             LIMIT 1
+            """)
+    UserEventAttribution userEventAttribution(@Param("userId") Long userId);
 
     @Select("""
             SELECT COUNT(1)
@@ -89,6 +106,21 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                             @Param("slotCap") Integer slotCap);
 
     @Select("""
+            SELECT config_key AS configKey, config_value AS configValue
+              FROM nx_compute_e3_config
+             WHERE config_key IN (
+                   'capacityBand1DeltaPct','capacityBand2DeltaPct','capacityBand3DeltaPct',
+                   'stageEarlyEnd','stageMidEnd','cycleMonths','capacityFloorPct','capacitySubsidyDays',
+                   'capacityApplyToPhone','capacityApplyToCloudShare','capacityApplyToPcGpu',
+                   'capacityApplyToS1','capacityApplyToPro','capacityApplyToProV2',
+                   'capacityApplyToRackP1','capacityApplyToRackP2',
+                   'taskLockS1','taskLockPro','taskLockRack')
+               AND is_deleted = 0
+             ORDER BY config_key
+            """)
+    List<E3CapacityConfig> e3CapacityConfig();
+
+    @Select("""
             SELECT COALESCE(SUM(daily_usdt), 0) AS dailyUsdt,
                    COALESCE(SUM(daily_nex), 0) AS dailyNex
               FROM nx_user_device
@@ -96,6 +128,17 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                AND UPPER(status) = 'ACTIVE'
             """)
     DeviceEarnings deviceEarnings(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT w.usdt_available AS usdtAvailable,
+                   w.nex_available AS nexAvailable,
+                   u.created_at AS joinedAt
+              FROM nx_user u
+              JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
+             WHERE u.id = #{userId} AND u.is_deleted = 0
+             LIMIT 1
+            """)
+    UserCanonicalProfile userCanonicalProfile(@Param("userId") Long userId);
 
     @Select("""
             SELECT id,
@@ -157,7 +200,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     int incrementOtpFailure(@Param("userId") Long userId, @Param("challengeNo") String challengeNo);
 
     @Select("""
-            SELECT id, price_usdt AS priceUsdt, stock
+            SELECT id, product_no AS productNo, price_usdt AS priceUsdt, stock
               FROM nx_product
              WHERE is_deleted = 0
                AND ((#{productId} IS NOT NULL AND id = #{productId})
@@ -182,7 +225,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
               order_status, activation_status, created_at, updated_at, is_deleted
             ) VALUES (
               #{userId}, #{orderNo}, #{productId}, #{quantity}, 'SINGLE', #{quantity},
-              #{amountUsdt}, 0, #{amountUsdt}, 'PENDING',
+              #{subtotalUsdt}, #{discountUsdt}, #{amountUsdt}, 'PENDING',
               'PENDING_PAYMENT', 'WAITING_PAYMENT', NOW(), NOW(), 0
             )
             """)
@@ -190,7 +233,59 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                     @Param("orderNo") String orderNo,
                     @Param("productId") Long productId,
                     @Param("quantity") Integer quantity,
+                    @Param("subtotalUsdt") BigDecimal subtotalUsdt,
+                    @Param("discountUsdt") BigDecimal discountUsdt,
                     @Param("amountUsdt") BigDecimal amountUsdt);
+
+    @Select("""
+            SELECT o.order_no AS orderNo,
+                   o.product_id AS productId,
+                   COALESCE((SELECT oi.product_no
+                               FROM nx_order_item oi
+                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0
+                              ORDER BY oi.sort_order, oi.id LIMIT 1), p.product_no) AS productNo,
+                   COALESCE((SELECT oi.product_name
+                               FROM nx_order_item oi
+                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0
+                              ORDER BY oi.sort_order, oi.id LIMIT 1),
+                            ta.target_product_name, p.name, o.order_no) AS productName,
+                   o.quantity,
+                   COALESCE((SELECT oi.unit_price_usdt
+                               FROM nx_order_item oi
+                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0
+                              ORDER BY oi.sort_order, oi.id LIMIT 1),
+                            p.price_usdt, o.subtotal_usdt) AS unitPriceUsdt,
+                   o.discount_usdt AS discountUsdt,
+                   o.amount_usdt AS amountUsdt,
+                   COALESCE((SELECT pr.provider
+                               FROM nx_payment_record pr
+                              WHERE pr.order_no = o.order_no AND pr.user_id = o.user_id AND pr.is_deleted = 0
+                              ORDER BY pr.id DESC LIMIT 1),
+                            CASE WHEN o.order_type = 'TRADE_IN' THEN 'USDT_WALLET' ELSE 'PENDING' END) AS paymentMethod,
+                   o.payment_status AS paymentStatus,
+                   o.order_status AS orderStatus,
+                   o.activation_status AS activationStatus,
+                   o.order_type AS orderType,
+                   o.created_at AS placedAt,
+                   o.paid_at AS paidAt,
+                   COALESCE(ud.activated_at, ta.completed_at) AS activatedAt,
+                   ud.dc_location AS dataCenter,
+                   ta.tradein_no AS tradeinNo,
+                   ta.source_device_id AS sourceDeviceId,
+                   ta.target_device_id AS targetDeviceId,
+                   ud.instance_no AS targetDeviceInstanceNo
+              FROM nx_order o
+              LEFT JOIN nx_product p
+                ON p.id = o.product_id AND p.is_deleted = 0
+              LEFT JOIN nx_tradein_application ta
+                ON ta.user_id = o.user_id AND ta.target_order_no = o.order_no AND ta.is_deleted = 0
+              LEFT JOIN nx_user_device ud
+                ON ud.id = ta.target_device_id AND ud.user_id = o.user_id AND ud.is_deleted = 0
+             WHERE o.user_id = #{userId} AND o.is_deleted = 0
+             ORDER BY o.created_at DESC, o.id DESC
+             LIMIT 100
+            """)
+    List<UserOrder> userOrders(@Param("userId") Long userId);
 
     @Select("""
             SELECT COALESCE((
@@ -253,6 +348,12 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     record DeviceEarnings(BigDecimal dailyUsdt, BigDecimal dailyNex) {
     }
 
+    record UserCanonicalProfile(BigDecimal usdtAvailable, BigDecimal nexAvailable, LocalDateTime joinedAt) {
+    }
+
+    record E3CapacityConfig(String configKey, String configValue) {
+    }
+
     record OwnedDevice(
             Long id,
             String instanceNo,
@@ -270,7 +371,34 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             String location) {
     }
 
-    record ProductStock(Long id, BigDecimal priceUsdt, Integer stock) {
+    record ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock) {
+    }
+
+    record UserEventAttribution(String phase, Integer accountAgeMonths, String cohort) {
+    }
+
+    record UserOrder(
+            String orderNo,
+            Long productId,
+            String productNo,
+            String productName,
+            Integer quantity,
+            BigDecimal unitPriceUsdt,
+            BigDecimal discountUsdt,
+            BigDecimal amountUsdt,
+            String paymentMethod,
+            String paymentStatus,
+            String orderStatus,
+            String activationStatus,
+            String orderType,
+            LocalDateTime placedAt,
+            LocalDateTime paidAt,
+            LocalDateTime activatedAt,
+            String dataCenter,
+            String tradeinNo,
+            Long sourceDeviceId,
+            Long targetDeviceId,
+            String targetDeviceInstanceNo) {
     }
 
     record TrialClaim(Long id, String claimNo, String status, BigDecimal priceUsdt, BigDecimal earnedOffsetUsdt) {

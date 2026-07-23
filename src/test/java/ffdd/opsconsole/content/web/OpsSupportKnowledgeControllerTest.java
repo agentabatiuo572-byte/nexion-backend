@@ -11,11 +11,27 @@ import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
 import ffdd.opsconsole.content.dto.SupportKnowledgeDeleteRequest;
 import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class OpsSupportKnowledgeControllerTest {
     private final OpsSupportKnowledgeService knowledgeService = mock(OpsSupportKnowledgeService.class);
-    private final OpsSupportKnowledgeController controller = new OpsSupportKnowledgeController(knowledgeService);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final OpsSupportKnowledgeController controller = new OpsSupportKnowledgeController(knowledgeService, idempotencyService);
+
+    @BeforeEach
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void executeIdempotentCommand() {
+        org.mockito.Mockito.when(idempotencyService.execute(
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                        org.mockito.ArgumentMatchers.any(Supplier.class)))
+                .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+    }
 
     @Test
     void overviewDelegatesToService() {
@@ -89,6 +105,8 @@ class OpsSupportKnowledgeControllerTest {
                 "Why is withdrawal pending?",
                 "Payment desk checks risk and chain state.",
                 "PUBLISHED",
+                "zh-CN",
+                10,
                 "Marina K.",
                 "新增提现 FAQ");
     }

@@ -13,10 +13,13 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 @RequiredArgsConstructor
@@ -32,6 +35,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({MethodArgumentNotValidException.class, ConstraintViolationException.class})
     public ApiResult<Void> handleValidation(Exception ex) {
         return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ApiResult<Void> handleMissingRequestHeader(MissingRequestHeaderException ex) {
+        if ("Idempotency-Key".equalsIgnoreCase(ex.getHeaderName())) {
+            return ApiResult.fail(
+                    OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(),
+                    OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        return ApiResult.fail(400, "REQUEST_HEADER_REQUIRED");
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -53,6 +66,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex) {
         return ApiResult.fail(400, "REQUEST_BODY_INVALID");
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ApiResult<Void> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex) {
+        return ApiResult.fail(405, "METHOD_NOT_ALLOWED");
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ApiResult<Void> handleNoResource(NoResourceFoundException ex) {
+        return ApiResult.fail(404, "RESOURCE_NOT_FOUND");
     }
 
     @ExceptionHandler(Exception.class)

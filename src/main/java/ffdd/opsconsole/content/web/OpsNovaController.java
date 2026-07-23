@@ -19,8 +19,14 @@ import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -39,6 +45,33 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsNovaController {
     private final OpsNovaService novaService;
+    private final AdminIdempotencyService idempotencyService;
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> executeCommand(
+            String scope,
+            String idempotencyKey,
+            Object request,
+            Supplier<ApiResult<T>> action) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return action.get();
+        }
+        return (ApiResult<T>) idempotencyService.execute(
+                scope,
+                idempotencyKey.trim(),
+                requestHash(scope + ":" + String.valueOf(request)),
+                ApiResult.class,
+                (Supplier) action);
+    }
+
+    private String requestHash(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
 
     @GetMapping("/overview")
     @PreAuthorize("hasAuthority('content_i2_read')")
@@ -51,7 +84,8 @@ public class OpsNovaController {
     public ApiResult<NovaChannelView> createChannel(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaChannelUpsertRequest request) {
-        return novaService.createChannel(idempotencyKey, request);
+        return executeCommand("I2_NOVA_CHANNEL_CREATE", idempotencyKey, request,
+                () -> novaService.createChannel(idempotencyKey, request));
     }
 
     @PatchMapping("/channels/{key}")
@@ -60,7 +94,8 @@ public class OpsNovaController {
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaChannelUpsertRequest request) {
-        return novaService.updateChannel(key, idempotencyKey, request);
+        return executeCommand("I2_NOVA_CHANNEL_UPDATE:" + key, idempotencyKey, request,
+                () -> novaService.updateChannel(key, idempotencyKey, request));
     }
 
     @PatchMapping("/channels/{key}/status")
@@ -69,7 +104,8 @@ public class OpsNovaController {
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaChannelStatusRequest request) {
-        return novaService.updateChannelStatus(key, idempotencyKey, request);
+        return executeCommand("I2_NOVA_CHANNEL_STATUS:" + key, idempotencyKey, request,
+                () -> novaService.updateChannelStatus(key, idempotencyKey, request));
     }
 
     @DeleteMapping("/channels/{key}")
@@ -78,7 +114,8 @@ public class OpsNovaController {
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaDeleteRequest request) {
-        return novaService.deleteChannel(key, idempotencyKey, request);
+        return executeCommand("I2_NOVA_CHANNEL_DELETE:" + key, idempotencyKey, request,
+                () -> novaService.deleteChannel(key, idempotencyKey, request));
     }
 
     @PostMapping("/templates")
@@ -86,7 +123,8 @@ public class OpsNovaController {
     public ApiResult<NovaTemplateView> createTemplate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaTemplateCreateRequest request) {
-        return novaService.createTemplate(idempotencyKey, request);
+        return executeCommand("I2_NOVA_TEMPLATE_CREATE", idempotencyKey, request,
+                () -> novaService.createTemplate(idempotencyKey, request));
     }
 
     @PatchMapping("/templates/{channel}")
@@ -95,7 +133,8 @@ public class OpsNovaController {
             @PathVariable String channel,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaTemplateCreateRequest request) {
-        return novaService.updateTemplate(channel, idempotencyKey, request);
+        return executeCommand("I2_NOVA_TEMPLATE_UPDATE:" + channel, idempotencyKey, request,
+                () -> novaService.updateTemplate(channel, idempotencyKey, request));
     }
 
     @DeleteMapping("/templates/{channel}")
@@ -104,7 +143,8 @@ public class OpsNovaController {
             @PathVariable String channel,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaDeleteRequest request) {
-        return novaService.deleteTemplate(channel, idempotencyKey, request);
+        return executeCommand("I2_NOVA_TEMPLATE_DELETE:" + channel, idempotencyKey, request,
+                () -> novaService.deleteTemplate(channel, idempotencyKey, request));
     }
 
     @PatchMapping("/templates/{channel}/status")
@@ -113,7 +153,8 @@ public class OpsNovaController {
             @PathVariable String channel,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaTemplateStatusRequest request) {
-        return novaService.updateTemplateStatus(channel, idempotencyKey, request);
+        return executeCommand("I2_NOVA_TEMPLATE_STATUS:" + channel, idempotencyKey, request,
+                () -> novaService.updateTemplateStatus(channel, idempotencyKey, request));
     }
 
     @PatchMapping("/social-distribution")
@@ -121,7 +162,8 @@ public class OpsNovaController {
     public ApiResult<List<NovaSocialDistributionItem>> updateDistribution(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaDistributionUpdateRequest request) {
-        return novaService.updateDistribution(idempotencyKey, request);
+        return executeCommand("I2_NOVA_SOCIAL_DISTRIBUTION", idempotencyKey, request,
+                () -> novaService.updateDistribution(idempotencyKey, request));
     }
 
     @GetMapping("/social-events")
@@ -139,7 +181,8 @@ public class OpsNovaController {
     public ApiResult<NovaSocialSyncResult> syncSocialEvents(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaSocialEventSyncRequest request) {
-        return novaService.syncSocialEvents(idempotencyKey, request);
+        return executeCommand("I2_NOVA_SOCIAL_SYNC", idempotencyKey, request,
+                () -> novaService.syncSocialEvents(idempotencyKey, request));
     }
 
     @PatchMapping("/social-events/{id}/status")
@@ -148,7 +191,8 @@ public class OpsNovaController {
             @PathVariable long id,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaSocialEventStatusRequest request) {
-        return novaService.updateSocialEventStatus(id, idempotencyKey, request);
+        return executeCommand("I2_NOVA_SOCIAL_EVENT_STATUS:" + id, idempotencyKey, request,
+                () -> novaService.updateSocialEventStatus(id, idempotencyKey, request));
     }
 
     @DeleteMapping("/social-events/{id}")
@@ -157,7 +201,8 @@ public class OpsNovaController {
             @PathVariable long id,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaDeleteRequest request) {
-        return novaService.deleteSocialEvent(id, idempotencyKey, request);
+        return executeCommand("I2_NOVA_SOCIAL_EVENT_DELETE:" + id, idempotencyKey, request,
+                () -> novaService.deleteSocialEvent(id, idempotencyKey, request));
     }
 
     @PostMapping("/social-events/expire")
@@ -165,7 +210,8 @@ public class OpsNovaController {
     public ApiResult<Map<String, Integer>> expireSocialEvents(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody NovaDeleteRequest request) {
-        return novaService.expireSocialEvents(idempotencyKey, request);
+        return executeCommand("I2_NOVA_SOCIAL_EXPIRE", idempotencyKey, request,
+                () -> novaService.expireSocialEvents(idempotencyKey, request));
     }
 
     @GetMapping("/social-events/sample")

@@ -21,7 +21,7 @@ public class FinanceWithdrawalControlFacadeAdapter implements FinanceWithdrawalC
             return 0;
         }
         int updated = withdrawalRepository.freezePendingByUserId(userId, text(reason, "USER_STATUS_FROZEN"));
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("D2_WITHDRAWALS_FROZEN_BY_C2")
                 .resourceType("USER")
                 .resourceId(String.valueOf(userId))
@@ -32,6 +32,27 @@ public class FinanceWithdrawalControlFacadeAdapter implements FinanceWithdrawalC
                 .result("SUCCESS")
                 .riskLevel("HIGH")
                 .detail(Map.of("updatedWithdrawals", updated, "reason", text(reason, "")))
+                .build());
+        return updated;
+    }
+
+    @Override
+    public int restoreWithdrawalsFrozenByUserStatus(Long userId, String reason, String operator) {
+        if (userId == null || userId <= 0) {
+            return 0;
+        }
+        int updated = withdrawalRepository.restoreFrozenByUserStatus(userId);
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("D2_WITHDRAWALS_RESTORED_BY_C2")
+                .resourceType("USER")
+                .resourceId(String.valueOf(userId))
+                .bizNo(String.valueOf(userId))
+                .userId(userId)
+                .actorType("ADMIN")
+                .actorUsername(actor(operator))
+                .result("SUCCESS")
+                .riskLevel("HIGH")
+                .detail(Map.of("restoredWithdrawals", updated, "reason", text(reason, "")))
                 .build());
         return updated;
     }

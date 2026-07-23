@@ -6,6 +6,8 @@ public record SupportFaqUpsertRequest(
         String question,
         String answer,
         String status,
+        String language,
+        Integer sortOrder,
         String operator,
         String reason) {
 }

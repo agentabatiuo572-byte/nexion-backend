@@ -18,12 +18,64 @@ class MybatisRiskOpsRepositoryTest {
     private final RiskOpsMapper mapper = mock(RiskOpsMapper.class);
 
     @Test
+    void firstHighK4ScoreClaimsOneDurableK5Crossing() {
+        when(mapper.findK4KycTriggerStateForUpdate("U1")).thenReturn(null);
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        boolean claimed = repository.transitionK4KycReviewTriggerState("U1", 91, 85, "score:9");
+
+        assertThat(claimed).isTrue();
+        verify(mapper).insertK4KycTriggerState("U1", true, 91, 85, "score:9", 1L);
+    }
+
+    @Test
+    void sustainedHighK4ScoreUpdatesStateWithoutClaimingOrIncrementingAgain() {
+        when(mapper.findK4KycTriggerStateForUpdate("U1")).thenReturn(
+                new RiskOpsMapper.K4KycTriggerStateRecord("U1", true, 90, 85, "score:8", 1L, 3L));
+        when(mapper.updateK4KycTriggerState("U1", true, 91, 85, "score:9", 0, 3L)).thenReturn(1);
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        boolean claimed = repository.transitionK4KycReviewTriggerState("U1", 91, 85, "score:9");
+
+        assertThat(claimed).isFalse();
+        verify(mapper).updateK4KycTriggerState("U1", true, 91, 85, "score:9", 0, 3L);
+    }
+
+    @Test
+    void persistedBelowToAboveK4TransitionClaimsAndIncrementsExactlyOnce() {
+        when(mapper.findK4KycTriggerStateForUpdate("U1")).thenReturn(
+                new RiskOpsMapper.K4KycTriggerStateRecord("U1", false, 80, 85, "score:8", 1L, 4L));
+        when(mapper.updateK4KycTriggerState("U1", true, 86, 85, "score:9", 1, 4L)).thenReturn(1);
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        boolean claimed = repository.transitionK4KycReviewTriggerState("U1", 86, 85, "score:9");
+
+        assertThat(claimed).isTrue();
+        verify(mapper).updateK4KycTriggerState("U1", true, 86, 85, "score:9", 1, 4L);
+    }
+
+    @Test
     void k3DryRunCandidateQueryUsesTheDeclaredThirtyDayWindow() throws Exception {
         var select = RiskOpsMapper.class.getMethod("withdrawRuleCandidates", int.class)
                 .getAnnotation(org.apache.ibatis.annotations.Select.class);
 
         assertThat(String.join(" ", select.value()))
                 .contains("w.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)");
+    }
+
+    @Test
+    void k2E3ProjectionKeepsExactlyFiveBusinessEvidenceCells() throws Exception {
+        var insert = RiskOpsMapper.class.getMethod("upsertE3TradeinArbitrageRows")
+                .getAnnotation(org.apache.ibatis.annotations.Insert.class);
+        String sql = String.join(" ", insert.value()).replaceAll("\\s+", " ");
+
+        assertThat(sql)
+                .contains("CONCAT_WS(' / '")
+                .contains("NULL, 4, 'flag'")
+                .doesNotContain("'E3 交易事实实时投影'");
     }
 
     @Test
@@ -52,6 +104,62 @@ class MybatisRiskOpsRepositoryTest {
         assertThat(String.join(" ", modelSelect.value())).contains("score_mapping_json");
         assertThat(String.join(" ", contributionInsert.value())).contains("model_version");
         assertThat(String.join(" ", historyInsert.value())).contains("nx_admin_risk_score_history", "contributions_json");
+    }
+
+    @Test
+    void automaticK4ProjectionRefreshPreservesOverrideAndRecordsTheEffectiveScore() {
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        var model = new ffdd.opsconsole.risk.domain.RiskScoreModelView(
+                45L, 1L, "active",
+                Map.of("multiAccount", 25, "arbitrage", 20, "kycStatus", 20,
+                        "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10),
+                Map.of("multiAccount", true, "arbitrage", true, "kycStatus", true,
+                        "withdrawVelocity", true, "accountAge", true, "anomalyBehavior", true),
+                40, 70, 85, "{}", "publish", "superadmin", "now", "now");
+        var override = new ffdd.opsconsole.risk.domain.RiskScoreOverrideView(
+                "U00000052", 10, 35, "人工判断", "superadmin", "now", true);
+        when(mapper.activeScoreOverride("U00000052")).thenReturn(override);
+        when(mapper.updateScoreUserModelIfVersion("U00000052", 7L, 15, "k4-v45")).thenReturn(1);
+        when(mapper.findScoreUser("U00000052")).thenReturn(
+                new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now"));
+        when(mapper.scoreConfigRows()).thenReturn(java.util.List.of());
+        when(mapper.scoreContributions("U00000052")).thenReturn(java.util.List.of());
+
+        var refreshed = repository.refreshScoreProjection(
+                "U00000052", 7L, model, 15, java.util.List.of()).orElseThrow();
+
+        assertThat(refreshed.modelScore()).isEqualTo(15);
+        assertThat(refreshed.effectiveScore()).isEqualTo(35);
+        assertThat(refreshed.overridden()).isTrue();
+        verify(mapper, never()).deactivateScoreOverrides("U00000052");
+        verify(mapper).insertScoreHistory(
+                eq("U00000052"), eq(45L), eq(15), eq(35), eq("manually-overridden"),
+                org.mockito.ArgumentMatchers.anyString(), eq("事实源刷新（保留人工覆盖）"), eq("system:k4"));
+        verify(mapper).advanceScoreAsOfToLatestSource("U00000052");
+    }
+
+    @Test
+    void c1CurrentScoreBandUsesTheCurrentActiveModelsNonDefaultThresholds() {
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        when(mapper.findCurrentScoreUser("U00000067")).thenReturn(
+                new RiskOpsMapper.ScoreUserRecord("U00000067", 67, "k4-v23", 4L, "now", "now"));
+        when(mapper.activeScoreModel()).thenReturn(new RiskOpsMapper.ScoreModelRecord(
+                23L, 8L, "active", "{}", "{}", "{}",
+                35, 65, 80, "non-default threshold test", "risk-admin", "risk-admin", "now", "now"));
+        when(mapper.activeScoreOverride("U00000067")).thenReturn(null);
+        when(mapper.scoreContributions("U00000067")).thenReturn(java.util.List.of());
+        when(mapper.scoreConfigRows()).thenReturn(java.util.List.of(
+                new RiskOpsMapper.ScoreConfigRecord("bandLowMax", "40"),
+                new RiskOpsMapper.ScoreConfigRecord("bandHighMin", "70"),
+                new RiskOpsMapper.ScoreConfigRecord("autoEscalateScore", "85")));
+
+        var current = repository.findCurrentScoreUser("U00000067").orElseThrow();
+
+        assertThat(current.bandLabel()).isEqualTo("高风险");
+        assertThat(current.bandTone()).isEqualTo("bad");
+        assertThat(current.modelVersion()).isEqualTo("k4-v23");
     }
 
     @Test

@@ -71,6 +71,38 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void routesCanonicalRegulatoryEndpointsThroughBiAuthorities() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
+        authenticate("bi_l5_read");
+        filter.doFilter(
+                request("GET", "/api/admin/regulatory/options"),
+                new MockHttpServletResponse(),
+                mark(readInvoked));
+        assertThat(readInvoked).isTrue();
+
+        SecurityContextHolder.clearContext();
+        AtomicBoolean writeInvoked = new AtomicBoolean(false);
+        authenticate("bi_l5_regulatory_generate");
+        filter.doFilter(
+                request("POST", "/api/admin/regulatory/report"),
+                new MockHttpServletResponse(),
+                mark(writeInvoked));
+        assertThat(writeInvoked).isTrue();
+
+        SecurityContextHolder.clearContext();
+        AtomicBoolean deniedWriteInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse deniedWrite = new MockHttpServletResponse();
+        authenticate("bi_l5_read");
+        filter.doFilter(
+                request("POST", "/api/admin/regulatory/report"),
+                deniedWrite,
+                mark(deniedWriteInvoked));
+        assertThat(deniedWriteInvoked).isFalse();
+        assertThat(deniedWrite.getStatus()).isEqualTo(403);
+        assertThat(deniedWrite.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
+    }
+
+    @Test
     void permitsMfaChallengeVerificationWithoutAuthentication() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
 
@@ -135,6 +167,48 @@ class AdminRbacAuthorizationFilterTest {
 
         assertThat(invoked).isFalse();
         assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void routesDedicatedB3ApiThroughOverviewAuthorities() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
+        authenticate("overview_b3_read");
+        filter.doFilter(request("GET", "/api/admin/funnel/cohort-trend"),
+                new MockHttpServletResponse(), mark(readInvoked));
+        assertThat(readInvoked).isTrue();
+
+        AtomicBoolean deniedWriteInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse deniedWrite = new MockHttpServletResponse();
+        authenticate("overview_b3_read");
+        filter.doFilter(request("POST", "/api/admin/funnel/view"),
+                deniedWrite, mark(deniedWriteInvoked));
+        assertThat(deniedWriteInvoked).isFalse();
+        assertThat(deniedWrite.getStatus()).isEqualTo(403);
+
+        AtomicBoolean writeInvoked = new AtomicBoolean(false);
+        authenticate("overview_b3_view_write");
+        filter.doFilter(request("POST", "/api/admin/funnel/view"),
+                new MockHttpServletResponse(), mark(writeInvoked));
+        assertThat(writeInvoked).isTrue();
+    }
+
+    @Test
+    void routesDedicatedB4ApiThroughOverviewAuthoritiesWithoutCrossModuleLeakage() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
+        authenticate("overview_b4_read");
+        filter.doFilter(request("GET", "/api/admin/phase/overview"),
+                new MockHttpServletResponse(), mark(readInvoked));
+        assertThat(readInvoked).isTrue();
+
+        SecurityContextHolder.clearContext();
+        AtomicBoolean deniedInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse denied = new MockHttpServletResponse();
+        authenticate("overview_b3_read");
+        filter.doFilter(request("GET", "/api/admin/phase/overview"),
+                denied, mark(deniedInvoked));
+        assertThat(deniedInvoked).isFalse();
+        assertThat(denied.getStatus()).isEqualTo(403);
+        assertThat(denied.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
     }
 
     @Test
@@ -261,6 +335,17 @@ class AdminRbacAuthorizationFilterTest {
 
         assertThat(meInvoked).isTrue();
         assertThat(changeInvoked).isTrue();
+    }
+
+    @Test
+    void delegatesCanonicalD5FieldAwareWriteAuthorizationToMethodSecurity() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("finance_d5_read");
+
+        filter.doFilter(request("PUT", "/api/admin/withdraw/limits"),
+                new MockHttpServletResponse(), mark(invoked));
+
+        assertThat(invoked).isTrue();
     }
 
     @Test
@@ -453,6 +538,29 @@ class AdminRbacAuthorizationFilterTest {
         assertThat(invoked).isFalse();
         assertThat(response.getStatus()).isEqualTo(403);
         assertThat(response.getContentAsString()).contains("ADMIN_RBAC_RULE_MISSING");
+    }
+
+    @Test
+    void routesCanonicalE2ConfigThroughDeviceAuthorities() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
+        authenticate("device_e2_read");
+
+        filter.doFilter(
+                request("GET", "/api/admin/config/task-pricing"),
+                new MockHttpServletResponse(),
+                mark(readInvoked));
+
+        assertThat(readInvoked).isTrue();
+
+        SecurityContextHolder.clearContext();
+        AtomicBoolean writeInvoked = new AtomicBoolean(false);
+        authenticate("device_e2_write");
+        filter.doFilter(
+                request("PUT", "/api/admin/config/phone-tiers"),
+                new MockHttpServletResponse(),
+                mark(writeInvoked));
+
+        assertThat(writeInvoked).isTrue();
     }
 
     private MockHttpServletRequest request(String method, String path) {

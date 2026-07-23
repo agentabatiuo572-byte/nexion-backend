@@ -19,6 +19,10 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -29,11 +33,14 @@ import ffdd.opsconsole.user.domain.UserSessionView;
 import ffdd.opsconsole.user.domain.UserTeamMemberView;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -61,6 +68,8 @@ public class OpsUser360Service {
     private final OpsRiskService riskService;
     private final AuditLogService auditLogService;
     private final UserOpsRepository userRepository;
+    private final AdminOperatorRoleResolver roleResolver;
+    private final EventOutboxService outboxService;
 
     @Transactional
     public ApiResult<Map<String, Object>> detail(String userKey) {
@@ -72,44 +81,87 @@ public class OpsUser360Service {
         if (existingUserId != null) {
             return detail(existingUserId);
         }
-        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_NOT_FOUND");
+        return ApiResult.fail(404, "USER_NOT_FOUND");
     }
 
     public ApiResult<Map<String, Object>> detail(Long userId) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
+        String role = text(roleResolver.resolveCode());
+        if (!Set.of("SUPER_ADMIN", "FINANCE", "RISK", "GROWTH", "SUPPORT", "AUDITOR").contains(role)) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "C1_ROLE_SCOPE_UNMAPPED");
+        }
+        boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
+        boolean canFinance = full || Set.of("FINANCE", "SUPPORT").contains(role);
+        boolean canGrowth = full || "GROWTH".equals(role);
+        boolean canDevices = full || "SUPPORT".equals(role);
+        boolean canCommerce = full || Set.of("GROWTH", "SUPPORT").contains(role);
         ApiResult<UserAccountView> profileResult = userService.profile(userId);
         if (profileResult.getCode() != 0 || profileResult.getData() == null) {
             return ApiResult.fail(profileResult.getCode(), profileResult.getMessage());
         }
 
         UserAccountView profile = profileResult.getData();
-        UserSecurityStatusView security = dataOrNull(userService.securityStatus(userId));
-        List<UserSessionView> sessions = listOrEmpty(dataOrNull(userService.sessions(userId, 50)));
-        PageResult<DepositFlowView> deposits = pageOrEmpty(dataOrNull(financeService.topupFlows("confirmed", userId, null, 1, 30)), 1, 30);
-        PageResult<WithdrawalOrderView> withdrawals = pageOrEmpty(dataOrNull(
-                financeService.withdrawals(new WithdrawalQueryRequest(null, userId, null, 1, 30))), 1, 30);
-        Map<String, Object> ledger = mapOrEmpty(dataOrNull(treasuryService.userLedger(userId)));
-        List<DeviceOpsView> devices = listOrEmpty(dataOrNull(deviceService.userDevices(userId, 200)));
-        List<DeviceOrderView> orders = pageOrEmpty(dataOrNull(
-                        deviceService.orders(new DeviceOrderQueryRequest(null, profile.userNo(), 1L, 50L))), 1, 50)
+        Read<UserSecurityStatusView> securityRead = full
+                ? read(() -> userService.securityStatus(userId))
+                : Read.hiddenRead();
+        UserSecurityStatusView security = securityRead.value();
+        Read<List<UserSessionView>> sessionRead = full
+                ? read(() -> userService.sessions(userId, 50))
+                : Read.hiddenRead();
+        List<Map<String, Object>> sessions = sanitizeSessions(listOrEmpty(sessionRead.value()));
+        Read<PageResult<DepositFlowView>> depositRead = canFinance
+                ? read(() -> financeService.topupFlows("confirmed", userId, null, 1, 30))
+                : Read.hiddenRead();
+        PageResult<DepositFlowView> deposits = pageOrEmpty(depositRead.value(), 1, 30);
+        Read<PageResult<WithdrawalOrderView>> withdrawalRead = canFinance
+                ? read(() -> financeService.withdrawals(new WithdrawalQueryRequest(null, userId, null, 1, 30)))
+                : Read.hiddenRead();
+        PageResult<WithdrawalOrderView> withdrawals = pageOrEmpty(withdrawalRead.value(), 1, 30);
+        Read<Map<String, Object>> ledgerRead = canFinance
+                ? read(() -> treasuryService.userLedger(userId))
+                : Read.hiddenRead();
+        Map<String, Object> ledger = mapOrEmpty(ledgerRead.value());
+        Read<List<DeviceOpsView>> deviceRead = canDevices
+                ? read(() -> deviceService.userDevices(userId, 200))
+                : Read.hiddenRead();
+        List<DeviceOpsView> devices = listOrEmpty(deviceRead.value());
+        Read<PageResult<DeviceOrderView>> orderRead = canCommerce
+                ? read(() -> deviceService.orders(new DeviceOrderQueryRequest(null, profile.userNo(), 1L, 50L)))
+                : Read.hiddenRead();
+        List<DeviceOrderView> orders = pageOrEmpty(orderRead.value(), 1, 50)
                 .getRecords()
                 .stream()
                 .filter(order -> sameText(order.userNo(), profile.userNo()))
                 .toList();
-        List<RiskCaseView> riskCases = pageOrEmpty(dataOrNull(
-                        riskService.cases(new RiskCaseQueryRequest(userId, null, null, 1, 20, null))), 1, 20)
+        Read<PageResult<RiskCaseView>> riskCaseRead = full
+                ? read(() -> riskService.cases(new RiskCaseQueryRequest(userId, null, null, 1, 20, null)))
+                : Read.hiddenRead();
+        List<RiskCaseView> riskCases = pageOrEmpty(riskCaseRead.value(), 1, 20)
                 .getRecords();
-        RiskScoreUserView riskScore = dataOrNull(riskService.scoreUser(profile.userNo()));
-        List<AuditLogRecord> audit = auditLogs(userId);
+        Read<RiskScoreUserView> riskScoreRead = full
+                ? read(() -> riskService.currentScoreUser(profile.userNo()))
+                : Read.hiddenRead();
+        RiskScoreUserView riskScore = riskScoreRead.value();
+        List<AuditLogRecord> audit = full ? safeList(() -> auditLogs(userId)) : List.of();
 
         Map<String, Object> risk = risk(profile, riskScore, riskCases);
+        risk.put("sourceStatus", riskScoreRead.hidden()
+                ? "HIDDEN"
+                : riskScoreRead.ready() && riskScore != null ? "READY" : "UNAVAILABLE");
         Map<String, Object> deviceSection = devices(devices);
+        sourceStatus(deviceSection, deviceRead);
         Map<String, Object> depositSection = deposits(deposits.getRecords());
+        sourceStatus(depositSection, depositRead);
         Map<String, Object> withdrawalSection = withdrawals(withdrawals.getRecords());
-        Map<String, Object> teamSection = team(userId);
-        Map<String, Object> notificationSection = notifications(userId);
+        sourceStatus(withdrawalSection, withdrawalRead);
+        Map<String, Object> teamSection = canGrowth
+                ? safeSection(() -> team(userId))
+                : hiddenSection();
+        Map<String, Object> notificationSection = canGrowth
+                ? safeSection(() -> notifications(userId))
+                : hiddenSection();
         List<TreasuryLedgerBillView> ledgerRows = ledgerRows(ledger);
         Map<String, Object> earningsSection = earnings(ledgerRows, deviceSection);
         Map<String, Object> referralSection = referral(teamSection, ledgerRows);
@@ -117,6 +169,7 @@ public class OpsUser360Service {
         Map<String, Object> financialSection = financial(profile, ledger, ledgerRows);
         Map<String, Object> engagementSection = engagement(notificationSection, audit);
         Map<String, Object> commerceSection = commerce(orders);
+        sourceStatus(commerceSection, orderRead);
         Map<String, Object> accountSection = account(profile, security, sessions, risk);
         Map<String, Object> hub = section(
                 "deposit", depositSection,
@@ -159,13 +212,221 @@ public class OpsUser360Service {
                         "write actions require Idempotency-Key, reason and A2 audit",
                         "media URLs must come from nx_admin media upload APIs",
                         "sunset products are historical compatibility only"));
+        trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce);
+        List<String> cardsViewed = response.keySet().stream()
+                .filter(key -> !Set.of("sources", "redlines", "hub").contains(key))
+                .toList();
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("ADMIN.USER_PROFILE_VIEWED")
+                .resourceType("USER_PROFILE")
+                .resourceId(profile.userNo())
+                .userId(userId)
+                .actorType("ADMIN")
+                .result("SUCCESS")
+                .riskLevel("HIGH")
+                .detail(Map.of(
+                        "role", role,
+                        "cardsViewed", cardsViewed))
+                .build());
+        outboxService.publish("USER_PROFILE", profile.userNo(), "ADMIN_USER_PROFILE_VIEWED", Map.of(
+                "target_user_id", userId,
+                "viewer_operator", AdminActorResolver.resolve("SYSTEM"),
+                "viewer_role", role,
+                "cards_viewed", cardsViewed,
+                "occurred_at", Instant.now().toString()));
         return ApiResult.ok(response);
+    }
+
+    private <T> Read<T> read(Supplier<ApiResult<T>> supplier) {
+        try {
+            ApiResult<T> result = supplier.get();
+            if (result == null || result.getCode() != 0) {
+                return Read.error();
+            }
+            return Read.ready(result.getData());
+        } catch (RuntimeException ex) {
+            return Read.error();
+        }
+    }
+
+    private <T> List<T> safeList(Supplier<List<T>> supplier) {
+        try {
+            List<T> values = supplier.get();
+            return values == null ? List.of() : values;
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
+    }
+
+    private Map<String, Object> safeSection(Supplier<Map<String, Object>> supplier) {
+        try {
+            Map<String, Object> value = supplier.get();
+            return value == null ? errorSection() : value;
+        } catch (RuntimeException ex) {
+            return errorSection();
+        }
+    }
+
+    private Map<String, Object> errorSection() {
+        return section("total", 0, "records", List.of(), "sourceStatus", "ERROR");
+    }
+
+    private Map<String, Object> hiddenSection() {
+        return section("total", 0, "records", List.of(), "sourceStatus", "HIDDEN");
+    }
+
+    private void sourceStatus(Map<String, Object> section, Read<?> read) {
+        if (section != null && read != null && !read.ready()) {
+            section.put("sourceStatus", read.hidden() ? "HIDDEN" : "ERROR");
+        }
+    }
+
+    private List<Map<String, Object>> sanitizeSessions(List<UserSessionView> sessions) {
+        return sessions.stream()
+                .map(value -> section(
+                        "deviceName", value.deviceName(),
+                        "clientIpMasked", value.clientIpMasked(),
+                        "status", value.status(),
+                        "issuedAt", value.issuedAt(),
+                        "lastActiveAt", value.lastActiveAt(),
+                        "expiresAt", value.expiresAt(),
+                        "revokedAt", value.revokedAt()))
+                .toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void trimForRole(
+            Map<String, Object> response,
+            String role,
+            boolean full,
+            boolean canFinance,
+            boolean canGrowth,
+            boolean canDevices,
+            boolean canCommerce) {
+        UserAccountView profile = (UserAccountView) response.get("profile");
+        Map<String, Object> projectedProfile = section(
+                "id", profile.id(),
+                "userNo", profile.userNo(),
+                "nickname", profile.nickname(),
+                "phoneMasked", profile.phoneMasked(),
+                "countryCode", profile.countryCode(),
+                "status", profile.status(),
+                "kycStatus", profile.kycStatus(),
+                "userLevel", profile.userLevel(),
+                "vRank", profile.vRank(),
+                "registeredAt", profile.registeredAt(),
+                "lastLoginAt", profile.lastLoginAt());
+        if (canFinance) {
+            projectedProfile.put("walletUsdt", profile.walletUsdt());
+            projectedProfile.put("walletNex", profile.walletNex());
+        }
+        if (full) {
+            projectedProfile.put("twoFactorEnabled", profile.twoFactorEnabled());
+            projectedProfile.put("riskScore", profile.riskScore());
+            projectedProfile.put("riskBand", profile.riskBand());
+            projectedProfile.put("deviceCount", profile.deviceCount());
+            projectedProfile.put("activeDeviceCount", profile.activeDeviceCount());
+        } else if ("SUPPORT".equals(role)) {
+            projectedProfile.put("riskBand", profile.riskBand());
+        }
+        response.put("profile", projectedProfile);
+
+        if (!full) {
+            response.remove("security");
+            response.remove("sessions");
+            response.remove("audit");
+            response.put("account", section(
+                    "status", profile.status(),
+                    "kycStatus", profile.kycStatus(),
+                    "riskBand", "SUPPORT".equals(role) ? profile.riskBand() : null,
+                    "sourceStatus", "READY"));
+            if ("SUPPORT".equals(role)) {
+                response.put("risk", section("bandLabel", profile.riskBand(), "sourceStatus", "READY"));
+            } else {
+                response.remove("risk");
+            }
+        }
+        if (!canFinance) {
+            remove(response, "deposits", "withdrawals", "ledger", "financial");
+        }
+        if (!canGrowth) {
+            remove(response, "team", "notifications", "referral", "vrank", "engagement");
+        }
+        if (!canDevices) {
+            response.remove("devices");
+        }
+        if (!canCommerce) {
+            response.remove("orders");
+            response.remove("commerce");
+        }
+        if (!full) {
+            response.remove("earnings");
+        }
+
+        Object summaryValue = response.get("summary");
+        if (summaryValue instanceof Map<?, ?> rawSummary) {
+            Map<String, Object> summary = (Map<String, Object>) rawSummary;
+            if (!full) {
+                remove(summary, "twoFactorEnabled", "locked", "passwordResetRequired", "activeSessionCount", "riskScore");
+            }
+            if (!canFinance) {
+                remove(summary, "walletUsdt", "walletNex", "depositedUsd", "withdrawnUsd", "withdrawRequestedUsd");
+            }
+            if (!canDevices) {
+                remove(summary, "deviceCount", "activeDeviceCount", "onlineDeviceCount", "dailyUsdt", "dailyNex");
+            }
+            if (!canGrowth) {
+                remove(summary, "teamSize", "directTeamSize", "teamVolumeUsd", "unreadNotificationCount");
+            }
+        }
+
+        Map<String, Object> hub = new LinkedHashMap<>();
+        Map<String, String> hubKeys = Map.ofEntries(
+                Map.entry("deposit", "deposits"),
+                Map.entry("withdrawal", "withdrawals"),
+                Map.entry("devices", "devices"),
+                Map.entry("earnings", "earnings"),
+                Map.entry("referral", "referral"),
+                Map.entry("vrank", "vrank"),
+                Map.entry("financial", "financial"),
+                Map.entry("engagement", "engagement"),
+                Map.entry("commerce", "commerce"),
+                Map.entry("account", "account"),
+                Map.entry("notification", "notifications"));
+        for (Map.Entry<String, String> entry : hubKeys.entrySet()) {
+            String key = entry.getKey();
+            String responseKey = entry.getValue();
+            if (response.containsKey(responseKey)) {
+                hub.put(key, response.get(responseKey));
+            }
+        }
+        response.put("hub", hub);
+    }
+
+    private void remove(Map<String, Object> map, String... keys) {
+        for (String key : keys) {
+            map.remove(key);
+        }
+    }
+
+    private record Read<T>(T value, boolean ready, boolean hidden) {
+        private static <T> Read<T> ready(T value) {
+            return new Read<>(value, true, false);
+        }
+
+        private static <T> Read<T> error() {
+            return new Read<>(null, false, false);
+        }
+
+        private static <T> Read<T> hiddenRead() {
+            return new Read<>(null, false, true);
+        }
     }
 
     private Map<String, Object> summary(
             UserAccountView profile,
             UserSecurityStatusView security,
-            List<UserSessionView> sessions,
+            List<Map<String, Object>> sessions,
             Map<String, Object> deposits,
             Map<String, Object> withdrawals,
             Map<String, Object> devices,
@@ -181,7 +442,7 @@ public class OpsUser360Service {
                 "twoFactorEnabled", security != null && security.twoFactorEnabled(),
                 "locked", security != null && security.locked(),
                 "passwordResetRequired", security != null && security.passwordResetRequired(),
-                "activeSessionCount", (int) sessions.stream().filter(session -> "ACTIVE".equalsIgnoreCase(session.status())).count(),
+                "activeSessionCount", (int) sessions.stream().filter(session -> "ACTIVE".equalsIgnoreCase(String.valueOf(session.get("status")))).count(),
                 "depositedUsd", deposits.get("confirmedUsd"),
                 "withdrawnUsd", withdrawals.get("completedUsd"),
                 "withdrawRequestedUsd", withdrawals.get("requestedUsd"),
@@ -369,7 +630,7 @@ public class OpsUser360Service {
     private Map<String, Object> account(
             UserAccountView profile,
             UserSecurityStatusView security,
-            List<UserSessionView> sessions,
+            List<Map<String, Object>> sessions,
             Map<String, Object> risk) {
         return section(
                 "profile", profile,
@@ -384,12 +645,8 @@ public class OpsUser360Service {
     }
 
     private Map<String, Object> risk(UserAccountView profile, RiskScoreUserView score, List<RiskCaseView> cases) {
-        int effectiveScore = score != null && score.effectiveScore() != null
-                ? score.effectiveScore()
-                : fallbackRiskScore(profile, cases);
-        String bandLabel = score != null && score.bandLabel() != null
-                ? score.bandLabel()
-                : riskBand(effectiveScore);
+        Integer effectiveScore = score == null ? null : score.effectiveScore();
+        String bandLabel = score == null ? null : score.bandLabel();
         List<String> flags = new ArrayList<>();
         if (!"ACTIVE".equalsIgnoreCase(profile.status())) {
             flags.add(profile.status());
@@ -459,32 +716,6 @@ public class OpsUser360Service {
             return BigDecimal.valueOf(number.doubleValue());
         }
         return safe(fallback);
-    }
-
-    private int fallbackRiskScore(UserAccountView profile, List<RiskCaseView> cases) {
-        int statusScore = switch (text(profile.status())) {
-            case "BANNED", "RESTRICTED" -> 88;
-            case "FROZEN" -> 76;
-            default -> 20;
-        };
-        int kycScore = List.of("VERIFIED", "APPROVED", "PASSED").contains(text(profile.kycStatus())) ? 0 : 25;
-        int caseScore = cases.stream()
-                .map(RiskCaseView::riskScore)
-                .filter(score -> score != null)
-                .mapToInt(Integer::intValue)
-                .max()
-                .orElse(0);
-        return Math.max(Math.min(100, statusScore + kycScore), caseScore);
-    }
-
-    private String riskBand(int score) {
-        if (score >= 70) {
-            return "高风险";
-        }
-        if (score >= 40) {
-            return "中风险";
-        }
-        return "低风险";
     }
 
     private boolean isActiveDevice(DeviceOpsView device) {

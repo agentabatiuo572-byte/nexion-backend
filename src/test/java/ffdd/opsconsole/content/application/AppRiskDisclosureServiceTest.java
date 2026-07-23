@@ -19,11 +19,15 @@ import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.dto.AppRiskDisclosureAckRequest;
 import ffdd.opsconsole.content.infrastructure.DisclosureAckStatusEntity;
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
+import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper.UserAttribution;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
@@ -37,8 +41,9 @@ class AppRiskDisclosureServiceTest {
     private final RiskDisclosureAckProperties ackProperties = new RiskDisclosureAckProperties();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final TamperDetectionPublisher tamperDetectionPublisher = mock(TamperDetectionPublisher.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final AppRiskDisclosureService service = new AppRiskDisclosureService(
-            repository, ackMapper, clock, ackProperties, auditLogService, tamperDetectionPublisher);
+            repository, ackMapper, clock, ackProperties, auditLogService, tamperDetectionPublisher, eventOutboxService);
 
     @BeforeEach
     void setUpPublishedVietnamDisclosure() {
@@ -47,6 +52,7 @@ class AppRiskDisclosureServiceTest {
                 new DisclosureJurisdictionCatalogView("CN-RISK", "中国法域", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12"),
                 new DisclosureJurisdictionCatalogView("VN-ALT", "越南替代法域", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12")));
         when(ackMapper.findUserCountryCode(42L)).thenReturn("vn");
+        when(ackMapper.userAttribution(42L)).thenReturn(new UserAttribution("P3", 4, "2026-W10"));
         when(ackMapper.insertReadToken(anyString(), eq(42L), eq("SBV"), eq("v13"),
                 any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
         when(repository.listJurisdictions()).thenReturn(List.of(
@@ -76,6 +82,9 @@ class AppRiskDisclosureServiceTest {
         assertThat(result.getData().acknowledgmentToken()).isNull();
         verify(repository).listActiveJurisdictionCatalog();
         verify(repository, never()).listJurisdictionCatalog();
+        verify(eventOutboxService).publishUserEvent(
+                eq("DISCLOSURE_VIEW"), eq("42:SBV"), eq("disclosure.viewed"), eq(42L),
+                eq("P3"), eq(4), eq("2026-W10"), any());
     }
 
     @Test
@@ -109,11 +118,32 @@ class AppRiskDisclosureServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().acknowledgmentToken()).isNotBlank();
         assertThat(result.getData().acknowledgmentTokenExpiresAt())
-                .isEqualTo(LocalDateTime.of(2026, 7, 12, 3, 10));
+                .isEqualTo(OffsetDateTime.of(2026, 7, 12, 3, 10, 0, 0, ZoneOffset.UTC));
         assertThat(result.getData().minimumReadingSeconds()).isEqualTo(5);
         verify(ackMapper).insertReadToken(anyString(), eq(42L), eq("SBV"), eq("v13"),
                 eq(LocalDateTime.of(2026, 7, 12, 3, 10)), eq(LocalDateTime.of(2026, 7, 12, 3, 0)));
         verify(ackMapper).deleteExpiredReadTokens(42L, LocalDateTime.of(2026, 7, 12, 3, 0));
+    }
+
+    @Test
+    void readTokenExpiryCarriesServerOffsetAndPreservesAbsoluteInstantForOtherTimeZones() throws Exception {
+        Clock shanghaiClock = Clock.fixed(
+                Instant.parse("2026-07-22T05:00:00Z"), ZoneId.of("Asia/Shanghai"));
+        AppRiskDisclosureService shanghaiService = new AppRiskDisclosureService(
+                repository, ackMapper, shanghaiClock, ackProperties, auditLogService,
+                tamperDetectionPublisher, eventOutboxService);
+        when(ackMapper.findUserAck(42L, "SBV")).thenReturn(null);
+
+        var result = shanghaiService.current(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().acknowledgmentTokenExpiresAt().getOffset())
+                .isEqualTo(ZoneOffset.ofHours(8));
+        assertThat(result.getData().acknowledgmentTokenExpiresAt().toInstant())
+                .isEqualTo(Instant.parse("2026-07-22T05:10:00Z"));
+        String json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+                .writeValueAsString(result.getData());
+        assertThat(json).contains("\"acknowledgmentTokenExpiresAt\":\"2026-07-22T13:10:00+08:00\"");
     }
 
     @Test
@@ -148,6 +178,9 @@ class AppRiskDisclosureServiceTest {
                 "I5_DISCLOSURE_ACKNOWLEDGED".equals(audit.getAction())
                         && Long.valueOf(42L).equals(audit.getUserId())
                         && !String.valueOf(audit.getDetail()).contains("token")));
+        verify(eventOutboxService).publishUserEvent(
+                eq("DISCLOSURE_ACK"), eq("42:SBV"), eq("disclosure.acked"), eq(42L),
+                eq("P3"), eq(4), eq("2026-W10"), any());
         verify(ackMapper).consumeReadToken(anyString(), eq(42L), eq("SBV"), eq("v13"),
                 eq(LocalDateTime.of(2026, 7, 12, 3, 0)),
                 eq(LocalDateTime.of(2026, 7, 12, 2, 59, 55)));
@@ -170,11 +203,17 @@ class AppRiskDisclosureServiceTest {
         assertThat(blocked.getCode()).isEqualTo(409);
         assertThat(blocked.getMessage()).isEqualTo("RISK_DISCLOSURE_ACK_REQUIRED");
         verify(ackMapper).incrementBlocked(eq("SBV"), any(LocalDateTime.class));
+        verify(eventOutboxService).publishUserEvent(
+                eq("DISCLOSURE_GATE"), eq("WD-1001"), eq("disclosure.gated_action_blocked"), eq(42L),
+                eq("P3"), eq(4), eq("2026-W10"), any());
 
         var retry = service.checkGate(42L, "withdraw", "WD-1001");
         assertThat(retry.getCode()).isEqualTo(409);
         verify(ackMapper, times(2)).recordBlockedIfAbsent(
                 eq(42L), eq("SBV"), eq("withdraw"), eq("WD-1001"), any(LocalDateTime.class));
+        verify(eventOutboxService, times(1)).publishUserEvent(
+                eq("DISCLOSURE_GATE"), eq("WD-1001"), eq("disclosure.gated_action_blocked"), eq(42L),
+                eq("P3"), eq(4), eq("2026-W10"), any());
 
         var inactive = service.checkGate(42L, "staking");
         assertThat(inactive.getCode()).isZero();

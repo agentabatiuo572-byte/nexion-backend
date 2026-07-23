@@ -39,6 +39,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -124,6 +125,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private final OpsI18nLearningService i18nLearningService;
     private final DisclosureReackNotificationService disclosureReackNotificationService;
     private final AdminIdempotencyService idempotencyService;
+    private final EventOutboxService eventOutboxService;
 
     public ApiResult<TrustDisclosureOverview> overview() {
         return ApiResult.ok(authorizedOverview(currentOverview()));
@@ -142,6 +144,21 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 })
                 .toList();
         return ApiResult.ok(new AppTrustSectionsView(sections));
+    }
+
+    @Transactional
+    public ApiResult<Void> recordSectionView(String sectionKey, String locale) {
+        TrustSectionView section = findSection(sectionKey);
+        if (section == null || !"published".equalsIgnoreCase(section.status())
+                || !APP_TRUST_SECTION_KEYS.contains(normalizeSectionKey(section.key()))) {
+            return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        }
+        String normalizedLocale = locale == null ? "und" : locale.trim().toLowerCase(Locale.ROOT);
+        if (!Set.of("zh", "vi", "en").contains(normalizedLocale)) normalizedLocale = "und";
+        eventOutboxService.publish("TRUST_SECTION", section.key(), "content.trust_section_viewed", Map.of(
+                "sectionKey", section.key(),
+                "locale", normalizedLocale));
+        return ApiResult.ok(null);
     }
 
     @Transactional
@@ -182,6 +199,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 "roleGate", current.roleGate(),
                 "dataSourceStatement", trimToEmpty(request.dataSourceStatement()),
                 "bilingualConfirmed", true));
+        publishTrustGovernanceEvent("admin.trust_content_published", current, updated.version(), request.operator(), request.reason(),
+                trimToEmpty(request.dataSourceStatement()));
         return ApiResult.ok(updated);
     }
 
@@ -213,6 +232,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         requiredAudit("I4_TRUST_SECTION_ROLLED_BACK", "TRUST_SECTION", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
                 "to", request.targetVersion().trim()));
+        publishTrustGovernanceEvent("admin.trust_content_rolledback", current, updated.version(), request.operator(), request.reason(), "");
         return ApiResult.ok(updated);
     }
 
@@ -307,6 +327,12 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         TrustSectionView updated = findSection(current.key());
         requiredAudit("I4_TRUST_SECTION_ARCHIVED", "TRUST_SECTION", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "version", current.version()));
+        eventOutboxService.publish("TRUST_SECTION", current.key(), "admin.trust_content_archived", Map.of(
+                "sectionKey", current.key(),
+                "version", current.version(),
+                "operator", operator(request.operator()),
+                "operatorRole", currentOperatorRole(current),
+                "reason", request.reason().trim()));
         return ApiResult.ok(updated);
     }
 
@@ -702,7 +728,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             trustDisclosureRepository.markDisclosureMatrixUsersStale(
                     normalized.jurisdictionCode(), affectedCountries, normalized.version(), adjustedAt);
             disclosureReackNotificationService.notifyPublished(
-                    normalized.jurisdictionCode(), normalized.version(), normalizedCountries,
+                    normalized.jurisdictionCode(), current == null || "archived".equalsIgnoreCase(current.status())
+                            ? "none" : current.version(),
+                    normalized.version(), affectedCountries,
                     idempotencyKey, adjustedAt);
         }
         requiredAudit("I5_DISCLOSURE_MATRIX_CONFIGURED", "DISCLOSURE_MATRIX", normalized.jurisdictionCode(), normalized.operator(), idempotencyKey, normalized.reason(), Map.of(
@@ -743,9 +771,18 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("I", "disclosure_gate", "restricted-actions") > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        OverviewMutationResult result = idempotencyService.execute(
+                "I5_DISCLOSURE_GATE_UPDATE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(String.valueOf(request)),
+                OverviewMutationResult.class,
+                () -> OverviewMutationResult.from(doUpdateGateScope(idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustDisclosureOverview> doUpdateGateScope(
+            String idempotencyKey, DisclosureGateUpdateRequest request) {
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         Set<String> activeKeys = resolveGateKeys(request.scope());
         if (activeKeys.isEmpty()) {
@@ -1496,6 +1533,35 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 .action(action).resourceType(resourceType).resourceId(resourceId).bizNo(resourceId)
                 .actorType("ADMIN").actorUsername(operator(operator)).result("SUCCESS").riskLevel("HIGH")
                 .detail(detail).build());
+    }
+
+    private void publishTrustGovernanceEvent(
+            String eventName,
+            TrustSectionView before,
+            String toVersion,
+            String requestOperator,
+            String reason,
+            String dataSourceStatement) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("sectionKey", before.key());
+        payload.put("fromVersion", before.version());
+        payload.put("toVersion", toVersion);
+        payload.put("operator", operator(requestOperator));
+        payload.put("operatorRole", currentOperatorRole(before));
+        payload.put("reason", reason.trim());
+        if (StringUtils.hasText(dataSourceStatement)) {
+            payload.put("dataSourceStatement", dataSourceStatement.trim());
+        }
+        eventOutboxService.publish("TRUST_SECTION", before.key(), eventName, payload);
+    }
+
+    private String currentOperatorRole(TrustSectionView section) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getName() != null
+                && "superadmin".equalsIgnoreCase(authentication.getName().trim())) {
+            return "SUPER_ADMIN";
+        }
+        return isSensitivePublishSection(section) ? "RISK_LEAD" : "CONTENT_LEAD";
     }
 
     @Override

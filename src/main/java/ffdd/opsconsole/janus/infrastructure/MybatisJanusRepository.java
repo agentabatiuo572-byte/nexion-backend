@@ -219,7 +219,22 @@ public class MybatisJanusRepository implements JanusRepository {
     @Override
     public boolean reserveCommand(String idempotencyKey, String commandType, String targetId, String requestHash,
                                   String actorId) {
-        mapper.deleteExpiredCommand(idempotencyKey);
+        if (insertCommandReservation(idempotencyKey, commandType, targetId, requestHash, actorId)) {
+            return true;
+        }
+        // Deleting a missing key before inserting acquires an InnoDB gap lock
+        // under REPEATABLE READ. Two concurrent retries with the same key can
+        // then deadlock while both attempt the insert. Only clean up after a
+        // duplicate proves that a row exists, and retry solely when that row
+        // was actually expired.
+        if (mapper.deleteExpiredCommand(idempotencyKey) != 1) {
+            return false;
+        }
+        return insertCommandReservation(idempotencyKey, commandType, targetId, requestHash, actorId);
+    }
+
+    private boolean insertCommandReservation(String idempotencyKey, String commandType, String targetId,
+                                             String requestHash, String actorId) {
         try {
             return mapper.insertCommandReservation(idempotencyKey, commandType, targetId, requestHash, actorId) == 1;
         } catch (DuplicateKeyException ignored) {
@@ -248,8 +263,13 @@ public class MybatisJanusRepository implements JanusRepository {
                 row.getPlatform(), row.getModel(), row.getOsName(), row.getBrowser(), parse(row.getMaturityJson(), false),
                 parse(row.getEnvironmentJson(), false), row.getHitStrategy(), row.getHitStrategyVersion(),
                 parse(row.getLatestDecisionJson(), false), parse(row.getLatestSessionJson(), false),
-                parse(row.getManualOverrideJson(), false), row.getLastOperatorId(), row.getLastOperationReason(),
+                managementManualOverride(row.getManualOverrideJson()), row.getLastOperatorId(), row.getLastOperationReason(),
                 row.getActivationKind(), parse(row.getTagsJson(), true), value(row.getLockVersion(), 0L));
+    }
+
+    private JsonNode managementManualOverride(String raw) {
+        JsonNode value = parse(raw, false);
+        return "strategy".equals(value.path("source").asText()) ? objectMapper.createObjectNode() : value;
     }
 
     private JanusStrategyView toStrategy(JanusStrategyRecord row) {

@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.domain.LearningProgressRow;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -28,6 +29,7 @@ public class AppLearningService {
     private final I18nLearningRepository learningRepository;
     private final AppLearningMapper learningMapper;
     private final TreasuryLedgerPostingFacade treasuryLedgerPostingFacade;
+    private final EventOutboxService eventOutboxService;
 
     public ApiResult<AppLearningOverview> overview(Long userId, String language) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
@@ -69,7 +71,9 @@ public class AppLearningService {
             return ApiResult.fail(409, "LEARNING_QUIZ_REQUIRED");
         }
         learningMapper.recordQuiz(userId, course.id(), course.version(), 100, 100);
-        learningMapper.insertLearningEvent(userId, course.id(), course.version(), "course_completed", "{\"source\":\"content\"}");
+        int inserted = learningMapper.insertLearningEvent(
+                userId, course.id(), course.version(), "course_completed", "{\"source\":\"content\"}");
+        publishCompletionIfNew(inserted, userId, course);
         return ApiResult.ok(resultAfterCompletion(userId, course, 100, 1));
     }
 
@@ -102,9 +106,21 @@ public class AppLearningService {
         learningMapper.recordQuiz(userId, course.id(), course.version(), score, passed ? 100 : 50);
         if (passed) {
             learningMapper.insertLearningEvent(userId, course.id(), course.version(), "quiz_passed", "{\"score\":" + score + "}");
-            learningMapper.insertLearningEvent(userId, course.id(), course.version(), "course_completed", "{\"source\":\"quiz\"}");
+            int inserted = learningMapper.insertLearningEvent(
+                    userId, course.id(), course.version(), "course_completed", "{\"source\":\"quiz\"}");
+            publishCompletionIfNew(inserted, userId, course);
         }
         return ApiResult.ok(resultAfterCompletion(userId, course, score, attempts + 1));
+    }
+
+    private void publishCompletionIfNew(int inserted, Long userId, LearningCourseView course) {
+        if (inserted != 1) return;
+        eventOutboxService.publish(
+                "LEARNING",
+                userId + ":" + course.id() + ":" + course.version(),
+                "LEARNING_COURSE_COMPLETED",
+                Map.of("user_id", userId, "course_id", course.id(), "course_version", course.version(),
+                        "nex_reward", nz(course.rewardNex())));
     }
 
     private AppLearningQuizResult resultAfterCompletion(Long userId, LearningCourseView course, int score, int attempts) {

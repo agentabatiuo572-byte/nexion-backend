@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 public class TreasuryDualLedgerProperties {
     private BigDecimal reserveUsd = new BigDecimal("5000");
     private BigDecimal nexUsdRate = new BigDecimal("0.17");
-    private BigDecimal redlinePct = new BigDecimal("85");
-    private BigDecimal healthyPct = new BigDecimal("100");
+    private BigDecimal redlinePct = new BigDecimal("100");
+    private BigDecimal healthyPct = new BigDecimal("110");
     private BigDecimal runRiskPct = new BigDecimal("15");
 }

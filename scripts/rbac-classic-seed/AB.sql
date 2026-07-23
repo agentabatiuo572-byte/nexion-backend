@@ -1,5 +1,5 @@
--- 域 A+B · 平台基础+总览 · 32 权限点
--- 源：docs/superpowers/specs/rbac-classic/AB.md（13 页 · READ 13 · WRITE 7 · HIGH 12）
+-- 域 A+B · 平台基础+总览 · 34 权限点
+-- 源：docs/superpowers/specs/rbac-classic/AB.md（13 页 · READ 14 · WRITE 8 · HIGH 12）
 -- 表：nx_admin_permission（schema 见 00-permission-alter.sql）
 -- 幂等：permission_code 唯一键，重复执行只更新不报错。
 -- amplifies=1 的 3 个：A2 operation_approve（资金放行·amplifies 工单挂 B1 红线）/ B1 redline_write / B1 runrisk_write
@@ -52,17 +52,24 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('overview_b1_runrisk_write',          'B1 挤兑压力红线阈值',               'API', '/overview/dual-ledger',      'HIGH',  1, 1, 0),
   ('overview_b1_kill_switch_trigger',    'B1 触发全局熔断',                   'API', '/overview/dual-ledger',      'HIGH',  0, 1, 0),
 
-  -- ===== B2 资金池水位 /overview/liquidity (1) =====
+  -- ===== B2 资金池水位 /overview/liquidity (3) =====
   ('overview_b2_read',                   'B2 资金池水位-页面读',              'API', '/overview/liquidity',        'READ',  0, 1, 0),
+  ('overview_b2_write',                  'B2 到期预测口径调整',               'API', '/overview/liquidity',        'WRITE', 0, 1, 0),
+  ('overview_b2_export',                 'B2 应付负债明细导出',               'API', '/overview/liquidity',        'READ',  0, 1, 0),
 
-  -- ===== B3 转化漏斗 /overview/funnel (1) =====
+  -- ===== B3 转化漏斗 /overview/funnel (3) =====
   ('overview_b3_read',                   'B3 转化漏斗-页面读',                'API', '/overview/funnel',           'READ',  0, 1, 0),
+  ('overview_b3_view_write',             'B3 转化漏斗-保存个人视图',          'API', '/overview/funnel',           'WRITE', 0, 1, 0),
+  ('overview_b3_export',                 'B3 转化漏斗-聚合导出',              'API', '/overview/funnel',           'WRITE', 0, 1, 0),
 
   -- ===== B4 节奏状态 /overview/rhythm (1) =====
   ('overview_b4_read',                   'B4 节奏状态-页面读',                'API', '/overview/rhythm',           'READ',  0, 1, 0),
 
-  -- ===== B5 风险雷达 /overview/risk-radar (1) =====
-  ('overview_b5_read',                   'B5 风险雷达-页面读',                'API', '/overview/risk-radar',       'READ',  0, 1, 0)
+  -- ===== B5 风险雷达 /overview/risk-radar (4) =====
+  ('overview_b5_read',                   'B5 风险雷达-页面读',                'API', '/overview/risk-radar',       'READ',  0, 1, 0),
+  ('overview_b5_triage',                 'B5 风险雷达-分诊跳转',              'API', '/overview/risk-radar',       'WRITE', 0, 1, 0),
+  ('overview_b5_subscribe',              'B5 风险雷达-告警订阅',              'API', '/overview/risk-radar',       'WRITE', 0, 1, 0),
+  ('overview_b5_threshold_write',        'B5 挤兑阈值配置',                   'API', '/overview/risk-radar',       'HIGH',  1, 1, 0)
 ON DUPLICATE KEY UPDATE
   permission_name = VALUES(permission_name),
   resource_path = VALUES(resource_path),
@@ -70,5 +77,5 @@ ON DUPLICATE KEY UPDATE
   amplifies = VALUES(amplifies),
   status = 1, is_deleted = 0;
 
--- 统计：READ 13 · WRITE 8 · HIGH 11 = 32 权限点
--- amplifies=1 计 3 个：platform_a2_operation_approve / overview_b1_redline_write / overview_b1_runrisk_write
+-- 统计：READ 14 · WRITE 11 · HIGH 12 = 37 权限点
+-- amplifies=1 计 4 个：platform_a2_operation_approve / overview_b1_redline_write / overview_b1_runrisk_write / overview_b5_threshold_write

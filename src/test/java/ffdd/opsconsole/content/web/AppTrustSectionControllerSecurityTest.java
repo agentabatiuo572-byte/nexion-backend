@@ -2,8 +2,10 @@ package ffdd.opsconsole.content.web;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -21,6 +23,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -73,5 +76,18 @@ class AppTrustSectionControllerSecurityTest {
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.sections[0].sectionKey").value("financials"))
                 .andExpect(jsonPath("$.data.sections[0].version").value("v1"));
+    }
+
+    @Test
+    void sectionViewEventIsPublicWithoutToken() throws Exception {
+        when(service.recordSectionView("leadership", "vi")).thenReturn(ApiResult.ok(null));
+
+        mockMvc.perform(post("/api/content/trust/sections/leadership/view")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"locale\":\"vi\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        verify(service).recordSectionView("leadership", "vi");
     }
 }

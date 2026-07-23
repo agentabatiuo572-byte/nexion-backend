@@ -21,7 +21,9 @@ import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
+import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
 import ffdd.opsconsole.growth.mapper.GrowthVoucherMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
@@ -49,6 +51,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.Function;
 import org.springframework.util.StringUtils;
+import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -90,15 +93,14 @@ public class OpsGrowthService implements AuditReplayable {
             "nexV2Unlock",
             "nexV2LockReward");
     private static final List<String> PHASE_DIAL_KEYS = List.of(
+            "newUserBonusMultiplier",
             "inviteRewardMultiplier",
-            "questRewardMultiplier",
-            "trialOffsetCapUsdt",
-            "deviceReleasePacingPct",
-            "commissionTighteningPct",
-            "campaignRewardNex",
-            "withdrawNexMinBalance",
-            "withdrawNexHoldDays",
-            "genesisEmissionsOpen");
+            "reinvestMultiplier",
+            "withdrawPenaltyFeeRate",
+            "withdrawCooldownDays",
+            "binaryDailyCap",
+            "questBonusMultiplier",
+            "complianceHoldEnabled");
     private static final List<Integer> RHYTHM_TOTAL_OPTIONS = List.of(9, 12, 15, 18, 24);
     private static final List<Integer> RHYTHM_PHASE_WEIGHTS = List.of(2, 2, 3, 1, 2, 2);
     private static final Set<String> PHASE_CONTROL_KEYS = Set.of("schedule", "pin", "override");
@@ -106,17 +108,26 @@ public class OpsGrowthService implements AuditReplayable {
             "trialDays",
             "graceDays",
             "extensionDays",
-            "price",
-            "shadow",
-            "offsetCap",
-            "disc",
-            "hq",
-            "failRate",
-            "trialCooldown",
-            "push",
-            "autoCharge");
+            "discountRate",
+            "discountCapUSD",
+            "autoChargeAtEnd",
+            "highQualityThresholdUSD",
+            "chargeFailRate",
+            "trialProductId",
+            "trialPriceUSD",
+            "shadowDailyUSD",
+            "shadowDailyNEX",
+            "cooldownDays",
+            "phaseOpen",
+            "autoPushEnabled",
+            "autoPushDelayMs",
+            "autoPushCooldownHours",
+            "autoPushMaxPerSession");
     private static final Set<String> TRIAL_TERMINAL_STATES = Set.of("cancelled", "redeemed");
     private static final Set<String> EVENT_STATES = Set.of("upcoming", "ongoing", "ended");
+    private static final Set<String> EVENT_KINDS = Set.of(
+            "discount", "referral", "wheel", "regional", "boost", "seasonal", "holding", "onboarding");
+    private static final Set<String> WHEEL_REWARD_KINDS = Set.of("nex", "points", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
 
     private final PlatformConfigFacade configFacade;
@@ -130,6 +141,8 @@ public class OpsGrowthService implements AuditReplayable {
     private final Optional<GrowthQuestEventMapper> questEventMapper;
     private final Optional<GrowthVoucherMapper> voucherMapper;
     private final AuditObjectLockMapper lockMapper;
+
+    private final Optional<OpsReferralRewardService> referralRewardService;
 
     public ApiResult<Map<String, Object>> phases() {
         ensurePhaseSeedData();
@@ -172,10 +185,10 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("withdrawNexGate", withdrawGate().getData());
         response.put("nextMonthDials", nextMonth > 0 ? monthlyDials.get(nextMonth - 1) : Map.of());
         response.put("impactMatrix", List.of(
-                impact("D5", "提现 NEX 闸镜像", "withdrawNexMinBalance / withdrawNexHoldDays 变更会同步 D5 参数口径"),
+                impact("D5", "提现派发", "withdrawPenaltyFeeRate / withdrawCooldownDays 由当月 H1 矩阵派发"),
                 impact("B1", "兑付覆盖率红线", "放松提现、奖励或活动流出方向时低于红线返回 422"),
-                impact("F3", "佣金与团队结算", "commissionTighteningPct 影响双轨结算出账速度"),
-                impact("E2", "设备发布节奏", "deviceReleasePacingPct 影响 Gen/SKU 供给节奏"),
+                impact("F3", "佣金与团队结算", "binaryDailyCap 约束双轨每日结算上限"),
+                impact("H3", "任务奖励", "questBonusMultiplier 影响任务奖励倍率"),
                 impact("J1", "Kill Switch", "红线或事故期恢复会付钱业务前必须先看 J1 闸门")));
         response.put("retiredDials", List.copyOf(RETIRED_KEYS));
         response.put("writes", false);
@@ -188,6 +201,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(rhythmOverview());
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateRhythmParam(
             String idempotencyKey,
             String paramKey,
@@ -198,6 +212,10 @@ public class OpsGrowthService implements AuditReplayable {
         }
         ensureRhythmSeedData();
         try {
+            if (questEventMapper.isEmpty()
+                    || !"H1_RHYTHM".equals(questEventMapper.get().lockGrowthMutation("H1_RHYTHM"))) {
+                return validation("H1_RHYTHM_MUTEX_UNAVAILABLE");
+            }
             String normalizedKey = normalizeRhythmParamKey(paramKey);
             int totalMonths = rhythmTotalMonths();
             String normalizedValue = normalizeRhythmValue(normalizedKey, request.value(), totalMonths);
@@ -396,7 +414,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("sessions", trialSessions());
         response.put("autoPushKilled", trialAutoPushKilled());
         response.put("j1TrialGate", trialKillSwitch());
-        response.put("serverOnlyFields", List.of("failRate"));
+        response.put("serverOnlyFields", List.of("chargeFailRate"));
         response.put("coverage", coverage());
         response.put("sources", List.of(
                 "nx_growth_trial_policy",
@@ -416,13 +434,16 @@ public class OpsGrowthService implements AuditReplayable {
             return guard;
         }
         String key = normalizeTrialParamKey(paramKey);
+        if (Set.of("phaseOpen", "trialProductId").contains(key)) {
+            return validation("TRIAL_PARAM_READONLY");
+        }
         String value;
         try {
             value = normalizeTrialParamValue(key, request.value());
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
-        boolean serverOnly = "failRate".equals(key);
+        boolean serverOnly = "chargeFailRate".equals(key);
         ensureGrowthBusinessTables();
         if (questEventMapper.isEmpty()) {
             return validation("TRIAL_POLICY_BUSINESS_TABLE_UNAVAILABLE");
@@ -450,6 +471,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> cancelTrialSession(
             String idempotencyKey,
             String sessionId,
@@ -463,12 +485,19 @@ public class OpsGrowthService implements AuditReplayable {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String sid = normalizeTrialSessionId(sessionId);
-        String state = trialSessionState(sid);
+        if (questEventMapper.isEmpty()) {
+            return validation("TRIAL_SESSION_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        Map<String, Object> locked = questEventMapper.get().lockTrialSession(sid);
+        if (locked == null || locked.isEmpty()) {
+            return validation("TRIAL_SESSION_NOT_FOUND");
+        }
+        String state = String.valueOf(locked.get("state")).toLowerCase(Locale.ROOT);
         if (TRIAL_TERMINAL_STATES.contains(state)) {
             return invalidState("TRIAL_SESSION_ALREADY_TERMINAL");
         }
-        if (questEventMapper.isEmpty() || questEventMapper.get().updateTrialSessionStatus(sid, "CANCELLED") <= 0) {
-            return validation("TRIAL_SESSION_BUSINESS_TABLE_UPDATE_FAILED");
+        if (questEventMapper.get().transitionTrialSessionStatus(sid, "CANCELLED") != 1) {
+            return invalidState("TRIAL_SESSION_STATE_CONFLICT");
         }
         audit("H2_TRIAL_SESSION_CANCELLED", "TRIAL_SESSION", sid, request.operator(), Map.of(
                 "sessionId", sid,
@@ -481,6 +510,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> chargeTrialSession(
             String idempotencyKey,
             String sessionId,
@@ -497,24 +527,49 @@ public class OpsGrowthService implements AuditReplayable {
         if (!trialKillSwitchEnabled()) {
             return validation("TRIAL_KILL_SWITCH_DISABLED");
         }
-        String state = trialSessionState(sid);
+        if (questEventMapper.isEmpty()) {
+            return validation("TRIAL_SESSION_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        Map<String, Object> locked = questEventMapper.get().lockTrialSession(sid);
+        if (locked == null || locked.isEmpty()) {
+            return validation("TRIAL_SESSION_NOT_FOUND");
+        }
+        String state = String.valueOf(locked.get("state")).toLowerCase(Locale.ROOT);
         if (TRIAL_TERMINAL_STATES.contains(state)) {
             return invalidState("TRIAL_SESSION_ALREADY_TERMINAL");
         }
-        if (questEventMapper.isEmpty() || questEventMapper.get().updateTrialSessionStatus(sid, "REDEEMED") <= 0) {
-            return validation("TRIAL_SESSION_BUSINESS_TABLE_UPDATE_FAILED");
+        Long userId = locked.get("userId") instanceof Number number ? number.longValue() : null;
+        if (userId == null || userId <= 0) {
+            return validation("TRIAL_SESSION_USER_INVALID");
         }
-        ledgerPostingFacade.postLedgerEntry(
-                "H2-TRIAL-CHARGE-" + sid,
-                userIdFromToken(sid),
-                "TRIAL_CHARGE",
-                "USDT",
-                "OUT",
-                trialChargeAmount(),
-                "SUCCESS",
-                "H2 trial session charged | sessionId=" + sid);
+        BigDecimal chargeAmount = parseDecimal(String.valueOf(locked.get("chargeAmount")), BigDecimal.ZERO);
+        BigDecimal walletBefore = questEventMapper.get().lockWalletUsdt(userId);
+        if (walletBefore == null || walletBefore.compareTo(chargeAmount) < 0) {
+            return validation("TRIAL_WALLET_INSUFFICIENT_FUNDS");
+        }
+        if (chargeAmount.signum() > 0) {
+            if (questEventMapper.get().debitWalletUsdt(userId, chargeAmount) != 1) {
+                throw new IllegalStateException("TRIAL_WALLET_DEBIT_CONFLICT");
+            }
+            String claimNo = String.valueOf(locked.get("claimNo"));
+            if (questEventMapper.get().insertTrialChargeLedger(
+                    userId,
+                    "H2-TRIAL-CHARGE-" + claimNo,
+                    chargeAmount,
+                    walletBefore.subtract(chargeAmount),
+                    sid) != 1) {
+                throw new IllegalStateException("TRIAL_LEDGER_WRITE_FAILED");
+            }
+        }
+        if (questEventMapper.get().transitionTrialSessionStatus(sid, "REDEEMED") != 1) {
+            throw new IllegalStateException("TRIAL_SESSION_STATE_CONFLICT");
+        }
         audit("H2_TRIAL_SESSION_CHARGED", "TRIAL_SESSION", sid, request.operator(), Map.of(
                 "sessionId", sid,
+                "userId", userId,
+                "amountUsdt", chargeAmount,
+                "balanceBefore", walletBefore,
+                "balanceAfter", walletBefore.subtract(chargeAmount),
                 "oldState", state,
                 "newState", "redeemed",
                 "reason", request.reason().trim(),
@@ -571,7 +626,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("trackables", trackables());
         response.put("coverage", coverage());
         response.put("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
-        response.put("disabledOutputs", List.of("Premium entitlement writes", "NEX v2 lock rewards", "Points ledger writes"));
+        response.put("disabledOutputs", List.of("已退役权益写入", "已退役积分账本写入"));
         response.put("sources", List.of(
                 "nx_mission",
                 "nx_user_mission",
@@ -584,6 +639,26 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    public ApiResult<Map<String, Object>> questTasks() {
+        Map<String, Object> response = new LinkedHashMap<>(questEvents().getData());
+        List.of("h4Stats", "events", "eventStates", "wheelTiers", "wheelSignature", "wheelEvUsd",
+                        "wheelGuards", "trackables")
+                .forEach(response::remove);
+        response.put("domain", "H3");
+        return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> questEventOverview() {
+        Map<String, Object> response = new LinkedHashMap<>(questEvents().getData());
+        List.of("h3Stats", "dayOneWindow", "dayOneTriReward", "dayOneTasks", "dayOneStates",
+                        "weeklyTier1", "weeklyTier2", "weeklyChampionBonus", "weeklyMultipliers",
+                        "monthlyMissions", "taskMonitor", "taskContracts", "promoBanner", "phaseMultiplierReadonly")
+                .forEach(response::remove);
+        response.put("domain", "H4");
+        return ApiResult.ok(response);
+    }
+
+    @Transactional
     public ApiResult<Map<String, Object>> createQuestEvent(
             String idempotencyKey,
             GrowthQuestEventRequest request) {
@@ -599,12 +674,19 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("QUEST_EVENT_BUSINESS_TABLE_UNAVAILABLE");
         }
         try {
+            if (!"H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"))) {
+                return validation("H4_EVENT_MUTEX_UNAVAILABLE");
+            }
             String id = normalizeNewEventId(request.id());
             if (questEventMapper.get().countById(id) > 0) {
                 return validation("EVENT_ALREADY_EXISTS");
             }
             String name = normalizePlainText(request.name(), 128);
-            String kind = normalizePlainText(StringUtils.hasText(request.kind()) ? request.kind() : "EVENT_ACTIONS", 64).toUpperCase(Locale.ROOT);
+            String kind = normalizePlainText(StringUtils.hasText(request.kind()) ? request.kind() : "discount", 64)
+                    .toLowerCase(Locale.ROOT);
+            if (!EVENT_KINDS.contains(kind)) {
+                return validation("EVENT_KIND_INVALID");
+            }
             String state = normalizeEventState(request.state());
             String reward = normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 NEX", 128);
             boolean featured = Boolean.TRUE.equals(request.featured());
@@ -642,7 +724,7 @@ public class OpsGrowthService implements AuditReplayable {
                     "featured", featured,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
-            Map<String, Object> response = questEvents().getData();
+            Map<String, Object> response = questEventOverview().getData();
             response.put("updated", Map.of("eventId", id, "action", "created"));
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
@@ -677,6 +759,9 @@ public class OpsGrowthService implements AuditReplayable {
             if (rewardPoints < 0) {
                 throw new IllegalArgumentException("MISSION_REWARD_INVALID");
             }
+            if (rewardPoints > 0 && coverageBelowRedline()) {
+                return coverageRedline();
+            }
             questEventMapper.get().insertMission(code, name, type, rewardPoints, 1, LocalDateTime.now());
             audit("H3_MISSION_CREATED", "GROWTH_MISSION", code, request.operator(), Map.of(
                     "missionCode", code,
@@ -685,7 +770,7 @@ public class OpsGrowthService implements AuditReplayable {
                     "rewardPoints", rewardPoints,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
-            Map<String, Object> response = questEvents().getData();
+            Map<String, Object> response = questTasks().getData();
             response.put("updated", Map.of("missionCode", code, "missionType", type, "action", "created"));
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
@@ -742,7 +827,7 @@ public class OpsGrowthService implements AuditReplayable {
                     "rewardAmount", rewardAmount,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
-            Map<String, Object> response = questEvents().getData();
+            Map<String, Object> response = questTasks().getData();
             response.put("updated", Map.of("challengeCode", code, "action", "created"));
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
@@ -750,6 +835,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> createWheelTier(
             String idempotencyKey,
             GrowthWheelTierRequest request) {
@@ -761,17 +847,31 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         }
         try {
+            if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
+                return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
+            }
             String tierName = normalizePlainText(request.tierName(), 128);
             if (questEventMapper.get().countByTierName(tierName) > 0) {
                 return validation("WHEEL_TIER_ALREADY_EXISTS");
+            }
+            if (questEventMapper.get().countActiveWheelTiers() >= 12) {
+                return validation("WHEEL_TIER_COUNT_OUT_OF_RANGE");
             }
             String rewardName = normalizePlainText(request.rewardName(), 128);
             BigDecimal probability = request.probabilityPct() == null ? BigDecimal.ZERO : request.probabilityPct();
             if (probability.compareTo(BigDecimal.ZERO) < 0 || probability.compareTo(new BigDecimal("100")) > 0) {
                 throw new IllegalArgumentException("WHEEL_TIER_PROBABILITY_INVALID");
             }
+            BigDecimal currentProbability = Optional.ofNullable(questEventMapper.get().activeWheelProbabilitySum())
+                    .orElse(BigDecimal.ZERO);
+            if (currentProbability.add(probability).compareTo(new BigDecimal("100")) > 0) {
+                return validation("WHEEL_PROBABILITY_TOTAL_EXCEEDS_100");
+            }
             int realOutflow = (request.realOutflow() != null && request.realOutflow() == 1) ? 1 : 0;
             String rewardKind = normalizePlainText(StringUtils.hasText(request.rewardKind()) ? request.rewardKind() : "nex", 64).toLowerCase(Locale.ROOT);
+            if (!WHEEL_REWARD_KINDS.contains(rewardKind)) {
+                return validation("WHEEL_TIER_KIND_INVALID");
+            }
             // 真实出金档位会放大资金流出,过 B1 备付金红线
             if (realOutflow == 1 && coverageBelowRedline()) {
                 return coverageRedline();
@@ -785,8 +885,190 @@ public class OpsGrowthService implements AuditReplayable {
                     "realOutflow", realOutflow,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
-            Map<String, Object> response = questEvents().getData();
+            Map<String, Object> response = questEventOverview().getData();
             response.put("updated", Map.of("tierName", tierName, "action", "created"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updateWheelTier(
+            String idempotencyKey,
+            String existingTierName,
+            GrowthWheelTierRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
+                return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
+            }
+            String tierName = normalizePlainText(existingTierName, 128);
+            Map<String, Object> before = growthRows(GrowthQuestEventMapper::wheelTiers).stream()
+                    .filter(row -> tierName.equals(String.valueOf(row.get("tier"))))
+                    .findFirst()
+                    .orElse(null);
+            if (before == null) {
+                return validation("WHEEL_TIER_NOT_FOUND");
+            }
+            String rewardName = normalizePlainText(request.rewardName(), 128);
+            BigDecimal probability = request.probabilityPct() == null
+                    ? parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO)
+                    : request.probabilityPct();
+            if (probability.compareTo(BigDecimal.ZERO) < 0 || probability.compareTo(new BigDecimal("100")) > 0
+                    || probability.scale() > 4) {
+                return validation("WHEEL_TIER_PROBABILITY_INVALID");
+            }
+            BigDecimal previousProbability = parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO);
+            BigDecimal currentTotal = Optional.ofNullable(questEventMapper.get().activeWheelProbabilitySum())
+                    .orElse(BigDecimal.ZERO);
+            if (currentTotal.subtract(previousProbability).add(probability).compareTo(new BigDecimal("100")) != 0) {
+                return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
+            }
+            int realOutflow = request.realOutflow() != null
+                    ? (request.realOutflow() == 1 ? 1 : 0)
+                    : (truthy(before.get("real")) ? 1 : 0);
+            String rewardKind = normalizePlainText(
+                    StringUtils.hasText(request.rewardKind()) ? request.rewardKind() : String.valueOf(before.get("kind")), 64)
+                    .toLowerCase(Locale.ROOT);
+            if (!WHEEL_REWARD_KINDS.contains(rewardKind)) {
+                return validation("WHEEL_TIER_KIND_INVALID");
+            }
+            boolean amplifiesRealOutflow = realOutflow == 1
+                    && (!truthy(before.get("real")) || probability.compareTo(previousProbability) > 0);
+            if (amplifiesRealOutflow && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            if (questEventMapper.get().updateWheelTier(
+                    tierName, rewardName, probability, realOutflow, rewardKind) != 1) {
+                throw new IllegalStateException("WHEEL_TIER_UPDATE_FAILED");
+            }
+            audit("H4_WHEEL_TIER_CHANGED", "WHEEL_CONFIG", tierName, request.operator(), Map.of(
+                    "before", before,
+                    "rewardName", rewardName,
+                    "probabilityPct", probability,
+                    "realOutflow", realOutflow,
+                    "rewardKind", rewardKind,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEventOverview().getData();
+            response.put("updated", Map.of("tierName", tierName, "action", "changed"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> deleteWheelTier(
+            String idempotencyKey,
+            String tierNameRaw,
+            GrowthConfigUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
+                return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
+            }
+            String tierName = normalizePlainText(tierNameRaw, 128);
+            List<Map<String, Object>> tiers = growthRows(GrowthQuestEventMapper::wheelTiers);
+            Map<String, Object> before = tiers.stream()
+                    .filter(row -> tierName.equals(String.valueOf(row.get("tier"))))
+                    .findFirst()
+                    .orElse(null);
+            if (before == null) {
+                return validation("WHEEL_TIER_NOT_FOUND");
+            }
+            if (tiers.size() <= 2) {
+                return validation("WHEEL_TIER_COUNT_OUT_OF_RANGE");
+            }
+            if (parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO).compareTo(BigDecimal.ZERO) != 0) {
+                return validation("WHEEL_TIER_DELETE_REQUIRES_ZERO_PROBABILITY");
+            }
+            if (questEventMapper.get().softDeleteWheelTier(tierName) != 1) {
+                throw new IllegalStateException("WHEEL_TIER_DELETE_FAILED");
+            }
+            audit("H4_WHEEL_TIER_DELETED", "WHEEL_CONFIG", tierName, request.operator(), Map.of(
+                    "before", before,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEventOverview().getData();
+            response.put("updated", Map.of("tierName", tierName, "action", "deleted"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updateWheelProbabilities(
+            String idempotencyKey,
+            GrowthWheelProbabilityBatchRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
+                return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
+            }
+            List<Map<String, Object>> rows = growthRows(GrowthQuestEventMapper::wheelTiers);
+            Map<String, BigDecimal> requested = request.probabilities() == null
+                    ? Map.of() : new LinkedHashMap<>(request.probabilities());
+            Set<String> activeNames = rows.stream()
+                    .map(row -> String.valueOf(row.get("tier")))
+                    .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+            if (requested.size() != activeNames.size() || !requested.keySet().equals(activeNames)) {
+                return validation("WHEEL_TIER_SET_CHANGED");
+            }
+            BigDecimal total = BigDecimal.ZERO;
+            boolean amplifiesRealOutflow = false;
+            for (Map<String, Object> row : rows) {
+                String tierName = String.valueOf(row.get("tier"));
+                BigDecimal probability = requested.get(tierName);
+                if (probability == null || probability.compareTo(BigDecimal.ZERO) < 0
+                        || probability.compareTo(new BigDecimal("100")) > 0
+                        || probability.scale() > 4) {
+                    return validation("WHEEL_TIER_PROBABILITY_INVALID");
+                }
+                total = total.add(probability);
+                BigDecimal before = parseDecimal(String.valueOf(row.get("prob")), BigDecimal.ZERO);
+                if (truthy(row.get("real")) && probability.compareTo(before) > 0) {
+                    amplifiesRealOutflow = true;
+                }
+            }
+            if (total.compareTo(new BigDecimal("100")) != 0) {
+                return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
+            }
+            if (amplifiesRealOutflow && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            for (Map.Entry<String, BigDecimal> entry : requested.entrySet()) {
+                if (questEventMapper.get().updateWheelTierProbability(entry.getKey(), entry.getValue()) != 1) {
+                    throw new IllegalStateException("WHEEL_TIER_UPDATE_FAILED");
+                }
+            }
+            audit("H4_WHEEL_PROBABILITIES_CHANGED", "WHEEL_CONFIG", "ACTIVE_POOL", request.operator(), Map.of(
+                    "probabilities", requested,
+                    "total", total,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEventOverview().getData();
+            response.put("updated", Map.of("probabilities", requested, "total", total));
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
@@ -821,7 +1103,7 @@ public class OpsGrowthService implements AuditReplayable {
                     "guardLabel", label,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
-            Map<String, Object> response = questEvents().getData();
+            Map<String, Object> response = questEventOverview().getData();
             response.put("updated", Map.of("guardKey", key, "action", "created"));
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
@@ -838,6 +1120,34 @@ public class OpsGrowthService implements AuditReplayable {
             return guard;
         }
         ensureQuestEventSeedData();
+        Matcher taskReward = Pattern.compile("^dayOne\\.tasks\\.(\\d+)\\.reward$").matcher(configKey == null ? "" : configKey);
+        if (taskReward.matches()) {
+            int displayId = Integer.parseInt(taskReward.group(1));
+            int newReward;
+            try {
+                newReward = bounded(parseDecimal(request.value()), BigDecimal.ZERO, new BigDecimal("100000"))
+                        .setScale(0, RoundingMode.UNNECESSARY).intValueExact();
+            } catch (RuntimeException ex) {
+                return validation("QUEST_REWARD_INVALID");
+            }
+            Integer oldReward = questEventMapper.map(mapper -> mapper.missionRewardByDisplayId(displayId)).orElse(null);
+            if (oldReward == null) {
+                return validation("QUEST_TASK_NOT_FOUND");
+            }
+            if (newReward > oldReward && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            int updated = questEventMapper.map(mapper -> mapper.updateMissionRewardByDisplayId(displayId, newReward)).orElse(0);
+            if (updated != 1) {
+                return validation("QUEST_TASK_UPDATE_FAILED");
+            }
+            audit("H3_MISSION_REWARD_CHANGED", "GROWTH_MISSION", String.valueOf(displayId), request.operator(), Map.of(
+                    "oldValue", oldReward, "newValue", newReward,
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questTasks().getData();
+            response.put("updated", Map.of("key", configKey, "value", newReward + " NEX"));
+            return ApiResult.ok(response);
+        }
         String normalizedKey;
         try {
             normalizedKey = normalizeQuestConfigKey(configKey);
@@ -862,7 +1172,7 @@ public class OpsGrowthService implements AuditReplayable {
                 "newValue", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
-        Map<String, Object> response = questEvents().getData();
+        Map<String, Object> response = questTasks().getData();
         response.put("updated", Map.of("key", normalizedKey, "configKey", storageKey, "value", value));
         return ApiResult.ok(response);
     }
@@ -900,11 +1210,12 @@ public class OpsGrowthService implements AuditReplayable {
                 "newValue", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
-        Map<String, Object> response = questEvents().getData();
+        Map<String, Object> response = questEventOverview().getData();
         response.put("updated", Map.of("eventId", id, "field", "reward", "value", value));
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateQuestEventStatus(
             String idempotencyKey,
             String eventId,
@@ -918,6 +1229,10 @@ public class OpsGrowthService implements AuditReplayable {
             return trialGate;
         }
         ensureQuestEventSeedData();
+        if (questEventMapper.isEmpty()
+                || !"H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"))) {
+            return validation("H4_EVENT_MUTEX_UNAVAILABLE");
+        }
         String id = normalizeEventId(eventId);
         String status = requireText(request.value(), "Event status is required").toLowerCase(Locale.ROOT);
         if (!EVENT_STATES.contains(status)) {
@@ -938,11 +1253,12 @@ public class OpsGrowthService implements AuditReplayable {
                 "newStatus", status,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
-        Map<String, Object> response = questEvents().getData();
+        Map<String, Object> response = questEventOverview().getData();
         response.put("updated", Map.of("eventId", id, "field", "status", "value", status));
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateQuestEventFeatured(
             String idempotencyKey,
             String eventId,
@@ -961,16 +1277,20 @@ public class OpsGrowthService implements AuditReplayable {
         if (featured == null) {
             return validation("BOOLEAN_VALUE_INVALID");
         }
+        if (questEventMapper.isEmpty()) {
+            return validation("QUEST_EVENT_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        if (!"H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"))) {
+            return validation("H4_EVENT_MUTEX_UNAVAILABLE");
+        }
+        questEventMapper.get().lockEventRowsForUpdate();
         if (featured && !"ongoing".equals(eventStatus(id))) {
             return validation("EVENT_FEATURED_REQUIRES_ONGOING");
         }
         if (featured) {
-            Optional<Map<String, Object>> currentFeatured = questEventsList().stream()
-                    .filter(row -> !id.equals(row.get("id")))
-                    .filter(row -> Boolean.TRUE.equals(row.get("featured")))
-                    .filter(row -> "ongoing".equals(row.get("state")))
-                    .findFirst();
-            if (currentFeatured.isPresent()) {
+            // This must be a current locking read, not the read-model snapshot:
+            // two commands can establish snapshots before one waits on H4_EVENT.
+            if (!questEventMapper.get().featuredOngoingEventIdsForUpdate(id).isEmpty()) {
                 return validation("EVENT_FEATURED_UNIQUE_VIOLATION");
             }
         }
@@ -982,7 +1302,7 @@ public class OpsGrowthService implements AuditReplayable {
                 "featured", featured,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
-        Map<String, Object> response = questEvents().getData();
+        Map<String, Object> response = questEventOverview().getData();
         response.put("updated", Map.of("eventId", id, "field", "featured", "value", featured));
         return ApiResult.ok(response);
     }
@@ -1004,7 +1324,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("tickInterval", tickInterval());
         response.put("coverage", coverage());
         response.put("pointsSystemStatus", "SUNSET_HISTORY_ONLY");
-        response.put("disabledOutputs", List.of("Points ledger writes", "points redemption", "premium trial points"));
+        response.put("disabledOutputs", List.of("已退役积分账本写入", "已退役积分兑换"));
         response.put("sources", List.of(
                 "nx_growth_checkin_rule",
                 "nx_daily_check_in",
@@ -1150,7 +1470,8 @@ public class OpsGrowthService implements AuditReplayable {
         if ("day".equals(key)) {
             BigDecimal oldDay = rowDecimal(current.get(), "day");
             BigDecimal newDay = bounded(parseDecimal(value), BigDecimal.ONE, new BigDecimal("365"));
-            if (newDay.compareTo(oldDay) > 0 && coverageBelowRedline()) {
+            // Unlocking earlier increases reward exposure; delaying the unlock is restrictive.
+            if (newDay.compareTo(oldDay) < 0 && coverageBelowRedline()) {
                 return coverageRedline();
             }
             value = newDay.setScale(0, RoundingMode.DOWN).toPlainString();
@@ -1172,6 +1493,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateEarnMilestone(
             String idempotencyKey,
             String milestoneKey,
@@ -1179,6 +1501,11 @@ public class OpsGrowthService implements AuditReplayable {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        ensureGrowthBusinessTables();
+        if (questEventMapper.isEmpty()
+                || !"H5_MILESTONE".equals(questEventMapper.get().lockGrowthMutation("H5_MILESTONE"))) {
+            return validation("H5_MILESTONE_MUTEX_UNAVAILABLE");
         }
         String key = normalizeEarnMilestoneKey(milestoneKey);
         List<Map<String, Object>> rows = earnMilestones();
@@ -1201,7 +1528,7 @@ public class OpsGrowthService implements AuditReplayable {
                 || questEventMapper.get().updateEarnMilestoneRule(key, newThreshold, newReward) <= 0) {
             return validation("EARN_MILESTONE_BUSINESS_TABLE_UPDATE_FAILED");
         }
-        audit("H6_EARN_MILESTONE_CHANGED", "EARN_MILESTONE", key, request.operator(), Map.of(
+        audit("H5_EARN_MILESTONE_CHANGED", "EARN_MILESTONE", key, request.operator(), Map.of(
                 "key", key,
                 "oldThresholdUsd", oldThreshold,
                 "newThresholdUsd", newThreshold,
@@ -1234,8 +1561,8 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("TICK_INTERVAL_OUT_OF_RANGE");
         }
         String value = String.valueOf(seconds.setScale(0, RoundingMode.DOWN).intValue());
-        configFacade.upsertAdminValue(EARN_TICK_INTERVAL_KEY, value, "NUMBER", "growth", "H6 cascade tick interval");
-        audit("H6_TICK_INTERVAL_CHANGED", "EARN_MILESTONE_TICK", EARN_TICK_INTERVAL_KEY, request.operator(), Map.of(
+        configFacade.upsertAdminValue(EARN_TICK_INTERVAL_KEY, value, "NUMBER", "growth", "H5 milestone tick interval");
+        audit("H5_TICK_INTERVAL_CHANGED", "EARN_MILESTONE_TICK", EARN_TICK_INTERVAL_KEY, request.operator(), Map.of(
                 "seconds", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
@@ -1594,7 +1921,7 @@ public class OpsGrowthService implements AuditReplayable {
         return row(
                 "sourceDomain", "H1",
                 "currentPhase", currentPhaseForRhythm(currentMonth, totalMonths),
-                "value", activeDials().get("questRewardMultiplier"),
+                "value", activeDials().get("questBonusMultiplier"),
                 "note", "H1 owns global quest reward multiplier; H3 only consumes it");
     }
 
@@ -1727,7 +2054,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private String trialParamCurrentValue(String key, String fallback) {
-        if ("failRate".equals(key)) {
+        if ("chargeFailRate".equals(key)) {
             return "•••(server only)";
         }
         if (questEventMapper.isEmpty()) {
@@ -1812,20 +2139,29 @@ public class OpsGrowthService implements AuditReplayable {
         if (value.startsWith("{") || value.startsWith("[")) {
             throw new IllegalArgumentException("JSON_VALUE_NOT_ALLOWED");
         }
-        if ("failRate".equals(key)) {
+        if ("chargeFailRate".equals(key)) {
             return bounded(parseDecimal(value), BigDecimal.ZERO, new BigDecimal("100")).toPlainString();
         }
         if (isTrialDayParam(key)) {
             return normalizeTrialDayParam(key, value).toPlainString();
         }
-        if ("autoCharge".equals(key)) {
+        if (Set.of("autoChargeAtEnd", "phaseOpen", "autoPushEnabled").contains(key)) {
             return normalizeTrialAutoCharge(value);
+        }
+        if (Set.of("discountRate").contains(key)) {
+            return bounded(parseDecimal(value.replace("%", "")), BigDecimal.ZERO, new BigDecimal("100")).stripTrailingZeros().toPlainString();
+        }
+        if (Set.of("discountCapUSD", "highQualityThresholdUSD", "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX").contains(key)) {
+            return bounded(parseDecimal(value.replace("$", "").replace(",", "")), BigDecimal.ZERO, new BigDecimal("1000000")).stripTrailingZeros().toPlainString();
+        }
+        if (Set.of("autoPushDelayMs", "autoPushCooldownHours", "autoPushMaxPerSession").contains(key)) {
+            return wholeDays(parseDecimal(value), 0, 86400000).toPlainString();
         }
         return value;
     }
 
     private boolean isTrialDayParam(String key) {
-        return "trialDays".equals(key) || "graceDays".equals(key) || "extensionDays".equals(key);
+        return Set.of("trialDays", "graceDays", "extensionDays", "cooldownDays").contains(key);
     }
 
     private BigDecimal normalizeTrialDayParam(String key, String raw) {
@@ -1833,6 +2169,7 @@ public class OpsGrowthService implements AuditReplayable {
         return switch (key) {
             case "trialDays" -> wholeDays(value, 1, 90);
             case "graceDays", "extensionDays" -> wholeDays(value, 0, 30);
+            case "cooldownDays" -> wholeDays(value, 0, 365);
             default -> throw new IllegalArgumentException("Unsupported H2 trial day parameter");
         };
     }
@@ -2000,15 +2337,18 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private String trialParamValueType(String key) {
-        return "failRate".equals(key) || isTrialDayParam(key) ? "NUMBER" : "STRING";
+        return Set.of("discountRate", "discountCapUSD", "highQualityThresholdUSD", "chargeFailRate",
+                "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "autoPushDelayMs",
+                "autoPushCooldownHours", "autoPushMaxPerSession").contains(key) || isTrialDayParam(key) ? "NUMBER" : "STRING";
     }
 
     private boolean trialParamHot(String key) {
-        return Set.of("price", "failRate", "autoCharge").contains(key);
+        return Set.of("trialPriceUSD", "chargeFailRate", "autoChargeAtEnd").contains(key);
     }
 
     private String trialParamSection(String key) {
-        return Set.of("trialDays", "graceDays", "extensionDays", "price", "shadow").contains(key) ? "newonly" : "live";
+        return Set.of("trialDays", "graceDays", "extensionDays", "autoChargeAtEnd", "trialProductId",
+                "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX").contains(key) ? "newonly" : "live";
     }
 
     private void ensureQuestEventSeedData() {
@@ -2043,7 +2383,7 @@ public class OpsGrowthService implements AuditReplayable {
         seedIfMissing(CHECKIN_LUCKY_2_PCT_KEY, "5", "NUMBER", "growth", "H5 check-in seed");
         seedIfMissing(CHECKIN_BROKEN_HOURS_KEY, "48", "NUMBER", "growth", "H5 check-in seed");
         seedIfMissing(CHECKIN_REVIVE_CARDS_KEY, "1 张 / 30 天", "STRING", "growth", "H5 check-in seed");
-        seedIfMissing(EARN_TICK_INTERVAL_KEY, "4", "NUMBER", "growth", "H6 tick interval seed");
+        seedIfMissing(EARN_TICK_INTERVAL_KEY, "4", "NUMBER", "growth", "H5 milestone tick interval seed");
     }
 
     private void ensureWithdrawGateSeedData() {
@@ -2263,26 +2603,14 @@ public class OpsGrowthService implements AuditReplayable {
 
     private Map<String, Object> activeDials() {
         Map<String, Object> dials = new LinkedHashMap<>();
-        putActiveDial(dials, "inviteRewardMultiplier", "growth.phase.invite_reward_multiplier", BigDecimal.ONE, false);
-        putActiveDial(dials, "questRewardMultiplier", "growth.phase.quest_reward_multiplier", BigDecimal.ONE, false);
-        putActiveDial(dials, "trialOffsetCapUsdt", "growth.phase.trial_offset_cap_usdt", new BigDecimal("50"), false);
-        putActiveDial(dials, "deviceReleasePacingPct", "growth.phase.device_release_pacing_pct", new BigDecimal("0.60"), true);
-        putActiveDial(dials, "commissionTighteningPct", "growth.phase.commission_tightening_pct", new BigDecimal("0.10"), true);
-        putActiveDial(dials, "campaignRewardNex", "growth.phase.campaign_reward_nex", new BigDecimal("10"), false);
-        putActiveDial(dials, "withdrawNexMinBalance", WITHDRAW_MIN_BALANCE_KEY, new BigDecimal("100"), false);
-        configFacade.activeValue(WITHDRAW_HOLD_DAYS_KEY)
-                .ifPresent(value -> dials.put("withdrawNexHoldDays", configDecimal(WITHDRAW_HOLD_DAYS_KEY, new BigDecimal("7")).intValue()));
-        configFacade.activeValue("growth.phase.genesis_emissions_open")
-                .ifPresent(value -> dials.put("genesisEmissionsOpen", booleanDialLabel(value)));
-        return dials;
-    }
-
-    private void putActiveDial(Map<String, Object> dials, String outputKey, String configKey, BigDecimal fallback, boolean percentage) {
-        if (configFacade.activeValue(configKey).isEmpty()) {
-            return;
+        int month = currentMonth();
+        if (month < 1) {
+            return dials;
         }
-        BigDecimal value = configDecimal(configKey, fallback);
-        dials.put(outputKey, percentage ? percent(value) : value);
+        for (String key : PHASE_DIAL_KEYS) {
+            dials.put(key, displayPhaseDialValue(key, monthDialValue(month, key)));
+        }
+        return dials;
     }
 
     private int currentMonth() {
@@ -2387,9 +2715,9 @@ public class OpsGrowthService implements AuditReplayable {
     private List<Map<String, Object>> phaseAttribution() {
         // 三阶段归因是固定目录(P1/P2/P3),保证归因矩阵非空。
         return List.of(
-                phaseAttributionRow("P1", "新手上手期", "新手任务加成驱动激活", "deviceReleasePacingPct", "0.80", "增长主导"),
-                phaseAttributionRow("P2", "裂变扩散期", "邀请奖励拉新驱动裂变", "inviteRewardMultiplier", "1.20", "增长主导"),
-                phaseAttributionRow("P3", "沉淀转化期", "任务/质押驱动转化", "questRewardMultiplier", "1.00", "增长+运营"));
+                phaseAttributionRow("P1", "新手上手期", "新用户与任务加成驱动激活", "newUserBonusMultiplier", "2", "增长主导"),
+                phaseAttributionRow("P2", "裂变扩散期", "邀请奖励拉新驱动裂变", "inviteRewardMultiplier", "1.5", "增长主导"),
+                phaseAttributionRow("P3", "沉淀转化期", "复投加成驱动沉淀", "reinvestMultiplier", "2", "增长+运营"));
     }
 
     private Map<String, Object> phaseAttributionRow(String phase, String name, String driver, String paramKey, String value, String owner) {
@@ -2406,9 +2734,14 @@ public class OpsGrowthService implements AuditReplayable {
     private Map<String, Object> coverage() {
         TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
         Map<String, Object> coverage = new LinkedHashMap<>();
-        coverage.put("coverageRatio", snapshot.coverageRatio());
-        coverage.put("redlinePct", snapshot.redlinePct());
-        coverage.put("redlineBreached", snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0);
+        boolean reliable = snapshot != null && snapshot.reliable()
+                && snapshot.coverageRatio() != null && snapshot.redlinePct() != null
+                && snapshot.coverageRatio().signum() > 0 && snapshot.redlinePct().signum() > 0;
+        coverage.put("reliable", reliable);
+        coverage.put("coverageRatio", snapshot == null ? null : snapshot.coverageRatio());
+        coverage.put("redlinePct", snapshot == null ? null : snapshot.redlinePct());
+        coverage.put("redlineBreached", !reliable
+                || snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0);
         return coverage;
     }
 
@@ -2418,30 +2751,25 @@ public class OpsGrowthService implements AuditReplayable {
 
     private BigDecimal defaultPhaseMonthDialValue(int month, String key) {
         return switch (key) {
-            case "inviteRewardMultiplier" -> month <= 2 ? new BigDecimal("2")
+            case "newUserBonusMultiplier", "inviteRewardMultiplier" -> month <= 2 ? new BigDecimal("2")
                     : month <= 4 ? new BigDecimal("1.5") : BigDecimal.ONE;
-            case "questRewardMultiplier" -> month <= 2 ? new BigDecimal("4") : BigDecimal.ONE;
-            case "trialOffsetCapUsdt" -> new BigDecimal("50");
-            case "deviceReleasePacingPct" -> month <= 2 ? new BigDecimal("0.60")
-                    : month <= 4 ? new BigDecimal("0.70")
-                    : month <= 7 ? new BigDecimal("0.80") : new BigDecimal("0.90");
-            case "commissionTighteningPct" -> month <= 4 ? new BigDecimal("0.10")
-                    : month <= 7 ? new BigDecimal("0.15") : new BigDecimal("0.20");
-            case "campaignRewardNex" -> month <= 2 ? new BigDecimal("20")
-                    : month <= 4 ? new BigDecimal("15") : new BigDecimal("10");
-            case "withdrawNexMinBalance" -> month <= 8 ? new BigDecimal("100") : new BigDecimal("200");
-            case "withdrawNexHoldDays" -> month <= 7 ? new BigDecimal("7")
-                    : month == 8 ? new BigDecimal("14") : new BigDecimal("21");
-            case "genesisEmissionsOpen" -> month >= 7 ? BigDecimal.ONE : BigDecimal.ZERO;
+            case "reinvestMultiplier" -> month >= 5 && month <= 6 ? new BigDecimal("2") : BigDecimal.ONE;
+            case "withdrawPenaltyFeeRate" -> month <= 8 ? new BigDecimal("0.20")
+                    : month <= 10 ? new BigDecimal("0.25") : new BigDecimal("0.30");
+            case "withdrawCooldownDays" -> month <= 7 ? new BigDecimal("30")
+                    : month == 8 ? new BigDecimal("35") : new BigDecimal("45");
+            case "binaryDailyCap" -> month <= 6 ? new BigDecimal("5000") : new BigDecimal("2000");
+            case "questBonusMultiplier" -> month <= 2 ? new BigDecimal("4") : BigDecimal.ONE;
+            case "complianceHoldEnabled" -> month >= 8 ? BigDecimal.ONE : BigDecimal.ZERO;
             default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };
     }
 
     private Object displayPhaseDialValue(String key, BigDecimal value) {
         return switch (key) {
-            case "deviceReleasePacingPct", "commissionTighteningPct" -> percent(value);
-            case "withdrawNexHoldDays" -> value.intValue();
-            case "genesisEmissionsOpen" -> value.signum() > 0 ? "是" : "否";
+            case "withdrawPenaltyFeeRate" -> percent(value);
+            case "withdrawCooldownDays" -> value.intValue();
+            case "complianceHoldEnabled" -> value.signum() > 0 ? "是" : "否";
             default -> value.stripTrailingZeros();
         };
     }
@@ -2453,22 +2781,6 @@ public class OpsGrowthService implements AuditReplayable {
                 "NUMBER",
                 "growth",
                 "H1 phase dial");
-        if ("withdrawNexMinBalance".equals(normalizedKey)) {
-            configFacade.upsertAdminValue(
-                    WITHDRAW_MIN_BALANCE_MIRROR_KEY,
-                    newValue.toPlainString(),
-                    "NUMBER",
-                    "wallet",
-                    "D5 mirror of H1 withdraw NEX gate");
-        }
-        if ("withdrawNexHoldDays".equals(normalizedKey)) {
-            configFacade.upsertAdminValue(
-                    WITHDRAW_HOLD_DAYS_MIRROR_KEY,
-                    newValue.toPlainString(),
-                    "NUMBER",
-                    "wallet",
-                    "D5 mirror of H1 withdraw NEX gate");
-        }
     }
 
     private List<Map<String, Object>> voucherRows() {
@@ -2729,7 +3041,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason)) {
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 200) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -2753,7 +3065,10 @@ public class OpsGrowthService implements AuditReplayable {
 
     private boolean coverageBelowRedline() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        return coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
+        return coverage == null || !coverage.reliable()
+                || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.coverageRatio().signum() <= 0 || coverage.redlinePct().signum() <= 0
+                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
     }
 
     private String normalizePhaseDialKey(String key) {
@@ -2771,29 +3086,26 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String phaseDialConfigKey(String key) {
         return switch (key) {
+            case "newUserBonusMultiplier" -> "growth.phase.new_user_bonus_multiplier";
             case "inviteRewardMultiplier" -> "growth.phase.invite_reward_multiplier";
-            case "questRewardMultiplier" -> "growth.phase.quest_reward_multiplier";
-            case "trialOffsetCapUsdt" -> "growth.phase.trial_offset_cap_usdt";
-            case "deviceReleasePacingPct" -> "growth.phase.device_release_pacing_pct";
-            case "commissionTighteningPct" -> "growth.phase.commission_tightening_pct";
-            case "campaignRewardNex" -> "growth.phase.campaign_reward_nex";
-            case "withdrawNexMinBalance" -> WITHDRAW_MIN_BALANCE_KEY;
-            case "withdrawNexHoldDays" -> WITHDRAW_HOLD_DAYS_KEY;
-            case "genesisEmissionsOpen" -> "growth.phase.genesis_emissions_open";
+            case "reinvestMultiplier" -> "growth.phase.reinvest_multiplier";
+            case "withdrawPenaltyFeeRate" -> "growth.phase.withdraw_penalty_fee_rate";
+            case "withdrawCooldownDays" -> "growth.phase.withdraw_cooldown_days";
+            case "binaryDailyCap" -> "growth.phase.binary_daily_cap";
+            case "questBonusMultiplier" -> "growth.phase.quest_bonus_multiplier";
+            case "complianceHoldEnabled" -> "growth.phase.compliance_hold_enabled";
             default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };
     }
 
     private BigDecimal defaultPhaseDialValue(String key) {
         return switch (key) {
-            case "trialOffsetCapUsdt" -> new BigDecimal("50");
-            case "deviceReleasePacingPct" -> new BigDecimal("0.60");
-            case "commissionTighteningPct" -> new BigDecimal("0.10");
-            case "campaignRewardNex" -> new BigDecimal("10");
-            case "withdrawNexMinBalance" -> new BigDecimal("100");
-            case "withdrawNexHoldDays" -> new BigDecimal("7");
-            case "genesisEmissionsOpen" -> BigDecimal.ZERO;
-            default -> BigDecimal.ONE;
+            case "newUserBonusMultiplier", "inviteRewardMultiplier", "reinvestMultiplier", "questBonusMultiplier" -> BigDecimal.ONE;
+            case "withdrawPenaltyFeeRate" -> new BigDecimal("0.20");
+            case "withdrawCooldownDays" -> new BigDecimal("30");
+            case "binaryDailyCap" -> new BigDecimal("5000");
+            case "complianceHoldEnabled" -> BigDecimal.ZERO;
+            default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };
     }
 
@@ -2827,20 +3139,19 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private BigDecimal normalizePhaseDialValue(String key, String raw) {
-        if ("genesisEmissionsOpen".equals(key)) {
-            String value = requireText(raw, "Genesis emissions dial value is required").trim().toLowerCase(Locale.ROOT);
+        if ("complianceHoldEnabled".equals(key)) {
+            String value = requireText(raw, "Compliance dial value is required").trim().toLowerCase(Locale.ROOT);
             if (Set.of("1", "true", "on", "是").contains(value)) return BigDecimal.ONE;
             if (Set.of("0", "false", "off", "否").contains(value)) return BigDecimal.ZERO;
-            throw new IllegalArgumentException("GENESIS_EMISSIONS_DIAL_INVALID");
+            throw new IllegalArgumentException("COMPLIANCE_DIAL_INVALID");
         }
         BigDecimal value = parseDecimal(raw);
         return switch (key) {
-            case "inviteRewardMultiplier", "questRewardMultiplier" -> bounded(value, new BigDecimal("0.10"), new BigDecimal("4"));
-            case "trialOffsetCapUsdt" -> bounded(value, BigDecimal.ZERO, new BigDecimal("500"));
-            case "deviceReleasePacingPct", "commissionTighteningPct" -> bounded(ratio(value), BigDecimal.ZERO, BigDecimal.ONE);
-            case "campaignRewardNex" -> bounded(value, BigDecimal.ZERO, new BigDecimal("100000"));
-            case "withdrawNexMinBalance" -> bounded(value, BigDecimal.ZERO, new BigDecimal("1000000"));
-            case "withdrawNexHoldDays" -> wholeDays(value, 0, 365);
+            case "newUserBonusMultiplier", "inviteRewardMultiplier", "reinvestMultiplier", "questBonusMultiplier" ->
+                    bounded(value, BigDecimal.ONE, new BigDecimal("4"));
+            case "withdrawPenaltyFeeRate" -> bounded(ratio(value), BigDecimal.ZERO, BigDecimal.ONE);
+            case "withdrawCooldownDays" -> wholeDays(value, 7, 90);
+            case "binaryDailyCap" -> bounded(value, BigDecimal.ZERO, new BigDecimal("50000"));
             default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };
     }
@@ -2851,10 +3162,10 @@ public class OpsGrowthService implements AuditReplayable {
 
     private boolean amplifiesPhasePayout(String key, BigDecimal oldValue, BigDecimal newValue) {
         return switch (key) {
-            case "inviteRewardMultiplier", "questRewardMultiplier", "trialOffsetCapUsdt", "deviceReleasePacingPct", "campaignRewardNex" ->
+            case "newUserBonusMultiplier", "inviteRewardMultiplier", "reinvestMultiplier", "binaryDailyCap", "questBonusMultiplier" ->
                     newValue.compareTo(oldValue) > 0;
-            case "commissionTighteningPct", "withdrawNexMinBalance", "withdrawNexHoldDays" -> newValue.compareTo(oldValue) < 0;
-            case "genesisEmissionsOpen" -> newValue.compareTo(oldValue) > 0;
+            case "withdrawCooldownDays", "withdrawPenaltyFeeRate", "complianceHoldEnabled" ->
+                    newValue.compareTo(oldValue) < 0;
             default -> false;
         };
     }
@@ -3442,7 +3753,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private BigDecimal trialChargeAmount() {
-        return parseMoney(trialParamCurrentValue("price", "$1,299"));
+        return parseMoney(trialParamCurrentValue("trialPriceUSD", "1299"));
     }
 
     private Long userIdFromToken(String token) {
@@ -3542,7 +3853,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private void audit(String action, String resourceType, String resourceId, String operator, Map<String, Object> detail) {
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)
@@ -3583,6 +3894,11 @@ public class OpsGrowthService implements AuditReplayable {
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "h1_phase_dial" -> {
+                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, str(p, "value"), reason, operator);
+                Integer month = intVal(p, "month");
+                return updatePhaseMonthDial(idem, month == null ? 0 : month, str(p, "dialKey"), req);
+            }
             case "h1_phase_control" -> {
                 GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, str(p, "value"), reason, operator);
                 return updatePhaseControl(idem, str(p, "controlKey"), req);
@@ -3605,6 +3921,16 @@ public class OpsGrowthService implements AuditReplayable {
             case "h5_checkin_rule" -> {
                 GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, str(p, "value"), reason, operator);
                 return updateCheckInRule(idem, str(p, "ruleKey"), req);
+            }
+            case "h8_referral_settlement" -> {
+                if (referralRewardService.isEmpty()) {
+                    return ApiResult.fail(503, "H8_REFERRAL_REWARD_SERVICE_UNAVAILABLE");
+                }
+                Integer requestedLimit = intVal(p, "limit");
+                int limit = requestedLimit == null ? 20 : requestedLimit;
+                return ApiResult.ok(referralRewardService.get().runSettlements(
+                        idem,
+                        new ReferralSettlementRunRequest(limit, reason, operator)));
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());

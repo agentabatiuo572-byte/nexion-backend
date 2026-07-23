@@ -4,6 +4,7 @@ import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public interface I18nLearningRepository {
@@ -18,6 +19,8 @@ public interface I18nLearningRepository {
     Optional<I18nMessagePairView> findDraftMessagePair(String messageKey);
 
     List<I18nMessagePairView> listMessagePairs();
+
+    default Map<String, String> listPublishedMessages(String namespace, String locale) { return Map.of(); }
 
     I18nMessagePairView saveMessagePair(String messageKey, String zh, String en, String vi, String status, LocalDateTime now);
 

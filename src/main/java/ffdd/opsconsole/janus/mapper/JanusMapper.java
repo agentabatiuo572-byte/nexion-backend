@@ -545,7 +545,7 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
     @Select("SELECT dry_run_id AS dryRunId,strategy_id AS strategyId,expected_version AS expectedVersion,config_hash AS configHash,CAST(result_json AS CHAR) AS resultJson,actor_id AS actorId,CAST(UNIX_TIMESTAMP(expires_at)*1000 AS UNSIGNED) AS expiresAt FROM nx_janus_dry_run WHERE dry_run_id=#{dryRunId}")
     Map<String, Object> findDryRun(@Param("dryRunId") String dryRunId);
 
-    @Select("SELECT idempotency_key AS idempotencyKey,command_type AS commandType,target_id AS targetId,request_hash AS requestHash,actor_id AS actorId,state,CAST(payload_json AS CHAR) AS payloadJson FROM nx_janus_command WHERE idempotency_key=#{idempotencyKey} AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP(3))")
+    @Select("SELECT idempotency_key AS idempotencyKey,command_type AS commandType,target_id AS targetId,request_hash AS requestHash,actor_id AS actorId,state,CAST(payload_json AS CHAR) AS payloadJson FROM nx_janus_command WHERE idempotency_key=#{idempotencyKey} AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP(3)) FOR SHARE")
     Map<String, Object> findCommand(@Param("idempotencyKey") String idempotencyKey);
 
     @Delete("DELETE FROM nx_janus_command WHERE idempotency_key=#{idempotencyKey} AND expires_at<=CURRENT_TIMESTAMP(3)")

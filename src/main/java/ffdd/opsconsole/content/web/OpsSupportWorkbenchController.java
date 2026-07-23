@@ -8,7 +8,9 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.user.application.OpsUserService;
 import ffdd.opsconsole.user.domain.UserAccountView;
+import ffdd.opsconsole.user.domain.UserProfileListView;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,7 +34,17 @@ public class OpsSupportWorkbenchController {
     // 用户账号列表 — M1 客服总览 读
     @PreAuthorize("hasAuthority('service_m1_read')")
     @GetMapping("/users")
-    public ApiResult<PageResult<UserAccountView>> users(UserQueryRequest request) {
-        return userService.profilePage(request);
+    public ApiResult<PageResult<UserProfileListView>> users(UserQueryRequest request) {
+        ApiResult<PageResult<UserAccountView>> result = userService.profilePage(request);
+        if (result.getCode() != 0 || result.getData() == null) {
+            return ApiResult.fail(result.getCode(), result.getMessage());
+        }
+        PageResult<UserAccountView> page = result.getData();
+        List<UserProfileListView> records = page.getRecords() == null
+                ? List.of()
+                : page.getRecords().stream()
+                        .map(record -> UserProfileListView.from(record, "SUPPORT"))
+                        .toList();
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
     }
 }

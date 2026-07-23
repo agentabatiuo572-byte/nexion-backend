@@ -10,6 +10,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
@@ -27,6 +28,7 @@ public class AuditReplayBusinessPermissionGuard {
             "financials", "nexnarrative", "nexstory", "auditsreserves", "compliancebadges");
 
     private final TrustDisclosureRepository trustDisclosureRepository;
+    private final AdminOperatorRoleResolver roleResolver;
 
     public record DelegatedProposalDescriptor(
             String action,
@@ -56,7 +58,9 @@ public class AuditReplayBusinessPermissionGuard {
         if (delegatedProposal() && requiredAuthority == null) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_UNMAPPED");
         }
-        if (requiredAuthority != null && !hasAuthority(requiredAuthority)) {
+        if (requiredAuthority != null
+                && !hasAuthority(requiredAuthority)
+                && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
         if ("I".equalsIgnoreCase(command.domain())
@@ -64,6 +68,19 @@ public class AuditReplayBusinessPermissionGuard {
             return validateDisclosureSnapshot(command.params());
         }
         return ApiResult.ok();
+    }
+
+    private boolean scopedMakerMayPropose(AuditReplayCommand command, String operation) {
+        if (!delegatedProposal() || command == null || command.domain() == null) {
+            return false;
+        }
+        String role = roleResolver.resolveCode();
+        String domain = command.domain().trim().toUpperCase(Locale.ROOT);
+        return "GROWTH".equalsIgnoreCase(role)
+                && "E".equals(domain)
+                && (Set.of("e5_device_force_activate", "e5_device_unbind").contains(operation)
+                    || ("e6_compute_config".equals(operation)
+                        && "E.compute.computeShareEnabled".equals(value(command.params(), "paramKey"))));
     }
 
     /**
@@ -109,7 +126,56 @@ public class AuditReplayBusinessPermissionGuard {
         if ("K".equals(domain)) {
             return delegatedKDescriptor(operation, params);
         }
+        if ("E".equals(domain)) {
+            return delegatedEDescriptor(operation, params);
+        }
         return null;
+    }
+
+    private DelegatedProposalDescriptor delegatedEDescriptor(String operation, Map<String, Object> params) {
+        String deviceId = positiveIdentifier(params.get("deviceId"));
+        return switch (operation) {
+            case "e5_device_force_activate" -> deviceDescriptor(
+                    "强制激活设备", deviceId, "ACTIVATED");
+            case "e5_device_unbind" -> deviceDescriptor(
+                    "解绑设备资产", deviceId, "UNBOUND");
+            case "e6_compute_config" -> computeConfigDescriptor(params);
+            default -> null;
+        };
+    }
+
+    private DelegatedProposalDescriptor computeConfigDescriptor(Map<String, Object> params) {
+        String paramKey = value(params, "paramKey");
+        String nextValue = value(params, "value");
+        if (!"E.compute.computeShareEnabled".equals(paramKey)
+                || !Set.of("on", "off").contains(nextValue)) {
+            return null;
+        }
+        return new DelegatedProposalDescriptor(
+                ("on".equals(nextValue) ? "开启" : "关闭") + "电脑共享算力入口",
+                paramKey,
+                "以服务器执行时状态为准",
+                nextValue,
+                "E6",
+                "param",
+                false,
+                new AuditLockTarget("E", "e6_compute_config", paramKey));
+    }
+
+    private DelegatedProposalDescriptor deviceDescriptor(
+            String action, String deviceId, String afterValue) {
+        if (deviceId == null || deviceId.isBlank()) {
+            return null;
+        }
+        return new DelegatedProposalDescriptor(
+                action + " · " + deviceId,
+                deviceId,
+                "以服务器执行时状态为准",
+                afterValue,
+                "E5",
+                "sos",
+                false,
+                new AuditLockTarget("E", "device", deviceId));
     }
 
     private DelegatedProposalDescriptor delegatedC2Descriptor(String operation, Map<String, Object> params) {
@@ -132,6 +198,8 @@ public class AuditReplayBusinessPermissionGuard {
                         ("ALLOW".equals(kind) ? "信任" : "禁入") + " · " + expiryLabel,
                         false, "accountlist");
             }
+            case "c2_blocklist_remove" -> userDescriptor(
+                    params, "移出账户名单", "REMOVED", false, "accountlist");
             case "c2_impersonate_terminate" -> {
                 String sessionNo = value(params, "sessionNo");
                 yield descriptor("终止模拟会话", sessionNo, "TERMINATED", false,
@@ -246,6 +314,11 @@ public class AuditReplayBusinessPermissionGuard {
     private String requiredAuthority(AuditReplayCommand command, String operation) {
         String domain = command.domain() == null ? "" : command.domain().trim().toUpperCase(Locale.ROOT);
         return switch (domain) {
+            case "A" -> switch (operation) {
+                case "a6_role_status_update", "a6_role_disable", "a6_role_delete" -> "platform_a6_write";
+                case "a6_role_grants_update" -> "platform_a6_role_grants_update";
+                default -> null;
+            };
             case "C" -> switch (operation) {
                 case "c2_account_freeze" -> "user_c2_account_freeze";
                 case "c2_account_unfreeze" -> "user_c2_account_unfreeze";
@@ -253,6 +326,11 @@ public class AuditReplayBusinessPermissionGuard {
                 case "c2_impersonate_terminate" -> "user_c2_impersonate_terminate";
                 case "c2_impersonate_start" -> "user_c2_impersonate_start";
                 case "c2_blocklist_upsert" -> "user_c2_blocklist_add";
+                case "c2_blocklist_remove" -> "user_c2_blocklist_add";
+                case "c5_2fa_disable" -> "user_c5_2fa_disable";
+                case "c5_password_reset" -> "user_c5_password_reset";
+                case "c5_user_unlock" -> c5UnlockAuthority(command.params());
+                case "c5_session_revoke_one" -> "user_c5_session_revoke_one";
                 default -> null;
             };
             case "K" -> switch (operation) {
@@ -266,6 +344,15 @@ public class AuditReplayBusinessPermissionGuard {
                 case "k2_row_boardflag" -> "risk_k2_row_boardflag";
                 default -> null;
             };
+            case "H" -> switch (operation) {
+                case "h1_phase_dial" -> "growth_h1_write";
+                case "h1_phase_control", "h1_phase_override" -> "growth_h1_control_pin_write";
+                case "h2_trial_cancel" -> "growth_h2_session_cancel";
+                case "h2_trial_charge" -> "growth_h2_session_charge";
+                case "h5_checkin_rule" -> "growth_h5_rule_write";
+                case "h8_referral_settlement" -> "growth_h8_settle";
+                default -> null;
+            };
             case "I" -> switch (operation) {
                 case "i4_trust_section_manage" -> sectionAuthority(command.params());
                 case "i4_disclosure_publish", "i5_disclosure_publish",
@@ -274,8 +361,52 @@ public class AuditReplayBusinessPermissionGuard {
                 case "i4_gate_adjust", "i5_gate_adjust" -> "content_i5_gate_adjust";
                 default -> null;
             };
+            case "E" -> switch (operation) {
+                case "e4_order_refund" -> "device_e4_order_refund";
+                case "e4_order_cancel", "e4_order_terminal", "e4_order_state" -> "device_e4_write";
+                case "e5_device_force_activate" -> "device_e5_device_force_activate";
+                case "e5_device_unbind" -> "device_e5_device_unbind";
+                case "e5_device_activate", "e5_device_deactivate",
+                        "e5_device_batch_pause", "e5_device_batch_resume",
+                        "e5_datacenter_create", "e5_datacenter_update",
+                        "e5_datacenter_delete", "e5_datacenter_resume" -> "device_e5_write";
+                case "e5_datacenter_pause" -> "device_e5_datacenter_pause";
+                case "e6_compute_config" -> e6ComputeAuthority(command.params());
+                case "e6_compute_config_batch" -> "device_e6_write";
+                default -> null;
+            };
+            // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
+            // 按 params.value 目标状态分流 dispose/reject;细分由 OpsTeamService.updateCommissionEventStatus 二次校验兜底。
+            case "F" -> switch (operation) {
+                case "f_commission_status" -> f5CommissionAuthority(command.params());
+                default -> null;
+            };
             default -> null;
         };
+    }
+
+    /**
+     * F5 佣金事件状态处置权限分流:rejected 终态(红冲)→ commission_reject;
+     * 其余 dispose 类(frozen/unlocked/settled/paid)→ commission_dispose。
+     * EF.sql:64-65 注册,f_commission_status 传入 params.value 为新状态(同 OpsTeamService.canonicalCommissionState 归一化)。
+     */
+    private String f5CommissionAuthority(Map<String, Object> params) {
+        String targetValue = value(params, "value").toLowerCase(Locale.ROOT);
+        boolean isReject = Set.of("rejected", "reversed", "异常回退", "驳回", "红冲").contains(targetValue);
+        return isReject ? "network_f5_commission_reject" : "network_f5_commission_dispose";
+    }
+
+    private String c5UnlockAuthority(Map<String, Object> params) {
+        Object lockKind = params == null ? null : params.get("lockKind");
+        return "LONG".equalsIgnoreCase(text(lockKind))
+                ? "user_c5_unlock_long"
+                : "user_c5_unlock_short";
+    }
+
+    private String e6ComputeAuthority(Map<String, Object> params) {
+        return "E.compute.computeShareEnabled".equals(value(params, "paramKey"))
+                ? "device_e6_flag_toggle"
+                : "device_e6_write";
     }
 
     /**

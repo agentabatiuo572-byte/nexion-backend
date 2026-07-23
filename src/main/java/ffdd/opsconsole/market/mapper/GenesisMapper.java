@@ -170,11 +170,13 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
     String latestGenesisDividendRerunBizNo();
 
     @Select("""
-            SELECT COUNT(1)
-              FROM nx_wallet_ledger
-             WHERE is_deleted = 0
-               AND biz_type = 'GENESIS_DIVIDEND'
-               AND biz_no = CONCAT('G4-DIVIDEND-', #{batchNo}, '-RERUN')
+            SELECT
+              (SELECT COUNT(1) FROM nx_wallet_ledger
+                WHERE is_deleted=0 AND biz_type='GENESIS_DIVIDEND'
+                  AND biz_no=CONCAT('G4-DIVIDEND-',#{batchNo},'-RERUN'))
+              +
+              (SELECT COUNT(1) FROM nx_genesis_emission_batch
+                WHERE is_deleted=0 AND batch_no=#{batchNo} AND UPPER(status)='COMPLETED')
             """)
     long countGenesisDividendRerun(@Param("batchNo") String batchNo);
 

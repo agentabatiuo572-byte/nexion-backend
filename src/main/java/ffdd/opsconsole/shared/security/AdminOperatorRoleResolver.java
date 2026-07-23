@@ -18,25 +18,14 @@ public class AdminOperatorRoleResolver {
     private final AdminRoleRelationMapper roleRelationMapper;
 
     public String resolve() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        Long adminId = authentication == null ? null : positiveId(authentication.getPrincipal());
-        if (adminId == null) {
-            return "认证运营员";
-        }
-        AdminEntity admin = adminMapper.selectById(adminId);
-        if (admin == null || Integer.valueOf(1).equals(admin.getIsDeleted())
-                || !Integer.valueOf(1).equals(admin.getStatus())) {
-            return "认证运营员";
-        }
-        if (Integer.valueOf(1).equals(admin.getSuperAdmin())) {
+        String roleCode = resolveCode();
+        if ("SUPER_ADMIN".equals(roleCode)) {
             return "超管";
         }
-        String roleCode = roleRelationMapper.activeRoleCode(adminId);
         if (!StringUtils.hasText(roleCode)) {
-            return "审计";
+            return "认证运营员";
         }
-        return switch (roleCode.trim().toUpperCase(Locale.ROOT)) {
-            case "SUPER_ADMIN" -> "超管";
+        return switch (roleCode) {
             case "CONFIG_ADMIN" -> "配置管理员";
             case "FINANCE" -> "财务";
             case "RISK" -> "风控";
@@ -44,8 +33,29 @@ public class AdminOperatorRoleResolver {
             case "GROWTH" -> "增长";
             case "SUPPORT" -> "客服";
             case "AUDITOR" -> "审计";
-            default -> "运营角色:" + roleCode.trim().toUpperCase(Locale.ROOT);
+            default -> "运营角色:" + roleCode;
         };
+    }
+
+    public String resolveCode() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        Long adminId = authentication == null ? null : positiveId(authentication.getPrincipal());
+        if (adminId == null) {
+            return null;
+        }
+        AdminEntity admin = adminMapper.selectById(adminId);
+        if (admin == null || Integer.valueOf(1).equals(admin.getIsDeleted())
+                || !Integer.valueOf(1).equals(admin.getStatus())) {
+            return null;
+        }
+        if (Integer.valueOf(1).equals(admin.getSuperAdmin())) {
+            return "SUPER_ADMIN";
+        }
+        String roleCode = roleRelationMapper.activeRoleCode(adminId);
+        if (!StringUtils.hasText(roleCode)) {
+            return null;
+        }
+        return roleCode.trim().toUpperCase(Locale.ROOT);
     }
 
     private Long positiveId(Object principal) {

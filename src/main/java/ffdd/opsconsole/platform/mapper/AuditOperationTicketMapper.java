@@ -28,12 +28,14 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
               decision_reason VARCHAR(512) NULL,
               decided_at DATETIME NULL,
               command_json TEXT NULL COMMENT '结构化回放指令 {domain,op,params}',
+              source_domain VARCHAR(8) NOT NULL DEFAULT 'A',
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,
               UNIQUE KEY uk_audit_operation_ticket_no (operation_id),
               KEY idx_audit_operation_ticket_status (status, created_at),
-              KEY idx_audit_operation_ticket_type (operation_type, status)
+              KEY idx_audit_operation_ticket_type (operation_type, status),
+              KEY idx_audit_operation_ticket_domain (source_domain, status, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTicketTable();

@@ -327,6 +327,7 @@ public class OpsJanusService {
 
     @Transactional
     public ApiResult<JanusStrategyView> createStrategy(String idempotencyKey, JanusStrategyUpsertRequest request) {
+        if (!canManageStrategies()) return ApiResult.fail(403, "ROLE_FORBIDDEN");
         String error = validateStrategy(request);
         if (error != null) return ApiResult.fail(422, error);
         String strategyId = deterministicStrategyId(idempotencyKey);
@@ -346,6 +347,7 @@ public class OpsJanusService {
     @Transactional
     public ApiResult<JanusStrategyView> updateStrategy(String strategyId, String idempotencyKey,
                                                        JanusStrategyUpsertRequest request) {
+        if (!canManageStrategies()) return ApiResult.fail(403, "ROLE_FORBIDDEN");
         String error = validateStrategy(request);
         if (error != null) return ApiResult.fail(422, error);
         if (request.expectedVersion() == null) return ApiResult.fail(422, "EXPECTED_VERSION_REQUIRED");
@@ -369,6 +371,7 @@ public class OpsJanusService {
 
     @Transactional
     public ApiResult<Map<String, Object>> dryRun(String strategyId, String idempotencyKey, JanusStrategyActionRequest request) {
+        if (!canManageStrategies()) return ApiResult.fail(403, "ROLE_FORBIDDEN");
         JanusStrategyView strategy = repository.findStrategy(strategyId).orElse(null);
         if (strategy == null) return ApiResult.fail(404, "JANUS_STRATEGY_NOT_FOUND");
         String reason = request == null ? null : first(request.reason(), request.note());
@@ -421,19 +424,22 @@ public class OpsJanusService {
     @Transactional
     public ApiResult<JanusStrategyView> lifecycle(String strategyId, String action, String idempotencyKey,
                                                   JanusStrategyActionRequest request) {
-        JanusStrategyView before = repository.findStrategy(strategyId).orElse(null);
-        if (before == null) return ApiResult.fail(404, "JANUS_STRATEGY_NOT_FOUND");
-        if (request == null) return ApiResult.fail(422, "STRATEGY_ACTION_REQUIRED");
-        String reason = request == null ? null : first(request.reason(), request.note());
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 4) return ApiResult.fail(422, "REASON_REQUIRED");
-        if (request.expectedVersion() == null) return ApiResult.fail(422, "EXPECTED_VERSION_REQUIRED");
         String normalized = action == null ? "" : action.toLowerCase(Locale.ROOT);
         if (!List.of("publish", "pause", "archive").contains(normalized)) {
             return ApiResult.fail(422, "STRATEGY_ACTION_INVALID");
         }
-        if ("publish".equals(normalized) && currentRole() != JanusRole.ADMIN) {
+        JanusRole role = currentRole();
+        if (("publish".equals(normalized) && role != JanusRole.ADMIN)
+                || (!"publish".equals(normalized)
+                && role != JanusRole.SENIOR_OPERATOR && role != JanusRole.ADMIN)) {
             return ApiResult.fail(403, "ROLE_FORBIDDEN");
         }
+        JanusStrategyView before = repository.findStrategy(strategyId).orElse(null);
+        if (before == null) return ApiResult.fail(404, "JANUS_STRATEGY_NOT_FOUND");
+        if (request == null) return ApiResult.fail(422, "STRATEGY_ACTION_REQUIRED");
+        String reason = first(request.reason(), request.note());
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 4) return ApiResult.fail(422, "REASON_REQUIRED");
+        if (request.expectedVersion() == null) return ApiResult.fail(422, "EXPECTED_VERSION_REQUIRED");
         String requestHash = hash(Map.of("action", normalized, "strategyId", strategyId, "request", request));
         CommandGuard guard = commandGuard(idempotencyKey, "STRATEGY_" + normalized.toUpperCase(), strategyId, requestHash);
         if (guard.failure() != null) return cast(guard.failure());
@@ -493,9 +499,9 @@ public class OpsJanusService {
     @Transactional
     public ApiResult<JanusStrategyView> rollback(String strategyId, String idempotencyKey,
                                                  JanusStrategyActionRequest request) {
+        if (currentRole() != JanusRole.ADMIN) return ApiResult.fail(403, "ROLE_FORBIDDEN");
         JanusStrategyView before = repository.findStrategy(strategyId).orElse(null);
         if (before == null) return ApiResult.fail(404, "JANUS_STRATEGY_NOT_FOUND");
-        if (currentRole() != JanusRole.ADMIN) return ApiResult.fail(403, "ROLE_FORBIDDEN");
         if (request == null || request.targetVersion() == null || request.expectedVersion() == null) {
             return ApiResult.fail(422, "ROLLBACK_FIELDS_REQUIRED");
         }
@@ -525,6 +531,7 @@ public class OpsJanusService {
 
     @Transactional
     public ApiResult<Void> deleteStrategy(String strategyId, String idempotencyKey, JanusStrategyActionRequest request) {
+        if (!canManageStrategies()) return ApiResult.fail(403, "ROLE_FORBIDDEN");
         String reason = request == null ? null : first(request.reason(), request.note());
         if (!StringUtils.hasText(reason) || reason.trim().length() < 4) return ApiResult.fail(422, "REASON_REQUIRED");
         if (request.expectedVersion() == null) return ApiResult.fail(422, "EXPECTED_VERSION_REQUIRED");
@@ -677,6 +684,7 @@ public class OpsJanusService {
         }
         if (request.channel() != null && (!request.channel().equals(request.channel().trim())
                 || !CHANNELS.contains(request.channel()))) return "CHANNEL_INVALID";
+        if (normalizePlatform(request.platform()) == null) return "PLATFORM_INVALID";
         if (!jsonShape(request.maturity(), false) || !jsonShape(request.environment(), false)
                 || !jsonShape(request.latestDecision(), false) || !jsonShape(request.latestSession(), false)
                 || !jsonShape(request.tags(), true)) return "REPORT_JSON_INVALID";
@@ -691,7 +699,7 @@ public class OpsJanusService {
         return new JanusDeviceReportRequest(request.reportId().trim(), request.deviceId().trim(), reportedAt,
                 firstSeenAt, installAt, trim(request.inviteCode(), 96), trim(request.channel(), 64),
                 trim(request.cohortId(), 96), null, false, trim(request.ua(), 1000),
-                first(request.platform(), "Android"), trim(request.model(), 128), trim(request.osName(), 128),
+                normalizePlatform(request.platform()), trim(request.model(), 128), trim(request.osName(), 128),
                 trim(request.browser(), 128), 0, 0, 0, 0, object(request.maturity()),
                 object(request.environment()), null, null, null, nullableObject(request.latestSession()),
                 objectMapper.createArrayNode());
@@ -912,6 +920,19 @@ public class OpsJanusService {
 
     private String deviceSid(long userId, String deviceId) {
         return "J-" + hash(userId + ":" + deviceId.trim()).substring(0, 32).toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizePlatform(String platform) {
+        if (!StringUtils.hasText(platform)) return "unknown";
+        return switch (platform.trim().toLowerCase(Locale.ROOT)) {
+            case "ios" -> "iOS";
+            case "android" -> "Android";
+            case "windows", "win32" -> "windows";
+            case "mac", "macos" -> "mac";
+            case "linux" -> "linux";
+            case "unknown", "devtools" -> "unknown";
+            default -> null;
+        };
     }
 
     private boolean validText(String value, int max) {
@@ -1613,6 +1634,11 @@ public class OpsJanusService {
         if (authorities.contains("risk_k6_senior")) return JanusRole.SENIOR_OPERATOR;
         if (authorities.contains("risk_k6_write")) return JanusRole.OPERATOR;
         return authorities.contains("risk_k6_read") ? JanusRole.VIEWER : JanusRole.VIEWER;
+    }
+
+    private boolean canManageStrategies() {
+        JanusRole role = currentRole();
+        return role == JanusRole.SENIOR_OPERATOR || role == JanusRole.ADMIN;
     }
 
     private String currentActor() {

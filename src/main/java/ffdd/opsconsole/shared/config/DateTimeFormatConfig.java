@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.config;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import java.time.Clock;
+import java.time.ZoneId;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.TimeZone;
@@ -27,7 +28,7 @@ public class DateTimeFormatConfig {
 
     @Bean
     public Clock systemClock() {
-        return Clock.systemDefaultZone();
+        return Clock.system(ZoneId.of("Asia/Shanghai"));
     }
 
     @Bean
@@ -35,7 +36,15 @@ public class DateTimeFormatConfig {
         return new Converter<String, LocalDateTime>() {
             @Override
             public LocalDateTime convert(String source) {
-                return source == null || source.isBlank() ? null : LocalDateTime.parse(source, DATE_TIME_FORMATTER);
+                if (source == null || source.isBlank()) {
+                    return null;
+                }
+                String value = source.trim();
+                try {
+                    return LocalDateTime.parse(value, DATE_TIME_FORMATTER);
+                } catch (java.time.format.DateTimeParseException ignored) {
+                    return LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+                }
             }
         };
     }

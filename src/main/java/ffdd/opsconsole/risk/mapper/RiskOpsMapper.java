@@ -544,6 +544,78 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                               @Param("sourceDomain") String sourceDomain,
                               @Param("sourceNo") String sourceNo);
 
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_admin_risk_score_kyc_trigger_state (
+              user_no VARCHAR(64) PRIMARY KEY,
+              above_threshold TINYINT NOT NULL DEFAULT 0,
+              last_score INT NOT NULL,
+              last_threshold INT NOT NULL,
+              last_transition_id VARCHAR(160) NOT NULL,
+              trigger_sequence BIGINT NOT NULL DEFAULT 0,
+              version BIGINT NOT NULL DEFAULT 0,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              KEY idx_k4_k5_trigger_threshold (last_threshold,above_threshold,updated_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createK4KycReviewTriggerStateTable();
+
+    @Select("""
+            SELECT user_no AS userNo,above_threshold AS aboveThreshold,last_score AS lastScore,
+                   last_threshold AS lastThreshold,last_transition_id AS lastTransitionId,
+                   trigger_sequence AS triggerSequence,version
+              FROM nx_admin_risk_score_kyc_trigger_state
+             WHERE user_no=#{userNo}
+             FOR UPDATE
+            """)
+    K4KycTriggerStateRecord findK4KycTriggerStateForUpdate(@Param("userNo") String userNo);
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_score_kyc_trigger_state
+              (user_no,above_threshold,last_score,last_threshold,last_transition_id,trigger_sequence,version)
+            VALUES
+              (#{userNo},#{above},#{score},#{threshold},#{transitionId},#{triggerSequence},0)
+            """)
+    int insertK4KycTriggerState(
+            @Param("userNo") String userNo,
+            @Param("above") boolean above,
+            @Param("score") int score,
+            @Param("threshold") int threshold,
+            @Param("transitionId") String transitionId,
+            @Param("triggerSequence") long triggerSequence);
+
+    @Update("""
+            UPDATE nx_admin_risk_score_kyc_trigger_state
+               SET above_threshold=#{above},last_score=#{score},last_threshold=#{threshold},
+                   last_transition_id=#{transitionId},
+                   trigger_sequence=trigger_sequence+#{triggerIncrement},version=version+1,updated_at=NOW()
+             WHERE user_no=#{userNo} AND version=#{expectedVersion}
+            """)
+    int updateK4KycTriggerState(
+            @Param("userNo") String userNo,
+            @Param("above") boolean above,
+            @Param("score") int score,
+            @Param("threshold") int threshold,
+            @Param("transitionId") String transitionId,
+            @Param("triggerIncrement") int triggerIncrement,
+            @Param("expectedVersion") long expectedVersion);
+
+    @Select("""
+            SELECT s.user_no
+              FROM nx_admin_risk_score_user s
+              JOIN nx_admin_risk_score_model m
+                ON m.state='active' AND m.is_deleted=0
+               AND s.model_version=CONCAT('k4-v',m.model_version)
+              LEFT JOIN nx_admin_risk_score_kyc_trigger_state t ON t.user_no=s.user_no
+             WHERE s.is_deleted=0
+               AND s.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+               AND (t.user_no IS NULL OR t.last_threshold<>#{threshold})
+             ORDER BY s.user_no ASC
+             LIMIT #{limit}
+            """)
+    List<String> scoreUserNosNeedingKycTriggerThresholdSync(
+            @Param("threshold") int threshold, @Param("limit") int limit);
+
     @Select("""
             SELECT source_domain AS sourceDomain,source_no AS sourceNo
               FROM nx_admin_risk_kyc_review_source
@@ -787,6 +859,16 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                      @Param("severity") String severity, @Param("evidence") String evidence, @Param("operator") String operator);
 
     @Insert("""
+            INSERT INTO nx_risk_signal (
+                signal_no, user_id, signal_type, severity, evidence, created_by, created_at, updated_at, is_deleted
+            ) VALUES (#{signalNo}, #{userId}, #{signalType}, #{severity}, #{evidence}, #{operator}, NOW(), NOW(), 0)
+            ON DUPLICATE KEY UPDATE signal_no = VALUES(signal_no)
+            """)
+    int insertSignalIfAbsent(@Param("signalNo") String signalNo, @Param("userId") Long userId,
+                             @Param("signalType") String signalType, @Param("severity") String severity,
+                             @Param("evidence") String evidence, @Param("operator") String operator);
+
+    @Insert("""
             INSERT INTO nx_admin_risk_score_user
               (user_no,model_score,model_version,updated_text,is_deleted)
             VALUES (#{userNo},0,'tamper-v1','刚刚',0)
@@ -913,16 +995,19 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        OR UPPER(COALESCE(rd.reason, '')) REGEXP 'ADDRESS_(BLACKLIST|REPUTATION_LOW)'
                      THEN 'low'
                      ELSE 'normal'
-                   END AS addressReputation,
-                   CONCAT_WS(' ',
+                    END AS addressReputation,
+                    w.chain AS chain,
+                    w.target_address AS targetAddress,
+                    CONCAT_WS(' ',
                        COALESCE(rd.rule_codes, ''),
                        COALESCE(rd.reason, ''),
                        COALESCE(u.status, ''),
-                       COALESCE(u.kyc_status, '')
+                       COALESCE(kyc.status, '')
                    ) AS existingSignals
               FROM nx_withdrawal_order w
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
+              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=w.user_id AND kyc.is_deleted=0
              WHERE w.is_deleted = 0
                AND w.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                AND w.status IN ('PENDING','REVIEWING','FROZEN','REJECTED','PENDING_CHAIN')
@@ -942,6 +1027,29 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                            @Param("conditionText") String conditionText, @Param("action") String action,
                            @Param("state") String state, @Param("builtIn") boolean builtIn,
                            @Param("priority") int priority, @Param("operator") String operator);
+
+    @Insert("""
+            INSERT INTO nx_risk_decision (
+                decision_no,user_id,biz_type,biz_no,decision,reason,risk_score,
+                rule_codes,rule_snapshot,reviewed_by,reviewed_at,created_at,updated_at,is_deleted
+            ) VALUES (
+                #{decisionNo},#{userId},'WITHDRAW_RULE',#{withdrawalNo},#{decision},#{reason},#{riskScore},
+                #{ruleCodes},#{ruleSnapshot},'system',NOW(),NOW(),NOW(),0
+            )
+            ON DUPLICATE KEY UPDATE
+                decision=VALUES(decision),reason=VALUES(reason),risk_score=VALUES(risk_score),
+                rule_codes=VALUES(rule_codes),rule_snapshot=VALUES(rule_snapshot),
+                reviewed_by='system',reviewed_at=NOW(),updated_at=NOW(),is_deleted=0
+            """)
+    int upsertWithdrawRuleDecision(
+            @Param("decisionNo") String decisionNo,
+            @Param("userId") Long userId,
+            @Param("withdrawalNo") String withdrawalNo,
+            @Param("decision") String decision,
+            @Param("reason") String reason,
+            @Param("riskScore") int riskScore,
+            @Param("ruleCodes") String ruleCodes,
+            @Param("ruleSnapshot") String ruleSnapshot);
 
     @Update("""
             UPDATE nx_admin_risk_withdraw_rule
@@ -1117,6 +1225,196 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     int updateArbitrageParam(@Param("key") String key, @Param("expectedVersion") long expectedVersion,
                              @Param("value") String value);
+
+    @Update("""
+            UPDATE nx_admin_risk_arbitrage_row
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE row_id LIKE 'K2-E3-U%'
+               AND is_deleted = 0
+            """)
+    int retireE3TradeinArbitrageRows();
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_arbitrage_row (
+                row_id,view_key,cluster_id,cell1,cell2,cell3,cell4,cell5,cell6,
+                level_value,actions_csv,is_deleted
+            )
+            SELECT CONCAT('K2-E3-U', a.user_id),
+                   'tradein',
+                   NULL,
+                   CONCAT('U', LPAD(a.user_id, 8, '0')),
+                   CONCAT(COUNT(DISTINCT a.id), ' 次置换'),
+                   '近 30 天',
+                   CONCAT(COUNT(DISTINCT a.id), ' 次高频下架置换'),
+                   CONCAT_WS(' / ',
+                       CASE WHEN COUNT(DISTINCT c.id) > 0
+                            THEN CONCAT(COUNT(DISTINCT c.id), ' 笔返佣') END,
+                       CASE WHEN COUNT(DISTINCT l.id) > 0
+                            THEN CONCAT(COUNT(DISTINCT l.id), ' 笔礼金') END),
+                   NULL,
+                   4,
+                   'flag',
+                   0
+              FROM nx_tradein_application a
+              LEFT JOIN nx_commission_event c
+                ON c.user_id = a.user_id
+               AND c.is_deleted = 0
+               AND c.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+               AND UPPER(c.status) NOT IN ('FAILED','REJECTED','CANCELLED')
+               AND c.amount_usdt > 0
+              LEFT JOIN nx_wallet_ledger l
+                ON l.user_id = a.user_id
+               AND l.is_deleted = 0
+               AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+               AND UPPER(l.biz_type) LIKE '%GIFT%'
+               AND UPPER(l.status) IN ('POSTED','SUCCESS','COMPLETED')
+               AND UPPER(l.direction) = 'IN'
+               AND l.amount > 0
+             WHERE a.is_deleted = 0
+               AND UPPER(a.status) = 'COMPLETED'
+               AND a.completed_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+             GROUP BY a.user_id
+            HAVING COUNT(DISTINCT a.id) >= 3
+               AND (COUNT(DISTINCT c.id) > 0 OR COUNT(DISTINCT l.id) > 0)
+            ON DUPLICATE KEY UPDATE
+                view_key = VALUES(view_key),
+                cluster_id = VALUES(cluster_id),
+                cell1 = VALUES(cell1),
+                cell2 = VALUES(cell2),
+                cell3 = VALUES(cell3),
+                cell4 = VALUES(cell4),
+                cell5 = VALUES(cell5),
+                cell6 = VALUES(cell6),
+                level_value = VALUES(level_value),
+                actions_csv = VALUES(actions_csv),
+                is_deleted = 0,
+                updated_at = NOW()
+            """)
+    int upsertE3TradeinArbitrageRows();
+
+    @Update("""
+            UPDATE nx_admin_risk_arbitrage_row
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE row_id LIKE 'K2-H2-U%'
+               AND is_deleted = 0
+            """)
+    int retireH2TrialCycleRows();
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_arbitrage_row (
+                row_id,view_key,cluster_id,cell1,cell2,cell3,cell4,cell5,cell6,
+                level_value,actions_csv,is_deleted
+            )
+            SELECT CONCAT('K2-H2-U', facts.user_id),
+                   'trial',
+                   facts.cluster_id,
+                   CONCAT('U', LPAD(facts.user_id, 8, '0')),
+                   CONCAT(facts.cycle_count, ' 次 / ', #{windowDays}, ' 天'),
+                   CONCAT(COALESCE(JSON_LENGTH(cluster.nodes_json), 1), ' 个关联账户'),
+                   CONCAT('H2 服务器试用开始事件 ', facts.cycle_count, ' 次'),
+                   NULL,
+                   NULL,
+                   LEAST(5, GREATEST(2, facts.cycle_count)),
+                   IF(facts.cluster_id IS NULL, 'flag', 'flag,freeze'),
+                   0
+              FROM (
+                    SELECT starts.user_id,
+                           COUNT(*) AS cycle_count,
+                           (
+                             SELECT c.cluster_id
+                               FROM nx_admin_risk_multi_account_cluster c
+                              WHERE c.is_deleted = 0
+                                AND c.nodes_json IS NOT NULL
+                                AND JSON_VALID(c.nodes_json) = 1
+                                AND JSON_SEARCH(c.nodes_json, 'one', CONCAT('U', LPAD(starts.user_id, 8, '0'))) IS NOT NULL
+                              ORDER BY FIELD(c.status, 'frozen', 'flagged', 'detected', 'released', 'cleared'), c.id DESC
+                              LIMIT 1
+                           ) AS cluster_id
+                      FROM (
+                            SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) AS UNSIGNED) AS user_id
+                              FROM nx_event_outbox e
+                             WHERE e.is_deleted = 0
+                               AND e.event_name = 'trial.started'
+                               AND e.analytics_event = 1
+                               AND e.schema_registered = 1
+                               AND e.is_server_authoritative = 1
+                               AND e.created_at >= DATE_SUB(NOW(), INTERVAL #{windowDays} DAY)
+                               AND JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) REGEXP '^[1-9][0-9]*$'
+                           ) starts
+                      JOIN nx_user u ON u.id = starts.user_id AND u.is_deleted = 0
+                     GROUP BY starts.user_id
+                    HAVING COUNT(*) >= #{minimumCycles}
+                   ) facts
+              LEFT JOIN nx_admin_risk_multi_account_cluster cluster
+                ON cluster.cluster_id = facts.cluster_id AND cluster.is_deleted = 0
+            ON DUPLICATE KEY UPDATE
+                view_key = VALUES(view_key),
+                cluster_id = VALUES(cluster_id),
+                cell1 = VALUES(cell1),
+                cell2 = VALUES(cell2),
+                cell3 = VALUES(cell3),
+                cell4 = VALUES(cell4),
+                cell5 = VALUES(cell5),
+                cell6 = VALUES(cell6),
+                level_value = VALUES(level_value),
+                actions_csv = VALUES(actions_csv),
+                is_deleted = 0,
+                updated_at = NOW()
+            """)
+    int upsertH2TrialCycleRows(@Param("minimumCycles") int minimumCycles,
+                               @Param("windowDays") int windowDays);
+
+    @Select("""
+            SELECT r.row_id AS rowId,
+                   u.id AS userId,
+                   r.cluster_id AS clusterId,
+                   COUNT(e.id) AS cycleCount
+              FROM nx_admin_risk_arbitrage_row r
+              JOIN nx_user u
+                ON r.row_id = CONCAT('K2-H2-U', u.id)
+               AND u.is_deleted = 0
+              JOIN nx_event_outbox e
+                ON CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) AS UNSIGNED) = u.id
+               AND e.is_deleted = 0
+               AND e.event_name = 'trial.started'
+               AND e.analytics_event = 1
+               AND e.schema_registered = 1
+               AND e.is_server_authoritative = 1
+               AND e.created_at >= DATE_SUB(NOW(), INTERVAL #{windowDays} DAY)
+             WHERE r.is_deleted = 0
+               AND r.view_key = 'trial'
+               AND r.row_id LIKE 'K2-H2-U%'
+             GROUP BY r.row_id, u.id, r.cluster_id
+            HAVING COUNT(e.id) >= #{minimumCycles}
+             ORDER BY u.id ASC
+            """)
+    List<TrialCycleDetectionRecord> trialCycleDetections(
+            @Param("minimumCycles") int minimumCycles,
+            @Param("windowDays") int windowDays);
+
+    @Select("""
+            SELECT DISTINCT u.id
+              FROM nx_admin_risk_arbitrage_row r
+              JOIN nx_user u ON u.is_deleted = 0
+             WHERE r.row_id = #{rowId}
+               AND r.is_deleted = 0
+               AND (
+                    r.row_id = CONCAT('K2-H2-U', u.id)
+                 OR r.row_id = CONCAT('K2-E3-U', u.id)
+                 OR r.cell1 = CONCAT('U', LPAD(u.id, 8, '0'))
+                 OR EXISTS (
+                      SELECT 1
+                        FROM nx_admin_risk_multi_account_cluster c
+                       WHERE c.cluster_id = r.cluster_id
+                         AND c.is_deleted = 0
+                         AND c.nodes_json IS NOT NULL
+                         AND JSON_VALID(c.nodes_json) = 1
+                         AND JSON_SEARCH(c.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
+                    )
+               )
+             ORDER BY u.id ASC
+            """)
+    List<Long> arbitrageSubjectUserIds(@Param("rowId") String rowId);
 
     @Select("SELECT COUNT(*) FROM nx_admin_risk_arbitrage_row WHERE is_deleted = 0")
     long countArbitrageRows();
@@ -1448,12 +1746,40 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     ScoreUserRecord findScoreUser(@Param("userNo") String userNo);
 
-    @Select("SELECT user_no FROM nx_admin_risk_score_user WHERE is_deleted=0 ORDER BY id")
+    @Select("""
+            SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
+                   s.row_version AS rowVersion,
+                   COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
+                   s.updated_text AS updatedText
+              FROM nx_admin_risk_score_user s
+              JOIN nx_admin_risk_score_model m
+                ON m.state = 'active'
+               AND m.is_deleted = 0
+               AND s.model_version = CONCAT('k4-v', m.model_version)
+             WHERE s.user_no = #{userNo}
+               AND s.is_deleted = 0
+               AND s.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+             LIMIT 1
+            """)
+    ScoreUserRecord findCurrentScoreUser(@Param("userNo") String userNo);
+
+    @Select("""
+            SELECT s.user_no
+              FROM nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+               AND u.is_deleted=0
+             WHERE s.is_deleted=0
+             ORDER BY s.id
+            """)
     List<String> scoreUserNos();
 
     @Select("""
             SELECT s.user_no
               FROM nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+               AND u.is_deleted=0
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
                            COUNT(DISTINCT dim_key) AS dimension_count,
@@ -1469,7 +1795,26 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                     OR COALESCE(c.contribution_count,0)<>6
                     OR COALESCE(c.dimension_count,0)<>6
                     OR COALESCE(c.canonical_count,0)<>6
-                    OR s.model_score<>COALESCE(c.point_total,0))
+                    OR s.model_score<>COALESCE(c.point_total,0)
+                    OR u.updated_at > COALESCE(s.as_of,'1970-01-01')
+                    OR EXISTS (SELECT 1 FROM nx_admin_risk_multi_account_cluster k1
+                                WHERE k1.updated_at > COALESCE(s.as_of,'1970-01-01')
+                                  AND k1.nodes_json IS NOT NULL AND JSON_VALID(k1.nodes_json)=1
+                                  AND JSON_SEARCH(k1.nodes_json,'one',s.user_no) IS NOT NULL)
+                    OR EXISTS (SELECT 1 FROM nx_admin_risk_arbitrage_row k2
+                                WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
+                                  AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
+                                      LIKE CONCAT('%',s.user_no,'%'))
+                    OR EXISTS (SELECT 1 FROM nx_kyc_profile c4
+                                WHERE c4.user_id=u.id
+                                  AND c4.updated_at > COALESCE(s.as_of,'1970-01-01'))
+                    OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
+                                WHERE withdraw_fact.user_id=u.id
+                                  AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
+                    OR EXISTS (SELECT 1 FROM nx_risk_signal j3
+                                WHERE j3.user_id=u.id
+                                  AND j3.updated_at > COALESCE(s.as_of,'1970-01-01'))
+                    OR s.as_of < NOW() - INTERVAL 1 DAY)
              ORDER BY s.id
              LIMIT #{limit}
             """)
@@ -1479,6 +1824,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("""
             SELECT COUNT(*)
               FROM nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+               AND u.is_deleted=0
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
                            COUNT(DISTINCT dim_key) AS dimension_count,
@@ -1494,7 +1842,26 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                     OR COALESCE(c.contribution_count,0)<>6
                     OR COALESCE(c.dimension_count,0)<>6
                     OR COALESCE(c.canonical_count,0)<>6
-                    OR s.model_score<>COALESCE(c.point_total,0))
+                    OR s.model_score<>COALESCE(c.point_total,0)
+                    OR u.updated_at > COALESCE(s.as_of,'1970-01-01')
+                    OR EXISTS (SELECT 1 FROM nx_admin_risk_multi_account_cluster k1
+                                WHERE k1.updated_at > COALESCE(s.as_of,'1970-01-01')
+                                  AND k1.nodes_json IS NOT NULL AND JSON_VALID(k1.nodes_json)=1
+                                  AND JSON_SEARCH(k1.nodes_json,'one',s.user_no) IS NOT NULL)
+                    OR EXISTS (SELECT 1 FROM nx_admin_risk_arbitrage_row k2
+                                WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
+                                  AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
+                                      LIKE CONCAT('%',s.user_no,'%'))
+                    OR EXISTS (SELECT 1 FROM nx_kyc_profile c4
+                                WHERE c4.user_id=u.id
+                                  AND c4.updated_at > COALESCE(s.as_of,'1970-01-01'))
+                    OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
+                                WHERE withdraw_fact.user_id=u.id
+                                  AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
+                    OR EXISTS (SELECT 1 FROM nx_risk_signal j3
+                                WHERE j3.user_id=u.id
+                                  AND j3.updated_at > COALESCE(s.as_of,'1970-01-01'))
+                    OR s.as_of < NOW() - INTERVAL 1 DAY)
             """)
     long countScoreUsersNeedingProjection(@Param("modelVersion") long modelVersion);
 
@@ -1518,7 +1885,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                            WHERE a.is_deleted=0 AND a.disposition IN ('cluster_frozen','gift_blocked','account_flagged')
                              AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
                                LIKE CONCAT('%',CONCAT('U',LPAD(u.id,8,'0')),'%')) AS severeArbitrage,
-                   COALESCE(u.kyc_status,'PENDING') AS kycStatus,
+                   COALESCE(kyc.status,'PENDING') AS kycStatus,
                    (SELECT COUNT(*) FROM nx_withdrawal_order w
                      WHERE w.user_id=u.id AND w.is_deleted=0 AND w.created_at>=NOW()-INTERVAL 24 HOUR)
                      AS withdrawalCount24h,
@@ -1550,6 +1917,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                            WHERE s.user_id=u.id AND s.is_deleted=0 AND s.signal_type='TAMPER_DETECTED'
                              AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected
               FROM nx_user u
+              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE CONCAT('U',LPAD(u.id,8,'0'))=#{userNo} AND u.is_deleted=0
              LIMIT 1
             """)
@@ -1658,6 +2026,34 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     int updateScoreUserModelIfVersion(
             @Param("userNo") String userNo,@Param("expectedVersion") long expectedVersion,
             @Param("modelScore") int modelScore,@Param("modelVersion") String modelVersion);
+
+    /**
+     * Advances K4's source watermark to the newest fact it actually observed.
+     * This prevents a producer/session clock offset from selecting the same row forever,
+     * while keeping soft-delete timestamps visible to the next recompute.
+     */
+    @Update("""
+            UPDATE nx_admin_risk_score_user s
+              JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+               SET s.as_of=GREATEST(COALESCE(s.as_of,'1970-01-01'),NOW(),
+                   COALESCE(u.updated_at,'1970-01-01'),
+                   COALESCE((SELECT MAX(k1.updated_at)
+                               FROM nx_admin_risk_multi_account_cluster k1
+                              WHERE k1.nodes_json IS NOT NULL AND JSON_VALID(k1.nodes_json)=1
+                                AND JSON_SEARCH(k1.nodes_json,'one',s.user_no) IS NOT NULL),'1970-01-01'),
+                   COALESCE((SELECT MAX(k2.updated_at)
+                               FROM nx_admin_risk_arbitrage_row k2
+                              WHERE CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
+                                    LIKE CONCAT('%',s.user_no,'%')),'1970-01-01'),
+                   COALESCE((SELECT MAX(c4.updated_at) FROM nx_kyc_profile c4
+                              WHERE c4.user_id=u.id),'1970-01-01'),
+                   COALESCE((SELECT MAX(withdraw_fact.updated_at) FROM nx_withdrawal_order withdraw_fact
+                              WHERE withdraw_fact.user_id=u.id),'1970-01-01'),
+                   COALESCE((SELECT MAX(j3.updated_at) FROM nx_risk_signal j3
+                              WHERE j3.user_id=u.id),'1970-01-01'))
+             WHERE s.user_no=#{userNo} AND s.is_deleted=0
+            """)
+    int advanceScoreAsOfToLatestSource(@Param("userNo") String userNo);
 
     @Update("""
             UPDATE nx_admin_risk_score_user
@@ -2109,7 +2505,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             <script>
             SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
                    CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
-                        ELSE COALESCE(u.kyc_status,'PENDING') END AS kyc,
+                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
                    CASE WHEN t.status='in-review' AND t.due_at IS NOT NULL AND t.due_at &lt; NOW() THEN 'overdue' ELSE t.status END AS st,
                    CASE WHEN t.due_at IS NULL THEN 0 ELSE LEAST(1,GREATEST(0,TIMESTAMPDIFF(SECOND,t.created_at,NOW())/NULLIF(TIMESTAMPDIFF(SECOND,t.created_at,t.due_at),0))) END AS slaPct,
                    CASE WHEN t.status IN ('passed','rejected') THEN '已完成'
@@ -2119,6 +2515,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    t.info_json AS infoJson,t.history_json AS histJson,t.version
               FROM nx_admin_risk_kyc_review_ticket t
               LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE t.is_deleted = 0
              <if test='filter != null and filter != ""'>
                <choose>
@@ -2137,11 +2534,12 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("""
             SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
                    CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
-                        ELSE COALESCE(u.kyc_status,'PENDING') END AS kyc,
+                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
                    t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
                    t.info_json AS infoJson,t.history_json AS histJson,t.version
               FROM nx_admin_risk_kyc_review_ticket t
               LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE t.ticket_id = #{ticketId} AND t.is_deleted = 0
              LIMIT 1
             """)
@@ -2150,15 +2548,30 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("""
             SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
                    CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
-                        ELSE COALESCE(u.kyc_status,'PENDING') END AS kyc,
+                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
                    t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
                    t.info_json AS infoJson,t.history_json AS histJson,t.version
               FROM nx_admin_risk_kyc_review_ticket t
               LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE t.user_no=#{userNo} AND t.status='in-review' AND t.is_deleted=0
              ORDER BY t.id DESC LIMIT 1
             """)
     KycReviewTicketRecord findOpenKycReviewTicketByUser(@Param("userNo") String userNo);
+
+    @Select("""
+            SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
+                   CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
+                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
+                   t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
+                   t.info_json AS infoJson,t.history_json AS histJson,t.version
+              FROM nx_admin_risk_kyc_review_ticket t
+              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
+             WHERE t.user_no=#{userNo} AND t.status='in-review' AND t.is_deleted=0
+             ORDER BY t.id DESC LIMIT 1 FOR UPDATE
+            """)
+    KycReviewTicketRecord findOpenKycReviewTicketByUserForUpdate(@Param("userNo") String userNo);
 
     @Insert("""
             INSERT INTO nx_admin_risk_kyc_review_ticket (
@@ -2324,6 +2737,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText) {
     }
 
+    record K4KycTriggerStateRecord(
+            String userNo, Boolean aboveThreshold, Integer lastScore, Integer lastThreshold,
+            String lastTransitionId, Long triggerSequence, Long version) {
+    }
+
     record ScoreUserSearchRecord(String userNo, Integer modelScore, String modelVersion, String updatedText,
                                  String nickname, String phoneMasked, String referralCode) {
     }
@@ -2369,6 +2787,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             String reviewNote,
             Long version
     ) {
+    }
+
+    record TrialCycleDetectionRecord(String rowId, Long userId, String clusterId, Integer cycleCount) {
     }
 
     record KycAlertSubscriptionRecord(String operatorName, String alertTypesJson, String channelsJson, Long version) {

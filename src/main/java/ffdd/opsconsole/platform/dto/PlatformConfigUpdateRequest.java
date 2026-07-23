@@ -5,6 +5,7 @@ public record PlatformConfigUpdateRequest(
         String flagKey,
         String gateKey,
         String value,
+        String expectedValue,
         String reason,
         String operator) {
 }

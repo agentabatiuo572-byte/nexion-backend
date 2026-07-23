@@ -13,6 +13,7 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_user_login_guard (
               login_key CHAR(64) PRIMARY KEY,
+              user_id BIGINT DEFAULT NULL,
               failed_count INT NOT NULL DEFAULT 0,
               window_started_at DATETIME(3) NOT NULL,
               locked_until DATETIME(3) DEFAULT NULL,
@@ -22,6 +23,12 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTable();
+
+    @Select("SELECT COUNT(1) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_login_guard' AND COLUMN_NAME='user_id'")
+    int countUserIdColumn();
+
+    @Update("ALTER TABLE nx_user_login_guard ADD COLUMN user_id BIGINT NULL AFTER login_key, ADD KEY idx_user_login_guard_user (user_id, locked_until)")
+    void addUserIdColumn();
 
     @Select("SELECT COUNT(1) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_login_guard' AND INDEX_NAME='idx_user_login_guard_updated'")
     int countUpdatedAtIndex();
@@ -34,6 +41,9 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
             VALUES(#{loginKey},0,#{now})
             """)
     void initialize(@Param("loginKey") String loginKey, @Param("now") LocalDateTime now);
+
+    @Update("UPDATE nx_user_login_guard SET user_id=#{userId} WHERE login_key=#{loginKey}")
+    int bindUser(@Param("loginKey") String loginKey, @Param("userId") Long userId);
 
     @Select("""
             SELECT failed_count AS failedCount,window_started_at AS windowStartedAt,locked_until AS lockedUntil
@@ -52,6 +62,9 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
 
     @Delete("DELETE FROM nx_user_login_guard WHERE login_key=#{loginKey}")
     void clear(@Param("loginKey") String loginKey);
+
+    @Delete("DELETE FROM nx_user_login_guard WHERE user_id=#{userId}")
+    int clearByUserId(@Param("userId") Long userId);
 
     @Delete("""
             DELETE FROM nx_user_login_guard

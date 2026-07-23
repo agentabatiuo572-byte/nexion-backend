@@ -9,6 +9,7 @@ import ffdd.opsconsole.platform.dto.PlatformRoleGrantsUpdateRequest;
 import ffdd.opsconsole.platform.dto.PlatformRoleOverview;
 import ffdd.opsconsole.platform.dto.PlatformRoleUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -45,7 +46,7 @@ public class OpsPlatformRoleController {
     @PreAuthorize("hasAuthority('platform_a6_write')")
     public ApiResult<PlatformRoleDetail> create(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody PlatformRoleCreateRequest request) {
+            @Valid @RequestBody PlatformRoleCreateRequest request) {
         return roleService.createRole(idempotencyKey, request);
     }
 
@@ -54,7 +55,7 @@ public class OpsPlatformRoleController {
     public ApiResult<?> update(
             @PathVariable Long roleId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody PlatformRoleUpdateRequest request) {
+            @Valid @RequestBody PlatformRoleUpdateRequest request) {
         return roleService.updateRole(roleId, idempotencyKey, request);
     }
 
@@ -63,7 +64,7 @@ public class OpsPlatformRoleController {
     public ApiResult<?> delete(
             @PathVariable Long roleId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) AdminAccountActionRequest request) {
+            @Valid @RequestBody(required = false) AdminAccountActionRequest request) {
         return roleService.deleteRole(roleId, idempotencyKey, request);
     }
 
@@ -73,7 +74,7 @@ public class OpsPlatformRoleController {
     public ApiResult<?> grants(
             @PathVariable Long roleId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody PlatformRoleGrantsUpdateRequest request) {
+            @Valid @RequestBody PlatformRoleGrantsUpdateRequest request) {
         return roleService.updateRoleGrants(roleId, idempotencyKey, request);
     }
 }

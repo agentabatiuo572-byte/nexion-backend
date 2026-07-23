@@ -14,6 +14,11 @@ import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -33,6 +38,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsI18nLearningController {
     private final OpsI18nLearningService i18nLearningService;
+    private final AdminIdempotencyService idempotencyService;
 
     @GetMapping("/overview")
     // 双域合并总览（i18n 文案 + 教程中心），任一读权限即可
@@ -88,7 +94,8 @@ public class OpsI18nLearningController {
     public ApiResult<I18nLearningOverview> rescan(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.rescan(idempotencyKey, request);
+        return executeCommand("I6_I18N_RESCAN", idempotencyKey, request,
+                () -> i18nLearningService.rescan(idempotencyKey, request));
     }
 
     @PatchMapping("/messages/{messageKey}/draft")
@@ -98,7 +105,8 @@ public class OpsI18nLearningController {
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nLocalizedCopyRequest request) {
-        return i18nLearningService.saveLocalizedDraft(messageKey, idempotencyKey, request);
+        return executeCommand("I6_I18N_DRAFT:" + messageKey, idempotencyKey, request,
+                () -> i18nLearningService.saveLocalizedDraft(messageKey, idempotencyKey, request));
     }
 
     @PostMapping("/messages/{messageKey}/publish")
@@ -108,7 +116,8 @@ public class OpsI18nLearningController {
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nLocalizedCopyRequest request) {
-        return i18nLearningService.publishLocalizedMessage(messageKey, idempotencyKey, request);
+        return executeCommand("I6_I18N_PUBLISH:" + messageKey, idempotencyKey, request,
+                () -> i18nLearningService.publishLocalizedMessage(messageKey, idempotencyKey, request));
     }
 
     @DeleteMapping("/messages/{messageKey}")
@@ -117,7 +126,8 @@ public class OpsI18nLearningController {
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.archiveLocalizedMessage(messageKey, idempotencyKey, request);
+        return executeCommand("I6_I18N_ARCHIVE:" + messageKey, idempotencyKey, request,
+                () -> i18nLearningService.archiveLocalizedMessage(messageKey, idempotencyKey, request));
     }
 
     @PostMapping("/integrity/{issueCode}/fix")
@@ -127,7 +137,8 @@ public class OpsI18nLearningController {
             @PathVariable String issueCode,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nIntegrityFixRequest request) {
-        return i18nLearningService.fixIntegrity(issueCode, idempotencyKey, request);
+        return executeCommand("I6_I18N_INTEGRITY_FIX:" + issueCode, idempotencyKey, request,
+                () -> i18nLearningService.fixIntegrity(issueCode, idempotencyKey, request));
     }
 
     @PostMapping("/courses/{courseId}")
@@ -137,7 +148,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody LearningCourseUpsertRequest request) {
-        return i18nLearningService.createCourse(courseId, idempotencyKey, request);
+        return executeCommand("I7_COURSE_CREATE:" + courseId, idempotencyKey, request,
+                () -> i18nLearningService.createCourse(courseId, idempotencyKey, request));
     }
 
     @GetMapping("/courses/{courseId}/versions")
@@ -152,7 +164,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody LearningCourseUpsertRequest request) {
-        return i18nLearningService.createCourseVersion(courseId, idempotencyKey, request);
+        return executeCommand("I7_COURSE_VERSION_CREATE:" + courseId, idempotencyKey, request,
+                () -> i18nLearningService.createCourseVersion(courseId, idempotencyKey, request));
     }
 
     @PatchMapping("/courses/{courseId}/versions/{version}")
@@ -161,7 +174,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId, @PathVariable String version,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody LearningCourseUpsertRequest request) {
-        return i18nLearningService.updateCourseVersion(courseId, version, idempotencyKey, request);
+        return executeCommand("I7_COURSE_VERSION_UPDATE:" + courseId + ":" + version, idempotencyKey, request,
+                () -> i18nLearningService.updateCourseVersion(courseId, version, idempotencyKey, request));
     }
 
     @DeleteMapping("/courses/{courseId}/versions/{version}")
@@ -170,7 +184,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId, @PathVariable String version,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.deleteCourseVersion(courseId, version, idempotencyKey, request);
+        return executeCommand("I7_COURSE_VERSION_DELETE:" + courseId + ":" + version, idempotencyKey, request,
+                () -> i18nLearningService.deleteCourseVersion(courseId, version, idempotencyKey, request));
     }
 
     @PostMapping("/courses/{courseId}/versions/{version}/publish")
@@ -179,7 +194,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId, @PathVariable String version,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.publishCourseVersion(courseId, version, idempotencyKey, request);
+        return executeCommand("I7_COURSE_VERSION_PUBLISH:" + courseId + ":" + version, idempotencyKey, request,
+                () -> i18nLearningService.publishCourseVersion(courseId, version, idempotencyKey, request));
     }
 
     @PostMapping("/courses/{courseId}/versions/{version}/rollback")
@@ -188,7 +204,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId, @PathVariable String version,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.rollbackCourseVersion(courseId, version, idempotencyKey, request);
+        return executeCommand("I7_COURSE_VERSION_ROLLBACK:" + courseId + ":" + version, idempotencyKey, request,
+                () -> i18nLearningService.rollbackCourseVersion(courseId, version, idempotencyKey, request));
     }
 
     @PatchMapping("/courses/{courseId}/draft")
@@ -197,7 +214,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody LearningCourseUpsertRequest request) {
-        return i18nLearningService.updateCourseDraft(courseId, idempotencyKey, request);
+        return executeCommand("I7_COURSE_DRAFT_UPDATE:" + courseId, idempotencyKey, request,
+                () -> i18nLearningService.updateCourseDraft(courseId, idempotencyKey, request));
     }
 
     @DeleteMapping("/courses/{courseId}")
@@ -206,7 +224,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.deleteCourseDraft(courseId, idempotencyKey, request);
+        return executeCommand("I7_COURSE_DELETE:" + courseId, idempotencyKey, request,
+                () -> i18nLearningService.deleteCourseDraft(courseId, idempotencyKey, request));
     }
 
     @PostMapping("/courses/{courseId}/publish")
@@ -216,7 +235,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.publishCourse(courseId, idempotencyKey, request);
+        return executeCommand("I7_COURSE_PUBLISH:" + courseId, idempotencyKey, request,
+                () -> i18nLearningService.publishCourse(courseId, idempotencyKey, request));
     }
 
     @PostMapping("/courses/{courseId}/archive")
@@ -226,7 +246,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody I18nActionRequest request) {
-        return i18nLearningService.archiveCourse(courseId, idempotencyKey, request);
+        return executeCommand("I7_COURSE_ARCHIVE:" + courseId, idempotencyKey, request,
+                () -> i18nLearningService.archiveCourse(courseId, idempotencyKey, request));
     }
 
     @PatchMapping("/courses/{courseId}/reward")
@@ -236,7 +257,8 @@ public class OpsI18nLearningController {
             @PathVariable String courseId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody LearningRewardUpdateRequest request) {
-        return i18nLearningService.updateCourseReward(courseId, idempotencyKey, request);
+        return executeCommand("I7_COURSE_REWARD:" + courseId, idempotencyKey, request,
+                () -> i18nLearningService.updateCourseReward(courseId, idempotencyKey, request));
     }
 
     @PatchMapping("/courses/featured")
@@ -245,6 +267,32 @@ public class OpsI18nLearningController {
     public ApiResult<LearningCourseView> updateFeaturedCourse(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody LearningFeaturedUpdateRequest request) {
-        return i18nLearningService.updateFeaturedCourse(idempotencyKey, request);
+        return executeCommand("I7_COURSE_FEATURED", idempotencyKey, request,
+                () -> i18nLearningService.updateFeaturedCourse(idempotencyKey, request));
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> executeCommand(
+            String scope, String idempotencyKey, Object request, Supplier<ApiResult<T>> action) {
+        // Keep the service's explicit validation response for a missing key; valid commands
+        // are claimed durably before any business row or required audit can be written.
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return action.get();
+        }
+        return (ApiResult<T>) idempotencyService.execute(
+                scope,
+                idempotencyKey.trim(),
+                requestHash(scope + "\u0000" + String.valueOf(request).trim()),
+                ApiResult.class,
+                (Supplier) action);
+    }
+
+    private String requestHash(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return java.util.HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 }

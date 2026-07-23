@@ -1,6 +1,7 @@
 package ffdd.opsconsole.user.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -24,6 +25,8 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -38,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 
 class OpsUser360ServiceTest {
     private final OpsUserService userService = mock(OpsUserService.class);
@@ -47,6 +51,8 @@ class OpsUser360ServiceTest {
     private final OpsRiskService riskService = mock(OpsRiskService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final UserOpsRepository userRepository = mock(UserOpsRepository.class);
+    private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
+    private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final OpsUser360Service service = service();
 
     private OpsUser360Service service() {
@@ -57,7 +63,14 @@ class OpsUser360ServiceTest {
                 deviceService,
                 riskService,
                 auditLogService,
-                userRepository);
+                userRepository,
+                roleResolver,
+                outboxService);
+    }
+
+    @BeforeEach
+    void useFullC1ScopeByDefault() {
+        when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
     }
 
     @Test
@@ -74,7 +87,7 @@ class OpsUser360ServiceTest {
 
         ApiResult<Map<String, Object>> result = service.detail("usr_84F2");
 
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getCode()).isEqualTo(404);
         assertThat(result.getMessage()).isEqualTo("USER_NOT_FOUND");
     }
 
@@ -105,7 +118,7 @@ class OpsUser360ServiceTest {
         when(userRepository.findUserIdByLookupKey("usr_84F2")).thenReturn(Optional.of(88421L));
         when(userRepository.countTeamMembers(88421L)).thenReturn(8L);
         when(userService.profile(88421L)).thenReturn(ApiResult.ok(profile));
-        when(riskService.scoreUser("U00088421")).thenReturn(ApiResult.ok(new RiskScoreUserView(
+        when(riskService.currentScoreUser("U00088421")).thenReturn(ApiResult.ok(new RiskScoreUserView(
                 "U00088421",
                 72,
                 72,
@@ -126,6 +139,35 @@ class OpsUser360ServiceTest {
         assertThat(summary)
                 .containsEntry("userId", 88421L)
                 .containsEntry("teamSize", 8L);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void detailDoesNotRecomputeRiskWhenCurrentK4ScoreIsUnavailable() {
+        LocalDateTime now = LocalDateTime.of(2026, 7, 22, 21, 0);
+        UserAccountView profile = new UserAccountView(
+                88421L, "U00088421", "Marcus Lee", "415****8821", "+1",
+                "RESTRICTED", "PENDING", "L4", "V3", true,
+                new BigDecimal("8420.00"), new BigDecimal("12400.00"),
+                88, "高风险", 2L, 2L, now.minusDays(104), now.minusMinutes(15));
+        when(userService.profile(88421L)).thenReturn(ApiResult.ok(profile));
+        when(riskService.currentScoreUser("U00088421"))
+                .thenReturn(ApiResult.fail(503, "K4_RISK_SCORE_UNAVAILABLE"));
+        when(auditLogService.list(org.mockito.ArgumentMatchers.any(AuditLogQueryRequest.class)))
+                .thenReturn(List.of());
+
+        ApiResult<Map<String, Object>> result = service.detail(88421L);
+
+        assertThat(result.getCode()).isZero();
+        Map<String, Object> risk = (Map<String, Object>) result.getData().get("risk");
+        Map<String, Object> summary = (Map<String, Object>) result.getData().get("summary");
+        assertThat(risk)
+                .containsEntry("sourceStatus", "UNAVAILABLE")
+                .containsEntry("effectiveScore", null)
+                .containsEntry("bandLabel", null);
+        assertThat(summary)
+                .containsEntry("riskScore", null)
+                .containsEntry("riskBand", null);
     }
 
     @Test
@@ -343,7 +385,7 @@ class OpsUser360ServiceTest {
                 .thenReturn(ApiResult.ok(new PageResult<>(1, 1, 50, List.of(order))));
         when(riskService.cases(new RiskCaseQueryRequest(2231L, null, null, 1, 20, null)))
                 .thenReturn(ApiResult.ok(new PageResult<>(1, 1, 20, List.of(riskCase))));
-        when(riskService.scoreUser("U00002231")).thenReturn(ApiResult.ok(score));
+        when(riskService.currentScoreUser("U00002231")).thenReturn(ApiResult.ok(score));
         when(userRepository.teamMembers(2231L, 20)).thenReturn(List.of(teamMember));
         when(userRepository.countTeamMembers(2231L)).thenReturn(3L);
         when(userRepository.countDirectTeamMembers(2231L)).thenReturn(1L);
@@ -428,5 +470,51 @@ class OpsUser360ServiceTest {
         assertThat((List<String>) data.get("sources"))
                 .contains("nx_user", "nx_user_session", "nx_deposit_order", "nx_withdrawal_order", "nx_wallet_ledger", "nx_user_device", "nx_device_order", "nx_risk_decision", "nx_team_member", "nx_notification", "nx_audit_log");
         assertThat(data.toString()).doesNotContain("mock").doesNotContain("localStorage");
+        assertThat(data.toString()).doesNotContain("rt-1");
+        List<Map<String, Object>> publicSessions = (List<Map<String, Object>>) data.get("sessions");
+        assertThat(publicSessions).hasSize(1);
+        assertThat(publicSessions.get(0))
+                .containsOnlyKeys("deviceName", "clientIpMasked", "status", "issuedAt", "lastActiveAt", "expiresAt", "revokedAt")
+                .doesNotContainKeys("userId", "refreshTokenId");
+        verify(auditLogService).recordRequired(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void deviceFailureDegradesOnlyTheDeviceCard() {
+        UserAccountView profile = profile(52L);
+        when(userService.profile(52L)).thenReturn(ApiResult.ok(profile));
+        when(deviceService.userDevices(52L, 200)).thenThrow(new IllegalStateException("device sql failed"));
+
+        ApiResult<Map<String, Object>> result = service.detail(52L);
+
+        assertThat(result.getCode()).isZero();
+        Map<String, Object> devices = (Map<String, Object>) result.getData().get("devices");
+        assertThat(devices).containsEntry("sourceStatus", "ERROR");
+        assertThat(devices.get("records")).isEqualTo(List.of());
+    }
+
+    @Test
+    void supportRoleDoesNotReceiveRiskDetailsSessionsOrAuditRows() {
+        when(roleResolver.resolveCode()).thenReturn("SUPPORT");
+        when(userService.profile(52L)).thenReturn(ApiResult.ok(profile(52L)));
+        when(userService.sessions(52L, 50)).thenReturn(ApiResult.ok(List.of(new UserSessionView(
+                52L, "refresh-secret", "Chrome", "10.0.0.*", "ACTIVE",
+                LocalDateTime.now(), LocalDateTime.now().plusDays(1), null))));
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(new AuditLogRecord()));
+
+        ApiResult<Map<String, Object>> result = service.detail(52L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).doesNotContainKeys("sessions", "audit");
+        assertThat(result.getData().toString()).doesNotContain("refresh-secret");
+        assertThat(result.getData().get("risk").toString()).doesNotContain("cases");
+    }
+
+    private UserAccountView profile(Long id) {
+        return new UserAccountView(
+                id, "U00000052", "用户52", "138****0052", "86", "ACTIVE", "APPROVED",
+                "L2", "V1", true, new BigDecimal("100"), new BigDecimal("50"), 65,
+                "中风险", 0L, 0L, LocalDateTime.now().minusDays(30), LocalDateTime.now());
     }
 }
