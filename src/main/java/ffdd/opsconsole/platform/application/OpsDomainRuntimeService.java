@@ -205,6 +205,10 @@ public class OpsDomainRuntimeService {
                 api("TopupCardRisk", "/api/admin/finance/topup/card-risk/**", "finance_d1_read", "finance_d1_config_manage", false),
                 api("TopupRiskLock", "/api/admin/finance/topup/bin-locks/**", "finance_d1_read", "finance_d1_bin_lock", false),
                 api("TopupChargeback", "/api/admin/finance/topup/chargebacks/**", "finance_d1_read", "finance_d1_chargeback_refund", false),
+                api("VietQrRail", "/api/admin/finance/vietqr/**", "finance_d1_read", "finance_d1_bank_reconcile", false),
+                api("VietQrAccountPool", "/api/admin/finance/vietqr/accounts/**", "finance_d1_read", "finance_d1_bank_account_manage", false),
+                api("VietQrConfig", "/api/admin/finance/vietqr/config", "finance_d1_read", "finance_d1_bank_config_manage", false),
+                api("FxQuote", "/api/admin/finance/fx-quote", "finance_d6_read", "finance_d6_manage", false),
                 api("Withdrawal", "/api/admin/finance/withdrawals", "finance_d2_read", "finance_d2_withdrawal_approve", false),
                 api("WithdrawalParam", "/api/admin/withdraw/limits", "finance_d5_read", "finance_d5_daily_limit_write", false)));
         map.put(DomainCode.E, List.of(
@@ -241,6 +245,7 @@ public class OpsDomainRuntimeService {
                 api("Conversation", "/api/admin/content/conversations", "service_m3_read", "service_m3_write", false),
                 api("ConversationTransfer", "/api/admin/content/conversations/{conversationNo}/transfer", "service_m3_read", "service_m3_write", false),
                 api("TransferAcceptReturn", "/api/admin/content/conversations/{conversationNo}/transfer/{action}", "service_m3_read", "service_m3_write", false),
+                api("ConversationTimeoutPolicy", "/api/admin/content/conversations/timeout-policy", "service_m3_read", "service_m3_timeout_manage", false),
                 api("SupportTicket", "/api/admin/content/tickets", "service_m2_read", "service_m2_write", false),
                 api("SupportKnowledge", "/api/admin/content/knowledge/overview", "service_m4_read", "service_m4_write", false),
                 api("SupportFaqCrud", "/api/admin/content/knowledge/faqs", "service_m4_read", "service_m4_write", false),
@@ -282,7 +287,8 @@ public class OpsDomainRuntimeService {
                 api("RiskScoringModel", "/api/admin/risk/scoring/overview", "risk_k4_read", "risk_k4_write", false),
                 api("RiskScoringAction", "/api/admin/risk/scoring/**", "risk_k4_read", "risk_k4_write", false),
                 api("WithdrawRule", "/api/admin/risk/withdraw-rules", "risk_k3_read", "risk_k3_write", true),
-                api("WithdrawRuleDryRun", "/api/admin/risk/withdraw-rules/dry-runs", "risk_k3_read", "risk_k3_write", false)));
+                api("WithdrawRuleDryRun", "/api/admin/risk/withdraw-rules/dry-runs", "risk_k3_read", "risk_k3_write", false),
+                api("JanusApprovedTarget", "/api/admin/janus/remote-targets/**", "risk_k6_read", "risk_k6_target_manage", false)));
         map.put(DomainCode.L, List.of(
                 api("BIReport", "/api/admin/bi/reports", "bi_l5_read", "bi_l5_write", false),
                 api("BIReportAction", "/api/admin/bi/reports/{reportId}/{action}", "bi_l5_read", "bi_l5_write", false),

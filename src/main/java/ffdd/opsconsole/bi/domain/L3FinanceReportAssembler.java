@@ -21,10 +21,10 @@ public final class L3FinanceReportAssembler {
     public static final List<String> CANONICAL_LIABILITY_CATEGORIES = List.of(
             "withdrawable_balance", "usdt_staking_principal", "staking_interest",
             "genesis_daily_emission", "nex_v2_future", "withdrawal_queue",
-            "commission_cooling", "lock_other");
+            "commission_cooling", "lock_other", "unverified_deposit");
     public static final List<String> CANONICAL_LIABILITY_LABELS = List.of(
             "可提余额", "USDT staking 本金", "staking 应付利息", "Genesis 排放承诺",
-            "NEX v2 未来兑付", "待提现 queue", "佣金冷却未解锁", "锁仓本息其他");
+            "NEX v2 未来兑付", "待提现 queue", "佣金冷却未解锁", "锁仓本息其他", "待核实入金");
     private static final Set<String> PERIOD_GRANULARITIES = Set.of("day", "week", "month", "quarter", "custom");
     private static final BigDecimal ONE_CENT = new BigDecimal("0.01");
 
@@ -115,7 +115,7 @@ public final class L3FinanceReportAssembler {
 
     private List<Liability> orderedLiabilities(List<Liability> values) {
         requireExactKeys(values, Liability::category, CANONICAL_LIABILITY_CATEGORIES,
-                "eight canonical liability categories");
+                "nine canonical liability categories");
         List<Liability> ordered = new ArrayList<>(values);
         ordered.sort(Comparator.comparingInt(value -> CANONICAL_LIABILITY_CATEGORIES.indexOf(value.category())));
         ordered.forEach(value -> {

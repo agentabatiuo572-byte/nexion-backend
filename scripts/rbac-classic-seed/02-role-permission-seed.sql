@@ -300,7 +300,7 @@ WHERE r.role_code='FINANCE'
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'risk_%'
 WHERE r.role_code='RISK'
-  AND p.permission_code NOT IN ('risk_k4_write','risk_k4_user_override')
+  AND p.permission_code NOT IN ('risk_k4_write','risk_k4_user_override','risk_k6_target_manage')
   AND p.status=1 AND p.is_deleted=0;
 -- SUPPORT 仅可查看 K5 工单、统计与告警，不授予任何 K5 写权限。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
@@ -350,6 +350,7 @@ INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'service_%'
 WHERE r.role_code IN ('SUPPORT','RISK')
   AND (r.role_code <> 'RISK' OR p.permission_code <> 'service_m5_write')
+  AND p.permission_code <> 'service_m3_timeout_manage'
   AND p.status=1 AND p.is_deleted=0;
 DELETE rp FROM nx_admin_role_permission rp
 JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='RISK'
@@ -374,4 +375,42 @@ INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='SUPPORT'
   AND p.permission_code='user_c5_unlock_short'
+  AND p.status=1 AND p.is_deleted=0;
+
+-- 2026-07-25 高保真真实接口同步：新增高敏权限始终显式授权，避免域前缀通配扩大权限。
+DELETE rp FROM nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+WHERE (p.permission_code IN (
+         'finance_d1_bank_reconcile',
+         'finance_d1_bank_account_manage',
+         'finance_d1_bank_config_manage',
+         'finance_d6_manage'
+       ) AND r.role_code NOT IN ('SUPER_ADMIN','FINANCE_LEAD'))
+   OR (p.permission_code IN ('service_m3_timeout_manage','risk_k6_target_manage')
+       AND r.role_code <> 'SUPER_ADMIN')
+   OR (p.permission_code='finance_d6_read'
+       AND r.role_code NOT IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR'));
+
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR')
+  AND p.permission_code='finance_d6_read'
+  AND p.status=1 AND p.is_deleted=0;
+
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code IN ('SUPER_ADMIN','FINANCE_LEAD')
+  AND p.permission_code IN (
+    'finance_d1_bank_reconcile',
+    'finance_d1_bank_account_manage',
+    'finance_d1_bank_config_manage',
+    'finance_d6_manage'
+  )
+  AND p.status=1 AND p.is_deleted=0;
+
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='SUPER_ADMIN'
+  AND p.permission_code IN ('service_m3_timeout_manage','risk_k6_target_manage')
   AND p.status=1 AND p.is_deleted=0;

@@ -23,6 +23,8 @@ public class JanusDeviceRecord {
     private String statusSource;
     private Boolean activated;
     private String remoteUrlKey;
+    private Integer remoteTargetVersion;
+    private Long remoteTargetCatalogVersion;
     private Integer maturityScore;
     private Integer recommendationScore;
     private Integer environmentRiskScore;

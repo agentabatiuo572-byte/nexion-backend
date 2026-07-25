@@ -39,11 +39,26 @@ public interface JanusRepository {
     void updateDeviceCommandRecord(String sid, String state);
 
     boolean updateDeviceStatus(String sid, long expectedVersion, String targetStatus,
-                               String remoteUrlKey, String operator, String reason, String manualOverrideJson,
+                               String remoteUrlKey, Integer remoteTargetVersion, Long remoteTargetCatalogVersion,
+                               String operator, String reason, String manualOverrideJson,
                                String commandState);
 
+    default boolean updateDeviceStatus(String sid, long expectedVersion, String targetStatus,
+                                       String remoteUrlKey, String operator, String reason,
+                                       String manualOverrideJson, String commandState) {
+        return updateDeviceStatus(sid, expectedVersion, targetStatus, remoteUrlKey, null, null,
+                operator, reason, manualOverrideJson, commandState);
+    }
+
     boolean publishStrategyCommand(String sid, long expectedVersion, String targetStatus,
-                                   String remoteUrlKey, String payloadJson);
+                                   String remoteUrlKey, Integer remoteTargetVersion,
+                                   Long remoteTargetCatalogVersion, String payloadJson);
+
+    default boolean publishStrategyCommand(String sid, long expectedVersion, String targetStatus,
+                                           String remoteUrlKey, String payloadJson) {
+        return publishStrategyCommand(sid, expectedVersion, targetStatus, remoteUrlKey,
+                null, null, payloadJson);
+    }
 
     List<JanusStrategyView> strategies();
 
@@ -74,6 +89,8 @@ public interface JanusRepository {
                            String actorId);
 
     void completeCommand(String idempotencyKey, String state, String payloadJson);
+
+    void bindCommandRemoteTarget(String idempotencyKey, String key, int version, long catalogVersion);
 
     void releaseCommandReservation(String idempotencyKey);
 

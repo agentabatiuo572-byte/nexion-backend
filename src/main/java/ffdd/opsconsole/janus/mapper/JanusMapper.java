@@ -23,6 +23,8 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
             invite_code AS inviteCode, channel, cohort_id AS cohortId,
             reported_status AS status, desired_status AS desiredStatus, command_state AS commandState,
             status_source AS statusSource, activated, remote_url_key AS remoteUrlKey,
+            remote_target_version AS remoteTargetVersion,
+            remote_target_catalog_version AS remoteTargetCatalogVersion,
             maturity_score AS maturityScore, recommendation_score AS recommendationScore,
             environment_risk_score AS environmentRiskScore, priority_score AS priorityScore,
             ua, platform, model, os_name AS osName, browser,
@@ -67,6 +69,8 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
               status_source VARCHAR(24) NOT NULL DEFAULT 'system',
               activated TINYINT NOT NULL DEFAULT 0,
               remote_url_key VARCHAR(64) DEFAULT NULL,
+              remote_target_version INT DEFAULT NULL,
+              remote_target_catalog_version BIGINT DEFAULT NULL,
               maturity_score INT NOT NULL DEFAULT 0,
               recommendation_score INT NOT NULL DEFAULT 0,
               environment_risk_score INT NOT NULL DEFAULT 0,
@@ -96,7 +100,9 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
               KEY idx_janus_device_queue (reported_status, priority_score, last_seen_at),
               KEY idx_janus_device_channel (channel, reported_status),
               KEY idx_janus_device_strategy (hit_strategy),
-              KEY idx_janus_device_risk (environment_risk_score)
+              KEY idx_janus_device_risk (environment_risk_score),
+              KEY idx_janus_device_remote_target
+                (remote_url_key,remote_target_version,remote_target_catalog_version,command_state)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createDeviceTable();
@@ -112,6 +118,24 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Update("ALTER TABLE nx_janus_device ADD UNIQUE KEY uk_janus_device_owner (user_id, device_id)")
     void addDeviceOwnerIndex();
+
+    @Select("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_device' AND COLUMN_NAME='remote_target_version'")
+    int countDeviceRemoteTargetVersionColumn();
+
+    @Update("ALTER TABLE nx_janus_device ADD COLUMN remote_target_version INT DEFAULT NULL AFTER remote_url_key")
+    void addDeviceRemoteTargetVersionColumn();
+
+    @Select("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_device' AND COLUMN_NAME='remote_target_catalog_version'")
+    int countDeviceRemoteTargetCatalogVersionColumn();
+
+    @Update("ALTER TABLE nx_janus_device ADD COLUMN remote_target_catalog_version BIGINT DEFAULT NULL AFTER remote_target_version")
+    void addDeviceRemoteTargetCatalogVersionColumn();
+
+    @Select("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_device' AND INDEX_NAME='idx_janus_device_remote_target'")
+    int countDeviceRemoteTargetIndex();
+
+    @Update("ALTER TABLE nx_janus_device ADD KEY idx_janus_device_remote_target (remote_url_key,remote_target_version,remote_target_catalog_version,command_state)")
+    void addDeviceRemoteTargetIndex();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_janus_strategy (
@@ -223,11 +247,16 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
               request_hash CHAR(64) NOT NULL,
               actor_id VARCHAR(96) NOT NULL,
               state VARCHAR(24) NOT NULL,
+              remote_target_key VARCHAR(64) DEFAULT NULL,
+              remote_target_version INT DEFAULT NULL,
+              remote_target_catalog_version BIGINT DEFAULT NULL,
               payload_json JSON NOT NULL,
               created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
               expires_at DATETIME(3) DEFAULT NULL,
               UNIQUE KEY uk_janus_command_idem (idempotency_key),
               KEY idx_janus_command_target (target_id, created_at),
+              KEY idx_janus_command_remote_target
+                (remote_target_key,remote_target_version,remote_target_catalog_version,state),
               KEY idx_janus_command_expiry (expires_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
@@ -238,6 +267,30 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Update("ALTER TABLE nx_janus_command ADD COLUMN expires_at DATETIME(3) DEFAULT NULL AFTER created_at, ADD KEY idx_janus_command_expiry (expires_at)")
     void addCommandExpiresAtColumn();
+
+    @Select("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_command' AND COLUMN_NAME='remote_target_version'")
+    int countCommandRemoteTargetVersionColumn();
+
+    @Select("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_command' AND COLUMN_NAME='remote_target_key'")
+    int countCommandRemoteTargetKeyColumn();
+
+    @Update("ALTER TABLE nx_janus_command ADD COLUMN remote_target_key VARCHAR(64) DEFAULT NULL AFTER state")
+    void addCommandRemoteTargetKeyColumn();
+
+    @Update("ALTER TABLE nx_janus_command ADD COLUMN remote_target_version INT DEFAULT NULL AFTER remote_target_key")
+    void addCommandRemoteTargetVersionColumn();
+
+    @Select("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_command' AND COLUMN_NAME='remote_target_catalog_version'")
+    int countCommandRemoteTargetCatalogVersionColumn();
+
+    @Update("ALTER TABLE nx_janus_command ADD COLUMN remote_target_catalog_version BIGINT DEFAULT NULL AFTER remote_target_version")
+    void addCommandRemoteTargetCatalogVersionColumn();
+
+    @Select("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_janus_command' AND INDEX_NAME='idx_janus_command_remote_target'")
+    int countCommandRemoteTargetIndex();
+
+    @Update("ALTER TABLE nx_janus_command ADD KEY idx_janus_command_remote_target (remote_target_key,remote_target_version,remote_target_catalog_version,state)")
+    void addCommandRemoteTargetIndex();
 
     @Update("UPDATE nx_janus_command SET expires_at=DATE_ADD(created_at, INTERVAL 24 HOUR) WHERE expires_at IS NULL")
     void expireLegacyCommands();
@@ -373,6 +426,7 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Update("""
             UPDATE nx_janus_device SET desired_status=NULL,command_state=NULL,remote_url_key=NULL,
+              remote_target_version=NULL,remote_target_catalog_version=NULL,
               manual_override_json=NULL,status_source='system',
               acked_revision=GREATEST(acked_revision,desired_revision),lock_version=lock_version+1
             WHERE user_id=#{userId} AND sid=#{sid} AND desired_status IS NOT NULL
@@ -383,6 +437,7 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Update("""
             UPDATE nx_janus_device SET desired_status=NULL,command_state=NULL,remote_url_key=NULL,
+              remote_target_version=NULL,remote_target_catalog_version=NULL,
               manual_override_json=NULL,status_source='system',
               acked_revision=GREATEST(acked_revision,desired_revision),lock_version=lock_version+1
             WHERE desired_status IS NOT NULL
@@ -393,7 +448,10 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
 
     @Select("""
             SELECT desired_status AS desiredStatus, desired_revision AS revision,
-                   remote_url_key AS remoteUrlKey, command_state AS commandState,
+                   remote_url_key AS remoteUrlKey,
+                   remote_target_version AS remoteTargetVersion,
+                   remote_target_catalog_version AS remoteTargetCatalogVersion,
+                   command_state AS commandState,
                    CAST(manual_override_json AS CHAR) AS payloadJson
             FROM nx_janus_device
             WHERE user_id=#{userId} AND sid=#{sid} AND desired_revision>acked_revision
@@ -438,31 +496,43 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
     @Update("""
             UPDATE nx_janus_device SET desired_status = #{targetStatus}, desired_revision = desired_revision + 1,
               command_state = #{commandState},
-              remote_url_key = COALESCE(#{remoteUrlKey}, remote_url_key), last_operator_id = #{operator},
+              remote_url_key = #{remoteUrlKey},
+              remote_target_version = #{remoteTargetVersion},
+              remote_target_catalog_version = #{remoteTargetCatalogVersion},
+              last_operator_id = #{operator},
               last_operation_reason = #{reason}, manual_override_json = CAST(#{manualOverrideJson} AS JSON),
               lock_version = lock_version + 1
             WHERE sid = #{sid} AND lock_version = #{expectedVersion}
             """)
     int updateDeviceStatus(@Param("sid") String sid, @Param("expectedVersion") long expectedVersion,
                            @Param("targetStatus") String targetStatus,
-                           @Param("remoteUrlKey") String remoteUrlKey, @Param("operator") String operator,
+                           @Param("remoteUrlKey") String remoteUrlKey,
+                           @Param("remoteTargetVersion") Integer remoteTargetVersion,
+                           @Param("remoteTargetCatalogVersion") Long remoteTargetCatalogVersion,
+                           @Param("operator") String operator,
                            @Param("reason") String reason, @Param("manualOverrideJson") String manualOverrideJson,
                            @Param("commandState") String commandState);
 
     @Update("""
             UPDATE nx_janus_device SET desired_status=#{targetStatus},desired_revision=desired_revision+1,
               command_state='PUBLISHED',remote_url_key=#{remoteUrlKey},
+              remote_target_version=#{remoteTargetVersion},
+              remote_target_catalog_version=#{remoteTargetCatalogVersion},
               manual_override_json=CAST(#{payloadJson} AS JSON),status_source='strategy',
               last_operator_id='janus-engine',last_operation_reason='策略自动判定',
               lock_version=lock_version+1
             WHERE sid=#{sid} AND lock_version=#{expectedVersion}
               AND (desired_status IS NULL OR (acked_revision>=desired_revision AND status_source<>'manual'
                 AND (command_state='FAILED' OR desired_status<>#{targetStatus}
-                  OR COALESCE(remote_url_key,'')<>COALESCE(#{remoteUrlKey},''))))
+                  OR COALESCE(remote_url_key,'')<>COALESCE(#{remoteUrlKey},'')
+                  OR COALESCE(remote_target_version,-1)<>COALESCE(#{remoteTargetVersion},-1)
+                  OR COALESCE(remote_target_catalog_version,-1)<>COALESCE(#{remoteTargetCatalogVersion},-1))))
             """)
     int publishStrategyCommand(@Param("sid") String sid, @Param("expectedVersion") long expectedVersion,
                                @Param("targetStatus") String targetStatus,
                                @Param("remoteUrlKey") String remoteUrlKey,
+                               @Param("remoteTargetVersion") Integer remoteTargetVersion,
+                               @Param("remoteTargetCatalogVersion") Long remoteTargetCatalogVersion,
                                @Param("payloadJson") String payloadJson);
 
     @Select("SELECT " + STRATEGY_COLUMNS + " FROM nx_janus_strategy ORDER BY priority DESC, updated_at DESC")
@@ -559,6 +629,17 @@ public interface JanusMapper extends BaseMapper<JanusDeviceRecord> {
     @Update("UPDATE nx_janus_command SET state=#{state},payload_json=CAST(#{payloadJson} AS JSON) WHERE idempotency_key=#{idempotencyKey} AND state='PROCESSING'")
     int completeCommand(@Param("idempotencyKey") String idempotencyKey, @Param("state") String state,
                         @Param("payloadJson") String payloadJson);
+
+    @Update("""
+            UPDATE nx_janus_command
+            SET remote_target_key=#{key},remote_target_version=#{version},
+                remote_target_catalog_version=#{catalogVersion}
+            WHERE idempotency_key=#{idempotencyKey} AND state='PROCESSING'
+            """)
+    int bindCommandRemoteTarget(@Param("idempotencyKey") String idempotencyKey,
+                                @Param("key") String key,
+                                @Param("version") int version,
+                                @Param("catalogVersion") long catalogVersion);
 
     @Delete("DELETE FROM nx_janus_command WHERE idempotency_key=#{idempotencyKey} AND state='PROCESSING'")
     int releaseCommandReservation(@Param("idempotencyKey") String idempotencyKey);

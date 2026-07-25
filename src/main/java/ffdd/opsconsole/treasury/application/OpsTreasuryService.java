@@ -79,7 +79,7 @@ public class OpsTreasuryService {
     private static final List<String> D3_RESERVE_CATEGORIES = List.of("usdt", "otherLiquid");
     private static final List<String> D3_LIABILITY_CATEGORIES = List.of(
             "withdrawable_balance", "usdt_staking_principal", "staking_interest", "genesis_daily_emission",
-            "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other");
+            "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other", "unverified_deposit");
     private static final String B_ALERT_COVERAGE_ID = "coverage-redline";
     private static final String B_ALERT_COVERAGE_ACK_KEY = "wallet.dual-ledger.alert.coverage-redline.ack";
     private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
@@ -183,7 +183,7 @@ public class OpsTreasuryService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> reserve() {
         LocalDateTime now = LocalDateTime.now(clock);
-        BigDecimal ledgerReserve = safe(ledgerRepository.currentReserveUsd());
+        BigDecimal ledgerReserve = currentReserveWithVietQr();
         BigDecimal lockedPrincipal = safe(ledgerRepository.sumActiveStakingPrincipalUsdt());
         BigDecimal injected = safe(ledgerRepository.injectedCumulativeUsd());
         BigDecimal reserveTotal = ledgerReserve.subtract(lockedPrincipal).max(BigDecimal.ZERO);
@@ -199,7 +199,7 @@ public class OpsTreasuryService {
         return ApiResult.ok(response);
     }
 
-    /** D3 canonical eight-category liability breakdown used as B1/B2 input. */
+    /** D3 canonical nine-category liability breakdown used as B1/B2 input. */
     public ApiResult<Map<String, Object>> liabilities(boolean breakdown) {
         BigDecimal nexRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
         List<Map<String, Object>> rows = List.of(
@@ -210,7 +210,8 @@ public class OpsTreasuryService {
                 liability("nex_v2_future", "NEX v2 未来兑付", safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward())).multiply(nexRate), "nx_nex_lock_order active maturity"),
                 liability("withdrawal_queue", "待提现 queue", ledgerRepository.sumActiveWithdrawalQueueUsdt(), "nx_withdrawal_order active queue"),
                 liability("commission_cooling", "佣金冷却未解锁", ledgerRepository.sumPendingCommissionUsdt(), "nx_wallet_ledger pending commission"),
-                liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"));
+                liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"),
+                liability("unverified_deposit", "待核实入金", ledgerRepository.pendingUnverifiedDepositUsdt(), "nx_vietqr_reconciliation open suspense rows"));
         BigDecimal total = rows.stream().map(row -> (BigDecimal) row.get("amountUsdt")).reduce(BigDecimal.ZERO, BigDecimal::add);
         List<Map<String, Object>> withShare = rows.stream().map(row -> {
             Map<String, Object> next = new LinkedHashMap<>(row);
@@ -220,13 +221,13 @@ public class OpsTreasuryService {
         }).toList();
         Map<String, Object> response = section(
                 "totalUsdt", money(total),
-                "hardLiabilityCategoryCount", 8,
+                "hardLiabilityCategoryCount", 9,
                 "trialShadowIncluded", false,
                 "asOf", LocalDateTime.now(clock));
         if (breakdown) {
             response.put("breakdown", withShare);
         }
-        response.put("sources", List.of("nx_user_wallet", "nx_staking_position", "nx_nex_lock_order", "nx_withdrawal_order", "nx_wallet_ledger", "nx_genesis_holding", "nx_treasury_legacy_lock_liability"));
+        response.put("sources", List.of("nx_user_wallet", "nx_staking_position", "nx_nex_lock_order", "nx_withdrawal_order", "nx_wallet_ledger", "nx_genesis_holding", "nx_treasury_legacy_lock_liability", "nx_vietqr_reconciliation"));
         return ApiResult.ok(response);
     }
 
@@ -628,7 +629,7 @@ public class OpsTreasuryService {
         if (ledgerRepository.reserveVoucherExists(voucherNo)) {
             throw new BizException(409, "VOUCHER_ALREADY_REGISTERED");
         }
-        BigDecimal oldReserve = safe(ledgerRepository.currentReserveUsd()).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal oldReserve = currentReserveWithVietQr().setScale(2, RoundingMode.HALF_UP);
         BigDecimal newReserve = oldReserve.add(amount).setScale(2, RoundingMode.HALF_UP);
         try {
             ledgerRepository.recordReserveInjection(voucherNo, amount, reason, operator, idempotencyKey);
@@ -1591,6 +1592,10 @@ public class OpsTreasuryService {
             return reserveTotal != null && reserveTotal.signum() > 0 ? new BigDecimal("999.00") : BigDecimal.ZERO.setScale(2);
         }
         return safe(reserveTotal).divide(dailyAverage, 2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal currentReserveWithVietQr() {
+        return safe(ledgerRepository.currentReserveUsd()).add(safe(ledgerRepository.vietQrHeldReserveUsdt()));
     }
 
     private int d3WindowDays(String window, Set<Integer> allowed) {

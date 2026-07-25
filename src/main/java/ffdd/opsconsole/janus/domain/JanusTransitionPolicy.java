@@ -2,11 +2,10 @@ package ffdd.opsconsole.janus.domain;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 import org.springframework.util.StringUtils;
 
 public final class JanusTransitionPolicy {
-    private static final Set<String> REMOTE_TARGETS = Set.of("default", "backup", "promo");
+    private static final String REMOTE_TARGET_KEY_PATTERN = "[a-z][a-z0-9-]{1,63}";
     private record Spec(JanusRole role, boolean remote, boolean expiry, boolean strong, boolean highRisk, boolean noBatch) {}
 
     public record Validation(boolean allowed, String code, boolean highRisk, boolean noBatch) {
@@ -27,7 +26,7 @@ public final class JanusTransitionPolicy {
         if (spec == null) return Validation.reject("ILLEGAL_STATUS_TRANSITION");
         if (role == null || !role.atLeast(spec.role())) return Validation.reject("ROLE_FORBIDDEN");
         if (StringUtils.hasText(remoteUrlKey) && (!remoteUrlKey.equals(remoteUrlKey.trim())
-                || !REMOTE_TARGETS.contains(remoteUrlKey))) {
+                || !remoteUrlKey.matches(REMOTE_TARGET_KEY_PATTERN))) {
             return Validation.reject("REMOTE_TARGET_INVALID");
         }
         if (spec.remote() && !StringUtils.hasText(remoteUrlKey)) return Validation.reject("REMOTE_TARGET_REQUIRED");

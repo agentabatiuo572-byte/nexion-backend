@@ -117,6 +117,34 @@ class OpsDomainRuntimeServiceTest {
             assertThat(api.path()).isEqualTo("/api/admin/content/i18n-learning/courses/{courseId}");
             assertThat(api.b1RedlineTriggered()).isTrue();
         });
+        assertThat(result.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("ConversationTimeoutPolicy");
+            assertThat(api.path()).isEqualTo("/api/admin/content/conversations/timeout-policy");
+            assertThat(api.readPermission()).isEqualTo("service_m3_read");
+            assertThat(api.writePermission()).isEqualTo("service_m3_timeout_manage");
+        });
+    }
+
+    @Test
+    void synchronizedHighFidelityApisArePublishedInTheirOwnerContracts() {
+        ApiResult<OpsDomainRuntimeContract> finance = service.contract("finance");
+        assertThat(finance.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("VietQrRail");
+            assertThat(api.path()).isEqualTo("/api/admin/finance/vietqr/**");
+            assertThat(api.writePermission()).isEqualTo("finance_d1_bank_reconcile");
+        });
+        assertThat(finance.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("FxQuote");
+            assertThat(api.path()).isEqualTo("/api/admin/finance/fx-quote");
+            assertThat(api.writePermission()).isEqualTo("finance_d6_manage");
+        });
+
+        ApiResult<OpsDomainRuntimeContract> risk = service.contract("risk");
+        assertThat(risk.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("JanusApprovedTarget");
+            assertThat(api.path()).isEqualTo("/api/admin/janus/remote-targets/**");
+            assertThat(api.writePermission()).isEqualTo("risk_k6_target_manage");
+        });
     }
 
     @Test

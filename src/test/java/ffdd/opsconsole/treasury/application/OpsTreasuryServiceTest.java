@@ -176,7 +176,8 @@ class OpsTreasuryServiceTest {
         assertThat((Iterable<Map<String, Object>>) dualLedger.get("accounts"))
                 .extracting(account -> account.get("key"))
                 .containsExactly("withdrawable_balance", "usdt_staking_principal", "staking_interest",
-                        "genesis_daily_emission", "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other")
+                        "genesis_daily_emission", "nex_v2_future", "withdrawal_queue", "commission_cooling",
+                        "lock_other", "unverified_deposit")
                 .doesNotContain("nex_payable", "pending_withdraw", "premium", "points");
         assertThat(dualLedger.get("h1Rhythm"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
@@ -547,7 +548,7 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void d3CanonicalReadModelsExposeReserveEightLiabilitiesAndWindowedForecastsWithoutCoverage() {
+    void d3CanonicalReadModelsExposeReserveNineLiabilitiesAndWindowedForecastsWithoutCoverage() {
         ledgerRepository.usdtAvailable = new BigDecimal("1000");
         ledgerRepository.stakingPrincipal = new BigDecimal("500");
         ledgerRepository.stakingInterest = new BigDecimal("50");
@@ -558,6 +559,8 @@ class OpsTreasuryServiceTest {
         ledgerRepository.pendingWithdraw = new BigDecimal("40");
         ledgerRepository.injectedCumulative = new BigDecimal("250");
         ledgerRepository.genesisDaily = new BigDecimal("12.50");
+        ledgerRepository.pendingUnverifiedDeposit = new BigDecimal("48.25");
+        ledgerRepository.vietQrHeldReserve = new BigDecimal("48.25");
 
         Map<String, Object> reserve = service.reserve().getData();
         Map<String, Object> liabilities = service.liabilities(true).getData();
@@ -570,7 +573,10 @@ class OpsTreasuryServiceTest {
         assertThat((List<Map<String, Object>>) liabilities.get("breakdown"))
                 .extracting(row -> row.get("category"))
                 .containsExactly("withdrawable_balance", "usdt_staking_principal", "staking_interest", "genesis_daily_emission",
-                        "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other");
+                        "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other", "unverified_deposit");
+        assertThat(reserve).containsEntry("reserveTotalUsdt", new BigDecimal("4548.25"));
+        assertThat(((List<Map<String, Object>>) liabilities.get("breakdown")).get(8))
+                .containsEntry("amountUsdt", new BigDecimal("48.25"));
         assertThat((List<Map<String, Object>>) maturity.get("daily")).hasSize(30)
                 .allSatisfy(row -> assertThat(row).containsKeys("date", "withdrawDueUsdt", "interestDueUsdt", "genesisDividendUsdt"));
         assertThat(maturity).containsKeys("cumulative", "reserveCoverDays", "farLiabilityExcluded");
@@ -591,7 +597,8 @@ class OpsTreasuryServiceTest {
                         "nex_v2_future", true,
                         "withdrawal_queue", true,
                         "commission_cooling", true,
-                        "lock_other", true),
+                        "lock_other", true,
+                        "unverified_deposit", true),
                 "30d", true, false, "LINEAR", false,
                 0L, "调整未来三十天资金预测口径", "finance-lead");
 
@@ -652,7 +659,7 @@ class OpsTreasuryServiceTest {
                         "withdrawable_balance", true, "usdt_staking_principal", true,
                         "staking_interest", true, "genesis_daily_emission", true,
                         "nex_v2_future", true, "withdrawal_queue", true,
-                        "commission_cooling", true, "lock_other", true),
+                        "commission_cooling", true, "lock_other", true, "unverified_deposit", true),
                 "forecastWindow", "30d", "genesisIncluded", true,
                 "includeFarLiabilities", false, "stakingInterestMode", "AT_MATURITY",
                 "trialStressEnabled", true));
@@ -1240,6 +1247,8 @@ class OpsTreasuryServiceTest {
         private BigDecimal pendingWithdraw = BigDecimal.ZERO;
         private BigDecimal nexAvailable = BigDecimal.ZERO;
         private BigDecimal legacyLockOther = BigDecimal.ZERO;
+        private BigDecimal pendingUnverifiedDeposit = BigDecimal.ZERO;
+        private BigDecimal vietQrHeldReserve = BigDecimal.ZERO;
         private BigDecimal stakingPrincipal = BigDecimal.ZERO;
         private BigDecimal stakingInterest = BigDecimal.ZERO;
         private BigDecimal nexLocked = BigDecimal.ZERO;
@@ -1302,6 +1311,16 @@ class OpsTreasuryServiceTest {
         @Override
         public BigDecimal legacyLockOtherLiabilityUsd() {
             return legacyLockOther;
+        }
+
+        @Override
+        public BigDecimal pendingUnverifiedDepositUsdt() {
+            return pendingUnverifiedDeposit;
+        }
+
+        @Override
+        public BigDecimal vietQrHeldReserveUsdt() {
+            return vietQrHeldReserve;
         }
 
         @Override

@@ -33,6 +33,9 @@ public class MybatisJanusRepository implements JanusRepository {
         mapper.createDeviceTable();
         if (mapper.countDeviceUserIdColumn() == 0) mapper.addDeviceUserIdColumn();
         if (mapper.countDeviceOwnerIndex() == 0) mapper.addDeviceOwnerIndex();
+        if (mapper.countDeviceRemoteTargetVersionColumn() == 0) mapper.addDeviceRemoteTargetVersionColumn();
+        if (mapper.countDeviceRemoteTargetCatalogVersionColumn() == 0) mapper.addDeviceRemoteTargetCatalogVersionColumn();
+        if (mapper.countDeviceRemoteTargetIndex() == 0) mapper.addDeviceRemoteTargetIndex();
         mapper.createStrategyTable();
         mapper.createStrategyVersionTable();
         mapper.createEvaluationTable();
@@ -41,6 +44,10 @@ public class MybatisJanusRepository implements JanusRepository {
         mapper.createDryRunTable();
         mapper.createCommandTable();
         if (mapper.countCommandExpiresAtColumn() == 0) mapper.addCommandExpiresAtColumn();
+        if (mapper.countCommandRemoteTargetKeyColumn() == 0) mapper.addCommandRemoteTargetKeyColumn();
+        if (mapper.countCommandRemoteTargetVersionColumn() == 0) mapper.addCommandRemoteTargetVersionColumn();
+        if (mapper.countCommandRemoteTargetCatalogVersionColumn() == 0) mapper.addCommandRemoteTargetCatalogVersionColumn();
+        if (mapper.countCommandRemoteTargetIndex() == 0) mapper.addCommandRemoteTargetIndex();
         mapper.expireLegacyCommands();
     }
 
@@ -132,16 +139,20 @@ public class MybatisJanusRepository implements JanusRepository {
 
     @Override
     public boolean updateDeviceStatus(String sid, long expectedVersion, String targetStatus,
-                                      String remoteUrlKey, String operator, String reason,
+                                      String remoteUrlKey, Integer remoteTargetVersion,
+                                      Long remoteTargetCatalogVersion, String operator, String reason,
                                       String manualOverrideJson, String commandState) {
-        return mapper.updateDeviceStatus(sid, expectedVersion, targetStatus, remoteUrlKey, operator,
+        return mapper.updateDeviceStatus(sid, expectedVersion, targetStatus, remoteUrlKey,
+                remoteTargetVersion, remoteTargetCatalogVersion, operator,
                 reason, manualOverrideJson, commandState) == 1;
     }
 
     @Override
     public boolean publishStrategyCommand(String sid, long expectedVersion, String targetStatus,
-                                          String remoteUrlKey, String payloadJson) {
-        return mapper.publishStrategyCommand(sid, expectedVersion, targetStatus, remoteUrlKey, payloadJson) == 1;
+                                          String remoteUrlKey, Integer remoteTargetVersion,
+                                          Long remoteTargetCatalogVersion, String payloadJson) {
+        return mapper.publishStrategyCommand(sid, expectedVersion, targetStatus, remoteUrlKey,
+                remoteTargetVersion, remoteTargetCatalogVersion, payloadJson) == 1;
     }
 
     @Override
@@ -250,6 +261,13 @@ public class MybatisJanusRepository implements JanusRepository {
     }
 
     @Override
+    public void bindCommandRemoteTarget(String idempotencyKey, String key, int version, long catalogVersion) {
+        if (mapper.bindCommandRemoteTarget(idempotencyKey, key, version, catalogVersion) != 1) {
+            throw new IllegalStateException("JANUS_COMMAND_REMOTE_TARGET_BIND_FAILED");
+        }
+    }
+
+    @Override
     public void releaseCommandReservation(String idempotencyKey) {
         mapper.releaseCommandReservation(idempotencyKey);
     }
@@ -258,7 +276,8 @@ public class MybatisJanusRepository implements JanusRepository {
         return new JanusDeviceView(row.getSid(), row.getDeviceId(), row.getFirstSeenAt(), row.getLastSeenAt(),
                 row.getInstallAt(), row.getInstallDays(), row.getInviteCode(), row.getChannel(), row.getCohortId(),
                 row.getStatus(), row.getDesiredStatus(), row.getCommandState(), row.getStatusSource(),
-                Boolean.TRUE.equals(row.getActivated()), row.getRemoteUrlKey(), row.getMaturityScore(),
+                Boolean.TRUE.equals(row.getActivated()), row.getRemoteUrlKey(),
+                row.getRemoteTargetVersion(), row.getRemoteTargetCatalogVersion(), row.getMaturityScore(),
                 row.getRecommendationScore(), row.getEnvironmentRiskScore(), row.getPriorityScore(), row.getUa(),
                 row.getPlatform(), row.getModel(), row.getOsName(), row.getBrowser(), parse(row.getMaturityJson(), false),
                 parse(row.getEnvironmentJson(), false), row.getHitStrategy(), row.getHitStrategyVersion(),

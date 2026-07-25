@@ -60,6 +60,16 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public BigDecimal pendingUnverifiedDepositUsdt() {
+        return nz(mapper.pendingUnverifiedDepositUsdt());
+    }
+
+    @Override
+    public BigDecimal vietQrHeldReserveUsdt() {
+        return nz(mapper.vietQrHeldReserveUsdt());
+    }
+
+    @Override
     public BigDecimal sumActiveStakingPrincipalUsdt() {
         return nz(mapper.sumActiveStakingPrincipalUsdt());
     }

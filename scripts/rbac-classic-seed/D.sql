@@ -13,6 +13,9 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('finance_d1_bin_lock',          'BIN卡段锁定',         'API', '/finance/recon',        'HIGH',  1, 1, 0),
   ('finance_d1_bin_unlock',        'BIN卡段解锁',         'API', '/finance/recon',        'HIGH',  1, 1, 0),
   ('finance_d1_chargeback_refund', '拒付追回',            'API', '/finance/recon',        'HIGH',  1, 1, 0),
+  ('finance_d1_bank_reconcile',     'VietQR回单人工处置',  'API', '/finance/recon',        'HIGH',  1, 1, 0),
+  ('finance_d1_bank_account_manage','VietQR收款账户池管理','API', '/finance/recon',        'HIGH',  1, 1, 0),
+  ('finance_d1_bank_config_manage', 'VietQR匹配参数配置',  'API', '/finance/recon',        'HIGH',  1, 1, 0),
   -- D2 提现审核队列 /finance/withdrawals (9)
   ('finance_d2_read',                '提现审核-读',     'API', '/finance/withdrawals', 'READ',  0, 1, 0),
   ('finance_d2_withdrawal_approve',  '提现放行',        'API', '/finance/withdrawals', 'HIGH',  1, 1, 0),
@@ -38,7 +41,10 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('finance_d5_read',              '提现参数-读',        'API', '/finance/params', 'READ', 0, 1, 0),
   ('finance_d5_daily_limit_write', '每日提现次数调整',   'API', '/finance/params', 'HIGH', 1, 1, 0),
   ('finance_d5_balance_max_write', '余额可提上限调整',   'API', '/finance/params', 'HIGH', 1, 1, 0),
-  ('finance_d5_fee_write',         '提现费率调整',       'API', '/finance/params', 'HIGH', 1, 1, 0)
+  ('finance_d5_fee_write',         '提现费率调整',       'API', '/finance/params', 'HIGH', 1, 1, 0),
+  -- D6 汇率牌价 /finance/fx-rate
+  ('finance_d6_read',              '汇率牌价-读',        'API', '/finance/fx-rate', 'READ', 0, 1, 0),
+  ('finance_d6_manage',            '汇率牌价调整',       'API', '/finance/fx-rate', 'HIGH', 1, 1, 0)
 ON DUPLICATE KEY UPDATE
   permission_name = VALUES(permission_name),
   resource_type   = VALUES(resource_type),

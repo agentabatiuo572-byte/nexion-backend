@@ -19,7 +19,7 @@ class JanusTransitionPolicyTest {
     void requiresRemoteTargetExpiryAndStrongConfirmationWhereSpecified() {
         assertThat(policy.validate("NEW", "MANUAL_FORCED", JanusRole.SENIOR_OPERATOR, null, null, "strong_single").code())
                 .isEqualTo("REMOTE_TARGET_REQUIRED");
-        assertThat(policy.validate("NEW", "MANUAL_FORCED", JanusRole.SENIOR_OPERATOR, "untrusted", null, "strong_single").code())
+        assertThat(policy.validate("NEW", "MANUAL_FORCED", JanusRole.SENIOR_OPERATOR, "Bad Key", null, "strong_single").code())
                 .isEqualTo("REMOTE_TARGET_INVALID");
         assertThat(policy.validate("NEW", "MANUAL_FORCED", JanusRole.SENIOR_OPERATOR, "promo ", null, "strong_single").code())
                 .isEqualTo("REMOTE_TARGET_INVALID");
@@ -32,7 +32,7 @@ class JanusTransitionPolicyTest {
     @Test
     void acceptsDocumentedManualTransitions() {
         assertThat(policy.validate("RECOMMENDED", "HIT", JanusRole.OPERATOR, null, null, "standard").allowed()).isTrue();
-        assertThat(policy.validate("HIT", "ACTIVATED", JanusRole.OPERATOR, "default", null, "standard").allowed()).isTrue();
-        assertThat(policy.validate("BLOCKED", "MANUAL_FORCED", JanusRole.ADMIN, "backup", null, "strong_single").allowed()).isTrue();
+        assertThat(policy.validate("HIT", "ACTIVATED", JanusRole.OPERATOR, "tenant-blue", null, "standard").allowed()).isTrue();
+        assertThat(policy.validate("BLOCKED", "MANUAL_FORCED", JanusRole.ADMIN, "recovery-edge", null, "strong_single").allowed()).isTrue();
     }
 }

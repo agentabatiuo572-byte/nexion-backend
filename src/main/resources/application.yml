@@ -36,6 +36,10 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  janus:
+    remote-target:
+      # Comma-separated exact HTTPS origins. Empty fails closed.
+      allowed-origins: ${NEXION_JANUS_REMOTE_TARGET_ALLOWED_ORIGINS:}
   risk:
     k3:
       address-reputation:

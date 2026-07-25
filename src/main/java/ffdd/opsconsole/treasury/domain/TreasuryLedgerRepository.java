@@ -26,6 +26,14 @@ public interface TreasuryLedgerRepository {
         return BigDecimal.ZERO;
     }
 
+    default BigDecimal pendingUnverifiedDepositUsdt() {
+        return BigDecimal.ZERO;
+    }
+
+    default BigDecimal vietQrHeldReserveUsdt() {
+        return BigDecimal.ZERO;
+    }
+
     BigDecimal sumActiveStakingPrincipalUsdt();
 
     BigDecimal sumActiveStakingInterestUsdt();

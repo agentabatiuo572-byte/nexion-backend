@@ -2,7 +2,7 @@ package ffdd.opsconsole.growth.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
-import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.dto.ReferralRewardParamUpdateRequest;
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
@@ -33,7 +33,7 @@ public class OpsReferralRewardController {
     @PreAuthorize("hasAuthority('growth_h8_write')")
     public ApiResult<Map<String, Object>> updateParam(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String key,
-            @PathVariable String paramKey, @RequestBody GrowthConfigUpdateRequest request) {
+            @PathVariable String paramKey, @RequestBody ReferralRewardParamUpdateRequest request) {
         return ApiResult.ok(service.updateParam(paramKey, key, request));
     }
 

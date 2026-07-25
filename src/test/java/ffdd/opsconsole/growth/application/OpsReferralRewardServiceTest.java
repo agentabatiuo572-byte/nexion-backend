@@ -14,7 +14,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
 
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
-import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.dto.ReferralRewardParamUpdateRequest;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -58,6 +58,8 @@ class OpsReferralRewardServiceTest {
         when(config.activeValue("K.rewards.welcomeGift.lockMode")).thenReturn(Optional.of("risk_bucket"));
         when(config.activeValue("K.rewards.inviterReward.nexAmount")).thenReturn(Optional.of("10"));
         when(config.activeValue("K.rewards.referral.effectiveAt")).thenReturn(Optional.of("2026-07-17T00:00:00Z"));
+        when(config.activeValue("K.rewards.referral.version")).thenReturn(Optional.of("1"));
+        when(config.activeValueForUpdate("K.rewards.referral.version")).thenReturn(Optional.of("1"));
         when(config.activeValue("H1.rhythm.totalMonths")).thenReturn(Optional.of("12"));
         when(config.activeValue("H1.rhythm.currentMonth")).thenReturn(Optional.of("7"));
         when(config.activeValue("growth.phase.current")).thenReturn(Optional.of("P4"));
@@ -174,7 +176,8 @@ class OpsReferralRewardServiceTest {
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
 
         assertThatThrownBy(() -> service.updateParam("newcomer.usdt", "idem-ref-b1",
-                new GrowthConfigUpdateRequest("newcomer.usdt", "6", "raise welcome gift budget", "superadmin")))
+                new ReferralRewardParamUpdateRequest("newcomer.usdt", "6", 1L,
+                        "raise welcome gift budget", "superadmin")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_BELOW_REDLINE");
 
@@ -208,6 +211,49 @@ class OpsReferralRewardServiceTest {
         verify(mapper, never()).creditWallet(any(), any(), any());
         verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
                 any(), anyString(), anyString());
+    }
+
+    @Test
+    void overviewAndParamWriteExposeMonotonicConfigurationVersion() {
+        Map<String, Object> overview = service.overview();
+        assertThat(overview).containsEntry("version", 1L);
+
+        Map<String, Object> updated = service.updateParam("newcomer.usdt", "idem-ref-version",
+                new ReferralRewardParamUpdateRequest("newcomer.usdt", "5", 1L,
+                        "versioned parameter update", "superadmin"));
+
+        assertThat(updated).containsEntry("version", 2L);
+        verify(config).upsertAdminValue("K.rewards.referral.version", "2", "NUMBER",
+                "GROWTH_REFERRAL", "H8 referral reward configuration version");
+    }
+
+    @Test
+    void staleParameterVersionFailsClosedAndWritesRejectedAudit() {
+        when(config.activeValueForUpdate("K.rewards.referral.version")).thenReturn(Optional.of("2"));
+        assertThatThrownBy(() -> service.updateParam("newcomer.usdt", "idem-ref-stale",
+                new ReferralRewardParamUpdateRequest("newcomer.usdt", "4", 1L,
+                        "stale parameter update", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_CONFIG_VERSION_CONFLICT");
+
+        verify(config, never()).upsertAdminValue(eq("K.rewards.welcomeGift.usdtAmount"), anyString(),
+                anyString(), anyString(), anyString());
+        verify(audit).recordRequiredInNewTransaction(argThat(request ->
+                "REFERRAL_REWARD_PARAM_UPDATE_REJECTED".equals(request.getAction())
+                        && "REJECTED".equals(request.getResult())));
+    }
+
+    @Test
+    void invalidParameterWritesRejectedAuditInIndependentTransaction() {
+        assertThatThrownBy(() -> service.updateParam("newcomer.usdt", "idem-ref-invalid",
+                new ReferralRewardParamUpdateRequest("newcomer.usdt", "-1", 1L,
+                        "invalid parameter verification", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("REFERRAL_REWARD_AMOUNT_INVALID");
+
+        verify(audit).recordRequiredInNewTransaction(argThat(request ->
+                "REFERRAL_REWARD_PARAM_UPDATE_REJECTED".equals(request.getAction())
+                        && "REJECTED".equals(request.getResult())));
     }
 
     private static BigDecimal decimal(String expected) {

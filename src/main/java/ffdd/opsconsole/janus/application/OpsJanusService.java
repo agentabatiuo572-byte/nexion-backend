@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.janus.domain.JanusDeviceView;
 import ffdd.opsconsole.janus.domain.JanusRepository;
+import ffdd.opsconsole.janus.domain.JanusRemoteTargetRepository;
+import ffdd.opsconsole.janus.domain.JanusRemoteTargetView;
 import ffdd.opsconsole.janus.domain.JanusRole;
 import ffdd.opsconsole.janus.domain.JanusRuleEvaluator;
 import ffdd.opsconsole.janus.domain.JanusStrategyVersionView;
@@ -27,6 +29,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
@@ -53,7 +56,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsJanusService {
     private record ReportEvaluation(String status, String strategyId, Integer strategyVersion, String action,
-                                    String remoteUrlKey, Map<String, Object> ruleResults, boolean quotaReserved) {}
+                                    String remoteUrlKey, Integer remoteTargetVersion,
+                                    Long remoteTargetCatalogVersion,
+                                    Map<String, Object> ruleResults, boolean quotaReserved) {}
 
     private static final List<String> STATUSES = List.of("NEW", "OBSERVING", "RECOMMENDED", "HIT", "ACTIVATED",
             "ENV_FILTERED", "MANUAL_HOLD", "MANUAL_FORCED", "BLOCKED", "STALE", "RESET", "ERROR");
@@ -63,7 +68,6 @@ public class OpsJanusService {
             "foregroundDurationSeconds", "repeatStreakDays", "benchmarkViewed", "optimizeDone", "marketViewed",
             "walletViewed", "maturityScore", "inviteCode", "channel", "environmentRiskScore", "isHeadless",
             "automationSignalCount", "fpBlocklistHit", "screenAnomaly", "timezoneMismatch", "activated", "status");
-    private static final Set<String> REMOTE_TARGETS = Set.of("default", "backup", "promo");
     private static final Set<String> CHANNELS = Set.of("official", "ad", "invite", "test", "internal");
     private static final Set<String> COMMAND_ACTIONS = Set.of("REVERSAL_IMMEDIATE", "REVERSAL_SESSION_EDGE",
             "ENV_FILTER", "MANUAL_HOLD", "BLOCK");
@@ -86,6 +90,9 @@ public class OpsJanusService {
             "高风险设备排除", "客诉 / 线索跟进", "现场演示需要", "其他(在详细原因说明)");
 
     private final JanusRepository repository;
+    private final JanusRemoteTargetRepository remoteTargetRepository;
+    private final JanusRemoteTargetProperties remoteTargetProperties;
+    private final JanusRemoteTargetNetworkGuard remoteTargetNetworkGuard;
     private final JanusRuleEvaluator ruleEvaluator;
     private final ObjectMapper objectMapper;
     private final AuditLogService auditLogService;
@@ -93,11 +100,19 @@ public class OpsJanusService {
     private final JanusTransitionPolicy transitionPolicy = new JanusTransitionPolicy();
 
     public ApiResult<Map<String, Object>> metadata() {
+        List<Map<String, Object>> remoteTargets = remoteTargetRepository.list().stream()
+                .filter(target -> "ACTIVE".equals(target.status()))
+                .map(target -> Map.<String, Object>of(
+                        "remoteUrlKey", target.remoteTargetKey(),
+                        "remoteTargetVersion", target.remoteTargetVersion(),
+                        "remoteTargetCatalogVersion", target.catalogVersion(),
+                        "label", target.label()))
+                .toList();
         return ApiResult.ok(Map.of(
                 "statuses", STATUSES,
                 "actions", ACTIONS,
                 "ruleFields", RULE_FIELDS,
-                "remoteTargets", List.of("default", "backup", "promo"),
+                "remoteTargets", remoteTargets,
                 "transitions", transitionPolicy.metadata(),
                 "sourceTables", List.of("nx_janus_device", "nx_janus_strategy", "nx_janus_strategy_version",
                         "nx_janus_evaluation", "nx_janus_daily_quota", "nx_janus_command",
@@ -156,15 +171,24 @@ public class OpsJanusService {
         if (persisted == null) throw new IllegalStateException("JANUS_REPORT_NOT_PERSISTED");
         boolean recovery = prior != null && "strategy".equals(prior.statusSource())
                 && (!evaluation.status().equals(prior.status())
-                || !java.util.Objects.equals(evaluation.remoteUrlKey(), prior.remoteUrlKey()));
+                || !java.util.Objects.equals(evaluation.remoteUrlKey(), prior.remoteUrlKey())
+                || !java.util.Objects.equals(evaluation.remoteTargetVersion(), prior.remoteTargetVersion())
+                || !java.util.Objects.equals(evaluation.remoteTargetCatalogVersion(),
+                        prior.remoteTargetCatalogVersion()));
         if (COMMAND_ACTIONS.contains(evaluation.action()) || recovery) {
             ObjectNode command = objectMapper.createObjectNode();
             command.put("source", "strategy");
             command.put("reportId", authoritative.reportId());
             command.put("action", evaluation.action());
             if (evaluation.strategyId() != null) command.put("strategyId", evaluation.strategyId());
+            if (evaluation.remoteUrlKey() != null) {
+                command.put("remoteUrlKey", evaluation.remoteUrlKey());
+                command.put("remoteTargetVersion", evaluation.remoteTargetVersion());
+                command.put("remoteTargetCatalogVersion", evaluation.remoteTargetCatalogVersion());
+            }
             boolean published = repository.publishStrategyCommand(sid, persisted.version(), evaluation.status(),
-                    evaluation.remoteUrlKey(), command.toString());
+                    evaluation.remoteUrlKey(), evaluation.remoteTargetVersion(),
+                    evaluation.remoteTargetCatalogVersion(), command.toString());
             if (published) {
                 outboxService.publish("JANUS_DEVICE", sid, "JANUS_STRATEGY_COMMAND_PUBLISHED", command);
                 persisted = repository.findDevice(sid).orElse(persisted);
@@ -291,6 +315,17 @@ public class OpsJanusService {
             repository.releaseCommandReservation(idempotencyKey.trim());
             return ApiResult.fail("ROLE_FORBIDDEN".equals(validation.code()) ? 403 : 409, validation.code());
         }
+        JanusRemoteTargetView remoteTarget = null;
+        if (StringUtils.hasText(request.remoteUrlKey())) {
+            remoteTarget = resolveRemoteTarget(request.remoteUrlKey(), request.remoteTargetVersion(),
+                    request.remoteTargetCatalogVersion()).orElse(null);
+        }
+        if (StringUtils.hasText(request.remoteUrlKey()) && remoteTarget == null
+                || !StringUtils.hasText(request.remoteUrlKey())
+                && (request.remoteTargetVersion() != null || request.remoteTargetCatalogVersion() != null)) {
+            repository.releaseCommandReservation(idempotencyKey.trim());
+            return ApiResult.fail(422, "REMOTE_TARGET_INVALID");
+        }
         ObjectNode payload = objectMapper.valueToTree(request);
         payload.put("sid", sid);
         payload.put("fromStatus", before.status());
@@ -303,12 +338,17 @@ public class OpsJanusService {
         override.put("createdAt", System.currentTimeMillis());
         override.put("source", "manual");
         boolean updated = repository.updateDeviceStatus(sid, request.expectedDeviceVersion(), target,
-                request.remoteUrlKey(), currentActor(), request.reasonText().trim(), override.toString(), "PUBLISHED");
+                request.remoteUrlKey(), request.remoteTargetVersion(), request.remoteTargetCatalogVersion(),
+                currentActor(), request.reasonText().trim(), override.toString(), "PUBLISHED");
         if (!updated) {
             repository.releaseCommandReservation(idempotencyKey.trim());
             return ApiResult.fail(409, "VERSION_CONFLICT");
         }
         JanusDeviceView after = repository.findDevice(sid).orElseThrow();
+        if (remoteTarget != null) {
+            repository.bindCommandRemoteTarget(idempotencyKey.trim(), remoteTarget.remoteTargetKey(),
+                    remoteTarget.remoteTargetVersion(), remoteTarget.catalogVersion());
+        }
         repository.completeCommand(idempotencyKey.trim(), "PUBLISHED", json(after));
         outboxService.publish("JANUS_DEVICE", sid, "JANUS_DEVICE_STATUS_REQUESTED", payload);
         requiredAudit("K6_DEVICE_STATUS_REQUESTED", "JANUS_DEVICE", sid, request.reasonText(),
@@ -647,17 +687,23 @@ public class OpsJanusService {
         if (!validText(request.owner(), 96)) return "STRATEGY_OWNER_REQUIRED";
         if (request.priority() == null || request.priority() < 0 || request.priority() > 1000) return "STRATEGY_PRIORITY_INVALID";
         if (!validRuleTree(request.ruleTree())) return "INVALID_RULE_TREE";
-        if (!validObject(request.action(), Set.of("type", "remoteUrlKey"))
+        if (!validObject(request.action(), Set.of(
+                "type", "remoteUrlKey", "remoteTargetVersion", "remoteTargetCatalogVersion"))
                 || !ACTIONS.contains(request.action().path("type").asText())) return "STRATEGY_ACTION_INVALID";
         String actionType = request.action().path("type").asText();
         boolean needsRemote = actionType.startsWith("REVERSAL_");
         if (needsRemote && !StringUtils.hasText(request.action().path("remoteUrlKey").asText())) return "REMOTE_TARGET_REQUIRED";
         String remoteUrlKey = request.action().path("remoteUrlKey").asText();
-        if (StringUtils.hasText(remoteUrlKey)
-                && (!remoteUrlKey.equals(remoteUrlKey.trim()) || !REMOTE_TARGETS.contains(remoteUrlKey))) {
+        Integer remoteTargetVersion = positiveInt(request.action().get("remoteTargetVersion"));
+        Long remoteTargetCatalogVersion = positiveLong(request.action().get("remoteTargetCatalogVersion"));
+        if (StringUtils.hasText(remoteUrlKey) && (!remoteUrlKey.equals(remoteUrlKey.trim())
+                || resolveRemoteTarget(remoteUrlKey, remoteTargetVersion, remoteTargetCatalogVersion).isEmpty())) {
             return "REMOTE_TARGET_INVALID";
         }
-        if (!needsRemote && StringUtils.hasText(remoteUrlKey)) return "REMOTE_TARGET_NOT_ALLOWED";
+        if (!needsRemote && (StringUtils.hasText(remoteUrlKey)
+                || remoteTargetVersion != null || remoteTargetCatalogVersion != null)) {
+            return "REMOTE_TARGET_NOT_ALLOWED";
+        }
         if (!validScope(request.scope())) return "STRATEGY_SCOPE_INVALID";
         if (!validSafeguards(request.safeguards())) return "STRATEGY_SAFEGUARD_INVALID";
         if (!validRollout(request.rollout())) return "STRATEGY_ROLLOUT_INVALID";
@@ -724,6 +770,19 @@ public class OpsJanusService {
             JanusRuleEvaluator.Result result = ruleEvaluator.evaluate(strategy.ruleTree(), candidate);
             if (!result.passed()) continue;
             String action = actionType(strategy);
+            boolean reversalAction = action.startsWith("REVERSAL_");
+            String configuredRemoteUrlKey = strategy.action().path("remoteUrlKey").asText(null);
+            Integer remoteTargetVersion = positiveInt(strategy.action().get("remoteTargetVersion"));
+            Long remoteTargetCatalogVersion = positiveLong(
+                    strategy.action().get("remoteTargetCatalogVersion"));
+            if (reversalAction
+                    && resolveRemoteTarget(configuredRemoteUrlKey, remoteTargetVersion,
+                            remoteTargetCatalogVersion).isEmpty()) {
+                continue;
+            }
+            if (!reversalAction && (StringUtils.hasText(configuredRemoteUrlKey)
+                    || remoteTargetVersion != null || remoteTargetCatalogVersion != null)) continue;
+            String remoteUrlKey = reversalAction ? configuredRemoteUrlKey : null;
             int dailyCap = dryRunCap(strategy);
             if (dailyCap <= 0) continue;
             boolean quotaReserved = dailyCap != Integer.MAX_VALUE;
@@ -734,12 +793,10 @@ public class OpsJanusService {
             details.put("passedLeaves", result.passedLeaves());
             details.put("totalLeaves", result.totalLeaves());
             details.put("trace", result.trace());
-            String remoteUrlKey = action.startsWith("REVERSAL_")
-                    ? strategy.action().path("remoteUrlKey").asText(null) : null;
             return new ReportEvaluation(status, strategy.strategyId(), strategy.version(), action,
-                    remoteUrlKey, details, quotaReserved);
+                    remoteUrlKey, remoteTargetVersion, remoteTargetCatalogVersion, details, quotaReserved);
         }
-        return new ReportEvaluation(fallback, null, null, "BENIGN", null,
+        return new ReportEvaluation(fallback, null, null, "BENIGN", null, null, null,
                 Map.of("passed", false, "trace", List.of("NO_ACTIVE_STRATEGY_MATCH")), false);
     }
 
@@ -757,6 +814,11 @@ public class OpsJanusService {
         decision.put("action", evaluation.action());
         if (evaluation.strategyId() != null) decision.put("strategyId", evaluation.strategyId());
         if (evaluation.strategyVersion() != null) decision.put("strategyVersion", evaluation.strategyVersion());
+        if (evaluation.remoteUrlKey() != null) {
+            decision.put("remoteUrlKey", evaluation.remoteUrlKey());
+            decision.put("remoteTargetVersion", evaluation.remoteTargetVersion());
+            decision.put("remoteTargetCatalogVersion", evaluation.remoteTargetCatalogVersion());
+        }
         decision.set("ruleResults", objectMapper.valueToTree(evaluation.ruleResults()));
         return new JanusDeviceReportRequest(report.reportId(), report.deviceId(), report.reportedAt(),
                 report.firstSeenAt(), report.installAt(), report.inviteCode(), report.channel(), report.cohortId(),
@@ -775,7 +837,8 @@ public class OpsJanusService {
         return new JanusDeviceView(sid, report.deviceId(), report.firstSeenAt(), report.reportedAt(), report.installAt(),
                 installDays, report.inviteCode(), report.channel(), report.cohortId(),
                 prior == null ? status : prior.status(), null, null, "system",
-                prior != null && prior.activated(), null, maturityScore, recommendationScore, environmentRiskScore, priorityScore, report.ua(),
+                prior != null && prior.activated(), null, null, null,
+                maturityScore, recommendationScore, environmentRiskScore, priorityScore, report.ua(),
                 report.platform(), report.model(), report.osName(), report.browser(), report.maturity(),
                 report.environment(), strategyId, strategyVersion, prior == null ? null : prior.latestDecision(),
                 report.latestSession(), prior == null ? objectMapper.createObjectNode() : prior.manualOverride(),
@@ -1092,6 +1155,36 @@ public class OpsJanusService {
         return true;
     }
 
+    private Optional<JanusRemoteTargetView> resolveRemoteTarget(String key, Integer version,
+                                                                Long catalogVersion) {
+        if (!StringUtils.hasText(key) || version == null || version < 1
+                || catalogVersion == null || catalogVersion < 1) {
+            return Optional.empty();
+        }
+        try {
+            JanusRemoteTargetView target = remoteTargetRepository.find(key.trim(), version).orElse(null);
+            if (target == null || target.catalogVersion() != catalogVersion
+                    || !"ACTIVE".equals(target.status())
+                    || !remoteTargetProperties.allows(target.origin())
+                    || !remoteTargetNetworkGuard.allows(URI.create(target.url()))) {
+                return Optional.empty();
+            }
+            return Optional.of(target);
+        } catch (RuntimeException ex) {
+            return Optional.empty();
+        }
+    }
+
+    private Integer positiveInt(JsonNode value) {
+        return value != null && value.isIntegralNumber() && value.canConvertToInt()
+                && value.intValue() > 0 ? value.intValue() : null;
+    }
+
+    private Long positiveLong(JsonNode value) {
+        return value != null && value.isIntegralNumber() && value.longValue() > 0
+                ? value.longValue() : null;
+    }
+
     private boolean validOptionalObject(JsonNode node, Set<String> allowedFields) {
         return node == null || node.isNull() || validObject(node, allowedFields);
     }
@@ -1280,8 +1373,13 @@ public class OpsJanusService {
 
     private List<Map<String, Object>> auditData(String targetType, String q, int limit) {
         List<String> types = StringUtils.hasText(targetType)
-                ? List.of("strategy".equalsIgnoreCase(targetType) ? "JANUS_STRATEGY" : "JANUS_DEVICE")
-                : List.of("JANUS_DEVICE", "JANUS_STRATEGY", "JANUS_EXPORT");
+                ? switch (targetType.toLowerCase(Locale.ROOT)) {
+                    case "strategy" -> List.of("JANUS_STRATEGY");
+                    case "device" -> List.of("JANUS_DEVICE");
+                    case "target", "config" -> List.of("JANUS_REMOTE_TARGET");
+                    default -> List.of();
+                }
+                : List.of("JANUS_DEVICE", "JANUS_STRATEGY", "JANUS_REMOTE_TARGET", "JANUS_EXPORT");
         List<AuditLogRecord> records = new ArrayList<>();
         for (String type : types) {
             AuditLogQueryRequest query = new AuditLogQueryRequest();
@@ -1311,7 +1409,9 @@ public class OpsJanusService {
                 : record.getActorId() == null ? "system" : String.valueOf(record.getActorId());
         view.put("actorId", actor);
         view.put("action", record.getAction());
-        view.put("targetType", "JANUS_STRATEGY".equals(record.getResourceType()) ? "strategy" : "JANUS_DEVICE".equals(record.getResourceType()) ? "device" : "config");
+        view.put("targetType", "JANUS_STRATEGY".equals(record.getResourceType())
+                ? "strategy"
+                : "JANUS_DEVICE".equals(record.getResourceType()) ? "device" : "config");
         view.put("targetId", record.getResourceId());
         view.put("beforeSnapshot", detail.path("before"));
         view.put("afterSnapshot", detail.path("after"));
@@ -1428,14 +1528,17 @@ public class OpsJanusService {
             copyAuditScalar(source, reduced, key, minimal ? 32 : 96);
         }
         for (String key : List.of("priority", "owner", "lockVersion", "desiredStatus", "commandState",
-                "statusSource", "activated", "remoteUrlKey", "hitStrategy", "hitStrategyVersion",
+                "statusSource", "activated", "remoteUrlKey", "remoteTargetVersion",
+                "remoteTargetCatalogVersion", "hitStrategy", "hitStrategyVersion",
                 "lastOperatorId", "lastOperationReason")) {
             copyAuditScalar(source, reduced, key, minimal ? 32 : 96);
         }
         int nestedTextLimit = minimal ? 24 : 64;
         copyAuditMap(source, reduced, "ruleTreeSummary",
                 Set.of("mode", "ruleCount", "groupCount", "maxDepth"), nestedTextLimit);
-        copyAuditMap(source, reduced, "action", Set.of("type", "remoteUrlKey"), nestedTextLimit);
+        copyAuditMap(source, reduced, "action",
+                Set.of("type", "remoteUrlKey", "remoteTargetVersion", "remoteTargetCatalogVersion"),
+                nestedTextLimit);
         copyAuditMap(source, reduced, "scope",
                 Set.of("channelsCount", "inviteCodesCount", "cohortIdsCount"), nestedTextLimit);
         copyAuditMap(source, reduced, "safeguards", SAFEGUARD_FIELDS, nestedTextLimit);
@@ -1508,7 +1611,8 @@ public class OpsJanusService {
         compact.put("owner", compactText(strategy.owner(), 120));
         compact.put("scope", compactFields(strategy.scope(), SCOPE_FIELDS));
         compact.put("ruleTreeSummary", ruleTreeSummary(strategy.ruleTree()));
-        compact.put("action", compactFields(strategy.action(), Set.of("type", "remoteUrlKey")));
+        compact.put("action", compactFields(strategy.action(),
+                Set.of("type", "remoteUrlKey", "remoteTargetVersion", "remoteTargetCatalogVersion")));
         compact.put("safeguards", compactFields(strategy.safeguards(), SAFEGUARD_FIELDS));
         compact.put("rollout", compactFields(strategy.rollout(), ROLLOUT_FIELDS));
         compact.put("lockVersion", strategy.lockVersion());
@@ -1525,6 +1629,8 @@ public class OpsJanusService {
         compact.put("statusSource", compactText(device.statusSource(), 40));
         compact.put("activated", device.activated());
         compact.put("remoteUrlKey", compactText(device.remoteUrlKey(), 100));
+        compact.put("remoteTargetVersion", device.remoteTargetVersion());
+        compact.put("remoteTargetCatalogVersion", device.remoteTargetCatalogVersion());
         compact.put("hitStrategy", compactText(device.hitStrategy(), 100));
         compact.put("hitStrategyVersion", device.hitStrategyVersion());
         compact.put("lastOperatorId", compactText(device.lastOperatorId(), 100));
@@ -1646,9 +1752,13 @@ public class OpsJanusService {
         if (authentication == null) return "system";
         if (authentication.getDetails() instanceof Map<?, ?> details) {
             Object username = details.get("username");
-            if (username != null && StringUtils.hasText(String.valueOf(username))) return String.valueOf(username);
+            if (username != null && StringUtils.hasText(String.valueOf(username))) {
+                return String.valueOf(username).trim();
+            }
         }
-        return !StringUtils.hasText(authentication.getName()) ? "system" : authentication.getName();
+        return !StringUtils.hasText(authentication.getName())
+                ? "system"
+                : authentication.getName().trim();
     }
 
     private ObjectNode snapshot(JanusStrategyView strategy) {

@@ -463,6 +463,24 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     BigDecimal legacyLockOtherLiabilityUsd();
 
     @Select("""
+            SELECT COALESCE(SUM(received_vnd / NULLIF(locked_fx_rate_vnd_per_usdt, 0)), 0)
+              FROM nx_vietqr_reconciliation
+             WHERE is_deleted = 0
+               AND status = 'OPEN'
+               AND view_type IN ('ORPHAN', 'MISMATCH', 'LATE')
+            """)
+    BigDecimal pendingUnverifiedDepositUsdt();
+
+    @Select("""
+            SELECT COALESCE(SUM(received_vnd / NULLIF(locked_fx_rate_vnd_per_usdt, 0)), 0)
+              FROM nx_vietqr_reconciliation
+             WHERE is_deleted = 0
+               AND received_vnd > 0
+               AND status IN ('OPEN', 'CREDITED', 'RETURN_PENDING')
+            """)
+    BigDecimal vietQrHeldReserveUsdt();
+
+    @Select("""
             SELECT COUNT(1)
               FROM nx_treasury_reserve_ledger
              WHERE is_deleted = 0 AND voucher_no = #{voucherNo}

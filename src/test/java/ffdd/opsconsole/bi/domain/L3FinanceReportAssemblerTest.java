@@ -69,13 +69,13 @@ class L3FinanceReportAssemblerTest {
 
         assertThatThrownBy(() -> assembler.assemble(withLiabilities(base, missing)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("eight canonical liability categories");
+                .hasMessageContaining("nine canonical liability categories");
 
         List<L3FinanceReportAssembler.Liability> duplicate = new ArrayList<>(base.liabilities());
         duplicate.set(7, duplicate.get(0));
         assertThatThrownBy(() -> assembler.assemble(withLiabilities(base, duplicate)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("eight canonical liability categories");
+                .hasMessageContaining("nine canonical liability categories");
     }
 
     @Test
@@ -117,7 +117,8 @@ class L3FinanceReportAssemblerTest {
         List<L3FinanceReportAssembler.Liability> rows = new ArrayList<>();
         BigDecimal[] values = {
                 new BigDecimal("500"), new BigDecimal("100"), new BigDecimal("50"), new BigDecimal("25"),
-                new BigDecimal("75"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("60")
+                new BigDecimal("75"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("60"),
+                BigDecimal.ZERO
         };
         for (int index = 0; index < L3FinanceReportAssembler.CANONICAL_LIABILITY_CATEGORIES.size(); index++) {
             rows.add(new L3FinanceReportAssembler.Liability(

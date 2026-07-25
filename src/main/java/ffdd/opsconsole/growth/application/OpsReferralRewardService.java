@@ -1,7 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
-import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.dto.ReferralRewardParamUpdateRequest;
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
@@ -39,6 +39,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsReferralRewardService {
     private static final String EFFECTIVE_AT_KEY = "K.rewards.referral.effectiveAt";
+    private static final String VERSION_KEY = "K.rewards.referral.version";
     private static final Map<String, String> STORAGE_KEYS = Map.of(
             "newcomer.usdt", "K.rewards.welcomeGift.usdtAmount",
             "newcomer.nex", "K.rewards.welcomeGift.nexAmount",
@@ -82,50 +83,81 @@ public class OpsReferralRewardService {
         result.put("source", "nx_user.sponsor_user_id");
         result.put("settlementMode", "REAL_WALLET_LEDGER");
         result.put("effectiveAt", effectiveAt);
+        result.put("version", version(config.activeValue(VERSION_KEY).orElse("1")));
         return result;
     }
 
     @Transactional
-    public Map<String, Object> updateParam(String paramKey, String idempotencyKey, GrowthConfigUpdateRequest request) {
-        validateIdempotency(idempotencyKey);
-        if (!PARAMS.contains(paramKey)) {
-            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REFERRAL_PARAM_NOT_ALLOWED");
+    public Map<String, Object> updateParam(
+            String paramKey,
+            String idempotencyKey,
+            ReferralRewardParamUpdateRequest request) {
+        try {
+            validateIdempotency(idempotencyKey);
+            if (!PARAMS.contains(paramKey)) {
+                throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REFERRAL_PARAM_NOT_ALLOWED");
+            }
+            String reason = requireReason(request == null ? null : request.reason());
+            String value = normalizeParam(paramKey, request.value());
+            long expectedVersion = requireExpectedVersion(request.expectedVersion());
+            requireRewardMutex();
+            return idempotency.execute("REFERRAL_REWARD_PARAM", idempotencyKey,
+                    hash(paramKey + ":" + value + ":" + expectedVersion + ":" + reason), Map.class, () -> {
+                        long currentVersion = version(config.activeValueForUpdate(VERSION_KEY).orElse("1"));
+                        if (expectedVersion != currentVersion) {
+                            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                                    "H8_CONFIG_VERSION_CONFLICT");
+                        }
+                        String before = rawValue(paramKey);
+                        if (amplifies(paramKey, before, value)) requireHealthyCoverage();
+                        if (config.activeValue(EFFECTIVE_AT_KEY).isEmpty()) {
+                            config.upsertAdminValue(EFFECTIVE_AT_KEY, Instant.now().toString(), "DATETIME", "GROWTH_REFERRAL",
+                                    "H8 first effective time; historical referrals are never retroactively paid");
+                        }
+                        config.upsertAdminValue(STORAGE_KEYS.get(paramKey), value,
+                                "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
+                                "H8 邀请奖励真实发奖参数；" + reason);
+                        long nextVersion = Math.addExact(currentVersion, 1L);
+                        config.upsertAdminValue(VERSION_KEY, String.valueOf(nextVersion), "NUMBER",
+                                "GROWTH_REFERRAL", "H8 referral reward configuration version");
+                        String operator = actor(request.operator());
+                        audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey,
+                                Map.of("before", before, "after", value, "reason", reason,
+                                        "versionBefore", currentVersion, "versionAfter", nextVersion,
+                                        "coverage", coverageDetail()));
+                        outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
+                                Map.of("paramKey", paramKey, "before", before, "after", value,
+                                        "version", nextVersion, "operator", operator, "reason", reason,
+                                        "idempotencyKey", idempotencyKey));
+                        return Map.of("key", paramKey, "value", value, "status", "UPDATED",
+                                "version", nextVersion);
+                    });
+        } catch (RuntimeException ex) {
+            rejectedAudit("REFERRAL_REWARD_PARAM_UPDATE_REJECTED", paramKey,
+                    request == null ? null : request.operator(), idempotencyKey,
+                    request == null ? null : request.reason(), ex);
+            throw ex;
         }
-        String reason = requireReason(request == null ? null : request.reason());
-        String value = normalizeParam(paramKey, request.value());
-        requireRewardMutex();
-        return idempotency.execute("REFERRAL_REWARD_PARAM", idempotencyKey,
-                hash(paramKey + ":" + value + ":" + reason), Map.class, () -> {
-                    String before = rawValue(paramKey);
-                    if (amplifies(paramKey, before, value)) requireHealthyCoverage();
-                    if (config.activeValue(EFFECTIVE_AT_KEY).isEmpty()) {
-                        config.upsertAdminValue(EFFECTIVE_AT_KEY, Instant.now().toString(), "DATETIME", "GROWTH_REFERRAL",
-                                "H8 first effective time; historical referrals are never retroactively paid");
-                    }
-                    config.upsertAdminValue(STORAGE_KEYS.get(paramKey), value,
-                            "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
-                            "H8 邀请奖励真实发奖参数；" + reason);
-                    String operator = actor(request.operator());
-                    audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey,
-                            Map.of("before", before, "after", value, "reason", reason,
-                                    "coverage", coverageDetail()));
-                    outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
-                            Map.of("paramKey", paramKey, "before", before, "after", value,
-                                    "operator", operator, "reason", reason, "idempotencyKey", idempotencyKey));
-                    return Map.of("key", paramKey, "value", value, "status", "UPDATED");
-                });
     }
 
     @Transactional(isolation = Isolation.SERIALIZABLE)
     public Map<String, Object> runSettlements(String idempotencyKey, ReferralSettlementRunRequest request) {
-        validateIdempotency(idempotencyKey);
-        String reason = requireReason(request == null ? null : request.reason());
-        int limit = Math.min(100, Math.max(1, request.limit() == null ? 20 : request.limit()));
-        // The database mutex survives until commit, serializes all H8 batches across
-        // instances, and also freezes the reward configuration for the whole batch.
-        requireRewardMutex();
-        return idempotency.execute("REFERRAL_REWARD_SETTLEMENT", idempotencyKey,
-                hash(limit + ":" + reason), Map.class, () -> settle(limit, reason, actor(request.operator()), idempotencyKey));
+        try {
+            validateIdempotency(idempotencyKey);
+            String reason = requireReason(request == null ? null : request.reason());
+            int limit = Math.min(100, Math.max(1, request.limit() == null ? 20 : request.limit()));
+            // The database mutex survives until commit, serializes all H8 batches across
+            // instances, and also freezes the reward configuration for the whole batch.
+            requireRewardMutex();
+            return idempotency.execute("REFERRAL_REWARD_SETTLEMENT", idempotencyKey,
+                    hash(limit + ":" + reason), Map.class,
+                    () -> settle(limit, reason, actor(request.operator()), idempotencyKey));
+        } catch (RuntimeException ex) {
+            rejectedAudit("REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED", "batch",
+                    request == null ? null : request.operator(), idempotencyKey,
+                    request == null ? null : request.reason(), ex);
+            throw ex;
+        }
     }
 
     private Map<String, Object> settle(int limit, String reason, String operator, String key) {
@@ -325,6 +357,48 @@ public class OpsReferralRewardService {
             throw new BizException(OpsErrorCode.REASON_REQUIRED.httpStatus(), "OPERATION_REASON_TOO_SHORT");
         }
         return reason.trim();
+    }
+
+    private long requireExpectedVersion(Long expectedVersion) {
+        if (expectedVersion == null || expectedVersion < 1) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "H8_EXPECTED_VERSION_REQUIRED");
+        }
+        return expectedVersion;
+    }
+
+    private long version(String raw) {
+        try {
+            long parsed = Long.parseLong(raw == null ? "" : raw.trim());
+            if (parsed < 1 || parsed == Long.MAX_VALUE) throw new NumberFormatException();
+            return parsed;
+        } catch (RuntimeException ex) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "H8_CONFIG_VERSION_INVALID");
+        }
+    }
+
+    private void rejectedAudit(
+            String action,
+            String resourceId,
+            String operator,
+            String idempotencyKey,
+            String reason,
+            RuntimeException error) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("reason", StringUtils.hasText(reason) ? reason.trim() : "");
+        detail.put("idempotencyKey", StringUtils.hasText(idempotencyKey) ? idempotencyKey.trim() : "");
+        detail.put("error", StringUtils.hasText(error.getMessage())
+                ? error.getMessage()
+                : error.getClass().getSimpleName());
+        audit.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action(action)
+                .resourceType("REFERRAL_REWARD")
+                .resourceId(StringUtils.hasText(resourceId) ? resourceId.trim() : "unknown")
+                .actorUsername(actor(operator))
+                .result("REJECTED")
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
     }
 
     private void validateIdempotency(String key) {

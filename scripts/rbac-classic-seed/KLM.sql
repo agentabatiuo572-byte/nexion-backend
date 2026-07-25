@@ -48,6 +48,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   -- K6 Janus C2 控制台（2 点）
   ('risk_k6_read',  'Janus C2控制台-读(规则编排/命中日志/设备指纹簇)',                'API', '/risk/janus-c2', 'READ',  0, 1, 0),
   ('risk_k6_write', 'Janus C2-写(策略下发/规则热更新·高敏·amplifies·影响实时拦截)', 'API', '/risk/janus-c2', 'HIGH', 1, 1, 0),
+  ('risk_k6_target_manage', 'Janus批准目标版本管理(高敏·仅允许HTTPS目标)',          'API', '/risk/janus-c2', 'HIGH', 1, 1, 0),
 
   -- ===== L 域 · 数据与分析 BI（slug=bi）6 页 16 点 =====
 
@@ -92,6 +93,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   -- M3 即时会话台（2 点）
   ('service_m3_read',              '即时会话台-读(收件箱/客户档案)',                      'API', '/service/sessions',       'READ',  0, 1, 0),
   ('service_m3_write',             '即时会话台-常规写(回复/转交/接收/退回/推送/归档/备注/标签/主动发起/转工单)', 'API', '/service/sessions', 'WRITE', 0, 1, 0),
+  ('service_m3_timeout_manage',    '即时会话闲置提醒与自动结束策略',                      'API', '/service/sessions',       'HIGH',  1, 1, 0),
 
   -- M4 知识库与 SLA（2 点）
   ('service_m4_read',              '知识库与SLA-读(FAQ内容池/SLA矩阵)',                  'API', '/service/kb-sla',         'READ',  0, 1, 0),

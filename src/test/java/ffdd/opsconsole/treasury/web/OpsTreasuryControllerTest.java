@@ -91,7 +91,7 @@ class OpsTreasuryControllerTest {
                 1L, "调整未来三十天预测配置", "finance-lead");
         when(treasuryService.reserve()).thenReturn(ApiResult.ok(Map.of("reserveTotalUsdt", BigDecimal.TEN)));
         when(treasuryService.coverage()).thenReturn(ApiResult.ok(Map.of("coverageRatio", new BigDecimal("120"))));
-        when(treasuryService.liabilities(true)).thenReturn(ApiResult.ok(Map.of("hardLiabilityCategoryCount", 8)));
+        when(treasuryService.liabilities(true)).thenReturn(ApiResult.ok(Map.of("hardLiabilityCategoryCount", 9)));
         when(treasuryService.maturityForecast("30d")).thenReturn(ApiResult.ok(Map.of("window", "30d")));
         when(treasuryService.netExposure("90d")).thenReturn(ApiResult.ok(Map.of("window", "90d")));
         when(treasuryService.forecastConfig()).thenReturn(ApiResult.ok(Map.of("forecastWindow", "30d")));
@@ -100,7 +100,7 @@ class OpsTreasuryControllerTest {
 
         assertThat(controller.reserve().getData()).containsEntry("reserveTotalUsdt", BigDecimal.TEN);
         assertThat(controller.coverage().getData()).containsEntry("coverageRatio", new BigDecimal("120"));
-        assertThat(controller.liabilities(true).getData()).containsEntry("hardLiabilityCategoryCount", 8);
+        assertThat(controller.liabilities(true).getData()).containsEntry("hardLiabilityCategoryCount", 9);
         assertThat(controller.maturityForecast("30d").getData()).containsEntry("window", "30d");
         assertThat(controller.netExposure("90d").getData()).containsEntry("window", "90d");
         assertThat(controller.forecastConfig().getData()).containsEntry("forecastWindow", "30d");

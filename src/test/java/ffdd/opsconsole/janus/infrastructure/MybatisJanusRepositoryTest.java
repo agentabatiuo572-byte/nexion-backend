@@ -9,6 +9,8 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.janus.application.OpsJanusService;
+import ffdd.opsconsole.janus.application.JanusRemoteTargetNetworkGuard;
+import ffdd.opsconsole.janus.application.JanusRemoteTargetProperties;
 import ffdd.opsconsole.janus.domain.JanusDeviceView;
 import ffdd.opsconsole.janus.domain.JanusRuleEvaluator;
 import ffdd.opsconsole.janus.mapper.JanusMapper;
@@ -23,6 +25,26 @@ import org.junit.jupiter.api.Test;
 class MybatisJanusRepositoryTest {
     private final JanusMapper mapper = mock(JanusMapper.class);
     private final MybatisJanusRepository repository = new MybatisJanusRepository(mapper, new ObjectMapper());
+
+    @Test
+    void repairsPartiallyAppliedRemoteTargetSchemaWithoutReaddingExistingColumns() {
+        when(mapper.countDeviceUserIdColumn()).thenReturn(1);
+        when(mapper.countDeviceOwnerIndex()).thenReturn(1);
+        when(mapper.countDeviceRemoteTargetVersionColumn()).thenReturn(1);
+        when(mapper.countCommandExpiresAtColumn()).thenReturn(1);
+        when(mapper.countCommandRemoteTargetKeyColumn()).thenReturn(1);
+        when(mapper.countCommandRemoteTargetVersionColumn()).thenReturn(1);
+
+        repository.ensureSchema();
+
+        verify(mapper, never()).addDeviceRemoteTargetVersionColumn();
+        verify(mapper).addDeviceRemoteTargetCatalogVersionColumn();
+        verify(mapper).addDeviceRemoteTargetIndex();
+        verify(mapper, never()).addCommandRemoteTargetKeyColumn();
+        verify(mapper, never()).addCommandRemoteTargetVersionColumn();
+        verify(mapper).addCommandRemoteTargetCatalogVersionColumn();
+        verify(mapper).addCommandRemoteTargetIndex();
+    }
 
     @Test
     void hidesStrategyCommandPayloadFromManagementManualOverrideProjection() {
@@ -68,8 +90,10 @@ class MybatisJanusRepositoryTest {
         when(mapper.strategies()).thenReturn(List.of());
         AuditLogService audit = mock(AuditLogService.class);
         when(audit.list(org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
-        OpsJanusService service = new OpsJanusService(repository, new JanusRuleEvaluator(), new ObjectMapper(),
-                audit, mock(EventOutboxService.class));
+        OpsJanusService service = new OpsJanusService(repository,
+                mock(ffdd.opsconsole.janus.domain.JanusRemoteTargetRepository.class),
+                new JanusRemoteTargetProperties(), mock(JanusRemoteTargetNetworkGuard.class),
+                new JanusRuleEvaluator(), new ObjectMapper(), audit, mock(EventOutboxService.class));
 
         Map<String, Object> summary = castMap(service.dashboard().getData().get("summary"));
 

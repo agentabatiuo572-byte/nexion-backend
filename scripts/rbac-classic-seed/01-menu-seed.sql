@@ -59,7 +59,7 @@ JOIN (SELECT 'C1' code,'检索 & 画像' name,'/users/search' path,1 sort UNION 
       SELECT 'C6','注册/登录风控','/users/reg-risk',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
--- D 域 (5)
+-- D 域 (6)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'D' d) x ON p.menu_code='D'
@@ -67,7 +67,8 @@ JOIN (SELECT 'D1' code,'充值对账中心' name,'/finance/recon' path,1 sort UN
       SELECT 'D2','提现审核队列','/finance/withdrawals',2 UNION ALL
       SELECT 'D3','资金池水位仪表盘','/finance/pool',3 UNION ALL
       SELECT 'D4','账本/账单审计','/finance/ledger',4 UNION ALL
-      SELECT 'D5','提现参数配置','/finance/params',5) v
+      SELECT 'D5','提现参数配置','/finance/params',5 UNION ALL
+      SELECT 'D6','汇率牌价','/finance/fx-rate',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- E 域 (6)

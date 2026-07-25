@@ -13,6 +13,8 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.janus.domain.JanusDeviceView;
 import ffdd.opsconsole.janus.domain.JanusRepository;
+import ffdd.opsconsole.janus.domain.JanusRemoteTargetRepository;
+import ffdd.opsconsole.janus.domain.JanusRemoteTargetView;
 import ffdd.opsconsole.janus.domain.JanusRuleEvaluator;
 import ffdd.opsconsole.janus.domain.JanusStrategyView;
 import ffdd.opsconsole.janus.domain.JanusStrategyVersionView;
@@ -43,21 +45,38 @@ import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsJanusServiceTest {
     private final JanusRepository repository = mock(JanusRepository.class);
+    private final JanusRemoteTargetRepository remoteTargetRepository = mock(JanusRemoteTargetRepository.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final JanusRemoteTargetProperties remoteTargetProperties = new JanusRemoteTargetProperties();
+    private final JanusRemoteTargetNetworkGuard remoteTargetNetworkGuard =
+            mock(JanusRemoteTargetNetworkGuard.class);
     private final OpsJanusService service = new OpsJanusService(
-            repository, new JanusRuleEvaluator(), objectMapper, audit, outbox);
+            repository, remoteTargetRepository, remoteTargetProperties, remoteTargetNetworkGuard,
+            new JanusRuleEvaluator(), objectMapper, audit, outbox);
 
     @BeforeEach
     void commandDoesNotExist() {
         when(repository.findCommand(any())).thenReturn(Optional.empty());
         when(repository.reserveCommand(any(), any(), any(), any(), any())).thenReturn(true);
         when(repository.reserveDailyEvaluation(any(), any(), anyInt())).thenReturn(true);
+        remoteTargetProperties.setAllowedOrigins(List.of("https://approved.example"));
+        when(remoteTargetNetworkGuard.allows(any())).thenReturn(true);
+        when(remoteTargetRepository.find(any(), anyInt())).thenAnswer(invocation -> Optional.of(
+                target(String.valueOf((Object) invocation.getArgument(0)),
+                        ((Number) invocation.getArgument(1)).intValue(), 9)));
         when(repository.insertEvaluation(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any()))
                 .thenReturn(true);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 "superadmin", "n/a", List.of(new SimpleGrantedAuthority("risk_k6_write"))));
+    }
+
+    private JanusRemoteTargetView target(String key, int version, long catalogVersion) {
+        return new JanusRemoteTargetView(catalogVersion, key, version, "ACTIVE", key,
+                "https://approved.example/path", "https://approved.example", "ADMIN", "risk-owner",
+                1, 2, "superadmin", "批准目标用于策略验收", "影响已确认且具备回滚方案",
+                0, 0, 0, 0);
     }
 
     @AfterEach
@@ -73,7 +92,8 @@ class OpsJanusServiceTest {
         ApiResult<PageResult<JanusDeviceView>> result = service.devices(query);
 
         assertThat(result.getData().getRecords()).isEmpty();
-        verify(repository, never()).updateDeviceStatus(any(), anyLong(), any(), any(), any(), any(), any(), any());
+        verify(repository, never()).updateDeviceStatus(
+                any(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -122,7 +142,8 @@ class OpsJanusServiceTest {
         String reasonCategory = "复核环境信号";
         String reason = "\\\"".repeat(250);
         when(repository.findDevice("SID-1")).thenReturn(Optional.of(before), Optional.of(after));
-        when(repository.updateDeviceStatus(eq("SID-1"), eq(7L), eq("HIT"), any(), any(), any(), any(), eq("PUBLISHED")))
+        when(repository.updateDeviceStatus(eq("SID-1"), eq(7L), eq("HIT"),
+                any(), any(), any(), any(), any(), any(), eq("PUBLISHED")))
                 .thenReturn(true);
 
         ApiResult<JanusDeviceView> result = service.updateStatus("SID-1", idempotencyKey,
@@ -153,7 +174,8 @@ class OpsJanusServiceTest {
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("ROLE_FORBIDDEN");
-        verify(repository, never()).updateDeviceStatus(any(), anyLong(), any(), any(), any(), any(), any(), any());
+        verify(repository, never()).updateDeviceStatus(
+                any(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -164,8 +186,8 @@ class OpsJanusServiceTest {
         JanusDeviceView before = device("OBSERVING", 3);
         JanusDeviceView after = device("OBSERVING", 4);
         when(repository.findDevice("SID-1")).thenReturn(Optional.of(before), Optional.of(after));
-        when(repository.updateDeviceStatus(eq("SID-1"), eq(3L), eq("BLOCKED"), any(), any(), any(), any(),
-                eq("PUBLISHED"))).thenReturn(true);
+        when(repository.updateDeviceStatus(eq("SID-1"), eq(3L), eq("BLOCKED"),
+                any(), any(), any(), any(), any(), any(), eq("PUBLISHED"))).thenReturn(true);
 
         ApiResult<JanusDeviceView> result = service.updateStatus("SID-1", "idem-senior",
                 new JanusStatusChangeRequest("BLOCKED", "高风险设备排除", "证据完整确认需要阻断", "immediate",
@@ -492,7 +514,8 @@ class OpsJanusServiceTest {
                 eq("BENIGN"), eq("OBSERVING"), eq("OUT_OF_ORDER_REPORT"), anyInt(), eq("janus-server-v1"));
         verify(repository, never()).reserveDailyEvaluation(any(), any(), anyInt());
         verify(repository, never()).upsertDeviceReport(anyLong(), any(), any());
-        verify(repository, never()).publishStrategyCommand(any(), anyLong(), any(), any(), any());
+        verify(repository, never()).publishStrategyCommand(
+                any(), anyLong(), any(), any(), any(), any(), any());
         verify(outbox, never()).publish(any(), any(), any(), any());
     }
 
@@ -533,6 +556,33 @@ class OpsJanusServiceTest {
     }
 
     @Test
+    void disabledManagedRemoteTargetFailsClosedBeforeStrategyReservation() throws Exception {
+        when(remoteTargetRepository.find("finance-main", 1)).thenReturn(Optional.of(
+                new JanusRemoteTargetView(9, "finance-main", 1, "DISABLED", "财务主站",
+                        "https://approved.example/path", "https://approved.example", "ADMIN",
+                        "risk-owner", 1, 2, "superadmin", "停用原因已确认", "影响已确认且具备回滚方案",
+                        1, 0, 0, 0)));
+        JanusStrategyUpsertRequest request = new JanusStrategyUpsertRequest(
+                "远程接管策略", "仅允许当前批准目标", 100, "risk-team", objectMapper.createObjectNode(),
+                objectMapper.readTree("""
+                        {"mode":"ALL","rules":[{"field":"maturityScore","op":">=","value":60,"label":"成熟度达标"}]}
+                        """),
+                objectMapper.readTree("""
+                        {"type":"REVERSAL_IMMEDIATE","remoteUrlKey":"finance-main",
+                         "remoteTargetVersion":1,"remoteTargetCatalogVersion":9}
+                        """),
+                objectMapper.createObjectNode(), objectMapper.createObjectNode(), objectMapper.createObjectNode(),
+                null, 0L, "批准目标停用时必须失败关闭");
+
+        ApiResult<JanusStrategyView> result = service.createStrategy("disabled-target-strategy", request);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("REMOTE_TARGET_INVALID");
+        verify(repository, never()).reserveCommand(eq("disabled-target-strategy"), any(), any(), any(), any());
+        verify(repository, never()).createStrategy(any(), any());
+    }
+
+    @Test
     void expiredOverrideIsReleasedByServerClockWithoutReapplyingRetriedTelemetry() throws Exception {
         long now = System.currentTimeMillis();
         JanusDeviceReportRequest report = new JanusDeviceReportRequest("R-EXPIRED", "DEVICE-1", now,
@@ -570,7 +620,8 @@ class OpsJanusServiceTest {
         verify(repository, never()).strategies();
         verify(repository, never()).reserveDailyEvaluation(any(), any(), anyInt());
         verify(repository, never()).upsertDeviceReport(anyLong(), any(), any());
-        verify(repository, never()).publishStrategyCommand(any(), anyLong(), any(), any(), any());
+        verify(repository, never()).publishStrategyCommand(
+                any(), anyLong(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -584,12 +635,14 @@ class OpsJanusServiceTest {
         JanusStrategyView active = new JanusStrategyView("K6-ACTIVE", "真实在线策略", "服务端判定", "active", 4,
                 100, "owner", objectMapper.createObjectNode(),
                 objectMapper.readTree("{\"mode\":\"ALL\",\"rules\":[{\"field\":\"maturityScore\",\"op\":\">=\",\"value\":20}]}"),
-                objectMapper.readTree("{\"type\":\"REVERSAL_IMMEDIATE\",\"remoteUrlKey\":\"promo\"}"),
+                objectMapper.readTree("{\"type\":\"REVERSAL_IMMEDIATE\",\"remoteUrlKey\":\"promo\","
+                        + "\"remoteTargetVersion\":1,\"remoteTargetCatalogVersion\":9}"),
                 objectMapper.createObjectNode(), objectMapper.createObjectNode(), objectMapper.createObjectNode(),
                 null, List.of(), 1L, 2L, 3L);
         when(repository.strategies()).thenReturn(List.of(active));
         when(repository.findDevice(any())).thenReturn(Optional.of(device("HIT", 1)));
-        when(repository.publishStrategyCommand(any(), anyLong(), any(), any(), any())).thenReturn(true);
+        when(repository.publishStrategyCommand(
+                any(), anyLong(), any(), any(), any(), any(), any())).thenReturn(true);
 
         ApiResult<JanusDeviceView> result = service.reportDevice(42L, report);
 
@@ -601,8 +654,44 @@ class OpsJanusServiceTest {
         assertThat(saved.getValue().hitStrategyVersion()).isEqualTo(4);
         assertThat(saved.getValue().maturityScore()).isEqualTo(20);
         assertThat(saved.getValue().environmentRiskScore()).isZero();
-        verify(repository).publishStrategyCommand(any(), eq(1L), eq("HIT"), eq("promo"), any());
+        verify(repository).publishStrategyCommand(
+                any(), eq(1L), eq("HIT"), eq("promo"), eq(1), eq(9L), any());
         verify(outbox).publish(any(), any(), eq("JANUS_STRATEGY_COMMAND_PUBLISHED"), any());
+    }
+
+    @Test
+    void legacyReversalWithoutExactRemoteTargetFailsClosedBeforeQuotaOrCommand() throws Exception {
+        long now = System.currentTimeMillis();
+        JanusDeviceReportRequest report = new JanusDeviceReportRequest(
+                "R-LEGACY-REVERSAL", "DEVICE-1", now, now - 1_000, now - 10_000,
+                null, "official", null, null, false, "ua", "Android", "Pixel",
+                "Android 15", "Chrome", 0, 0, 0, 0, maturity(10), environment(),
+                null, null, null, null, objectMapper.createArrayNode());
+        JanusStrategyView corrupted = new JanusStrategyView(
+                "K6-LEGACY", "遗留反转策略", "缺少批准目标三元组", "active", 1, 100, "owner",
+                objectMapper.createObjectNode(),
+                objectMapper.readTree(
+                        "{\"mode\":\"ALL\",\"rules\":[{\"field\":\"maturityScore\",\"op\":\">=\",\"value\":20}]}"),
+                objectMapper.readTree("{\"type\":\"REVERSAL_IMMEDIATE\"}"),
+                objectMapper.readTree("{\"maxDailyHits\":1}"),
+                objectMapper.createObjectNode(), objectMapper.createObjectNode(), null,
+                List.of(), 1L, 2L, 3L);
+        when(repository.strategies()).thenReturn(List.of(corrupted));
+        when(repository.findDevice(any())).thenReturn(Optional.of(device("OBSERVING", 1)));
+
+        ApiResult<JanusDeviceView> result = service.reportDevice(42L, report);
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<JanusDeviceReportRequest> saved =
+                ArgumentCaptor.forClass(JanusDeviceReportRequest.class);
+        verify(repository).upsertDeviceReport(eq(42L), any(), saved.capture());
+        assertThat(saved.getValue().hitStrategy()).isNull();
+        assertThat(saved.getValue().reportedStatus()).isEqualTo("OBSERVING");
+        verify(remoteTargetRepository, never()).find(any(), anyInt());
+        verify(repository, never()).reserveDailyEvaluation(any(), any(), anyInt());
+        verify(repository, never()).publishStrategyCommand(
+                any(), anyLong(), any(), any(), any(), any(), any());
+        verify(outbox, never()).publish(any(), any(), eq("JANUS_STRATEGY_COMMAND_PUBLISHED"), any());
     }
 
     @Test
@@ -614,7 +703,8 @@ class OpsJanusServiceTest {
                 null, null, null, null, objectMapper.createArrayNode());
         when(repository.strategies()).thenReturn(List.of(cappedActiveStrategy()));
         when(repository.findDevice(any())).thenReturn(Optional.of(device("OBSERVING", 1)));
-        when(repository.publishStrategyCommand(any(), anyLong(), any(), any(), any())).thenReturn(false);
+        when(repository.publishStrategyCommand(
+                any(), anyLong(), any(), any(), any(), any(), any())).thenReturn(false);
 
         ApiResult<JanusDeviceView> result = service.reportDevice(42L, report);
 
@@ -938,7 +1028,8 @@ class OpsJanusServiceTest {
         return new JanusStrategyView("K6-CAPPED", "限额策略", "并发配额验证", "active", 1, 100, "owner",
                 objectMapper.createObjectNode(),
                 objectMapper.readTree("{\"mode\":\"ALL\",\"rules\":[{\"field\":\"maturityScore\",\"op\":\">=\",\"value\":20}]}"),
-                objectMapper.readTree("{\"type\":\"REVERSAL_IMMEDIATE\",\"remoteUrlKey\":\"promo\"}"),
+                objectMapper.readTree("{\"type\":\"REVERSAL_IMMEDIATE\",\"remoteUrlKey\":\"promo\","
+                        + "\"remoteTargetVersion\":1,\"remoteTargetCatalogVersion\":9}"),
                 objectMapper.readTree("{\"maxDailyHits\":1}"), objectMapper.createObjectNode(),
                 objectMapper.createObjectNode(), null, List.of(), 1L, 2L, 3L);
     }

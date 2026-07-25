@@ -66,6 +66,17 @@ SELECT DISTINCT rm.role_id,h8.id,0
  WHERE rm.is_deleted=0
 ON DUPLICATE KEY UPDATE is_deleted=0;
 
+-- H8 parameter writes use one monotonic server-side version for optimistic
+-- concurrency. Preserve an existing live version when this migration is rerun.
+INSERT INTO nx_config_item
+  (config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
+VALUES
+  ('K.rewards.referral.version','1','NUMBER','GROWTH_REFERRAL','ADMIN',
+   'H8 referral reward configuration version',1,0)
+ON DUPLICATE KEY UPDATE
+  value_type='NUMBER',config_group='GROWTH_REFERRAL',visibility='ADMIN',
+  remark=VALUES(remark),status=1,is_deleted=0;
+
 -- H2 authoritative 18-field TrialConfig. Retire historical display aliases so
 -- the admin read model cannot expose two names for the same business value.
 UPDATE nx_growth_trial_policy

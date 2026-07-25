@@ -68,6 +68,25 @@ class TreasuryLedgerMapperSqlContractTest {
     }
 
     @Test
+    void vietQrReserveAndCategoryNineUseTheSameReceiptFactsWithDifferentLifecycleCuts() throws Exception {
+        String liabilitySql = String.join("\n", TreasuryLedgerMapper.class
+                .getMethod("pendingUnverifiedDepositUsdt").getAnnotation(Select.class).value());
+        String reserveSql = String.join("\n", TreasuryLedgerMapper.class
+                .getMethod("vietQrHeldReserveUsdt").getAnnotation(Select.class).value());
+
+        assertThat(liabilitySql)
+                .contains("FROM nx_vietqr_reconciliation")
+                .contains("status = 'OPEN'")
+                .contains("'ORPHAN', 'MISMATCH', 'LATE'");
+        assertThat(reserveSql)
+                .contains("FROM nx_vietqr_reconciliation")
+                .contains("'OPEN', 'CREDITED', 'RETURN_PENDING'")
+                .doesNotContain("'RETURNED'");
+        assertThat(liabilitySql).contains("received_vnd / NULLIF(locked_fx_rate_vnd_per_usdt, 0)");
+        assertThat(reserveSql).contains("received_vnd / NULLIF(locked_fx_rate_vnd_per_usdt, 0)");
+    }
+
+    @Test
     void netReserveFlowComesFromCanonicalTreasuryReserveLedger() throws Exception {
         Method method = TreasuryLedgerMapper.class.getMethod(
                 "sumNetUsdtFlowBetween", LocalDateTime.class, LocalDateTime.class);
