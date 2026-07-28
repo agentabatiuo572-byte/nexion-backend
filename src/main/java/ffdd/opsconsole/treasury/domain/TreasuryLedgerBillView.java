@@ -24,11 +24,11 @@ public record TreasuryLedgerBillView(
     @JsonProperty("billType")
     public String billType() {
         String raw = bizType == null ? "" : bizType.trim().toUpperCase(Locale.ROOT);
-        if (raw.contains("BONUS") || raw.contains("TRIAL")) return "bonus";
+        if (raw.contains("REFUND") || raw.contains("CHARGEBACK") || raw.contains("REVERSAL")) return "refund";
+        if (raw.contains("BONUS") || raw.contains("TRIAL") || raw.contains("REWARD")) return "bonus";
         if (raw.contains("TOPUP") || raw.contains("DEPOSIT") || raw.contains("RECHARGE")) return "topup";
         if (raw.contains("WITHDRAW") || raw.contains("PAYOUT")) return "withdraw";
         if (raw.contains("COMMISSION")) return "commission";
-        if (raw.contains("REFUND") || raw.contains("CHARGEBACK") || raw.contains("REVERSAL")) return "refund";
         if (raw.contains("SWAP") || raw.contains("EXCHANGE") || raw.contains("CONVERT")) return "swap";
         return "earning";
     }

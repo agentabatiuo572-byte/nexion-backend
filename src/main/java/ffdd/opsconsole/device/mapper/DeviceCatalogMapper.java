@@ -128,7 +128,17 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              AS state,
             (SELECT ud.dc_location FROM nx_user_device ud
               WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0 ORDER BY ud.id DESC LIMIT 1) AS dcLocation,
-            CONCAT(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),'m') AS ageText,
+            CASE
+              WHEN 60 > TIMESTAMPDIFF(MINUTE,o.created_at,NOW())
+                THEN CONCAT(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),'分钟')
+              WHEN 1440 > TIMESTAMPDIFF(MINUTE,o.created_at,NOW())
+                THEN CONCAT(
+                  FLOOR(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()) / 60),'小时',
+                  MOD(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),60),'分钟')
+              ELSE CONCAT(
+                FLOOR(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()) / 1440),'天',
+                FLOOR(MOD(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),1440) / 60),'小时')
+            END AS ageText,
             o.created_at AS orderedAt,
             o.updated_at AS updatedAt
             """;

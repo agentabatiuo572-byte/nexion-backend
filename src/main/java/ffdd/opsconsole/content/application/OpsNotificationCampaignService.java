@@ -369,6 +369,10 @@ public class OpsNotificationCampaignService {
         if (normalizedCap == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAP_INVALID");
         }
+        String expectedCap = request == null ? "" : trimToEmpty(request.expectedCap());
+        if (!StringUtils.hasText(expectedCap) || expectedCap.length() > 160) {
+            return ApiResult.fail(409, "NOTIFICATION_CAP_EXPECTED_REQUIRED");
+        }
         if (!validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
@@ -385,12 +389,23 @@ public class OpsNotificationCampaignService {
                     if (current.locked()) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOTIFICATION_CAP_LOCKED");
                     }
-                    if (normalizedCap.equals(current.cap())) {
+                    if (!expectedCap.equals(current.cap())) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAP_STALE_VERSION");
+                    }
+                    if (normalizedCap.equals(normalizeCap(current.cap()))) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
                     }
                     String authenticatedOperator = operator(request.operator());
-                    campaignRepository.updateCapRule(normalizedTier, normalizedCap, authenticatedOperator, now());
-                    campaignRepository.applyRetention(now());
+                    LocalDateTime mutationTime = now();
+                    if (!campaignRepository.updateCapRuleIfCurrent(
+                            normalizedTier,
+                            normalizedCap,
+                            current.cap(),
+                            authenticatedOperator,
+                            mutationTime)) {
+                        return ApiResult.fail(409, "NOTIFICATION_CAP_STALE_VERSION");
+                    }
+                    campaignRepository.applyRetention(mutationTime);
                     NotificationCapRuleView updated = campaignRepository.findCapRule(normalizedTier).orElseThrow();
                     auditRequired("I3_NOTIFICATION_CAP_CHANGED", normalizedTier, authenticatedOperator, idempotencyKey, request.reason(), Map.of(
                             "from", current.cap(),
@@ -449,6 +464,12 @@ public class OpsNotificationCampaignService {
         }
         if (request.expectedRevision() == null) {
             return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_REVISION_REQUIRED");
+        }
+        if (request.name().trim().length() > 160 || request.titleZh().trim().length() > 160
+                || request.titleVi().trim().length() > 160 || trimToEmpty(request.titleEn()).length() > 160
+                || request.bodyZh().trim().length() > 4000 || request.bodyVi().trim().length() > 4000
+                || trimToEmpty(request.bodyEn()).length() > 4000) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
         }
         if (!TIERS.contains(normalizeTier(request.tier()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_TIER_UNSUPPORTED");

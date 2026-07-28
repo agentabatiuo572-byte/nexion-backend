@@ -15,6 +15,7 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
@@ -110,6 +111,7 @@ public class OpsGrowthService implements AuditReplayable {
             "extensionDays",
             "discountRate",
             "discountCapUSD",
+            "trialOffsetCapUSD",
             "autoChargeAtEnd",
             "highQualityThresholdUSD",
             "chargeFailRate",
@@ -123,7 +125,7 @@ public class OpsGrowthService implements AuditReplayable {
             "autoPushDelayMs",
             "autoPushCooldownHours",
             "autoPushMaxPerSession");
-    private static final Set<String> TRIAL_TERMINAL_STATES = Set.of("cancelled", "redeemed");
+    private static final Set<String> TRIAL_TERMINAL_STATES = Set.of("cancelled", "redeemed", "failed");
     private static final Set<String> EVENT_STATES = Set.of("upcoming", "ongoing", "ended");
     private static final Set<String> EVENT_KINDS = Set.of(
             "discount", "referral", "wheel", "regional", "boost", "seasonal", "holding", "onboarding");
@@ -141,6 +143,7 @@ public class OpsGrowthService implements AuditReplayable {
     private final Optional<GrowthQuestEventMapper> questEventMapper;
     private final Optional<GrowthVoucherMapper> voucherMapper;
     private final AuditObjectLockMapper lockMapper;
+    private final AppTrialLifecycleService appTrialLifecycleService;
 
     private final Optional<OpsReferralRewardService> referralRewardService;
 
@@ -496,6 +499,28 @@ public class OpsGrowthService implements AuditReplayable {
         if (TRIAL_TERMINAL_STATES.contains(state)) {
             return invalidState("TRIAL_SESSION_ALREADY_TERMINAL");
         }
+        Long userId = locked.get("userId") instanceof Number number ? number.longValue() : null;
+        if (userId == null || userId <= 0) {
+            return validation("TRIAL_SESSION_USER_INVALID");
+        }
+        if (appTrialLifecycleService != null) {
+            ApiResult<Map<String, Object>> lifecycle =
+                    appTrialLifecycleService.cancel(userId, "explicit", idempotencyKey);
+            if (lifecycle.getCode() != 0) {
+                return lifecycle;
+            }
+            audit("H2_TRIAL_SESSION_CANCELLED", "TRIAL_SESSION", sid, request.operator(), Map.of(
+                    "sessionId", sid,
+                    "userId", userId,
+                    "oldState", state,
+                    "newState", "cancelled",
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim(),
+                    "lifecycle", lifecycle.getData()));
+            Map<String, Object> response = trials().getData();
+            response.put("updated", Map.of("sessionId", sid, "state", "cancelled"));
+            return ApiResult.ok(response);
+        }
         if (questEventMapper.get().transitionTrialSessionStatus(sid, "CANCELLED") != 1) {
             return invalidState("TRIAL_SESSION_STATE_CONFLICT");
         }
@@ -541,6 +566,30 @@ public class OpsGrowthService implements AuditReplayable {
         Long userId = locked.get("userId") instanceof Number number ? number.longValue() : null;
         if (userId == null || userId <= 0) {
             return validation("TRIAL_SESSION_USER_INVALID");
+        }
+        if (appTrialLifecycleService != null) {
+            ApiResult<Map<String, Object>> lifecycle =
+                    appTrialLifecycleService.charge(userId, idempotencyKey);
+            if (lifecycle.getCode() != 0) {
+                return lifecycle;
+            }
+            Map<String, Object> lifecycleData = lifecycle.getData() == null ? Map.of() : lifecycle.getData();
+            if (Boolean.FALSE.equals(lifecycleData.get("ok"))) {
+                return ApiResult.fail(422,
+                        String.valueOf(lifecycleData.getOrDefault("reason", "TRIAL_CHARGE_FAILED")),
+                        lifecycleData);
+            }
+            audit("H2_TRIAL_SESSION_CHARGED", "TRIAL_SESSION", sid, request.operator(), Map.of(
+                    "sessionId", sid,
+                    "userId", userId,
+                    "oldState", state,
+                    "newState", "redeemed",
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim(),
+                    "lifecycle", lifecycleData));
+            Map<String, Object> response = trials().getData();
+            response.put("updated", Map.of("sessionId", sid, "state", "redeemed"));
+            return ApiResult.ok(response);
         }
         BigDecimal chargeAmount = parseDecimal(String.valueOf(locked.get("chargeAmount")), BigDecimal.ZERO);
         BigDecimal walletBefore = questEventMapper.get().lockWalletUsdt(userId);
@@ -605,12 +654,12 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("h3Stats", questStats());
         response.put("h4Stats", eventStats());
         response.put("dayOneWindow", dayOneWindow());
-        response.put("dayOneTriReward", rewardSummary(dayOneTaskRows()));
+        response.put("dayOneTriReward", questConfig("dayOne.triReward"));
         response.put("dayOneTasks", dayOneTasks());
         response.put("dayOneStates", dayOneStates());
         response.put("weeklyTier1", weeklyTier1());
         response.put("weeklyTier2", weeklyTier2());
-        response.put("weeklyChampionBonus", rewardSummary(weeklyTaskRows()));
+        response.put("weeklyChampionBonus", questConfig("weekly.champBonus"));
         response.put("weeklyMultipliers", weeklyMultipliers());
         response.put("monthlyMissions", monthlyMissions());
         response.put("taskMonitor", taskMonitor());
@@ -687,41 +736,80 @@ public class OpsGrowthService implements AuditReplayable {
             if (!EVENT_KINDS.contains(kind)) {
                 return validation("EVENT_KIND_INVALID");
             }
+            boolean wheelEvent = "wheel".equals(kind);
+            if (wheelEvent && questEventsList().stream()
+                    .anyMatch(row -> "wheel".equalsIgnoreCase(String.valueOf(row.get("kind"))))) {
+                return validation("EVENT_WHEEL_SINGLETON");
+            }
             String state = normalizeEventState(request.state());
-            String reward = normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 NEX", 128);
+            String reward = wheelEvent
+                    ? "Wheel pool award"
+                    : normalizePlainText(StringUtils.hasText(request.reward()) ? request.reward() : "0 NEX", 128);
+            String rewardType = wheelEvent ? "NEX" : eventRewardAsset(reward);
+            BigDecimal rewardAmount = wheelEvent ? BigDecimal.ZERO : rewardFlow(reward);
+            if (!wheelEvent && rewardAmount.signum() <= 0) {
+                return validation("EVENT_REWARD_INVALID");
+            }
             boolean featured = Boolean.TRUE.equals(request.featured());
             if (featured && !"ongoing".equals(state)) {
                 return validation("EVENT_FEATURED_REQUIRES_ONGOING");
             }
             if (featured && questEventsList().stream()
-                    .filter(row -> Boolean.TRUE.equals(row.get("featured")))
+                    .filter(row -> truthy(row.get("featured")))
                     .filter(row -> "ongoing".equals(row.get("state")))
                     .anyMatch(row -> !id.equals(row.get("id")))) {
                 return validation("EVENT_FEATURED_UNIQUE_VIOLATION");
             }
-            if (rewardFlow(reward).compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
+            if (rewardAmount.compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
                 return coverageRedline();
+            }
+            boolean trackable = !wheelEvent && Boolean.TRUE.equals(request.trackable());
+            int targetValue = trackable
+                    ? Optional.ofNullable(request.targetValue()).orElse(1)
+                    : 0;
+            if (targetValue < 0 || targetValue > 1_000_000_000) {
+                return validation("EVENT_TARGET_VALUE_INVALID");
+            }
+            String geo = StringUtils.hasText(request.geo()) ? normalizePlainText(request.geo(), 64) : "";
+            String href = StringUtils.hasText(request.href()) ? normalizePlainText(request.href(), 255) : "";
+            if (StringUtils.hasText(href) && !href.matches("^/pages/[A-Za-z0-9_./-]+$")) {
+                return validation("EVENT_HREF_INVALID");
+            }
+            LocalDateTime startsAt = request.startsAt();
+            LocalDateTime endsAt = request.endsAt();
+            if (startsAt != null && endsAt != null && !endsAt.isAfter(startsAt)) {
+                return validation("EVENT_TIME_WINDOW_INVALID");
             }
             int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, questEventRows().size() * 10L + 10L));
             questEventMapper.get().insertEvent(
                     id,
                     name,
                     normalizeEventCondition(request.condition()),
+                    geo,
+                    href,
+                    startsAt,
+                    endsAt,
                     kind,
-                    1,
-                    reward.toUpperCase(Locale.ROOT).contains("USDT") ? "USDT" : "NEX",
-                    rewardFlow(reward),
+                    targetValue,
+                    rewardType,
+                    rewardAmount,
                     reward,
                     featured ? "FEATURED" : null,
                     sortOrder,
                     eventStatusCode(state),
                     LocalDateTime.now());
-            audit("H4_EVENT_CREATED", "GROWTH_EVENT", id, request.operator(), Map.of(
+            audit("H4_EVENT_CREATED", "GROWTH_EVENT", id, request.operator(), row(
                     "eventId", id,
                     "name", name,
                     "state", state,
                     "reward", reward,
                     "featured", featured,
+                    "trackable", trackable,
+                    "targetValue", targetValue,
+                    "geo", geo,
+                    "href", href,
+                    "startsAt", startsAt == null ? "NONE" : startsAt,
+                    "endsAt", endsAt == null ? "NONE" : endsAt,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = questEventOverview().getData();
@@ -850,6 +938,10 @@ public class OpsGrowthService implements AuditReplayable {
             if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
+            List<Map<String, Object>> currentPool = growthRows(GrowthQuestEventMapper::wheelTiers);
+            if (!expectedTextMatches(request.expectedSignature(), wheelPoolSignature(currentPool))) {
+                return validation("WHEEL_CONFIG_STALE");
+            }
             String tierName = normalizePlainText(request.tierName(), 128);
             if (questEventMapper.get().countByTierName(tierName) > 0) {
                 return validation("WHEEL_TIER_ALREADY_EXISTS");
@@ -872,17 +964,31 @@ public class OpsGrowthService implements AuditReplayable {
             if (!WHEEL_REWARD_KINDS.contains(rewardKind)) {
                 return validation("WHEEL_TIER_KIND_INVALID");
             }
+            BigDecimal rewardAmount = request.rewardAmount() == null ? BigDecimal.ZERO : request.rewardAmount();
+            int dailyStock = Optional.ofNullable(request.dailyStock()).orElse(0);
+            String voucherId = StringUtils.hasText(request.voucherId())
+                    ? normalizePlainText(request.voucherId(), 80) : null;
+            ApiResult<Map<String, Object>> tierValueGuard = validateWheelTierValue(
+                    rewardKind, rewardAmount, voucherId, dailyStock, realOutflow);
+            if (tierValueGuard != null) {
+                return tierValueGuard;
+            }
             // 真实出金档位会放大资金流出,过 B1 备付金红线
             if (realOutflow == 1 && coverageBelowRedline()) {
                 return coverageRedline();
             }
             int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::wheelTiers).size() * 10L + 10L));
-            questEventMapper.get().insertWheelTier(tierName, rewardName, probability, realOutflow, rewardKind, sortOrder, 1, LocalDateTime.now());
-            audit("H4_WHEEL_TIER_CREATED", "WHEEL_CONFIG", tierName, request.operator(), Map.of(
+            questEventMapper.get().insertWheelTier(
+                    tierName, rewardName, probability, realOutflow, rewardKind,
+                    rewardAmount, voucherId, dailyStock, sortOrder, 1, LocalDateTime.now());
+            audit("H4_WHEEL_TIER_CREATED", "WHEEL_CONFIG", tierName, request.operator(), row(
                     "tierName", tierName,
                     "rewardName", rewardName,
                     "probabilityPct", probability,
                     "realOutflow", realOutflow,
+                    "rewardAmount", rewardAmount,
+                    "voucherId", voucherId == null ? "NONE" : voucherId,
+                    "dailyStock", dailyStock,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = questEventOverview().getData();
@@ -910,7 +1016,11 @@ public class OpsGrowthService implements AuditReplayable {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
             String tierName = normalizePlainText(existingTierName, 128);
-            Map<String, Object> before = growthRows(GrowthQuestEventMapper::wheelTiers).stream()
+            List<Map<String, Object>> currentPool = growthRows(GrowthQuestEventMapper::wheelTiers);
+            if (!expectedTextMatches(request.expectedSignature(), wheelPoolSignature(currentPool))) {
+                return validation("WHEEL_CONFIG_STALE");
+            }
+            Map<String, Object> before = currentPool.stream()
                     .filter(row -> tierName.equals(String.valueOf(row.get("tier"))))
                     .findFirst()
                     .orElse(null);
@@ -940,21 +1050,53 @@ public class OpsGrowthService implements AuditReplayable {
             if (!WHEEL_REWARD_KINDS.contains(rewardKind)) {
                 return validation("WHEEL_TIER_KIND_INVALID");
             }
+            BigDecimal rewardAmount = request.rewardAmount() == null
+                    ? parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO)
+                    : request.rewardAmount();
+            int dailyStock = request.dailyStock() == null
+                    ? intValue(before.get("dailyStock"), 0)
+                    : request.dailyStock();
+            String voucherId = request.voucherId() == null
+                    ? String.valueOf(before.getOrDefault("voucherId", ""))
+                    : request.voucherId().trim();
+            if (!StringUtils.hasText(voucherId)) {
+                voucherId = null;
+            }
+            ApiResult<Map<String, Object>> tierValueGuard = validateWheelTierValue(
+                    rewardKind, rewardAmount, voucherId, dailyStock, realOutflow);
+            if (tierValueGuard != null) {
+                return tierValueGuard;
+            }
+            if (rewardName.equals(String.valueOf(before.get("reward")))
+                    && probability.compareTo(previousProbability) == 0
+                    && realOutflow == (truthy(before.get("real")) ? 1 : 0)
+                    && rewardKind.equalsIgnoreCase(String.valueOf(before.get("kind")))
+                    && rewardAmount.compareTo(parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO)) == 0
+                    && dailyStock == intValue(before.get("dailyStock"), 0)
+                    && java.util.Objects.equals(
+                            voucherId == null ? "" : voucherId,
+                            String.valueOf(before.getOrDefault("voucherId", "")))) {
+                return validation("WHEEL_CONFIG_NO_CHANGE");
+            }
             boolean amplifiesRealOutflow = realOutflow == 1
                     && (!truthy(before.get("real")) || probability.compareTo(previousProbability) > 0);
             if (amplifiesRealOutflow && coverageBelowRedline()) {
                 return coverageRedline();
             }
             if (questEventMapper.get().updateWheelTier(
-                    tierName, rewardName, probability, realOutflow, rewardKind) != 1) {
+                    tierName, rewardName, probability, realOutflow, rewardKind,
+                    rewardAmount, voucherId, dailyStock) != 1) {
                 throw new IllegalStateException("WHEEL_TIER_UPDATE_FAILED");
             }
-            audit("H4_WHEEL_TIER_CHANGED", "WHEEL_CONFIG", tierName, request.operator(), Map.of(
+            audit("H4_WHEEL_TIER_CHANGED", "WHEEL_CONFIG", tierName, request.operator(), row(
                     "before", before,
                     "rewardName", rewardName,
                     "probabilityPct", probability,
                     "realOutflow", realOutflow,
                     "rewardKind", rewardKind,
+                    "rewardAmount", rewardAmount,
+                    "voucherId", voucherId == null ? "NONE" : voucherId,
+                    "dailyStock", dailyStock,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = questEventOverview().getData();
@@ -983,6 +1125,9 @@ public class OpsGrowthService implements AuditReplayable {
             }
             String tierName = normalizePlainText(tierNameRaw, 128);
             List<Map<String, Object>> tiers = growthRows(GrowthQuestEventMapper::wheelTiers);
+            if (!expectedTextMatches(request.expectedValue(), wheelPoolSignature(tiers))) {
+                return validation("WHEEL_CONFIG_STALE");
+            }
             Map<String, Object> before = tiers.stream()
                     .filter(row -> tierName.equals(String.valueOf(row.get("tier"))))
                     .findFirst()
@@ -1027,6 +1172,9 @@ public class OpsGrowthService implements AuditReplayable {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
             List<Map<String, Object>> rows = growthRows(GrowthQuestEventMapper::wheelTiers);
+            if (!expectedTextMatches(request.expectedSignature(), wheelPoolSignature(rows))) {
+                return validation("WHEEL_CONFIG_STALE");
+            }
             Map<String, BigDecimal> requested = request.probabilities() == null
                     ? Map.of() : new LinkedHashMap<>(request.probabilities());
             Set<String> activeNames = rows.stream()
@@ -1037,6 +1185,7 @@ public class OpsGrowthService implements AuditReplayable {
             }
             BigDecimal total = BigDecimal.ZERO;
             boolean amplifiesRealOutflow = false;
+            boolean changed = false;
             for (Map<String, Object> row : rows) {
                 String tierName = String.valueOf(row.get("tier"));
                 BigDecimal probability = requested.get(tierName);
@@ -1047,12 +1196,16 @@ public class OpsGrowthService implements AuditReplayable {
                 }
                 total = total.add(probability);
                 BigDecimal before = parseDecimal(String.valueOf(row.get("prob")), BigDecimal.ZERO);
+                changed = changed || probability.compareTo(before) != 0;
                 if (truthy(row.get("real")) && probability.compareTo(before) > 0) {
                     amplifiesRealOutflow = true;
                 }
             }
             if (total.compareTo(new BigDecimal("100")) != 0) {
                 return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
+            }
+            if (!changed) {
+                return validation("WHEEL_CONFIG_NO_CHANGE");
             }
             if (amplifiesRealOutflow && coverageBelowRedline()) {
                 return coverageRedline();
@@ -1075,6 +1228,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> createWheelGuard(
             String idempotencyKey,
             GrowthWheelGuardRequest request) {
@@ -1086,16 +1240,28 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         }
         try {
+            if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
+                return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
+            }
             String key = normalizePlainText(request.guardKey(), 64).toLowerCase(Locale.ROOT);
             if (!Pattern.compile("^[a-z][a-z0-9_]{1,63}$").matcher(key).matches()) {
                 throw new IllegalArgumentException("GUARD_KEY_INVALID");
+            }
+            if (!WHEEL_GUARD_KEYS.contains(key)) {
+                return validation("WHEEL_GUARD_INVALID");
             }
             if (questEventMapper.get().countByGuardKey(key) > 0) {
                 return validation("WHEEL_GUARD_ALREADY_EXISTS");
             }
             String label = normalizePlainText(request.guardLabel(), 128);
-            String value = request.guardValue() == null ? "" : request.guardValue().trim();
+            String value = normalizeWheelGuardValue(key, request.guardValue());
             String note = request.note() == null ? "" : request.note().trim();
+            boolean opensRealPayout = "kill".equals(key)
+                    && Set.of("开", "on", "true").contains(value.toLowerCase(Locale.ROOT));
+            boolean addsBudget = "budget".equals(key) && numericToken(value).signum() > 0;
+            if ((opensRealPayout || addsBudget) && coverageBelowRedline()) {
+                return coverageRedline();
+            }
             int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, growthRows(GrowthQuestEventMapper::wheelGuards).size() * 10L + 10L));
             questEventMapper.get().insertWheelGuard(key, label, value, note, sortOrder, 1, LocalDateTime.now());
             audit("H4_WHEEL_GUARD_CREATED", "WHEEL_CONFIG", key, request.operator(), Map.of(
@@ -1111,6 +1277,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> updateQuestConfig(
             String idempotencyKey,
             String configKey,
@@ -1119,10 +1286,19 @@ public class OpsGrowthService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        GrowthQuestEventMapper mapper = questEventMapper.get();
+        mapper.ensureH3ConfigMutex();
+        if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) {
+            return validation("H3_CONFIG_LOCK_UNAVAILABLE");
+        }
         ensureQuestEventSeedData();
-        Matcher taskReward = Pattern.compile("^dayOne\\.tasks\\.(\\d+)\\.reward$").matcher(configKey == null ? "" : configKey);
+        Matcher taskReward = Pattern.compile("^mission\\.([A-Za-z0-9_-]{2,64})\\.reward$")
+                .matcher(configKey == null ? "" : configKey);
         if (taskReward.matches()) {
-            int displayId = Integer.parseInt(taskReward.group(1));
+            String missionCode = taskReward.group(1);
             int newReward;
             try {
                 newReward = bounded(parseDecimal(request.value()), BigDecimal.ZERO, new BigDecimal("100000"))
@@ -1130,23 +1306,68 @@ public class OpsGrowthService implements AuditReplayable {
             } catch (RuntimeException ex) {
                 return validation("QUEST_REWARD_INVALID");
             }
-            Integer oldReward = questEventMapper.map(mapper -> mapper.missionRewardByDisplayId(displayId)).orElse(null);
+            Integer oldReward = mapper.missionRewardByCode(missionCode);
             if (oldReward == null) {
                 return validation("QUEST_TASK_NOT_FOUND");
+            }
+            if (!expectedIntegerMatches(request.expectedValue(), oldReward)) {
+                return validation("QUEST_CONFIG_STALE");
+            }
+            if (newReward == oldReward) {
+                return validation("QUEST_CONFIG_NO_CHANGE");
             }
             if (newReward > oldReward && coverageBelowRedline()) {
                 return coverageRedline();
             }
-            int updated = questEventMapper.map(mapper -> mapper.updateMissionRewardByDisplayId(displayId, newReward)).orElse(0);
+            int updated = mapper.updateMissionRewardByCode(missionCode, oldReward, newReward);
             if (updated != 1) {
-                return validation("QUEST_TASK_UPDATE_FAILED");
+                return validation("QUEST_CONFIG_STALE");
             }
-            audit("H3_MISSION_REWARD_CHANGED", "GROWTH_MISSION", String.valueOf(displayId), request.operator(), Map.of(
+            audit("H3_MISSION_REWARD_CHANGED", "GROWTH_MISSION", missionCode, request.operator(), Map.of(
                     "oldValue", oldReward, "newValue", newReward,
                     "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = questTasks().getData();
             response.put("updated", Map.of("key", configKey, "value", newReward + " NEX"));
             return ApiResult.ok(response);
+        }
+        Matcher monthlyReward = Pattern.compile("^monthly\\.([A-Za-z0-9_-]{2,64})\\.reward$")
+                .matcher(configKey == null ? "" : configKey);
+        if (monthlyReward.matches()) {
+            String challengeCode = monthlyReward.group(1);
+            BigDecimal newReward;
+            try {
+                newReward = bounded(parseDecimal(request.value()), BigDecimal.ZERO, new BigDecimal("100000"))
+                        .setScale(6, RoundingMode.DOWN);
+            } catch (RuntimeException ex) {
+                return validation("MONTHLY_REWARD_INVALID");
+            }
+            BigDecimal oldReward = mapper.monthlyRewardByCode(challengeCode);
+            if (oldReward == null) {
+                return validation("MONTHLY_CHALLENGE_NOT_FOUND");
+            }
+            if (!expectedDecimalMatches(request.expectedValue(), oldReward)) {
+                return validation("QUEST_CONFIG_STALE");
+            }
+            if (newReward.compareTo(oldReward) == 0) {
+                return validation("QUEST_CONFIG_NO_CHANGE");
+            }
+            if (newReward.compareTo(oldReward) > 0 && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            if (mapper.updateMonthlyRewardByCode(challengeCode, oldReward, newReward) != 1) {
+                return validation("QUEST_CONFIG_STALE");
+            }
+            audit("H3_MONTHLY_REWARD_CHANGED", "GROWTH_MONTHLY_CHALLENGE", challengeCode, request.operator(), Map.of(
+                    "oldValue", oldReward, "newValue", newReward,
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questTasks().getData();
+            response.put("updated", Map.of("key", configKey, "value", newReward.stripTrailingZeros().toPlainString()));
+            return ApiResult.ok(response);
+        }
+        Matcher promoConfig = Pattern.compile("^promoBanner\\.(baseReward|multiplier|countdownDays|countdownHours|targetDevice|targetDaily|status)$")
+                .matcher(configKey == null ? "" : configKey);
+        if (promoConfig.matches()) {
+            return updatePromoBannerConfig(mapper, promoConfig.group(1), configKey, idempotencyKey, request);
         }
         String normalizedKey;
         try {
@@ -1162,6 +1383,12 @@ public class OpsGrowthService implements AuditReplayable {
         }
         String storageKey = questConfigStorageKey(normalizedKey);
         String oldValue = questConfig(normalizedKey);
+        if (!expectedTextMatches(request.expectedValue(), oldValue)) {
+            return validation("QUEST_CONFIG_STALE");
+        }
+        if (oldValue.equals(value)) {
+            return validation("QUEST_CONFIG_NO_CHANGE");
+        }
         if (amplifiesQuestValue(normalizedKey, oldValue, value) && coverageBelowRedline()) {
             return coverageRedline();
         }
@@ -1177,6 +1404,164 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> updateWheelGuard(
+            String idempotencyKey,
+            String guardKey,
+            GrowthConfigUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
+        if (trialGate != null) {
+            return trialGate;
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        try {
+            if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
+                return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
+            }
+            String key = normalizePlainText(guardKey, 64).toLowerCase(Locale.ROOT);
+            if (!Pattern.compile("^[a-z][a-z0-9_]{1,63}$").matcher(key).matches()) {
+                return validation("GUARD_KEY_INVALID");
+            }
+            String oldValue = questEventMapper.get().lockWheelGuardValue(key);
+            if (!StringUtils.hasText(oldValue)) {
+                return validation("WHEEL_GUARD_NOT_FOUND");
+            }
+            String value = normalizeWheelGuardValue(key, request.value());
+            if (!expectedTextMatches(request.expectedValue(), oldValue)) {
+                return validation("WHEEL_GUARD_STALE");
+            }
+            if (oldValue.equalsIgnoreCase(value)) {
+                return validation("WHEEL_GUARD_NO_CHANGE");
+            }
+            boolean enablesRealPrize = "kill".equals(key)
+                    && Set.of("关", "off", "false").contains(oldValue.toLowerCase(Locale.ROOT))
+                    && Set.of("开", "on", "true").contains(value.toLowerCase(Locale.ROOT));
+            boolean increasesBudget = "budget".equals(key)
+                    && numericToken(value).compareTo(numericToken(oldValue)) > 0;
+            if ((enablesRealPrize || increasesBudget) && coverageBelowRedline()) {
+                return coverageRedline();
+            }
+            if (questEventMapper.get().updateWheelGuardValue(key, oldValue, value) != 1) {
+                return validation("WHEEL_GUARD_STALE");
+            }
+            audit("H4_WHEEL_GUARD_CHANGED", "WHEEL_CONFIG", key, request.operator(), Map.of(
+                    "oldValue", oldValue,
+                    "newValue", value,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = questEventOverview().getData();
+            response.put("updated", Map.of("guardKey", key, "value", value));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    private ApiResult<Map<String, Object>> updatePromoBannerConfig(
+            GrowthQuestEventMapper mapper,
+            String field,
+            String configKey,
+            String idempotencyKey,
+            GrowthConfigUpdateRequest request) {
+        Map<String, Object> current = mapper.lockPromoBanner();
+        if (current == null || current.get("id") == null) {
+            return validation("PROMO_BANNER_NOT_CONFIGURED");
+        }
+        String oldValue = String.valueOf(current.getOrDefault(field, ""));
+        String value;
+        try {
+            value = normalizePromoBannerValue(field, request.value());
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+        boolean numericField = Set.of("baseReward", "multiplier", "countdownDays", "countdownHours", "targetDaily")
+                .contains(field);
+        if (numericField
+                ? !expectedDecimalMatches(request.expectedValue(), parseDecimal(oldValue, BigDecimal.valueOf(-1)))
+                : !expectedTextMatches(request.expectedValue(), oldValue)) {
+            return validation("QUEST_CONFIG_STALE");
+        }
+        if (numericField
+                ? parseDecimal(oldValue, BigDecimal.valueOf(-1)).compareTo(parseDecimal(value)) == 0
+                : oldValue.equalsIgnoreCase(value)) {
+            return validation("QUEST_CONFIG_NO_CHANGE");
+        }
+        if (promoAmplifiesOutflow(field, oldValue, value) && coverageBelowRedline()) {
+            return coverageRedline();
+        }
+        long id = Long.parseLong(String.valueOf(current.get("id")));
+        if (mapper.updatePromoBannerField(id, field, value) != 1) {
+            return validation("QUEST_CONFIG_STALE");
+        }
+        audit("H3_PROMO_BANNER_CHANGED", "GROWTH_PROMO_BANNER", String.valueOf(id), request.operator(), Map.of(
+                "field", field, "oldValue", oldValue, "newValue", value,
+                "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = questTasks().getData();
+        response.put("updated", Map.of("key", configKey, "value", value));
+        return ApiResult.ok(response);
+    }
+
+    private String normalizePromoBannerValue(String field, String raw) {
+        return switch (field) {
+            case "baseReward" -> bounded(parseDecimal(raw), BigDecimal.ZERO, new BigDecimal("100000"))
+                    .stripTrailingZeros().toPlainString();
+            case "multiplier" -> bounded(parseDecimal(raw), new BigDecimal("0.1"), new BigDecimal("5"))
+                    .stripTrailingZeros().toPlainString();
+            case "countdownDays" -> wholeDays(parseDecimal(raw), 0, 365).toPlainString();
+            case "countdownHours" -> wholeDays(parseDecimal(raw), 0, 23).toPlainString();
+            case "targetDaily" -> bounded(parseDecimal(raw), BigDecimal.ZERO, new BigDecimal("1000000"))
+                    .stripTrailingZeros().toPlainString();
+            case "targetDevice" -> normalizePlainText(raw, 128);
+            case "status" -> {
+                String status = normalizePlainText(raw, 16).toLowerCase(Locale.ROOT);
+                if (!Set.of("active", "paused").contains(status)) {
+                    throw new IllegalArgumentException("PROMO_BANNER_STATUS_INVALID");
+                }
+                yield status;
+            }
+            default -> throw new IllegalArgumentException("PROMO_BANNER_FIELD_INVALID");
+        };
+    }
+
+    private boolean promoAmplifiesOutflow(String field, String oldValue, String newValue) {
+        return switch (field) {
+            case "baseReward", "multiplier" -> parseDecimal(newValue).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
+            case "status" -> !"active".equalsIgnoreCase(oldValue) && "active".equalsIgnoreCase(newValue);
+            default -> false;
+        };
+    }
+
+    private boolean expectedIntegerMatches(String expectedValue, int actual) {
+        if (!StringUtils.hasText(expectedValue)) {
+            return false;
+        }
+        try {
+            return parseDecimal(expectedValue).setScale(0, RoundingMode.UNNECESSARY).intValueExact() == actual;
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private boolean expectedDecimalMatches(String expectedValue, BigDecimal actual) {
+        return StringUtils.hasText(expectedValue)
+                && parseDecimal(expectedValue, BigDecimal.valueOf(-1)).compareTo(actual) == 0;
+    }
+
+    private boolean expectedTextMatches(String expectedValue, String actual) {
+        String current = actual == null ? "" : actual.trim();
+        return "__MISSING__".equals(expectedValue)
+                ? current.isEmpty()
+                : StringUtils.hasText(expectedValue) && expectedValue.trim().equalsIgnoreCase(current);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> updateQuestEventReward(
             String idempotencyKey,
             String eventId,
@@ -1190,15 +1575,40 @@ public class OpsGrowthService implements AuditReplayable {
             return trialGate;
         }
         ensureQuestEventSeedData();
+        if (questEventMapper.isEmpty()
+                || !"H4_EVENT".equals(questEventMapper.get().lockGrowthMutation("H4_EVENT"))) {
+            return validation("H4_EVENT_MUTEX_UNAVAILABLE");
+        }
         String id = normalizeEventId(eventId);
+        if ("wheel".equalsIgnoreCase(String.valueOf(eventRow(id).get("kind")))) {
+            return validation("EVENT_WHEEL_REWARD_MANAGED_BY_POOL");
+        }
         String value;
         try {
             value = normalizePlainText(request.value(), 160);
+            eventRewardAsset(value);
+            if (rewardFlow(value).signum() <= 0) {
+                return validation("EVENT_REWARD_INVALID");
+            }
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
         String oldValue = eventReward(id);
-        if (rewardFlow(value).compareTo(rewardFlow(oldValue)) > 0 && coverageBelowRedline()) {
+        if (!expectedTextMatches(request.expectedValue(), oldValue)) {
+            return validation("EVENT_CONFIG_STALE");
+        }
+        if (oldValue.equalsIgnoreCase(value)) {
+            return validation("EVENT_CONFIG_NO_CHANGE");
+        }
+        String oldAsset;
+        try {
+            oldAsset = eventRewardAsset(oldValue);
+        } catch (IllegalArgumentException ignored) {
+            oldAsset = "";
+        }
+        boolean amplifiesOutflow = rewardFlow(value).compareTo(rewardFlow(oldValue)) > 0
+                || ("USDT".equals(eventRewardAsset(value)) && !"USDT".equals(oldAsset));
+        if (amplifiesOutflow && coverageBelowRedline()) {
             return coverageRedline();
         }
         if (!updateBusinessEventReward(id, value)) {
@@ -1239,10 +1649,29 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("EVENT_STATUS_INVALID");
         }
         String oldStatus = eventStatus(id);
+        if (!expectedTextMatches(request.expectedValue(), oldStatus)) {
+            return validation("EVENT_CONFIG_STALE");
+        }
+        if (oldStatus.equals(status)) {
+            return validation("EVENT_CONFIG_NO_CHANGE");
+        }
+        if ("ended".equals(oldStatus)) {
+            return validation("EVENT_STATUS_TERMINAL");
+        }
+        boolean validTransition = ("upcoming".equals(oldStatus)
+                && Set.of("ongoing", "ended").contains(status))
+                || ("ongoing".equals(oldStatus) && "ended".equals(status));
+        if (!validTransition) {
+            return validation("EVENT_STATUS_TRANSITION_INVALID");
+        }
+        if ("ongoing".equals(status) && rewardFlow(eventReward(id)).signum() > 0
+                && coverageBelowRedline()) {
+            return coverageRedline();
+        }
         if (!updateBusinessEventStatus(id, status)) {
             return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
         }
-        if ("ended".equals(status) && eventFeatured(id)) {
+        if (!"ongoing".equals(status) && eventFeatured(id)) {
             if (!updateBusinessEventFeatured(id, false)) {
                 return validation("QUEST_EVENT_BUSINESS_TABLE_UPDATE_FAILED");
             }
@@ -1284,6 +1713,13 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("H4_EVENT_MUTEX_UNAVAILABLE");
         }
         questEventMapper.get().lockEventRowsForUpdate();
+        String oldFeatured = String.valueOf(eventFeatured(id));
+        if (!expectedTextMatches(request.expectedValue(), oldFeatured)) {
+            return validation("EVENT_CONFIG_STALE");
+        }
+        if (oldFeatured.equalsIgnoreCase(String.valueOf(featured))) {
+            return validation("EVENT_CONFIG_NO_CHANGE");
+        }
         if (featured && !"ongoing".equals(eventStatus(id))) {
             return validation("EVENT_FEATURED_REQUIRES_ONGOING");
         }
@@ -1369,6 +1805,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateCheckInRule(
             String idempotencyKey,
             String ruleKey,
@@ -1383,6 +1820,18 @@ public class OpsGrowthService implements AuditReplayable {
         }
         String key = normalizeCheckInRuleKey(ruleKey);
         String value = requireText(request.value(), "value is required");
+        String persistedValue = questEventMapper.isEmpty()
+                ? null
+                : questEventMapper.get().checkInRuleValue(key);
+        if (!StringUtils.hasText(persistedValue)) {
+            return validation("CHECKIN_RULE_BUSINESS_ROW_NOT_FOUND");
+        }
+        String expectedValue = StringUtils.hasText(request.expectedValue())
+                ? request.expectedValue().trim()
+                : persistedValue;
+        if (!persistedValue.equals(expectedValue)) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
         if (Set.of("baseline", "bonus7", "p15", "p2", "broken").contains(key)) {
             BigDecimal oldValue = currentCheckInRuleNumber(key);
             BigDecimal newValue = normalizeCheckInRuleNumber(key, value);
@@ -1398,12 +1847,15 @@ public class OpsGrowthService implements AuditReplayable {
         if (questEventMapper.isEmpty()) {
             return validation("CHECKIN_RULE_BUSINESS_TABLE_UNAVAILABLE");
         }
-        questEventMapper.get().upsertCheckInRuleValue(
+        if (questEventMapper.get().updateCheckInRuleValueCas(
                 key,
                 value,
+                persistedValue,
                 checkInRuleValueType(key),
                 checkInRuleHot(key),
-                checkInRuleSortOrder(key));
+                checkInRuleSortOrder(key)) != 1) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
         audit("H5_CHECKIN_RULE_CHANGED", "CHECKIN_RULE", key, request.operator(), Map.of(
                 "key", key,
                 "value", value,
@@ -1414,6 +1866,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateStreakMilestone(
             String idempotencyKey,
             int milestoneId,
@@ -1428,15 +1881,22 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("STREAK_MILESTONE_ID_INVALID");
         }
         String reward = requireText(request.value(), "reward is required");
+        String persistedReward = String.valueOf(current.get().get("reward"));
+        String expectedReward = StringUtils.hasText(request.expectedValue())
+                ? request.expectedValue().trim()
+                : persistedReward;
+        if (!persistedReward.equals(expectedReward)) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
         BigDecimal oldFlow = rewardFlow(String.valueOf(current.get().get("reward")));
         BigDecimal newFlow = rewardFlow(reward);
         if (newFlow.compareTo(oldFlow) > 0 && coverageBelowRedline()) {
             return coverageRedline();
         }
         if (questEventMapper.isEmpty()
-                || questEventMapper.get().updateStreakMilestoneReward(
-                        milestoneId, reward, rewardTypeFromReward(reward), newFlow) <= 0) {
-            return validation("STREAK_MILESTONE_BUSINESS_TABLE_UPDATE_FAILED");
+                || questEventMapper.get().updateStreakMilestoneRewardCas(
+                        milestoneId, reward, rewardTypeFromReward(reward), newFlow, persistedReward) <= 0) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         audit("H5_STREAK_MILESTONE_CHANGED", "STREAK_MILESTONE", String.valueOf(milestoneId), request.operator(), Map.of(
                 "milestoneId", milestoneId,
@@ -1448,6 +1908,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updatePowerUp(
             String idempotencyKey,
             int powerUpId,
@@ -1466,6 +1927,15 @@ public class OpsGrowthService implements AuditReplayable {
             return validation("POWER_UP_KEY_INVALID");
         }
         String value = requireText(request.value(), "value is required");
+        String persistedValue = "day".equals(key)
+                ? String.valueOf(current.get().get("day"))
+                : String.valueOf(current.get().getOrDefault("note", ""));
+        String expectedValue = StringUtils.hasText(request.expectedValue())
+                ? request.expectedValue().trim()
+                : persistedValue;
+        if (!persistedValue.equals(expectedValue)) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
         int updated;
         if ("day".equals(key)) {
             BigDecimal oldDay = rowDecimal(current.get(), "day");
@@ -1475,12 +1945,14 @@ public class OpsGrowthService implements AuditReplayable {
                 return coverageRedline();
             }
             value = newDay.setScale(0, RoundingMode.DOWN).toPlainString();
-            updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpDay(powerUpId, Integer.parseInt(value));
+            updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpDayCas(
+                    powerUpId, Integer.parseInt(value), Integer.parseInt(persistedValue));
         } else {
-            updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpNote(powerUpId, value);
+            updated = questEventMapper.isEmpty() ? 0 : questEventMapper.get().updatePowerUpNoteCas(
+                    powerUpId, value, persistedValue);
         }
         if (updated <= 0) {
-            return validation("POWER_UP_BUSINESS_TABLE_UPDATE_FAILED");
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         audit("H5_POWER_UP_CHANGED", "POWER_UP", String.valueOf(powerUpId), request.operator(), Map.of(
                 "powerUpId", powerUpId,
@@ -1608,10 +2080,12 @@ public class OpsGrowthService implements AuditReplayable {
                         .count()));
         response.put("sources", List.of(
                 "nx_growth_voucher",
+                "nx_growth_voucher_grant",
                 "nx_device_sku"));
         return ApiResult.ok(response);
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> createVoucher(String idempotencyKey, GrowthVoucherRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -1644,6 +2118,7 @@ public class OpsGrowthService implements AuditReplayable {
                     Boolean.TRUE.equals(next.get("stackWithTrial")),
                     Boolean.TRUE.equals(next.get("stackWithOthers")),
                     Boolean.TRUE.equals(next.get("splittable")),
+                    longValue(next.get("issuanceLimit")),
                     stringValue(next.get("status"), ""),
                     request.operator());
             audit("H7_VOUCHER_CREATED", "VOUCHER", id, request.operator(), Map.of(
@@ -1658,6 +2133,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateVoucher(String idempotencyKey, String voucherId, GrowthVoucherRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -1665,9 +2141,14 @@ public class OpsGrowthService implements AuditReplayable {
         }
         try {
             String id = normalizeVoucherId(voucherId);
+            if (!A2ReplayContext.isReplaying()
+                    && lockMapper.countActiveByTarget("H", "voucher", id) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+            }
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
             voucherIndex(rows, id);
             Map<String, Object> next = normalizeVoucher(request, id);
+            long expectedVersion = expectedVoucherVersion(request.expectedVersion());
             if (voucherMapper.isEmpty()) {
                 return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
             }
@@ -1688,10 +2169,12 @@ public class OpsGrowthService implements AuditReplayable {
                     Boolean.TRUE.equals(next.get("stackWithTrial")),
                     Boolean.TRUE.equals(next.get("stackWithOthers")),
                     Boolean.TRUE.equals(next.get("splittable")),
+                    longValue(next.get("issuanceLimit")),
                     stringValue(next.get("status"), ""),
+                    expectedVersion,
                     request.operator());
             if (updatedRows == 0) {
-                return validation("VOUCHER_NOT_FOUND");
+                return ApiResult.fail(409, "H7_VOUCHER_STALE");
             }
             audit("H7_VOUCHER_UPDATED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
@@ -1705,6 +2188,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateVoucherStatus(String idempotencyKey, String voucherId, GrowthConfigUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -1712,14 +2196,19 @@ public class OpsGrowthService implements AuditReplayable {
         }
         try {
             String id = normalizeVoucherId(voucherId);
+            if (!A2ReplayContext.isReplaying()
+                    && lockMapper.countActiveByTarget("H", "voucher", id) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+            }
             String status = normalizeVoucherStatus(request.value());
+            long expectedVersion = expectedVoucherVersion(request.expectedValue());
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
             voucherIndex(rows, id);
             if (voucherMapper.isEmpty()) {
                 return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
             }
-            if (voucherMapper.get().updateStatus(id, status, request.operator()) == 0) {
-                return validation("VOUCHER_NOT_FOUND");
+            if (voucherMapper.get().updateStatus(id, status, expectedVersion, request.operator()) == 0) {
+                return ApiResult.fail(409, "H7_VOUCHER_STALE");
             }
             audit("H7_VOUCHER_STATUS_CHANGED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
@@ -1734,6 +2223,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> deleteVoucher(String idempotencyKey, String voucherId, GrowthConfigUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -1741,13 +2231,18 @@ public class OpsGrowthService implements AuditReplayable {
         }
         try {
             String id = normalizeVoucherId(voucherId);
+            if (!A2ReplayContext.isReplaying()
+                    && lockMapper.countActiveByTarget("H", "voucher", id) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+            }
+            long expectedVersion = expectedVoucherVersion(request.expectedValue());
             List<Map<String, Object>> rows = new ArrayList<>(voucherRows());
             voucherIndex(rows, id);
             if (voucherMapper.isEmpty()) {
                 return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
             }
-            if (voucherMapper.get().softDelete(id, request.operator()) == 0) {
-                return validation("VOUCHER_NOT_FOUND");
+            if (voucherMapper.get().softDelete(id, expectedVersion, request.operator()) == 0) {
+                return ApiResult.fail(409, "H7_VOUCHER_STALE");
             }
             audit("H7_VOUCHER_DELETED", "VOUCHER", id, request.operator(), Map.of(
                     "voucherId", id,
@@ -1755,6 +2250,43 @@ public class OpsGrowthService implements AuditReplayable {
                     "idempotencyKey", idempotencyKey.trim()));
             Map<String, Object> response = vouchers().getData();
             response.put("updated", Map.of("voucherId", id, "action", "deleted"));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> revokeAvailableVoucherGrants(
+            String idempotencyKey,
+            String voucherId,
+            GrowthConfigUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        try {
+            String id = normalizeVoucherId(voucherId);
+            if (!A2ReplayContext.isReplaying()
+                    && lockMapper.countActiveByTarget("H", "voucher", id) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+            }
+            long expectedVersion = expectedVoucherVersion(request.expectedValue());
+            voucherIndex(new ArrayList<>(voucherRows()), id);
+            if (voucherMapper.isEmpty()) {
+                return validation("VOUCHER_BUSINESS_TABLE_UNAVAILABLE");
+            }
+            if (voucherMapper.get().touchVersion(id, expectedVersion, request.operator()) == 0) {
+                return ApiResult.fail(409, "H7_VOUCHER_STALE");
+            }
+            int revoked = voucherMapper.get().revokeAvailableGrants(id);
+            audit("H7_VOUCHER_AVAILABLE_GRANTS_REVOKED", "VOUCHER", id, request.operator(), Map.of(
+                    "voucherId", id,
+                    "revoked", revoked,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            Map<String, Object> response = vouchers().getData();
+            response.put("updated", Map.of("voucherId", id, "action", "available_grants_revoked", "revoked", revoked));
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
@@ -1827,11 +2359,53 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private String dayOneWindow() {
-        List<Map<String, Object>> rows = dayOneTaskRows();
-        if (rows.isEmpty()) {
-            return "";
+        return questConfig("dayOne.windowMs");
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updatePowerUpConfig(
+            String idempotencyKey,
+            int powerUpId,
+            GrowthPowerUpUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (request.day() == null || request.expectedDay() == null
+                || request.expectedNote() == null || request.note() == null) {
+            return validation("POWER_UP_EXPECTED_STATE_REQUIRED");
         }
-        return rows.size() + " 个首日任务定义来自 nx_mission";
+        List<Map<String, Object>> rows = powerUps();
+        Optional<Map<String, Object>> current = indexedBusinessRow(rows, powerUpId);
+        if (current.isEmpty()) return validation("POWER_UP_ID_INVALID");
+        int persistedDay = rowDecimal(current.get(), "day").intValue();
+        String persistedNote = String.valueOf(current.get().getOrDefault("note", ""));
+        if (persistedDay != request.expectedDay()
+                || !persistedNote.equals(request.expectedNote())) {
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
+        int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365"))
+                .setScale(0, RoundingMode.DOWN).intValueExact();
+        if (day < persistedDay && coverageBelowRedline()) return coverageRedline();
+        int updated = questEventMapper.isEmpty()
+                ? 0
+                : questEventMapper.get().updatePowerUpConfigCas(
+                        powerUpId, day, request.note(), persistedDay, persistedNote);
+        if (updated != 1) return ApiResult.fail(409, "H5_CONFIG_STALE");
+        audit("H5_POWER_UP_CHANGED", "POWER_UP", String.valueOf(powerUpId), request.operator(), Map.of(
+                "powerUpId", powerUpId,
+                "oldDay", persistedDay,
+                "newDay", day,
+                "oldNote", persistedNote,
+                "newNote", request.note(),
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = checkIn().getData();
+        response.put("updated", Map.of(
+                "powerUpId", powerUpId,
+                "source", "nx_streak_power_up",
+                "day", day,
+                "note", request.note()));
+        return ApiResult.ok(response);
     }
 
     private List<Map<String, Object>> dayOneTaskRows() {
@@ -1984,8 +2558,9 @@ public class OpsGrowthService implements AuditReplayable {
 
     private BigDecimal wheelEvUsd() {
         BigDecimal value = wheelTiers().stream()
-                .filter(row -> Boolean.TRUE.equals(row.get("real")))
-                .map(row -> parseMoney(row.get("reward").toString()).multiply(new BigDecimal(row.get("prob").toString()))
+                .filter(row -> truthy(row.get("real")))
+                .map(row -> parseDecimal(String.valueOf(row.get("amount")), BigDecimal.ZERO)
+                        .multiply(parseDecimal(String.valueOf(row.get("prob")), BigDecimal.ZERO))
                         .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP))
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP)
@@ -1995,10 +2570,50 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String wheelPoolSignature() {
         List<Map<String, Object>> tiers = wheelTiers();
+        return wheelPoolSignature(tiers);
+    }
+
+    private String wheelPoolSignature(List<Map<String, Object>> tiers) {
         if (tiers.isEmpty()) {
-            return "";
+            return "__EMPTY__";
         }
-        return tiers.size() + " 档 · EV $" + wheelEvUsd().toPlainString() + "/spin";
+        return tiers.stream()
+                .map(row -> String.join("|",
+                        String.valueOf(row.get("tier")),
+                        String.valueOf(row.get("reward")),
+                        parseDecimal(String.valueOf(row.get("prob")), BigDecimal.ZERO)
+                                .stripTrailingZeros().toPlainString(),
+                        String.valueOf(truthy(row.get("real"))),
+                        String.valueOf(row.get("kind")),
+                        parseDecimal(String.valueOf(row.get("amount")), BigDecimal.ZERO)
+                                .stripTrailingZeros().toPlainString(),
+                        String.valueOf(row.getOrDefault("voucherId", "")),
+                        String.valueOf(intValue(row.get("dailyStock"), 0))))
+                .collect(java.util.stream.Collectors.joining(";"));
+    }
+
+    private ApiResult<Map<String, Object>> validateWheelTierValue(
+            String rewardKind,
+            BigDecimal rewardAmount,
+            String voucherId,
+            int dailyStock,
+            int realOutflow) {
+        if (rewardAmount == null || rewardAmount.signum() <= 0 || rewardAmount.scale() > 6) {
+            return validation("WHEEL_TIER_REWARD_AMOUNT_INVALID");
+        }
+        if (dailyStock < 0 || dailyStock > 1_000_000) {
+            return validation("WHEEL_TIER_DAILY_STOCK_INVALID");
+        }
+        if ("coupon".equals(rewardKind) && !StringUtils.hasText(voucherId)) {
+            return validation("WHEEL_TIER_VOUCHER_REQUIRED");
+        }
+        if ("usdt".equals(rewardKind) != (realOutflow == 1)) {
+            return validation("WHEEL_REAL_PRIZE_CLASSIFICATION_INVALID");
+        }
+        if ("points".equals(rewardKind) && rewardAmount.stripTrailingZeros().scale() > 0) {
+            return validation("WHEEL_POINTS_REWARD_INVALID");
+        }
+        return null;
     }
 
     private List<Map<String, Object>> wheelGuards() {
@@ -2151,7 +2766,7 @@ public class OpsGrowthService implements AuditReplayable {
         if (Set.of("discountRate").contains(key)) {
             return bounded(parseDecimal(value.replace("%", "")), BigDecimal.ZERO, new BigDecimal("100")).stripTrailingZeros().toPlainString();
         }
-        if (Set.of("discountCapUSD", "highQualityThresholdUSD", "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX").contains(key)) {
+        if (Set.of("discountCapUSD", "trialOffsetCapUSD", "highQualityThresholdUSD", "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX").contains(key)) {
             return bounded(parseDecimal(value.replace("$", "").replace(",", "")), BigDecimal.ZERO, new BigDecimal("1000000")).stripTrailingZeros().toPlainString();
         }
         if (Set.of("autoPushDelayMs", "autoPushCooldownHours", "autoPushMaxPerSession").contains(key)) {
@@ -2337,7 +2952,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private String trialParamValueType(String key) {
-        return Set.of("discountRate", "discountCapUSD", "highQualityThresholdUSD", "chargeFailRate",
+        return Set.of("discountRate", "discountCapUSD", "trialOffsetCapUSD", "highQualityThresholdUSD", "chargeFailRate",
                 "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "autoPushDelayMs",
                 "autoPushCooldownHours", "autoPushMaxPerSession").contains(key) || isTrialDayParam(key) ? "NUMBER" : "STRING";
     }
@@ -2713,11 +3328,14 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> phaseAttribution() {
-        // 三阶段归因是固定目录(P1/P2/P3),保证归因矩阵非空。
+        // P1-P6 归因目录必须与 H1 的六阶段节奏完整对齐，B4 深链可直接定位任一阶段。
         return List.of(
                 phaseAttributionRow("P1", "新手上手期", "新用户与任务加成驱动激活", "newUserBonusMultiplier", "2", "增长主导"),
                 phaseAttributionRow("P2", "裂变扩散期", "邀请奖励拉新驱动裂变", "inviteRewardMultiplier", "1.5", "增长主导"),
-                phaseAttributionRow("P3", "沉淀转化期", "复投加成驱动沉淀", "reinvestMultiplier", "2", "增长+运营"));
+                phaseAttributionRow("P3", "沉淀转化期", "复投加成驱动沉淀", "reinvestMultiplier", "2", "增长+运营"),
+                phaseAttributionRow("P4", "拐点调节期", "提现冷却与合规审查共同控制流出", "withdrawCooldownDays", "35", "增长+风控"),
+                phaseAttributionRow("P5", "稳态运营期", "双轨封顶与提现费率维持资金稳态", "binaryDailyCap", "2000", "增长+资金"),
+                phaseAttributionRow("P6", "软退场期", "增强合规审查与提现费率约束尾部风险", "complianceHoldEnabled", "是", "增长+风控"));
     }
 
     private Map<String, Object> phaseAttributionRow(String phase, String name, String driver, String paramKey, String value, String owner) {
@@ -2787,13 +3405,9 @@ public class OpsGrowthService implements AuditReplayable {
         if (voucherMapper.isEmpty()) {
             return new ArrayList<>();
         }
-        try {
-            return voucherMapper.get().listVouchers().stream()
-                    .map(this::voucherRowFromBusinessTable)
-                    .toList();
-        } catch (RuntimeException ex) {
-            return List.of();
-        }
+        return voucherMapper.get().listVouchers().stream()
+                .map(this::voucherRowFromBusinessTable)
+                .toList();
     }
 
     private List<Map<String, Object>> voucherSkuOptions() {
@@ -2836,6 +3450,13 @@ public class OpsGrowthService implements AuditReplayable {
         voucher.put("stackWithTrial", truthy(row.get("stackWithTrial")));
         voucher.put("stackWithOthers", truthy(row.get("stackWithOthers")));
         voucher.put("splittable", truthy(row.get("splittable")));
+        voucher.put("issuanceLimit", longValue(row.get("issuanceLimit")));
+        voucher.put("version", longValue(row.get("version")));
+        voucher.put("issuedCount", longValue(row.get("issuedCount")));
+        voucher.put("availableCount", longValue(row.get("availableCount")));
+        voucher.put("redeemedCount", longValue(row.get("redeemedCount")));
+        voucher.put("revokedCount", longValue(row.get("revokedCount")));
+        voucher.put("batchCount", longValue(row.get("batchCount")));
         voucher.put("status", stringValue(row.get("status"), ""));
         return voucher;
     }
@@ -2939,8 +3560,31 @@ public class OpsGrowthService implements AuditReplayable {
         voucher.put("stackWithTrial", Boolean.TRUE.equals(request.stackWithTrial()));
         voucher.put("stackWithOthers", Boolean.TRUE.equals(request.stackWithOthers()));
         voucher.put("splittable", Boolean.TRUE.equals(request.splittable()));
+        long issuanceLimit = request.issuanceLimit() == null ? 0L : request.issuanceLimit();
+        if (issuanceLimit < 0L || issuanceLimit > 10_000_000L) {
+            throw new IllegalArgumentException("VOUCHER_ISSUANCE_LIMIT_INVALID");
+        }
+        voucher.put("issuanceLimit", issuanceLimit);
         voucher.put("status", status);
         return voucher;
+    }
+
+    private long expectedVoucherVersion(Long value) {
+        if (value == null || value <= 0L) {
+            throw new IllegalArgumentException("H7_VOUCHER_EXPECTED_VERSION_REQUIRED");
+        }
+        return value;
+    }
+
+    private long expectedVoucherVersion(String value) {
+        if (!StringUtils.hasText(value)) {
+            throw new IllegalArgumentException("H7_VOUCHER_EXPECTED_VERSION_REQUIRED");
+        }
+        try {
+            return expectedVoucherVersion(Long.valueOf(value.trim()));
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("H7_VOUCHER_EXPECTED_VERSION_INVALID");
+        }
     }
 
     private BigDecimal voucherNumber(BigDecimal value, BigDecimal fallback) {
@@ -3306,6 +3950,24 @@ public class OpsGrowthService implements AuditReplayable {
         return value;
     }
 
+    private String normalizeWheelGuardValue(String key, String raw) {
+        if ("cap".equals(key)) {
+            throw new IllegalArgumentException("WHEEL_CAP_DERIVED_FROM_TIER_STOCK");
+        }
+        String value = normalizeQuestValue("wheel.guards." + key, raw);
+        if ("budget".equals(key)) {
+            if (!value.matches("^\\$?\\s*\\d[\\d,]*(?:\\.\\d{1,2})?$")) {
+                throw new IllegalArgumentException("WHEEL_BUDGET_INVALID");
+            }
+            BigDecimal budget = numericToken(value);
+            if (budget.signum() <= 0 || budget.compareTo(new BigDecimal("1000000000")) > 0) {
+                throw new IllegalArgumentException("WHEEL_BUDGET_INVALID");
+            }
+            return "$" + budget.stripTrailingZeros().toPlainString();
+        }
+        return value;
+    }
+
     private String normalizePlainText(String raw, int maxLength) {
         String value = requireText(raw, "value is required");
         if (value.length() > maxLength) {
@@ -3440,7 +4102,18 @@ public class OpsGrowthService implements AuditReplayable {
 
     private boolean updateBusinessEventReward(String eventId, String reward) {
         return questEventMapper.isPresent()
-                && questEventMapper.get().updateReward(eventId, reward, rewardFlow(reward), LocalDateTime.now()) > 0;
+                && questEventMapper.get().updateReward(
+                        eventId, reward, eventRewardAsset(reward), rewardFlow(reward), LocalDateTime.now()) > 0;
+    }
+
+    private String eventRewardAsset(String reward) {
+        String value = reward == null ? "" : reward.toUpperCase(Locale.ROOT);
+        boolean nex = value.matches(".*\\bNEX\\b.*");
+        boolean usdt = value.matches(".*\\bUSDT\\b.*");
+        if (nex == usdt) {
+            throw new IllegalArgumentException("EVENT_REWARD_ASSET_INVALID");
+        }
+        return usdt ? "USDT" : "NEX";
     }
 
     private boolean updateBusinessEventStatus(String eventId, String status) {
@@ -3919,7 +4592,8 @@ public class OpsGrowthService implements AuditReplayable {
                 return chargeTrialSession(idem, str(p, "sid"), req);
             }
             case "h5_checkin_rule" -> {
-                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(null, str(p, "value"), reason, operator);
+                GrowthConfigUpdateRequest req = new GrowthConfigUpdateRequest(
+                        null, str(p, "value"), reason, operator, str(p, "expectedValue"));
                 return updateCheckInRule(idem, str(p, "ruleKey"), req);
             }
             case "h8_referral_settlement" -> {
@@ -3930,7 +4604,13 @@ public class OpsGrowthService implements AuditReplayable {
                 int limit = requestedLimit == null ? 20 : requestedLimit;
                 return ApiResult.ok(referralRewardService.get().runSettlements(
                         idem,
-                        new ReferralSettlementRunRequest(limit, reason, operator)));
+                        new ReferralSettlementRunRequest(
+                                limit,
+                                reason,
+                                operator,
+                                longVal(p, "expectedH8Version"),
+                                intVal(p, "expectedRhythmMonth"),
+                                str(p, "rewardSnapshotHash"))));
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
@@ -3960,6 +4640,18 @@ public class OpsGrowthService implements AuditReplayable {
         if (v instanceof Number n) return n.intValue();
         try {
             return Integer.parseInt(String.valueOf(v).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /** 从 replay params 取 Long；非法或缺失均返回 null，由业务快照 CAS fail-closed。 */
+    private static Long longVal(Map<String, Object> params, String key) {
+        Object v = params.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.longValue();
+        try {
+            return Long.parseLong(String.valueOf(v).trim());
         } catch (NumberFormatException ex) {
             return null;
         }

@@ -11,6 +11,7 @@ import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import jakarta.servlet.FilterChain;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -167,6 +168,38 @@ class AdminRbacAuthorizationFilterTest {
 
         assertThat(invoked).isFalse();
         assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    void sharedTreasuryFactsReachControllerMethodSecurityForDedicatedB2Authorities() throws Exception {
+        authenticate("overview_b2_read", "overview_b2_write", "overview_b2_export");
+        for (String path : List.of(
+                "/api/admin/treasury/reserve",
+                "/api/admin/treasury/liabilities",
+                "/api/admin/treasury/maturity-forecast",
+                "/api/admin/treasury/forecast-config",
+                "/api/admin/treasury/liabilities/export")) {
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            filter.doFilter(request("GET", path), new MockHttpServletResponse(), mark(invoked));
+            assertThat(invoked).as(path).isTrue();
+        }
+
+        AtomicBoolean writeInvoked = new AtomicBoolean(false);
+        filter.doFilter(request("PUT", "/api/admin/treasury/forecast-config"),
+                new MockHttpServletResponse(), mark(writeInvoked));
+        assertThat(writeInvoked).isTrue();
+    }
+
+    @Test
+    void sharedTreasuryMutationsReachControllerMethodSecurityForDedicatedB1Authorities() throws Exception {
+        authenticate("overview_b1_write", "overview_b1_redline_write");
+        for (String path : List.of(
+                "/api/admin/treasury/dual-ledger/scope",
+                "/api/admin/treasury/dual-ledger/thresholds")) {
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            filter.doFilter(request("PATCH", path), new MockHttpServletResponse(), mark(invoked));
+            assertThat(invoked).as(path).isTrue();
+        }
     }
 
     @Test
@@ -538,6 +571,57 @@ class AdminRbacAuthorizationFilterTest {
         assertThat(invoked).isFalse();
         assertThat(response.getStatus()).isEqualTo(403);
         assertThat(response.getContentAsString()).contains("ADMIN_RBAC_RULE_MISSING");
+    }
+
+    @Test
+    void routesCanonicalF5CommissionReadsThroughNetworkAuthorities() throws Exception {
+        AtomicBoolean overviewInvoked = new AtomicBoolean(false);
+        AtomicBoolean anomaliesInvoked = new AtomicBoolean(false);
+        authenticate("network_f5_read");
+
+        filter.doFilter(
+                request("GET", "/api/admin/commissions"),
+                new MockHttpServletResponse(),
+                mark(overviewInvoked));
+        filter.doFilter(
+                request("GET", "/api/admin/commissions/anomalies"),
+                new MockHttpServletResponse(),
+                mark(anomaliesInvoked));
+
+        assertThat(overviewInvoked).isTrue();
+        assertThat(anomaliesInvoked).isTrue();
+    }
+
+    @Test
+    void routesCanonicalF5CommissionWritesThroughNetworkAuthorities() throws Exception {
+        AtomicBoolean reverseInvoked = new AtomicBoolean(false);
+        AtomicBoolean suspendInvoked = new AtomicBoolean(false);
+        authenticate("network_f5_commission_reject");
+
+        filter.doFilter(
+                request("POST", "/api/admin/commissions/CM-1/reverse"),
+                new MockHttpServletResponse(),
+                mark(reverseInvoked));
+        filter.doFilter(
+                request("POST", "/api/admin/users/42/commission/suspend"),
+                new MockHttpServletResponse(),
+                mark(suspendInvoked));
+
+        assertThat(reverseInvoked).isTrue();
+        assertThat(suspendInvoked).isTrue();
+    }
+
+    @Test
+    void rejectsNonNetworkAuthorityForCanonicalF5CommissionRead() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        authenticate("user_c1_read");
+
+        filter.doFilter(request("GET", "/api/admin/commissions"), response, mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
     }
 
     @Test

@@ -12,6 +12,7 @@ import ffdd.opsconsole.finance.dto.TopupCommandRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
+import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalBatchReviewRequest;
 import java.math.BigDecimal;
 import java.util.Map;
@@ -196,6 +197,15 @@ public class OpsFinanceController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) WithdrawalReviewRequest request) {
         return financeService.reviewWithdrawal(withdrawalNo, idempotencyKey, request);
+    }
+
+    @PostMapping("/withdrawals/{withdrawalNo}/confirm")
+    @PreAuthorize("hasAuthority('finance_d2_withdrawal_approve')")
+    public ApiResult<WithdrawalOrderView> confirmWithdrawal(
+            @PathVariable String withdrawalNo,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) WithdrawalConfirmationRequest request) {
+        return financeService.confirmWithdrawal(withdrawalNo, idempotencyKey, request);
     }
 
     @PostMapping("/withdrawals/batch")

@@ -62,6 +62,7 @@ class OpsTeamServiceTest {
             new com.fasterxml.jackson.databind.ObjectMapper(),
             vRankRewardDispatcher,
             mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
+    private final LeadershipPoolService leadershipPoolService = mock(LeadershipPoolService.class);
     private final OpsTeamService service = new OpsTeamService(
             configFacade,
             coverageFacade,
@@ -74,7 +75,8 @@ class OpsTeamServiceTest {
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
             vRankPromotionEngine,
             vRankRewardDispatcher,
-            eventOutboxService);
+            eventOutboxService,
+            leadershipPoolService);
 
     @BeforeEach
     void seedPermissionContext() {
@@ -124,7 +126,8 @@ class OpsTeamServiceTest {
         Map<String, Object> leadershipPool = (Map<String, Object>) result.getData().get("leadershipPool");
         assertThat(leadershipPool)
                 .containsKeys("quotaRows", "ambassadorBands", "podium", "voteWeights")
-                .containsEntry("settlementWindow", "");
+                .containsEntry("settlementWindow", "周日 23:59 UTC")
+                .containsEntry("settlementDispatchWindow", "周一 00:00 UTC");
     }
 
     @Test
@@ -187,7 +190,8 @@ class OpsTeamServiceTest {
                 mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
                 soloEngine,
                 soloDispatcher,
-                mock(EventOutboxService.class));
+                mock(EventOutboxService.class),
+                mock(LeadershipPoolService.class));
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
         ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
@@ -208,7 +212,8 @@ class OpsTeamServiceTest {
                 .containsEntry("weeklyGmvUsd", 0)
                 .containsEntry("weeklyInjectedUsd", 0)
                 .containsEntry("monthlyCapUsd", 0)
-                .containsEntry("settlementWindow", "");
+                .containsEntry("settlementWindow", "周日 23:59 UTC")
+                .containsEntry("settlementDispatchWindow", "周一 00:00 UTC");
         assertThat((List<Map<String, Object>>) pool.getData().get("quotaRows")).isEmpty();
         assertThat((List<Map<String, Object>>) pool.getData().get("ambassadorBands")).isEmpty();
         assertThat((List<Map<String, Object>>) pool.getData().get("podium")).isEmpty();
@@ -287,7 +292,8 @@ class OpsTeamServiceTest {
                 .containsEntry("weeklyGmvUsd", 0)
                 .containsEntry("weeklyInjectedUsd", 0)
                 .containsEntry("participantCount", 0)
-                .containsEntry("settlementWindow", "");
+                .containsEntry("settlementWindow", "周日 23:59 UTC")
+                .containsEntry("settlementDispatchWindow", "周一 00:00 UTC");
         assertThat((List<Map<String, Object>>) result.getData().get("quotaRows")).isEmpty();
         assertThat((List<Map<String, Object>>) result.getData().get("ambassadorBands")).isEmpty();
         assertThat((List<Map<String, Object>>) result.getData().get("podium")).isEmpty();
@@ -460,7 +466,7 @@ class OpsTeamServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void updateF2UiConfigWritesBackendStateAndOverviewEchoesValue() {
+    void updateF2L1DirectRateIsImmutable() {
         commissionRepository.unilevelRates.add(new LinkedHashMap<>(Map.of(
                 "level", "L1",
                 "usdtPct", new BigDecimal("10"),
@@ -472,13 +478,13 @@ class OpsTeamServiceTest {
                 "idem-f2-unilevel",
                 new TeamCommissionConfigUpdateRequest("F.unilevel.L1", "11%", "raise direct rate", "superadmin"));
 
-        assertThat(result.getCode()).isZero();
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
         assertThat(configFacade.values).doesNotContainKey("team.ui.F.unilevel.L1");
-        List<Map<String, Object>> rates = (List<Map<String, Object>>) result.getData().get("unilevelRates");
-        assertThat(rates)
+        assertThat(commissionRepository.unilevelRates)
                 .filteredOn(row -> "L1".equals(row.get("level")))
                 .singleElement()
-                .satisfies(row -> assertThat(row.get("usdtPct").toString()).isEqualTo("11"));
+                .satisfies(row -> assertThat(row.get("usdtPct").toString()).isEqualTo("10"));
     }
 
     // 批2a · 修复1 NEX 路径补强:F.unilevel.nex.L{1-7} 调 NEX 奖励走 updateUnilevelRule(nexPerUsd),
@@ -1575,6 +1581,20 @@ class OpsTeamServiceTest {
         assertThat((String) result.getMessage()).contains("VRANK_OVERRIDE_DIRECTION_MISMATCH");
     }
 
+    /** 人工等级调整是高风险动作：直调业务端点不得绕过 A2 复核。 */
+    @Test
+    void overrideVRankRequiresA2Replay() {
+        commissionRepository.memberVRanks.put(7110L, "V1");
+
+        ApiResult<Map<String, Object>> result = service.overrideVRank(7110L, "idem-7110",
+                new VRankOverrideRequest("V2", "promote", "direct endpoint bypass attempt", "tester"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(commissionRepository.memberVRanks.get(7110L)).isEqualTo("V1");
+        assertThat(commissionRepository.userLevelLogs).isEmpty();
+    }
+
     /** 端点 2:override promote 合法路径 —— 写 member.v_rank + level_log(is_manual=true)。 */
     @Test
     @SuppressWarnings("unchecked")
@@ -1582,8 +1602,14 @@ class OpsTeamServiceTest {
         // currentV=V1,targetV=V3,direction=promote;业绩全零(fake) → 派发器在 V3 找不到奖励规则,不实际派发
         commissionRepository.memberVRanks.put(7104L, "V1");
 
-        ApiResult<Map<String, Object>> result = service.overrideVRank(7104L, "idem-7104",
-                new VRankOverrideRequest("V3", "promote", "force promote for testing", "tester"));
+        ApiResult<Map<String, Object>> result;
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            result = service.overrideVRank(7104L, "idem-7104",
+                    new VRankOverrideRequest("V3", "promote", "force promote for testing", "tester"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("before", "V1");
@@ -1612,8 +1638,14 @@ class OpsTeamServiceTest {
         // currentV=V5,targetV=V2,direction=rollback
         commissionRepository.memberVRanks.put(7105L, "V5");
 
-        ApiResult<Map<String, Object>> result = service.overrideVRank(7105L, "idem-7105",
-                new VRankOverrideRequest("V2", "rollback", "policy violation rollback", "tester"));
+        ApiResult<Map<String, Object>> result;
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            result = service.overrideVRank(7105L, "idem-7105",
+                    new VRankOverrideRequest("V2", "rollback", "policy violation rollback", "tester"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("after", "V2");
@@ -1644,7 +1676,8 @@ class OpsTeamServiceTest {
                 lockMapper,
                 vRankPromotionEngine,
                 vRankRewardDispatcher,
-                eventOutboxService);
+                eventOutboxService,
+                leadershipPoolService);
         commissionRepository.memberVRanks.put(7106L, "V1");
 
         ApiResult<Map<String, Object>> result = lockedService.overrideVRank(7106L, "idem-7106",
@@ -1788,6 +1821,22 @@ class OpsTeamServiceTest {
         assertThat((String) result.getMessage()).contains("PAYOUT_NOT_FOUND");
     }
 
+    /** 合法状态的重发仍须由 A2 replay 执行，直调不得放大资金流出。 */
+    @Test
+    void reissueRequiresA2Replay() {
+        commissionRepository.rewardPayouts.add(makePayoutRow("pay-a2-reissue", 8100L, "V2", "usdt",
+                "REVERSED", "2026-07-15 10:00:00", new BigDecimal("50"), 1234L));
+
+        ApiResult<Map<String, Object>> result = service.reissueRewardPayout("pay-a2-reissue", "idem-a2-reissue",
+                new VRankRewardPayoutActionRequest("direct payout reissue attempt", "tester"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(ledgerPostingFacade.entries).isEmpty();
+        assertThat(commissionRepository.findRewardPayoutByPayoutId("pay-a2-reissue").get("status"))
+                .isEqualTo("REVERSED");
+    }
+
     /** 端点 5:reissue 资金类(usdt)落 D4:新 commission_event + postLedgerEntry(IN/PENDING) + payout UPDATE REISSUED。 */
     @Test
     void reissueFundPayoutPostsD4LedgerAndMarksReissued() {
@@ -1795,8 +1844,14 @@ class OpsTeamServiceTest {
         commissionRepository.rewardPayouts.add(makePayoutRow("pay-reissue-1", 8101L, "V2", "usdt",
                 "REVERSED", "2026-07-15 10:00:00", new BigDecimal("50"), 1234L));
         // 资金类合法路径(B1 红线 fake 不阻断)
-        ApiResult<Map<String, Object>> result = service.reissueRewardPayout("pay-reissue-1", "idem-reissue-2",
-                new VRankRewardPayoutActionRequest("manual reissue payout", "admin-1"));
+        ApiResult<Map<String, Object>> result;
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            result = service.reissueRewardPayout("pay-reissue-1", "idem-reissue-2",
+                    new VRankRewardPayoutActionRequest("manual reissue payout", "admin-1"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("status", "REISSUED");
@@ -1832,8 +1887,14 @@ class OpsTeamServiceTest {
         commissionRepository.rewardPayouts.add(makePayoutRow("pay-reverse-1", 8201L, "V3", "usdt",
                 "GRANTED", "2026-07-15 10:00:00", new BigDecimal("80"), 5678L));
         // 资金类合法路径
-        ApiResult<Map<String, Object>> result = service.reverseRewardPayout("pay-reverse-1", "idem-reverse-1",
-                new VRankRewardPayoutActionRequest("fraud detection reversal", "risk-admin"));
+        ApiResult<Map<String, Object>> result;
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            result = service.reverseRewardPayout("pay-reverse-1", "idem-reverse-1",
+                    new VRankRewardPayoutActionRequest("fraud detection reversal", "risk-admin"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("status", "REVERSED");
@@ -1853,14 +1914,36 @@ class OpsTeamServiceTest {
         assertThat(updated.get("reversedAt")).asString().isNotEmpty();
     }
 
+    /** 合法状态的冲正仍须由 A2 replay 执行，直调不得写 D4。 */
+    @Test
+    void reverseRequiresA2Replay() {
+        commissionRepository.rewardPayouts.add(makePayoutRow("pay-a2-reverse", 8200L, "V3", "usdt",
+                "GRANTED", "2026-07-15 10:00:00", new BigDecimal("80"), 5670L));
+
+        ApiResult<Map<String, Object>> result = service.reverseRewardPayout("pay-a2-reverse", "idem-a2-reverse",
+                new VRankRewardPayoutActionRequest("direct payout reverse attempt", "tester"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(ledgerPostingFacade.entries).isEmpty();
+        assertThat(commissionRepository.findRewardPayoutByPayoutId("pay-a2-reverse").get("status"))
+                .isEqualTo("GRANTED");
+    }
+
     /** 端点 6:reverse 权益类(voucher) 不进 D4:payout REVERSED 但 ledgerPostingFacade 不被调用。 */
     @Test
     void reverseVoucherPayoutSkipsD4Ledger() {
         commissionRepository.rewardPayouts.add(makePayoutRow("pay-voucher", 8202L, "V1", "voucher",
                 "GRANTED", "2026-07-15 10:00:00", null, null));
 
-        ApiResult<Map<String, Object>> result = service.reverseRewardPayout("pay-voucher", "idem-reverse-2",
-                new VRankRewardPayoutActionRequest("voucher grant rollback", "tester"));
+        ApiResult<Map<String, Object>> result;
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            result = service.reverseRewardPayout("pay-voucher", "idem-reverse-2",
+                    new VRankRewardPayoutActionRequest("voucher grant rollback", "tester"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("status", "REVERSED");
@@ -1878,7 +1961,7 @@ class OpsTeamServiceTest {
                 new VRankRewardPayoutActionRequest("double reverse attempt", "tester"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat((String) result.getMessage()).contains("PAYOUT_ALREADY_REVERSED");
+        assertThat((String) result.getMessage()).contains("PAYOUT_REVERSE_STATE_INVALID");
     }
 
     /** 构造 payout row 测试数据。 */

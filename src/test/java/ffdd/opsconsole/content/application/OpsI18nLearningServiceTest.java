@@ -22,6 +22,7 @@ import ffdd.opsconsole.content.domain.LearningCourseVersionView;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
 import ffdd.opsconsole.content.dto.I18nIntegrityFixRequest;
 import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
+import ffdd.opsconsole.content.dto.I18nVersionActionRequest;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningQuizQuestionRequest;
@@ -29,6 +30,7 @@ import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -52,13 +54,15 @@ class OpsI18nLearningServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final TreasuryCoverageFacade coverageFacade = () -> new TreasuryCoverageSnapshot(new BigDecimal("128.4"), new BigDecimal("100"));
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final OpsI18nLearningService service = new OpsI18nLearningService(
             repository,
             auditLogService,
             coverageFacade,
             Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-            lockMapper);
+            lockMapper,
+            eventOutboxService);
 
     @BeforeEach
     void stubLockGuard() {
@@ -80,7 +84,7 @@ class OpsI18nLearningServiceTest {
 
         service.saveLocalizedDraft("milestones.earnCross", "idem-i6-authenticated-actor",
                 new I18nLocalizedCopyRequest("中文 {amount}", "English {amount}", "Vietnamese {amount}",
-                        "spoofed-attacker", "验证认证主体覆盖客户端操作者"));
+                        "v4", "spoofed-attacker", "验证认证主体覆盖客户端操作者"));
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
@@ -114,6 +118,29 @@ class OpsI18nLearningServiceTest {
     }
 
     @Test
+    void saveLocalizedDraftRejectsStaleVersionAndRawHtml() {
+        var stale = service.saveLocalizedDraft(
+                "milestones.earnCross",
+                "idem-i6-stale-draft",
+                new I18nLocalizedCopyRequest(
+                        "中文 {amount}", "English {amount}", "Vietnamese {amount}",
+                        "v3", "Marina K.", "验证陈旧版本不得覆盖词条"));
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("I18N_MESSAGE_VERSION_CONFLICT");
+
+        var html = service.saveLocalizedDraft(
+                "milestones.earnCross",
+                "idem-i6-html-draft",
+                new I18nLocalizedCopyRequest(
+                        "<img src=x onerror=alert(1)>",
+                        "<img src=x onerror=alert(1)>",
+                        "<img src=x onerror=alert(1)>",
+                        "v4", "Marina K.", "验证词条拒绝原始 HTML"));
+        assertThat(html.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(html.getMessage()).isEqualTo("I18N_RAW_JSON_OR_URL_NOT_ALLOWED");
+    }
+
+    @Test
     void publishLocalizedMessagePersistsAndAudits() {
         var saved = service.saveLocalizedDraft("milestones.earnCross", "idem-i6-draft-before-pub", copyRequest("完成 {amount} 并获得 {nex}", "Earn {nex} after {amount}"));
         var result = service.publishLocalizedMessage("milestones.earnCross", "idem-i6-pub",
@@ -125,6 +152,8 @@ class OpsI18nLearningServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService, times(2)).recordRequired(captor.capture());
         assertThat(captor.getAllValues().get(1).getAction()).isEqualTo("I6_I18N_MESSAGE_PUBLISHED");
+        verify(eventOutboxService).publish(
+                eq("I18N_MESSAGE"), eq("milestones.earnCross"), eq("admin.i18n_published"), any(Map.class));
     }
 
     @Test
@@ -143,12 +172,17 @@ class OpsI18nLearningServiceTest {
     @Test
     void archiveOnlyArchivesPublishedAndKeepsNewerDraft() {
         service.saveLocalizedDraft("milestones.earnCross", "idem-i6-newer-draft", copyRequest("草稿 {amount} {nex}", "Draft {amount} {nex}"));
-        var result = service.archiveLocalizedMessage("milestones.earnCross", "idem-i6-archive", new I18nActionRequest("Marina K.", "归档当前发布词条"));
+        var result = service.archiveLocalizedMessage(
+                "milestones.earnCross",
+                "idem-i6-archive",
+                new I18nVersionActionRequest("v4", "Marina K.", "归档当前发布词条"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v4");
         assertThat(repository.findDraftMessagePair("milestones.earnCross")).isPresent();
         assertThat(repository.findPublishedMessagePair("milestones.earnCross")).isEmpty();
+        verify(eventOutboxService).publish(
+                eq("I18N_MESSAGE"), eq("milestones.earnCross"), eq("admin.i18n_rolledback"), any(Map.class));
     }
 
     @Test
@@ -173,7 +207,8 @@ class OpsI18nLearningServiceTest {
                 () -> new TreasuryCoverageSnapshot(new BigDecimal("88"), new BigDecimal("100")),
                 Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-                lockMapper);
+                lockMapper,
+                eventOutboxService);
 
         var result = redlineService.updateCourseReward("what-is-nexion", "idem-i7-reward", new LearningRewardUpdateRequest(
                 new BigDecimal("40"),
@@ -202,7 +237,8 @@ class OpsI18nLearningServiceTest {
                 () -> new TreasuryCoverageSnapshot(new BigDecimal("88"), new BigDecimal("100")),
                 Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-                lockMapper);
+                lockMapper,
+                eventOutboxService);
 
         var result = redlineService.rollbackCourseVersion(
                 "course-redline", "v2", "idem-i7-rollback-redline",
@@ -243,7 +279,8 @@ class OpsI18nLearningServiceTest {
                 versionRepository, auditLogService,
                 () -> new TreasuryCoverageSnapshot(new BigDecimal("88"), new BigDecimal("100")),
                 Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
-                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(), lockMapper);
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(), lockMapper,
+                eventOutboxService);
 
         var result = redlineService.rollbackCourseVersion(
                 "course-safe-rollback", "v2", "idem-i7-safe-rollback",
@@ -271,7 +308,8 @@ class OpsI18nLearningServiceTest {
         OpsI18nLearningService concurrentService = new OpsI18nLearningService(
                 versionRepository, auditLogService, coverageFacade,
                 Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
-                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(), lockMapper);
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(), lockMapper,
+                eventOutboxService);
 
         var result = concurrentService.rollbackCourseVersion(
                 "course-concurrent", "v2", "idem-i7-concurrent-rollback",
@@ -372,7 +410,7 @@ class OpsI18nLearningServiceTest {
     }
 
     private static I18nLocalizedCopyRequest copyRequest(String zh, String en) {
-        return new I18nLocalizedCopyRequest(zh, en, en, "Marina K.", "同步三语词条并记录审计");
+        return new I18nLocalizedCopyRequest(zh, en, en, "v4", "Marina K.", "同步三语词条并记录审计");
     }
 
     private static I18nLocalizedCopyRequest publishRequest(String zh, String en, String version) {

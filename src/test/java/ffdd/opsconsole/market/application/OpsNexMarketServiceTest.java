@@ -523,26 +523,27 @@ class OpsNexMarketServiceTest {
 
         ApiResult<Map<String, Object>> result = service.updateWeeklyCurve(
                 "idem-g3",
-                new NexMarketCurveUpdateRequest(frames("0.200"), "raise price", "superadmin"));
+                new NexMarketCurveUpdateRequest(frames("0.200"), "raise price", "superadmin", frames("0.171")));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
     }
 
     @Test
-    void validCurveWritesConfigPublishesActiveFrameAndAudits() {
+    void validCurveWritesConfigWithoutOverwritingCurrentPriceAndAudits() {
         configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
+        configFacade.values.put("wallet.exchange.nex_usdt_price", "0.155");
         ApiResult<Map<String, Object>> result = service.updateWeeklyCurve(
                 "idem-g3",
-                new NexMarketCurveUpdateRequest(frames("0.160"), "weekly schedule", "superadmin"));
+                new NexMarketCurveUpdateRequest(frames("0.160"), "weekly schedule", "superadmin", frames("0.171")));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsKey("wallet.nex_market.weekly_curve");
-        assertThat(configFacade.values).containsEntry("wallet.exchange.nex_usdt_price", "0.16");
-        assertThat(marketRepository.lastPrice).isEqualByComparingTo("0.16000000");
+        assertThat(configFacade.values).containsEntry("wallet.exchange.nex_usdt_price", "0.155");
+        assertThat(marketRepository.lastPrice).isNull();
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G3_WEEKLY_CURVE_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-g3");
     }
@@ -591,13 +592,13 @@ class OpsNexMarketServiceTest {
         ApiResult<Map<String, Object>> result = service.updateControl(
                 "idem-control",
                 "pin",
-                new NexMarketValueUpdateRequest("D3", "pin demo day", "superadmin"));
+                new NexMarketValueUpdateRequest("D3", "pin demo day", "superadmin", "未钉住"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("wallet.nex_market.control.pin", "D3");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G3_CONTROL_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-control");
     }
@@ -605,10 +606,15 @@ class OpsNexMarketServiceTest {
     @Test
     void updateScheduleControlNormalizesTimeAndWritesConfig() {
         configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
+        configFacade.values.put("wallet.nex_market.control.schedule", "每日 00:00 UTC 自动推进");
         ApiResult<Map<String, Object>> result = service.updateControl(
                 "idem-schedule",
                 "schedule",
-                new NexMarketValueUpdateRequest("每日 08:30 Asia/Shanghai 自动推进", "change daily advance time", "superadmin"));
+                new NexMarketValueUpdateRequest(
+                        "每日 08:30 Asia/Shanghai 自动推进",
+                        "change daily advance time",
+                        "superadmin",
+                        "每日 00:00 UTC 自动推进"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values)
@@ -628,6 +634,31 @@ class OpsNexMarketServiceTest {
         assertThat(result.getMessage()).isEqualTo("G3_SCHEDULE_INVALID");
         assertThat(configFacade.values)
                 .containsEntry("wallet.nex_market.control.schedule", "每日 00:00 UTC 自动推进");
+    }
+
+    @Test
+    void updateControlRejectsInvalidEnumsAndStaleExpectedValue() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
+        configFacade.values.put("wallet.nex_market.control.pin", "D3");
+
+        ApiResult<Map<String, Object>> invalidPin = service.updateControl(
+                "idem-pin-invalid",
+                "pin",
+                new NexMarketValueUpdateRequest("D9", "reject invalid pin", "superadmin", "D3"));
+        ApiResult<Map<String, Object>> invalidLoop = service.updateControl(
+                "idem-loop-invalid",
+                "loop",
+                new NexMarketValueUpdateRequest("MAGIC", "reject invalid loop", "superadmin", "循环"));
+        ApiResult<Map<String, Object>> stale = service.updateControl(
+                "idem-pin-stale",
+                "pin",
+                new NexMarketValueUpdateRequest("D4", "reject stale update", "superadmin", "D2"));
+
+        assertThat(invalidPin.getMessage()).isEqualTo("G3_PIN_INVALID");
+        assertThat(invalidLoop.getMessage()).isEqualTo("G3_LOOP_INVALID");
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("G3_STATE_CONFLICT");
+        assertThat(configFacade.values).containsEntry("wallet.nex_market.control.pin", "D3");
     }
 
     @Test
@@ -651,19 +682,65 @@ class OpsNexMarketServiceTest {
     @Test
     void updateOverridePricePublishesMarketPriceAndAudits() {
         configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
+        configFacade.values.put("wallet.exchange.nex_usdt_price", "0.171");
         ApiResult<Map<String, Object>> result = service.updateOverride(
                 "idem-price",
                 "currentPrice",
-                new NexMarketValueUpdateRequest("0.166", "temporary market override", "superadmin"));
+                new NexMarketValueUpdateRequest("0.166", "temporary market override", "superadmin", "0.171"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("wallet.exchange.nex_usdt_price", "0.166");
         assertThat(marketRepository.lastPrice).isEqualByComparingTo("0.16600000");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G3_OVERRIDE_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("overrideKey", "currentPrice");
+    }
+
+    @Test
+    void updateOverrideRejectsInvalidOracleAndBlocksResumeBelowRedline() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
+        configFacade.values.put("wallet.nex_market.oracle", "内部做市");
+        configFacade.values.put("wallet.nex_market.paused", "true");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+
+        ApiResult<Map<String, Object>> invalidOracle = service.updateOverride(
+                "idem-oracle-invalid",
+                "oracle",
+                new NexMarketValueUpdateRequest("INVALID", "reject invalid oracle", "superadmin", "内部做市"));
+        ApiResult<Map<String, Object>> resume = service.updateOverride(
+                "idem-resume-redline",
+                "paused",
+                new NexMarketValueUpdateRequest("false", "resume market engine", "superadmin", "true"));
+
+        assertThat(invalidOracle.getMessage()).isEqualTo("G3_ORACLE_INVALID");
+        assertThat(resume.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values)
+                .containsEntry("wallet.nex_market.oracle", "内部做市")
+                .containsEntry("wallet.nex_market.paused", "true");
+    }
+
+    @Test
+    void zeroVolatilityAndDeviationAreValidConfiguredMinimums() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
+        configFacade.values.put("wallet.nex_market.volatility_pct", "2");
+        configFacade.values.put("wallet.nex_market.deviation_pct", "5");
+
+        ApiResult<Map<String, Object>> volatility = service.updateOverride(
+                "idem-zero-volatility",
+                "volatilityPct",
+                new NexMarketValueUpdateRequest("0", "set volatility zero", "superadmin", "2"));
+        ApiResult<Map<String, Object>> deviation = service.updateOverride(
+                "idem-zero-deviation",
+                "deviationPct",
+                new NexMarketValueUpdateRequest("0", "set deviation zero", "superadmin", "5"));
+
+        assertThat(volatility.getCode()).isZero();
+        assertThat(deviation.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("wallet.nex_market.volatility_pct", "0")
+                .containsEntry("wallet.nex_market.deviation_pct", "0");
     }
 
     @Test
@@ -1159,17 +1236,23 @@ class OpsNexMarketServiceTest {
     @Test
     void replayG3CurveControlWritesConfigAndAudits() {
         configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
-        ApiResult<?> result = service.replay(
-                new AuditReplayCommand("G", "g3_curve_control", Map.of(
-                        "controlKey", "pin",
-                        "value", "D3")),
-                new AuditReplayContext("superadmin", "g3 replay pin", "idem-replay-g3-pin"));
+        ApiResult<?> result;
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+        try {
+            result = service.replay(
+                    new AuditReplayCommand("G", "g3_curve_control", Map.of(
+                            "controlKey", "pin",
+                            "value", "D3")),
+                    new AuditReplayContext("superadmin", "g3 replay pin", "idem-replay-g3-pin"));
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+        }
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("wallet.nex_market.control.pin", "D3");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G3_CONTROL_CHANGED");
     }
 

@@ -160,6 +160,16 @@ public class AppTradeinService {
         outboxService.publishUserEvent(
                 "TRADEIN", tradeinNo, "tradein.completed", userId, normalizePhase(attribution.phase()),
                 attribution.accountAgeMonths(), attribution.cohort(), event);
+        Map<String, Object> completedOrder = linked(
+                "orderId", orderNo,
+                "orderNo", orderNo,
+                "orderSubtotalUsdt", quote.payableUsdt());
+        outboxService.publishUserEvent(
+                "ORDER", orderNo, "checkout.completed", userId, normalizePhase(attribution.phase()),
+                attribution.accountAgeMonths(), attribution.cohort(), completedOrder);
+        outboxService.publishUserEvent(
+                "DEVICE_ORDER", orderNo, "device.purchase_completed", userId, normalizePhase(attribution.phase()),
+                attribution.accountAgeMonths(), attribution.cohort(), linked("orderId", orderNo));
         auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
                 .action("USER_TRADEIN_COMPLETED")
                 .resourceType("TRADEIN_APPLICATION")
@@ -280,7 +290,9 @@ public class AppTradeinService {
 
     private BigDecimal creditRate(TradeinPolicy policy, BigDecimal ratio) {
         for (int i = 0; i < policy.cuts().size(); i++) {
-            if (ratio.compareTo(policy.cuts().get(i)) <= 0) return policy.credits().get(i);
+            // Admin/App wording defines [0, cut1), [cut1, cut2) ... [cut4, +inf).
+            // Equality therefore belongs to the next band, not the previous one.
+            if (ratio.compareTo(policy.cuts().get(i)) < 0) return policy.credits().get(i);
         }
         return policy.credits().get(policy.credits().size() - 1);
     }

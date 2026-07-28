@@ -17,6 +17,7 @@ public interface SupportSlaRuleMapper extends BaseMapper<SupportSlaRuleEntity> {
               resolution_hours AS resolutionHours,
               queue,
               escalation,
+              version,
               updated_at AS updatedAt
             FROM nx_support_sla_rule
             WHERE is_deleted=0 AND status=1
@@ -33,9 +34,10 @@ public interface SupportSlaRuleMapper extends BaseMapper<SupportSlaRuleEntity> {
                    resolution_hours=#{resolutionHours},
                    queue=#{queue},
                    escalation=#{escalation},
+                   version=version+1,
                    status=1,
                    updated_at=#{now}
-             WHERE category=#{category} AND is_deleted=0
+             WHERE category=#{category} AND is_deleted=0 AND version=#{expectedVersion}
             """)
     int updateRule(
             @Param("category") String category,
@@ -43,5 +45,6 @@ public interface SupportSlaRuleMapper extends BaseMapper<SupportSlaRuleEntity> {
             @Param("resolutionHours") Integer resolutionHours,
             @Param("queue") String queue,
             @Param("escalation") String escalation,
+            @Param("expectedVersion") Long expectedVersion,
             @Param("now") LocalDateTime now);
 }

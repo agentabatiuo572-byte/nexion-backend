@@ -6,12 +6,15 @@ import ffdd.opsconsole.finance.dto.VietQrBankAccountCommandRequest;
 import ffdd.opsconsole.finance.dto.VietQrBankAccountCreateRequest;
 import ffdd.opsconsole.finance.dto.VietQrConfigUpdateRequest;
 import ffdd.opsconsole.finance.dto.VietQrReconciliationCommandRequest;
+import ffdd.opsconsole.finance.dto.VietQrReceiptRegistrationRequest;
+import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -19,13 +22,17 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -38,14 +45,19 @@ public class OpsVietnamPaymentService {
     private static final Set<String> VIEW_TYPES = Set.of("INFLIGHT", "MATCHED", "ORPHAN", "MISMATCH", "LATE");
     private static final Set<String> ACCOUNT_ACTIONS = Set.of("ENABLE", "DISABLE", "RECOVER", "UPDATE_CAP");
     private static final Set<String> ROTATION_STRATEGIES = Set.of("ROUND_ROBIN", "REMAINING_CAPACITY");
+    private static final ZoneId VIETNAM_BANK_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     private final VietnamPaymentMapper mapper;
     private final AuditLogService audit;
     private final AdminIdempotencyService idempotency;
     private final FinanceSensitiveDataCipher sensitiveDataCipher;
+    private final AppVietQrIntentMapper appIntentMapper;
+    private final EventOutboxService outboxService;
     private final Clock clock;
 
-    @Transactional(readOnly = true)
+    @Transactional
     public ApiResult<Map<String, Object>> vietQrOverview(String view, Integer pageNum, Integer pageSize) {
+        appIntentMapper.expireAllIntents();
+        appIntentMapper.closeAllInactiveInFlightReconciliations();
         String normalizedView = normalizeView(view);
         int safePage = pageNum == null ? 1 : Math.max(1, pageNum);
         int safeSize = pageSize == null ? 20 : Math.min(100, Math.max(1, pageSize));
@@ -79,14 +91,36 @@ public class OpsVietnamPaymentService {
         requireId(id, "VIETQR_RECONCILIATION_ID_REQUIRED");
         validateMutation(idempotencyKey, request == null ? null : request.expectedVersion(),
                 request == null ? null : request.reason());
+        validateEvidence(request == null ? null : request.evidenceRef());
         String normalizedAction = normalizeAction(action);
         String requestHash = hash(id + ":" + normalizedAction + ":" + request.expectedVersion() + ":"
-                + request.userId() + ":" + clean(request.intentNo()) + ":" + request.reason().trim());
+                + request.userId() + ":" + clean(request.intentNo()) + ":"
+                + request.evidenceRef().trim() + ":" + request.reason().trim());
         @SuppressWarnings({"rawtypes", "unchecked"})
         ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
                 "D1_VIETQR_RECONCILIATION_" + normalizedAction,
                 idempotencyKey, requestHash, ApiResult.class,
                 () -> doReconcile(id, normalizedAction, idempotencyKey, request));
+        return result;
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> registerVietQrReceipt(
+            String idempotencyKey, VietQrReceiptRegistrationRequest request) {
+        validateReceiptRegistration(idempotencyKey, request);
+        String paymentReference = request.paymentReference().trim();
+        String memoCode = clean(request.memoCode()).toUpperCase(Locale.ROOT);
+        String requestHash = hash(request.bankAccountId() + ":" + paymentReference + ":"
+                + memoCode + ":" + request.receivedVnd().toPlainString() + ":"
+                + request.receivedAt().toInstant() + ":" + request.evidenceRef().trim() + ":"
+                + request.reason().trim());
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult)
+                idempotency.execute(
+                        "D1_VIETQR_RECEIPT_REGISTER",
+                        idempotencyKey, requestHash, ApiResult.class,
+                        () -> doRegisterVietQrReceipt(
+                                idempotencyKey, request, paymentReference, memoCode));
         return result;
     }
 
@@ -102,10 +136,12 @@ public class OpsVietnamPaymentService {
         ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
                 "D1_VIETQR_BANK_ACCOUNT_CREATE", idempotencyKey, requestHash, ApiResult.class, () -> {
                     try {
+                        String accountHash = hash(accountNumber);
                         if (mapper.insertVietQrBankAccount(
                                 request.bankCode().trim().toUpperCase(Locale.ROOT),
                                 request.bankName().trim(), request.accountHolder().trim(),
-                                sensitiveDataCipher.encrypt(accountNumber), hash(accountNumber), last4(accountNumber),
+                                sensitiveDataCipher.encrypt(accountNumber, accountHash),
+                                accountHash, last4(accountNumber),
                                 request.dailyCapVnd().setScale(0, RoundingMode.UNNECESSARY)) != 1) {
                             conflict("VIETQR_BANK_ACCOUNT_CREATE_FAILED");
                         }
@@ -153,6 +189,10 @@ public class OpsVietnamPaymentService {
                             : decimal(before.get("dailyCapVnd"));
                     if (mapper.updateVietQrBankAccount(id, action, cap, request.expectedVersion()) != 1) {
                         conflict("VIETQR_BANK_ACCOUNT_VERSION_OR_STATE_CONFLICT");
+                    }
+                    if ("DISABLE".equals(action)) {
+                        appIntentMapper.cancelActiveIntentsForBankAccount(id);
+                        appIntentMapper.closeInFlightReconciliationsForBankAccount(id);
                     }
                     Map<String, Object> updated = requiredMap(mapper.findVietQrBankAccount(id),
                             "VIETQR_BANK_ACCOUNT_NOT_FOUND", 404);
@@ -217,6 +257,16 @@ public class OpsVietnamPaymentService {
                 "D6_FX_QUOTE_UPDATE", idempotencyKey, requestHash, ApiResult.class, () -> {
                     Map<String, Object> before = requiredMap(mapper.findFxQuoteConfig(), "FX_QUOTE_CONFIG_UNAVAILABLE");
                     String actor = operator(request.operator());
+                    if (longValue(before.get("version")) != request.expectedVersion()) {
+                        conflict("FX_QUOTE_VERSION_CONFLICT");
+                    }
+                    if (decimal(before.get("baseRateVndPerUsdt"))
+                                    .compareTo(request.baseRateVndPerUsdt()) == 0
+                            && decimal(before.get("buySpreadPct"))
+                                    .compareTo(request.buySpreadPct()) == 0
+                            && intValue(before.get("lockWindowMinutes")) == request.lockWindowMinutes()) {
+                        throw new BizException(422, "FX_QUOTE_NO_CHANGES");
+                    }
                     if (mapper.updateFxQuoteConfig(
                             request.baseRateVndPerUsdt().setScale(0, RoundingMode.UNNECESSARY),
                             request.buySpreadPct().setScale(2, RoundingMode.UNNECESSARY),
@@ -235,6 +285,17 @@ public class OpsVietnamPaymentService {
                     requiredAudit("FX_QUOTE_UPDATED", "FX_QUOTE_CONFIG", "VND_USDT",
                             actor, request.reason(), idempotencyKey,
                             Map.of("before", fxAuditValues(before), "after", fxAuditValues(updated)));
+                    outboxService.publish("FX_QUOTE_CONFIG", "VND_USDT", "admin.fx_quote_updated", Map.of(
+                            "configCode", "VND_USDT",
+                            "beforeVersion", longValue(before.get("version")),
+                            "version", longValue(updated.get("version")),
+                            "baseRateVndPerUsdt", decimal(updated.get("baseRateVndPerUsdt")),
+                            "buySpreadPct", decimal(updated.get("buySpreadPct")),
+                            "quoteRateVndPerUsdt", VietnamPaymentPolicy.quoteRate(
+                                    decimal(updated.get("baseRateVndPerUsdt")),
+                                    decimal(updated.get("buySpreadPct"))),
+                            "lockWindowMinutes", intValue(updated.get("lockWindowMinutes")),
+                            "operator", actor));
                     Map<String, Object> response = fxSnapshot(updated);
                     response.put("history", safeList(mapper.listFxQuoteHistory()));
                     return ApiResult.ok(response);
@@ -252,34 +313,79 @@ public class OpsVietnamPaymentService {
         if (longValue(row.get("version")) != request.expectedVersion()) {
             conflict("VIETQR_RECONCILIATION_VERSION_CONFLICT");
         }
+        if (!StringUtils.hasText(text(row.get("paymentReference")))) {
+            conflict("VIETQR_PAYMENT_EVIDENCE_MISSING");
+        }
+        requiredMap(mapper.findVietQrBankAccountForUpdate(longValue(row.get("bankAccountId"))),
+                "VIETQR_BANK_ACCOUNT_NOT_FOUND", 404);
         String viewType = text(row.get("viewType"));
         Long userId = row.get("userId") instanceof Number number ? number.longValue() : request.userId();
-        String intentNo = StringUtils.hasText(text(row.get("intentNo")))
-                ? text(row.get("intentNo")) : clean(request.intentNo());
+        String boundIntentNo = text(row.get("intentNo"));
+        boolean intentTransitionRequired = row.get("intentTransitionRequired") == null
+                || booleanValue(row.get("intentTransitionRequired"));
+        String requestedIntentNo = clean(request.intentNo());
+        if (StringUtils.hasText(boundIntentNo)
+                && StringUtils.hasText(requestedIntentNo)
+                && !boundIntentNo.equals(requestedIntentNo)) {
+            conflict("VIETQR_BOUND_INTENT_OVERRIDE_NOT_ALLOWED");
+        }
+        String intentNo = StringUtils.hasText(boundIntentNo) ? boundIntentNo : requestedIntentNo;
+        Map<String, Object> canonicalIntent = null;
+        boolean transitionIntent = false;
         boolean credit;
         if ("MATCH_CREDIT".equals(action)) {
-            if (!Set.of("ORPHAN", "LATE").contains(viewType)) {
+            if (!Set.of("MATCHED", "ORPHAN").contains(viewType)) {
                 conflict("VIETQR_MATCH_CREDIT_NOT_ALLOWED");
             }
-            userId = request.userId() == null ? userId : request.userId();
-            intentNo = StringUtils.hasText(request.intentNo()) ? request.intentNo().trim() : intentNo;
-            if (userId == null || !StringUtils.hasText(intentNo)) {
+            if (!StringUtils.hasText(intentNo)) {
                 validation("VIETQR_MATCH_TARGET_REQUIRED");
             }
+            canonicalIntent = canonicalIntent(intentNo);
+            userId = canonicalUserId(canonicalIntent, userId, request.userId());
+            transitionIntent = !StringUtils.hasText(boundIntentNo) || intentTransitionRequired;
+            validateCanonicalIntent(
+                    canonicalIntent, row, viewType,
+                    true, "ORPHAN".equals(viewType), transitionIntent);
             credit = true;
         } else if ("WRITE_OFF".equals(action)) {
-            if (!"MISMATCH".equals(viewType) || userId == null) {
+            if (!"MISMATCH".equals(viewType) || !StringUtils.hasText(intentNo)) {
                 conflict("VIETQR_WRITE_OFF_NOT_ALLOWED");
             }
+            canonicalIntent = canonicalIntent(intentNo);
+            userId = canonicalUserId(canonicalIntent, userId, request.userId());
+            transitionIntent = intentTransitionRequired;
+            validateCanonicalIntent(
+                    canonicalIntent, row, viewType,
+                    true, false, transitionIntent);
             credit = true;
         } else {
             if (!Set.of("ORPHAN", "MISMATCH", "LATE").contains(viewType)) {
                 conflict("VIETQR_RETURN_NOT_ALLOWED");
             }
+            boolean unboundOrphan = "ORPHAN".equals(viewType)
+                    && !StringUtils.hasText(boundIntentNo);
+            if (unboundOrphan
+                    && (StringUtils.hasText(requestedIntentNo)
+                    || request.userId() != null)) {
+                conflict("VIETQR_ORPHAN_RETURN_TARGET_NOT_ALLOWED");
+            }
+            if (unboundOrphan) {
+                userId = null;
+                intentNo = null;
+            } else if (StringUtils.hasText(intentNo)) {
+                canonicalIntent = canonicalIntent(intentNo);
+                userId = canonicalUserId(canonicalIntent, userId, request.userId());
+                transitionIntent = !StringUtils.hasText(boundIntentNo) || intentTransitionRequired;
+                validateCanonicalIntent(
+                        canonicalIntent, row, viewType,
+                        false, false, transitionIntent);
+            }
             credit = false;
         }
 
-        BigDecimal amount = credit ? reconciliationAmount(row) : BigDecimal.ZERO.setScale(6);
+        BigDecimal amount = credit
+                ? reconciliationAmount(row, canonicalIntent, viewType)
+                : BigDecimal.ZERO.setScale(6);
         if (credit) {
             Map<String, Object> wallet = requiredMap(mapper.findUsdtWalletForUpdate(userId),
                     "VIETQR_TARGET_WALLET_NOT_FOUND", 404);
@@ -290,12 +396,27 @@ public class OpsVietnamPaymentService {
             }
             if (mapper.insertVietQrWalletLedger(
                     "D1-VIETQR-" + text(row.get("reconciliationNo")),
-                    userId, amount, balanceAfter, request.reason().trim()) != 1) {
+                    userId, amount, balanceAfter,
+                    "VietQR settlement " + text(row.get("reconciliationNo"))) != 1) {
                 throw new IllegalStateException("VIETQR_LEDGER_WRITE_FAILED");
             }
         }
         String nextStatus = credit ? "CREDITED" : "RETURNED";
         String nextView = credit ? "MATCHED" : viewType;
+        if (canonicalIntent != null && transitionIntent) {
+            BigDecimal receivedVnd = decimal(row.get("receivedVnd"));
+            if (appIntentMapper.transitionIntent(
+                    intentNo,
+                    longValue(canonicalIntent.get("version")),
+                    text(canonicalIntent.get("status")),
+                    nextStatus,
+                    receivedVnd.signum() > 0 ? receivedVnd : null,
+                    amount,
+                    LocalDateTime.now(clock)) != 1) {
+                conflict("VIETQR_INTENT_VERSION_CONFLICT");
+            }
+            appIntentMapper.closeInFlightReconciliation(intentNo, nextStatus);
+        }
         if (mapper.completeVietQrReconciliation(id, request.expectedVersion(), nextStatus, nextView,
                 userId, intentNo, amount, request.reason().trim()) != 1) {
             conflict("VIETQR_RECONCILIATION_VERSION_CONFLICT");
@@ -303,10 +424,227 @@ public class OpsVietnamPaymentService {
         requiredAudit("VIETQR_RECONCILIATION_" + action, "VIETQR_RECONCILIATION",
                 String.valueOf(id), operator(request.operator()), request.reason(), idempotencyKey,
                 Map.of("beforeStatus", "OPEN", "afterStatus", nextStatus,
-                        "amountUsdt", amount, "viewType", viewType));
+                        "amountUsdt", amount, "viewType", viewType,
+                        "evidenceRef", request.evidenceRef().trim(),
+                        "paymentReference", text(row.get("paymentReference"))));
         return ApiResult.ok(Map.of(
                 "id", id, "status", nextStatus, "viewType", nextView,
                 "creditedUsdt", amount, "version", request.expectedVersion() + 1));
+    }
+
+    private Map<String, Object> canonicalIntent(String intentNo) {
+        return requiredMap(appIntentMapper.findIntentForUpdate(intentNo),
+                "VIETQR_INTENT_NOT_FOUND", 404);
+    }
+
+    private ApiResult<Map<String, Object>> doRegisterVietQrReceipt(
+            String idempotencyKey,
+            VietQrReceiptRegistrationRequest request,
+            String paymentReference,
+            String memoCode) {
+        requiredMap(
+                mapper.findVietQrBankAccountForUpdate(request.bankAccountId()),
+                "VIETQR_BANK_ACCOUNT_NOT_FOUND", 404);
+        LocalDateTime receivedAt = receiptBusinessTime(request);
+        LocalDate receivedBankDate = request.receivedAt()
+                .atZoneSameInstant(VIETNAM_BANK_ZONE)
+                .toLocalDate();
+        Map<String, Object> intent = StringUtils.hasText(memoCode)
+                ? appIntentMapper.findIntentByMemoForUpdate(memoCode)
+                : null;
+        Map<String, Object> config = requiredMap(
+                mapper.findVietQrConfig(), "VIETQR_CONFIG_UNAVAILABLE");
+        String viewType = "ORPHAN";
+        Long userId = null;
+        String intentNo = null;
+        BigDecimal payableVnd = null;
+        BigDecimal rate;
+        LocalDateTime expiresAt = null;
+        String nextIntentStatus = null;
+        boolean intentTransitionRequired = false;
+        if (intent == null) {
+            Map<String, Object> fx = requiredMap(
+                    mapper.findFxQuoteConfig(), "FX_QUOTE_CONFIG_UNAVAILABLE");
+            rate = VietnamPaymentPolicy.quoteRate(
+                    decimal(fx.get("baseRateVndPerUsdt")),
+                    decimal(fx.get("buySpreadPct")));
+        } else {
+            LocalDateTime createdAt = localDateTime(intent.get("createdAt"));
+            if (createdAt == null || receivedAt.isBefore(createdAt)) {
+                conflict("VIETQR_RECEIPT_PREDATES_INTENT");
+            }
+            userId = longValue(intent.get("userId"));
+            intentNo = text(intent.get("intentNo"));
+            payableVnd = decimal(intent.get("payableVnd"));
+            rate = decimal(intent.get("lockedFxRateVndPerUsdt"));
+            expiresAt = localDateTime(intent.get("expiresAt"));
+            String intentStatus = text(intent.get("status"));
+            boolean alreadyClaimedOrTerminal = Set.of(
+                    "RECEIPT_REVIEW", "MISMATCH_REVIEW", "LATE_REVIEW",
+                    "CREDITED", "CANCELLED", "RETURN_PENDING", "RETURNED")
+                    .contains(intentStatus);
+            if (!alreadyClaimedOrTerminal
+                    && !Set.of("AWAITING_PAYMENT", "EXPIRED").contains(intentStatus)) {
+                conflict("VIETQR_INTENT_STATUS_INVALID");
+            }
+            boolean late = expiresAt == null
+                    || receivedAt.isAfter(expiresAt.plusMinutes(
+                            intValue(config.get("graceMinutes"))));
+            boolean mismatch = longValue(intent.get("bankAccountId"))
+                    != request.bankAccountId()
+                    || request.receivedVnd().subtract(payableVnd).abs()
+                            .compareTo(decimal(config.get("toleranceVnd"))) > 0;
+            if (alreadyClaimedOrTerminal) {
+                viewType = "LATE";
+            } else if (late) {
+                viewType = "LATE";
+                nextIntentStatus = "LATE_REVIEW";
+                intentTransitionRequired = true;
+            } else if (mismatch) {
+                viewType = "MISMATCH";
+                nextIntentStatus = "MISMATCH_REVIEW";
+                intentTransitionRequired = true;
+            } else {
+                viewType = "MATCHED";
+                nextIntentStatus = "RECEIPT_REVIEW";
+                intentTransitionRequired = true;
+            }
+        }
+
+        String reconciliationNo = "VQR-REC-"
+                + UUID.randomUUID().toString().replace("-", "")
+                        .substring(0, 20).toUpperCase(Locale.ROOT);
+        try {
+            if (mapper.insertVietQrReceipt(
+                    reconciliationNo, intentNo, userId, request.bankAccountId(),
+                    viewType, payableVnd, request.receivedVnd(), rate,
+                    paymentReference,
+                    "REGISTERED evidence=" + request.evidenceRef().trim(),
+                    expiresAt, receivedAt,
+                    intentTransitionRequired) != 1) {
+                conflict("VIETQR_RECEIPT_REGISTER_FAILED");
+            }
+        } catch (DuplicateKeyException ex) {
+            throw new BizException(409, "VIETQR_PAYMENT_REFERENCE_ALREADY_REGISTERED");
+        }
+        if (mapper.addVietQrBankReceivedToday(
+                request.bankAccountId(),
+                request.receivedVnd(),
+                receivedBankDate) != 1) {
+            conflict("VIETQR_BANK_ACCOUNT_RECEIPT_TOTAL_UPDATE_FAILED");
+        }
+        if (intent != null && intentTransitionRequired) {
+            appIntentMapper.closeInFlightReconciliation(intentNo, "RECEIPT_REGISTERED");
+            if (appIntentMapper.transitionIntent(
+                            intentNo,
+                            longValue(intent.get("version")),
+                            text(intent.get("status")),
+                            nextIntentStatus,
+                            request.receivedVnd(),
+                            BigDecimal.ZERO.setScale(6),
+                            receivedAt) != 1) {
+                conflict("VIETQR_INTENT_VERSION_CONFLICT");
+            }
+        }
+        Map<String, Object> accountAfterReceipt = requiredMap(
+                mapper.findVietQrBankAccountForUpdate(request.bankAccountId()),
+                "VIETQR_BANK_ACCOUNT_NOT_FOUND", 404);
+        if ("FUSED".equals(text(accountAfterReceipt.get("status")))) {
+            appIntentMapper.cancelAwaitingIntentsForFusedAccount(
+                    request.bankAccountId(), intentNo);
+            appIntentMapper.closeCancelledInFlightReconciliationsForFusedAccount(
+                    request.bankAccountId(), intentNo);
+        }
+        requiredAudit("VIETQR_RECEIPT_REGISTERED", "VIETQR_RECONCILIATION",
+                reconciliationNo, operator(request.operator()), request.reason(), idempotencyKey,
+                Map.of(
+                        "bankAccountId", request.bankAccountId(),
+                        "paymentReference", paymentReference,
+                        "evidenceRef", request.evidenceRef().trim(),
+                        "viewType", viewType,
+                        "receivedVnd", request.receivedVnd()));
+        return ApiResult.ok(requiredMap(
+                mapper.findVietQrReceiptByPaymentReference(paymentReference),
+                "VIETQR_RECEIPT_READ_AFTER_WRITE_FAILED"));
+    }
+
+    private Long canonicalUserId(
+            Map<String, Object> intent, Long reconciliationUserId, Long requestedUserId) {
+        Long canonicalUserId = longValue(intent.get("userId"));
+        if ((reconciliationUserId != null && !canonicalUserId.equals(reconciliationUserId))
+                || (requestedUserId != null && !canonicalUserId.equals(requestedUserId))) {
+            conflict("VIETQR_INTENT_USER_MISMATCH");
+        }
+        return canonicalUserId;
+    }
+
+    private void validateCanonicalIntent(
+            Map<String, Object> intent, Map<String, Object> reconciliation,
+            String viewType, boolean requireBankMatch,
+            boolean requireWithinTolerance, boolean transitionIntent) {
+        String status = text(intent.get("status"));
+        LocalDateTime expiresAt = localDateTime(intent.get("expiresAt"));
+        LocalDateTime receivedAt = localDateTime(reconciliation.get("receivedAt"));
+        if (expiresAt == null || receivedAt == null) {
+            conflict("VIETQR_RECEIPT_TIME_SNAPSHOT_INVALID");
+        }
+        if (transitionIntent) {
+            Set<String> expectedStatuses = switch (viewType) {
+                case "MATCHED" -> Set.of("RECEIPT_REVIEW");
+                case "MISMATCH" -> Set.of("MISMATCH_REVIEW");
+                case "LATE" -> Set.of("LATE_REVIEW");
+                case "ORPHAN" -> Set.of("AWAITING_PAYMENT", "EXPIRED");
+                default -> Set.of();
+            };
+            if (!expectedStatuses.contains(status)) {
+                conflict("VIETQR_INTENT_ALREADY_TERMINAL");
+            }
+            if ("ORPHAN".equals(viewType)) {
+                Map<String, Object> config = requiredMap(
+                        mapper.findVietQrConfig(), "VIETQR_CONFIG_UNAVAILABLE");
+                LocalDateTime createdAt = localDateTime(intent.get("createdAt"));
+                if (createdAt == null
+                        || receivedAt.isBefore(createdAt)) {
+                    conflict("VIETQR_RECEIPT_PREDATES_INTENT");
+                }
+                boolean arrivedLate = receivedAt.isAfter(expiresAt.plusMinutes(
+                        intValue(config.get("graceMinutes"))));
+                if (arrivedLate) {
+                    conflict("VIETQR_INTENT_EXPIRED");
+                }
+            }
+        } else if (!"LATE".equals(viewType)) {
+            conflict("VIETQR_SUPPLEMENTAL_RECEIPT_ACTION_NOT_ALLOWED");
+        }
+        BigDecimal intentRate = decimal(intent.get("lockedFxRateVndPerUsdt"));
+        if (intentRate.signum() <= 0) {
+            conflict("VIETQR_INTENT_FX_SNAPSHOT_INVALID");
+        }
+        if (requireBankMatch && longValue(intent.get("bankAccountId"))
+                != longValue(reconciliation.get("bankAccountId"))) {
+            conflict("VIETQR_INTENT_BANK_ACCOUNT_MISMATCH");
+        }
+        if (requireWithinTolerance) {
+            BigDecimal tolerance = decimal(requiredMap(
+                    mapper.findVietQrConfig(), "VIETQR_CONFIG_UNAVAILABLE").get("toleranceVnd"));
+            BigDecimal delta = decimal(reconciliation.get("receivedVnd"))
+                    .subtract(decimal(intent.get("payableVnd"))).abs();
+            if (delta.compareTo(tolerance) > 0) {
+                conflict("VIETQR_INTENT_AMOUNT_MISMATCH");
+            }
+        }
+    }
+
+    private boolean booleanValue(Object value) {
+        if (value instanceof Boolean bool) return bool;
+        if (value instanceof Number number) return number.intValue() != 0;
+        return Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private LocalDateTime localDateTime(Object value) {
+        if (value instanceof LocalDateTime localDateTime) return localDateTime;
+        if (value instanceof java.sql.Timestamp timestamp) return timestamp.toLocalDateTime();
+        return null;
     }
 
     private Map<String, Object> fxSnapshot(Map<String, Object> config) {
@@ -369,13 +707,26 @@ public class OpsVietnamPaymentService {
                 BigDecimal.valueOf(10_000_000_000L), "VIETQR_DAILY_CAP_OUT_OF_RANGE");
     }
 
-    private BigDecimal reconciliationAmount(Map<String, Object> row) {
+    private BigDecimal reconciliationAmount(
+            Map<String, Object> row, Map<String, Object> canonicalIntent,
+            String viewType) {
         BigDecimal received = decimal(row.get("receivedVnd"));
-        BigDecimal rate = decimal(row.get("lockedFxRateVndPerUsdt"));
+        BigDecimal rate = decimal(canonicalIntent.get("lockedFxRateVndPerUsdt"));
         if (received.signum() <= 0 || rate.signum() <= 0) {
             conflict("VIETQR_RECONCILIATION_AMOUNT_INVALID");
         }
-        return received.divide(rate, 6, RoundingMode.HALF_UP);
+        BigDecimal amount = received.divide(rate, 6, RoundingMode.HALF_UP);
+        if ("MISMATCH".equals(viewType)) {
+            BigDecimal requestedUsdt = decimal(canonicalIntent.get("requestedUsdt"));
+            BigDecimal currentLimit = decimal(requiredMap(
+                    mapper.findVietQrConfig(), "VIETQR_CONFIG_UNAVAILABLE")
+                    .get("perTxLimitUsd"));
+            if (requestedUsdt.signum() <= 0 || currentLimit.signum() <= 0
+                    || amount.compareTo(requestedUsdt.max(currentLimit)) > 0) {
+                conflict("VIETQR_RECEIPT_CREDIT_LIMIT_EXCEEDED");
+            }
+        }
+        return amount;
     }
 
     private String normalizeView(String view) {
@@ -417,7 +768,59 @@ public class OpsVietnamPaymentService {
         }
     }
 
+    private void validateEvidence(String evidenceRef) {
+        String value = clean(evidenceRef);
+        if (value.length() < 3 || value.length() > 128
+                || !value.matches("[A-Za-z0-9][A-Za-z0-9._:/-]*")) {
+            validation("VIETQR_EVIDENCE_REFERENCE_INVALID");
+        }
+    }
+
+    private void validateReceiptRegistration(
+            String idempotencyKey, VietQrReceiptRegistrationRequest request) {
+        requireKeyAndReason(idempotencyKey, request == null ? null : request.reason());
+        if (request == null || request.bankAccountId() == null
+                || request.bankAccountId() <= 0) {
+            validation("VIETQR_BANK_ACCOUNT_ID_REQUIRED");
+        }
+        validateEvidence(request.evidenceRef());
+        String paymentReference = clean(request.paymentReference());
+        if (paymentReference.length() < 6 || paymentReference.length() > 128
+                || !paymentReference.matches("[A-Za-z0-9][A-Za-z0-9._:/-]*")) {
+            validation("VIETQR_PAYMENT_REFERENCE_INVALID");
+        }
+        String memoCode = clean(request.memoCode());
+        if (StringUtils.hasText(memoCode)
+                && (memoCode.length() > 32
+                || !memoCode.matches("[A-Za-z0-9][A-Za-z0-9_-]*"))) {
+            validation("VIETQR_MEMO_CODE_INVALID");
+        }
+        requireIntegerRange(
+                request.receivedVnd(), BigDecimal.ONE,
+                BigDecimal.valueOf(10_000_000_000L),
+                "VIETQR_RECEIVED_AMOUNT_INVALID");
+        if (request.receivedAt() == null) {
+            validation("VIETQR_RECEIVED_AT_REQUIRED");
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime receivedAt = receiptBusinessTime(request);
+        if (receivedAt.isAfter(now.plusMinutes(5))
+                || receivedAt.isBefore(now.minus(90, ChronoUnit.DAYS))
+                || request.receivedAt().atZoneSameInstant(VIETNAM_BANK_ZONE)
+                        .toLocalDate()
+                        .isAfter(LocalDate.now(clock.withZone(VIETNAM_BANK_ZONE)))) {
+            validation("VIETQR_RECEIVED_AT_INVALID");
+        }
+    }
+
+    private LocalDateTime receiptBusinessTime(VietQrReceiptRegistrationRequest request) {
+        return request.receivedAt()
+                .atZoneSameInstant(clock.getZone())
+                .toLocalDateTime();
+    }
+
     private void requireIntegerRange(BigDecimal value, BigDecimal min, BigDecimal max, String error) {
+        requireSafeDecimal(value, error);
         requireRange(value, min, max, error);
         if (value.stripTrailingZeros().scale() > 0) {
             validation(error);
@@ -425,7 +828,15 @@ public class OpsVietnamPaymentService {
     }
 
     private void requireRange(BigDecimal value, BigDecimal min, BigDecimal max, String error) {
+        requireSafeDecimal(value, error);
         if (value == null || value.compareTo(min) < 0 || value.compareTo(max) > 0) {
+            validation(error);
+        }
+    }
+
+    private void requireSafeDecimal(BigDecimal value, String error) {
+        if (value == null || value.scale() < -20 || value.scale() > 20
+                || value.precision() > 32) {
             validation(error);
         }
     }

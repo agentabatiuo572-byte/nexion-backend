@@ -150,6 +150,22 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
+    void saveDraftRejectsStaleCopyRevisionBeforeWriting() {
+        CopyAudienceTarget audience = new CopyAudienceTarget(
+                "structured", List.of(), List.of("P1", "P2"), 1, null);
+        var request = new CopyDraftSaveRequest(
+                "v8", "home", null, audience, "50", "并发草稿",
+                "中文", "English", "Tiếng Việt", "home.hero",
+                "Marina K.", "拒绝过期页面保存草稿", 99L);
+
+        var result = service.saveDraft("home.conversionBanner", "idem-i1-stale-draft", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("COPY_REVISION_CONFLICT");
+        assertThat(repository.saveDraftCalls).isZero();
+    }
+
+    @Test
     void positionCrudRejectsDeletingReferencedPosition() {
         var created = service.createPosition("idem-i1-position-create", new CopyPositionCreateRequest(
                 "earn.banner", "Earn Banner", "earn", 20, "Marina K.", "新增 Earn 文案位置"));
@@ -487,12 +503,12 @@ class OpsCopyAbServiceTest {
 
     @Test
     void archiveRejectsAStaleExpectedVersionAfterLockingTheCopy() {
-        var request = new CopyActionRequest("Marina K.", "确认下架当前文案版本", "v6");
+        var request = new CopyActionRequest("Marina K.", "确认下架当前文案版本", "v6", 1L);
 
         var result = service.archiveCurrent("home.conversionBanner", "idem-i1-archive-stale", request);
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("COPY_VERSION_CONFLICT");
+        assertThat(result.getMessage()).isEqualTo("COPY_REVISION_CONFLICT");
         assertThat(repository.copies.get("home.conversionBanner").status()).isEqualTo("published");
     }
 
@@ -691,7 +707,7 @@ class OpsCopyAbServiceTest {
 
     @Test
     void rollbackPublishedVersionReturns409() {
-        var result = service.rollbackVersion("home.conversionBanner", "v7", "idem-i1-rollback", actionRequest());
+        var result = service.rollbackVersion("home.conversionBanner", "v7", "idem-i1-rollback", copyStateAction());
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -715,8 +731,8 @@ class OpsCopyAbServiceTest {
 
     @Test
     void rollbackArchivedVersionPublishesIt() {
-        var result = service.rollbackVersion("home.conversionBanner", "v6", "idem-i1-rollback", actionRequest());
-        var replay = service.rollbackVersion("home.conversionBanner", "v6", "idem-i1-rollback", actionRequest());
+        var result = service.rollbackVersion("home.conversionBanner", "v6", "idem-i1-rollback", copyStateAction());
+        var replay = service.rollbackVersion("home.conversionBanner", "v6", "idem-i1-rollback", copyStateAction());
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().version()).isEqualTo("v6");
@@ -730,11 +746,24 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
+    void rollbackRejectsStaleCurrentVersionAndRevision() {
+        var result = service.rollbackVersion(
+                "home.conversionBanner",
+                "v6",
+                "idem-i1-stale-rollback",
+                new CopyActionRequest("Marina K.", "拒绝过期页面回滚文案", "v5", 1L));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("COPY_REVISION_CONFLICT");
+        assertThat(repository.copies.get("home.conversionBanner").version()).isEqualTo("v7");
+    }
+
+    @Test
     void archiveCurrentReplaysTheOriginalSuccessWithoutASecondMutation() {
         var first = service.archiveCurrent(
-                "home.conversionBanner", "idem-i1-archive-replay", actionRequest());
+                "home.conversionBanner", "idem-i1-archive-replay", copyStateAction());
         var replay = service.archiveCurrent(
-                "home.conversionBanner", "idem-i1-archive-replay", actionRequest());
+                "home.conversionBanner", "idem-i1-archive-replay", copyStateAction());
 
         assertThat(first.getCode()).isZero();
         assertThat(replay.getCode()).isZero();
@@ -746,9 +775,9 @@ class OpsCopyAbServiceTest {
 
     @Test
     void archiveCurrentRejectsRepeatedArchive() {
-        assertThat(service.archiveCurrent("home.conversionBanner", "idem-i1-archive", actionRequest()).getCode()).isZero();
+        assertThat(service.archiveCurrent("home.conversionBanner", "idem-i1-archive", copyStateAction()).getCode()).isZero();
 
-        var repeated = service.archiveCurrent("home.conversionBanner", "idem-i1-archive-2", actionRequest());
+        var repeated = service.archiveCurrent("home.conversionBanner", "idem-i1-archive-2", copyStateAction());
 
         assertThat(repeated.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -758,11 +787,13 @@ class OpsCopyAbServiceTest {
         var result = service.updateFrameworkParam("split", "idem-i1-fw", new CopyFrameworkUpdateRequest(
                 "40/60",
                 "Marina K.",
-                "调整分流默认"));
+                "调整实验分流默认",
+                "变体等分"));
         var repeated = service.updateFrameworkParam("split", "idem-i1-fw", new CopyFrameworkUpdateRequest(
                 "40/60",
                 "Marina K.",
-                "调整分流默认"));
+                "调整实验分流默认",
+                "变体等分"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().current()).isEqualTo("40/60");
@@ -771,6 +802,19 @@ class OpsCopyAbServiceTest {
         verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
                 "I1_EXPERIMENT_FRAMEWORK_UPDATED".equals(request.getAction())
                         && "HIGH".equals(request.getRiskLevel())));
+    }
+
+    @Test
+    void frameworkUpdateRejectsStaleExpectedValue() {
+        var result = service.updateFrameworkParam(
+                "split",
+                "idem-i1-fw-stale",
+                new CopyFrameworkUpdateRequest(
+                        "40/60", "Marina K.", "拒绝覆盖他人框架参数", "旧页面值"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("COPY_FRAMEWORK_VALUE_CONFLICT");
+        assertThat(repository.framework.get("split").current()).isEqualTo("变体等分");
     }
 
     @Test
@@ -843,6 +887,10 @@ class OpsCopyAbServiceTest {
 
     private static CopyActionRequest actionRequest() {
         return new CopyActionRequest("Marina K.", "确认执行本次内容操作", null, 1L);
+    }
+
+    private static CopyActionRequest copyStateAction() {
+        return new CopyActionRequest("Marina K.", "确认执行本次内容操作", "v7", 1L);
     }
 
     private static final class FakeCopyAbRepository implements CopyAbRepository {

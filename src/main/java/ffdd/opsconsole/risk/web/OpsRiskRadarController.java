@@ -37,7 +37,9 @@ public class OpsRiskRadarController {
     @PreAuthorize("hasAuthority('overview_b5_read')")
     public SseEmitter stream() {
         Map<String, Object> initial = service.radarView();
-        SseEmitter emitter = new SseEmitter(60_000L);
+        // The browser already performs a 30s authoritative refresh. Keep the stream open
+        // until the transport actually disconnects instead of manufacturing a 60s outage.
+        SseEmitter emitter = new SseEmitter(0L);
         try {
             emitter.send(SseEmitter.event().name("radar").data(initial));
         } catch (IOException ex) {

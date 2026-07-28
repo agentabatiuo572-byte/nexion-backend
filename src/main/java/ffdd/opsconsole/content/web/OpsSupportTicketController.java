@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.dto.SupportTicketAssigneeRequest;
 import ffdd.opsconsole.content.dto.SupportTicketArchiveRequest;
 import ffdd.opsconsole.content.dto.SupportTicketCreateRequest;
 import ffdd.opsconsole.content.dto.SupportTicketEscalateRequest;
+import ffdd.opsconsole.content.dto.SupportTicketNoteRequest;
 import ffdd.opsconsole.content.dto.SupportTicketPriorityRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.content.dto.SupportTicketReplyRequest;
@@ -107,6 +108,16 @@ public class OpsSupportTicketController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketReplyRequest request) {
         return ticketService.reply(ticketNo, idempotencyKey, request);
+    }
+
+    // 内部备注只进入客服工单时间线，不作为用户回复发送。
+    @PreAuthorize("hasAuthority('service_m2_write')")
+    @PostMapping("/{ticketNo}/internal-notes")
+    public ApiResult<SupportTicketDetail> addInternalNote(
+            @PathVariable String ticketNo,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody SupportTicketNoteRequest request) {
+        return ticketService.addInternalNote(ticketNo, idempotencyKey, request);
     }
 
     // 工单状态流转/关闭/重开 — M2 工单台 写

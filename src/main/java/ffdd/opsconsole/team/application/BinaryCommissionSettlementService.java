@@ -4,6 +4,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.application.BinarySettlementPolicyProvider.BinarySettlementPolicy;
 import ffdd.opsconsole.team.application.BinarySettlementPolicyProvider.PolicyBlocked;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper;
@@ -46,6 +47,7 @@ public class BinaryCommissionSettlementService {
     private final TreasuryLedgerPostingFacade ledgerFacade;
     private final AuditLogService auditLogService;
     private final PlatformConfigFacade configFacade;
+    private final EventOutboxService eventOutboxService;
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public AssignmentResult assignLeg(
@@ -85,19 +87,22 @@ public class BinaryCommissionSettlementService {
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public SettlementResult settle(Long ownerUserId, LocalDate settlementDate) {
-        return settleTrusted(ownerUserId, settlementDate, null, "SYSTEM", "SYSTEM");
+        return settleTrusted(ownerUserId, settlementDate, null, "SYSTEM", "SYSTEM", "系统周期结算");
     }
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public SettlementResult settleAsAdmin(
-            Long ownerUserId, LocalDate settlementDate, Long actorAdminId, String actorUsername) {
+            Long ownerUserId, LocalDate settlementDate, String reason,
+            Long actorAdminId, String actorUsername) {
         requirePositive(actorAdminId, "BINARY_ADMIN_ACTOR_REQUIRED");
         return settleTrusted(ownerUserId, settlementDate, actorAdminId,
-                text(actorUsername, "BINARY_ADMIN_ACTOR_REQUIRED"), "ADMIN");
+                text(actorUsername, "BINARY_ADMIN_ACTOR_REQUIRED"), "ADMIN",
+                reason(reason));
     }
 
     private SettlementResult settleTrusted(
-            Long ownerUserId, LocalDate settlementDate, Long actorId, String actorUsername, String actorType) {
+            Long ownerUserId, LocalDate settlementDate, Long actorId, String actorUsername,
+            String actorType, String reason) {
         requirePositive(ownerUserId, "BINARY_OWNER_REQUIRED");
         if (settlementDate == null) throw new IllegalArgumentException("BINARY_SETTLEMENT_DATE_REQUIRED");
         mapper.ensureSettlementMutex(ownerUserId, settlementDate);
@@ -117,8 +122,19 @@ public class BinaryCommissionSettlementService {
             throw new IllegalStateException("BINARY_BLOCKED_SETTLEMENT_RETRY_CONFLICT");
         }
 
+        BinarySettlementPolicy policy;
+        try {
+            policy = policyProvider.lockPolicy();
+        } catch (PolicyBlocked ex) {
+            return blockedWithoutRow(ownerUserId, settlementDate, ex.getMessage());
+        }
         List<BinaryLegAssignmentRow> assignments = mapper.listAssignmentsForUpdate(ownerUserId);
         int directMembers = mapper.countDirectMembers(ownerUserId);
+        if (policy.spilloverEnabled() && directMembers >= 2
+                && (assignments == null || assignments.size() != directMembers)) {
+            autoPlaceMissing(ownerUserId, assignments, actorId, actorUsername, actorType);
+            assignments = mapper.listAssignmentsForUpdate(ownerUserId);
+        }
         if (directMembers < 2 || assignments == null || assignments.size() != directMembers) {
             return blockedWithoutRow(ownerUserId, settlementDate, "BINARY_LEG_ASSIGNMENT_INCOMPLETE");
         }
@@ -137,21 +153,19 @@ public class BinaryCommissionSettlementService {
             return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
                     ZERO, ZERO, ZERO, ex.getMessage());
         }
-        BigDecimal consumedBefore = money(mapper.consumedMatchedInMonth(ownerUserId, month));
-        LegVolumeSnapshot snapshot = mapper.monthlyLegVolumes(ownerUserId, monthStart, settlementWindowEnd);
-        BigDecimal left = money(snapshot == null ? null : snapshot.leftVolume());
-        BigDecimal right = money(snapshot == null ? null : snapshot.rightVolume());
+        VolumeWindow volumeWindow = volumeWindow(
+                ownerUserId, policy.residualPolicy(), monthStart, settlementWindowEnd, settlementDate);
+        BigDecimal consumedBefore = volumeWindow.consumedBefore();
+        BigDecimal left = volumeWindow.left();
+        BigDecimal right = volumeWindow.right();
 
-        BinarySettlementPolicy policy;
-        try {
-            policy = policyProvider.lockPolicy();
-        } catch (PolicyBlocked ex) {
-            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, ZERO, ex.getMessage());
-        }
         if (policy.paused()) {
             return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
                     left, right, policy.dailyCap(), "F3_BINARY_PAUSED");
+        }
+        if (!isSettlementDue(settlementDate, policy.settlePeriod())) {
+            return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
+                    left, right, policy.dailyCap(), "F3_SETTLEMENT_NOT_DUE");
         }
         if (left.compareTo(policy.threshold()) < 0 || right.compareTo(policy.threshold()) < 0) {
             return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
@@ -164,24 +178,33 @@ public class BinaryCommissionSettlementService {
             return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
                     left, right, policy.dailyCap(), "BINARY_NO_AVAILABLE_MATCHED_VOLUME");
         }
+        BigDecimal settlementCap = policy.dailyCap()
+                .multiply(BigDecimal.valueOf(periodDays(settlementDate, policy.settlePeriod())))
+                .setScale(6, RoundingMode.DOWN);
         BigDecimal settledToday = money(mapper.settledAmountOnDate(ownerUserId, settlementDate));
-        BigDecimal capRemaining = policy.dailyCap().subtract(settledToday).max(BigDecimal.ZERO);
+        BigDecimal capRemaining = settlementCap.subtract(settledToday).max(BigDecimal.ZERO);
         if (capRemaining.signum() <= 0) {
             return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, policy.dailyCap(), "H1_BINARY_DAILY_CAP_EXHAUSTED");
+                    left, right, settlementCap, "H1_BINARY_DAILY_CAP_EXHAUSTED");
         }
         BigDecimal capMatched = capRemaining.divide(policy.matchRate(), 6, RoundingMode.DOWN);
         BigDecimal consumedMatched = availableMatched.min(capMatched).setScale(6, RoundingMode.DOWN);
         BigDecimal amount = consumedMatched.multiply(policy.matchRate()).setScale(6, RoundingMode.DOWN);
         if (consumedMatched.signum() <= 0 || amount.signum() <= 0) {
             return blocked(ownerUserId, settlementDate, leftRoot, rightRoot,
-                    left, right, policy.dailyCap(), "BINARY_PAYABLE_AMOUNT_ZERO");
+                    left, right, settlementCap, "BINARY_PAYABLE_AMOUNT_ZERO");
         }
-
         BinarySettlementRow pending = new BinarySettlementRow(
                 null, ownerUserId, settlementDate, leftRoot, rightRoot,
-                left, right, consumedMatched, amount, policy.dailyCap(), null, "PENDING");
+                left, right, consumedMatched, amount, settlementCap, null, "PENDING");
         if (mapper.insertSettlement(pending) != 1) throw new IllegalStateException("BINARY_SETTLEMENT_INSERT_FAILED");
+        if (volumeWindow.pairReset()
+                && mapper.insertPairResetCursorCas(
+                        ownerUserId, settlementDate,
+                        volumeWindow.fromVolumeId(), volumeWindow.throughVolumeId(),
+                        left, right, consumedMatched) != 1) {
+            throw new BizException(409, "F3_PAIR_RESET_CURSOR_CAS_CONFLICT");
+        }
 
         String settlementNo = settlementNo(ownerUserId, settlementDate);
         String remark = "F3 binary settlement | rawMatched=" + rawMatched.toPlainString()
@@ -209,11 +232,70 @@ public class BinaryCommissionSettlementService {
                         "leftVolume", left, "rightVolume", right,
                         "rawMatched", rawMatched, "consumedBefore", consumedBefore,
                         "consumedMatched", consumedMatched, "amountUsdt", amount,
-                        "dailyCap", policy.dailyCap(), "commissionEventId", eventId))
+                        "settlementCap", settlementCap,
+                        "settlePeriod", policy.settlePeriod(),
+                        "residualPolicy", policy.residualPolicy(),
+                        "commissionEventId", eventId,
+                        "reason", reason))
                 .build());
+        eventOutboxService.publish(
+                "BINARY_COMMISSION",
+                settlementNo,
+                "commission.paid",
+                linked(
+                        "userId", ownerUserId,
+                        "kind", "binary",
+                        "currency", "USDT",
+                        "amount", amount,
+                        "smallerTrackGv", rawMatched,
+                        "matchRate", policy.matchRate(),
+                        "dailyCapApplied", amount.compareTo(settlementCap) >= 0,
+                        "commissionEventId", eventId));
         return new SettlementResult(
                 ownerUserId, settlementDate, "PENDING", "", left, right,
-                consumedMatched, amount, policy.dailyCap(), eventId, false);
+                consumedMatched, amount, settlementCap, eventId, false);
+    }
+
+    private VolumeWindow volumeWindow(
+            Long ownerUserId,
+            String residualPolicy,
+            LocalDateTime monthStart,
+            LocalDateTime settlementWindowEnd,
+            LocalDate settlementDate) {
+        if ("每次对碰清零".equals(residualPolicy)) {
+            long fromVolumeId = positiveOrZero(mapper.latestPairResetThroughVolumeId(ownerUserId));
+            long throughVolumeId = positiveOrZero(mapper.latestActiveVolumeIdInWindow(
+                    ownerUserId, monthStart, settlementWindowEnd));
+            if (throughVolumeId <= fromVolumeId) {
+                return new VolumeWindow(ZERO, ZERO, ZERO, true, fromVolumeId, throughVolumeId);
+            }
+            LegVolumeSnapshot snapshot = mapper.pairResetLegVolumes(
+                    ownerUserId, fromVolumeId, throughVolumeId, monthStart, settlementWindowEnd);
+            return new VolumeWindow(
+                    money(snapshot == null ? null : snapshot.leftVolume()),
+                    money(snapshot == null ? null : snapshot.rightVolume()),
+                    ZERO, true, fromVolumeId, throughVolumeId);
+        }
+        if ("转结".equals(residualPolicy)) {
+            BigDecimal consumed = money(mapper.consumedMatchedBefore(ownerUserId, settlementDate.plusDays(1)));
+            LegVolumeSnapshot snapshot = mapper.carriedLegVolumes(ownerUserId, settlementWindowEnd);
+            BigDecimal left = money(snapshot == null ? null : snapshot.leftVolume())
+                    .subtract(consumed).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+            BigDecimal right = money(snapshot == null ? null : snapshot.rightVolume())
+                    .subtract(consumed).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+            return new VolumeWindow(left, right, ZERO, false, 0L, 0L);
+        }
+        BigDecimal consumed = money(mapper.consumedMatchedInMonth(
+                ownerUserId, settlementDate.withDayOfMonth(1)));
+        LegVolumeSnapshot snapshot = mapper.monthlyLegVolumes(ownerUserId, monthStart, settlementWindowEnd);
+        return new VolumeWindow(
+                money(snapshot == null ? null : snapshot.leftVolume()),
+                money(snapshot == null ? null : snapshot.rightVolume()),
+                consumed, false, 0L, 0L);
+    }
+
+    private long positiveOrZero(Long value) {
+        return value == null || value < 0 ? 0L : value;
     }
 
     private void reconcileRefundedVolumes(Long ownerUserId) {
@@ -277,6 +359,58 @@ public class BinaryCommissionSettlementService {
                 .map(BinaryLegAssignmentRow::memberUserId).min(Long::compareTo).orElse(null);
     }
 
+    private void autoPlaceMissing(
+            Long ownerUserId,
+            List<BinaryLegAssignmentRow> current,
+            Long actorId,
+            String actorUsername,
+            String actorType) {
+        List<BinaryLegAssignmentRow> safeCurrent = current == null ? List.of() : current;
+        int aCount = (int) safeCurrent.stream().filter(row -> "A".equals(row.leg())).count();
+        int bCount = (int) safeCurrent.stream().filter(row -> "B".equals(row.leg())).count();
+        List<Long> missing = mapper.listUnassignedDirectMembersForUpdate(ownerUserId);
+        if (missing == null) throw new IllegalStateException("BINARY_AUTO_PLACEMENT_SOURCE_UNAVAILABLE");
+        for (Long memberUserId : missing) {
+            String leg = aCount <= bCount ? "A" : "B";
+            if (mapper.insertAssignment(ownerUserId, memberUserId, leg,
+                    actorId == null ? 0L : actorId,
+                    "SYSTEM".equals(actorType) ? "SYSTEM_AUTO_PLACEMENT" : actorUsername) != 1) {
+                BinaryLegAssignmentRow replay = mapper.findAssignmentForUpdate(ownerUserId, memberUserId);
+                if (replay == null || !leg.equals(replay.leg())) {
+                    throw new BizException(409, "BINARY_AUTO_PLACEMENT_CONFLICT");
+                }
+            } else {
+                auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                        .action("F3_BINARY_AUTO_PLACED").resourceType("BINARY_LEG_ASSIGNMENT")
+                        .resourceId(ownerUserId + ":" + memberUserId)
+                        .bizNo(ownerUserId + ":" + memberUserId).userId(ownerUserId)
+                        .actorId(actorId).actorType(actorType).actorUsername(actorUsername)
+                        .result("SUCCESS").riskLevel("HIGH")
+                        .detail(linked("ownerUserId", ownerUserId, "memberUserId", memberUserId, "leg", leg))
+                        .build());
+            }
+            if ("A".equals(leg)) aCount++; else bCount++;
+        }
+    }
+
+    private boolean isSettlementDue(LocalDate date, String settlePeriod) {
+        return switch (settlePeriod) {
+            case "每日" -> true;
+            case "每周" -> date.getDayOfWeek() == java.time.DayOfWeek.SUNDAY;
+            case "每月" -> date.getDayOfMonth() == date.lengthOfMonth();
+            default -> false;
+        };
+    }
+
+    private int periodDays(LocalDate date, String settlePeriod) {
+        return switch (settlePeriod) {
+            case "每日" -> 1;
+            case "每周" -> 7;
+            case "每月" -> date.lengthOfMonth();
+            default -> 0;
+        };
+    }
+
     private String normalizeLeg(String value) {
         String leg = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         if (!List.of("A", "B").contains(leg)) throw new IllegalArgumentException("BINARY_LEG_INVALID");
@@ -297,6 +431,14 @@ public class BinaryCommissionSettlementService {
     private String text(String value, String code) {
         if (!StringUtils.hasText(value) || value.trim().length() > 64) throw new IllegalArgumentException(code);
         return value.trim();
+    }
+
+    private String reason(String value) {
+        String reason = text(value, "REASON_REQUIRED");
+        if (reason.length() < 8 || reason.length() > 200) {
+            throw new IllegalArgumentException("REASON_REQUIRED");
+        }
+        return reason;
     }
 
     private void requirePositive(Long value, String code) {
@@ -326,6 +468,14 @@ public class BinaryCommissionSettlementService {
             super(code);
         }
     }
+
+    private record VolumeWindow(
+            BigDecimal left,
+            BigDecimal right,
+            BigDecimal consumedBefore,
+            boolean pairReset,
+            long fromVolumeId,
+            long throughVolumeId) { }
 
     public record AssignmentResult(Long ownerUserId, Long memberUserId, String leg, boolean replayed) { }
 

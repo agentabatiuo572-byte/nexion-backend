@@ -155,6 +155,10 @@ public interface UserOpsRepository {
 
     void revokeUserSessions(Long userId, String reason);
 
+    default void revokeActiveUserSessions(Long userId, String reason, int idleDays) {
+        revokeUserSessions(userId, reason);
+    }
+
     boolean disableTwoFactor(Long userId);
 
     boolean markPasswordResetRequired(Long userId, String resetMarker);

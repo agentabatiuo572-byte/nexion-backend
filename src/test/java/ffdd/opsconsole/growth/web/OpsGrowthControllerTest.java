@@ -297,11 +297,13 @@ class OpsGrowthControllerTest {
                 false,
                 false,
                 false,
+                0L,
+                1L,
                 "active",
                 "create",
                 "superadmin");
-        GrowthConfigUpdateRequest status = new GrowthConfigUpdateRequest("status", "paused", "pause", "superadmin");
-        GrowthConfigUpdateRequest delete = new GrowthConfigUpdateRequest("delete", "delete", "delete", "superadmin");
+        GrowthConfigUpdateRequest status = new GrowthConfigUpdateRequest("status", "paused", "pause", "superadmin", "1");
+        GrowthConfigUpdateRequest delete = new GrowthConfigUpdateRequest("delete", "delete", "delete", "superadmin", "1");
         when(growthService.createVoucher("idem-create", voucher)).thenReturn(ApiResult.ok(Map.of("ok", true)));
         when(growthService.updateVoucher("idem-update", "vc-test", voucher)).thenReturn(ApiResult.ok(Map.of("ok", true)));
         when(growthService.updateVoucherStatus("idem-status", "vc-test", status)).thenReturn(ApiResult.ok(Map.of("ok", true)));

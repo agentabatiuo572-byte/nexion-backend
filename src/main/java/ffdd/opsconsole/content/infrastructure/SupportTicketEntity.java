@@ -26,4 +26,5 @@ public class SupportTicketEntity extends BaseEntity {
     private LocalDateTime closedAt;
     private Boolean archived;
     private LocalDateTime archivedAt;
+    private Long version;
 }

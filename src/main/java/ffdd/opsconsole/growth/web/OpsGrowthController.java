@@ -7,6 +7,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
@@ -184,6 +185,16 @@ public class OpsGrowthController {
                 () -> growthService.createWheelGuard(idempotencyKey, request));
     }
 
+    @PatchMapping("/quest-events/wheel-guards/{guardKey}")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
+    public ApiResult<Map<String, Object>> updateWheelGuard(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String guardKey,
+            @RequestBody GrowthConfigUpdateRequest request) {
+        return commandBoundary.execute("H4", "WHEEL_GUARD_UPDATE", guardKey, idempotencyKey, request,
+                () -> growthService.updateWheelGuard(idempotencyKey, guardKey, request));
+    }
+
     @PatchMapping("/quest-events/wheel-tiers/probabilities")
     @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
     public ApiResult<Map<String, Object>> updateWheelProbabilities(
@@ -332,6 +343,17 @@ public class OpsGrowthController {
                 () -> growthService.updatePowerUp(idempotencyKey, powerUpId, request));
     }
 
+    @PatchMapping("/check-in/power-ups/{powerUpId}/config")
+    @PreAuthorize("hasAuthority('growth_h5_write')")
+    public ApiResult<Map<String, Object>> updatePowerUpConfig(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable int powerUpId,
+            @RequestBody GrowthPowerUpUpdateRequest request) {
+        return commandBoundary.execute("H5", "POWER_UP_CONFIG_UPDATE", String.valueOf(powerUpId),
+                idempotencyKey, request,
+                () -> growthService.updatePowerUpConfig(idempotencyKey, powerUpId, request));
+    }
+
     @PatchMapping("/earn-milestones/tick-interval")
     // earn 里程碑属 H5 签到&NEX（收益/间隔），按业务内容归 H5
     @PreAuthorize("hasAuthority('growth_h5_write')")
@@ -413,5 +435,15 @@ public class OpsGrowthController {
             @RequestBody GrowthConfigUpdateRequest request) {
         return commandBoundary.execute("H7", "VOUCHER_DELETE", voucherId, idempotencyKey, request,
                 () -> growthService.deleteVoucher(idempotencyKey, voucherId, request));
+    }
+
+    @PatchMapping("/vouchers/{voucherId}/grants/revoke-available")
+    @PreAuthorize("hasAuthority('growth_h7_write')")
+    public ApiResult<Map<String, Object>> revokeAvailableVoucherGrants(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String voucherId,
+            @RequestBody GrowthConfigUpdateRequest request) {
+        return commandBoundary.execute("H7", "VOUCHER_AVAILABLE_GRANTS_REVOKE", voucherId, idempotencyKey, request,
+                () -> growthService.revokeAvailableVoucherGrants(idempotencyKey, voucherId, request));
     }
 }

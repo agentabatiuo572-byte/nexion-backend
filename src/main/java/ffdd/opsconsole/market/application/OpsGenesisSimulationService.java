@@ -33,8 +33,9 @@ public class OpsGenesisSimulationService {
     private static final String PREFIX = "market.genesis.ops.";
     private static final Set<String> BOOLEAN_KEYS = Set.of(
             "eligibility.enabled", "eligibility.kycRequired", "presale.enabled", "presale.showCountdown");
-    private static final Set<String> DECIMAL_KEYS = Set.of("eligibility.maxPerUser", "presale.unitPrice");
-    private static final Set<String> INTEGER_KEYS = Set.of("eligibility.minAccountAgeDays", "presale.maxPerUser");
+    private static final Set<String> DECIMAL_KEYS = Set.of("presale.unitPrice");
+    private static final Set<String> INTEGER_KEYS = Set.of(
+            "eligibility.maxPerUser", "eligibility.minAccountAgeDays", "presale.maxPerUser");
     private static final Set<String> INSTANT_KEYS = Set.of("presale.startAt", "presale.endAt");
     private static final Set<String> ALLOWED_KEYS = Set.of(
             "eligibility.enabled", "eligibility.kycRequired", "eligibility.maxPerUser", "eligibility.minAccountAgeDays",
@@ -68,10 +69,19 @@ public class OpsGenesisSimulationService {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "G4_CONFIG_MUTEX_UNAVAILABLE");
         }
         return idempotency.execute("GENESIS_OPS_CONFIG", idempotencyKey,
-                hash(configKey + ":" + value + ":" + reason), Map.class, () -> {
+                hash(configKey + ":" + value + ":" + reason + ":" + request.expectedValue()), Map.class, () -> {
+                    if (request.expectedValue() == null) {
+                        throw new BizException(428, "G4_CONFIG_EXPECTED_VALUE_REQUIRED");
+                    }
+                    String before = config.activeValueForUpdate(PREFIX + configKey).orElse("");
+                    if (!before.equals(request.expectedValue().trim())) {
+                        throw new BizException(409, "G4_CONFIG_STATE_CONFLICT");
+                    }
+                    if (before.equals(value)) {
+                        throw new BizException(409, "G4_CONFIG_NO_CHANGES");
+                    }
                     validatePresaleWindow(configKey, value);
                     validatePresaleActivation(configKey, value);
-                    String before = config.activeValue(PREFIX + configKey).orElse("");
                     config.upsertAdminValue(PREFIX + configKey, value, valueType(configKey), "MARKET_GENESIS_OPS",
                             "G4 资格门/预售配置；" + reason);
                     audit("GENESIS_OPS_CONFIG_UPDATE", configKey, actor(request.operator()), idempotencyKey,

@@ -51,7 +51,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
             <script>
             SELECT eo.id,
                    eo.user_id AS userId,
-                   CONCAT('U', LPAD(eo.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(eo.user_id, GREATEST(8, LENGTH(CAST(eo.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, CONCAT('user-', eo.user_id)) AS nickname,
                    COALESCE(u.country_code, '--') AS countryCode,
                    eo.exchange_no AS exchangeNo,
@@ -126,7 +126,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
     @Select("""
             SELECT eo.id,
                    eo.user_id AS userId,
-                   CONCAT('U', LPAD(eo.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(eo.user_id, GREATEST(8, LENGTH(CAST(eo.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, CONCAT('user-', eo.user_id)) AS nickname,
                    COALESCE(u.country_code, '--') AS countryCode,
                    eo.exchange_no AS exchangeNo,

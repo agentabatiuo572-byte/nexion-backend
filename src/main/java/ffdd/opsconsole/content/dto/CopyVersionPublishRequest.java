@@ -14,11 +14,21 @@ public record CopyVersionPublishRequest(
         String vi,
         String copyPosition,
         String operator,
-        String reason) {
+        String reason,
+        Long expectedRevision) {
+
+    public CopyVersionPublishRequest(
+            String version, String surface, String audience, CopyAudienceTarget audienceTarget,
+            String trafficSplit, String versionNote, String zh, String en, String vi,
+            String copyPosition, String operator, String reason) {
+        this(version, surface, audience, audienceTarget, trafficSplit, versionNote, zh, en, vi,
+                copyPosition, operator, reason, 1L);
+    }
 
     public CopyVersionPublishRequest(
             String version, String surface, String audience, String trafficSplit, String versionNote,
             String zh, String en, String vi, String copyPosition, String operator, String reason) {
-        this(version, surface, audience, null, trafficSplit, versionNote, zh, en, vi, copyPosition, operator, reason);
+        this(version, surface, audience, null, trafficSplit, versionNote, zh, en, vi,
+                copyPosition, operator, reason, 1L);
     }
 }

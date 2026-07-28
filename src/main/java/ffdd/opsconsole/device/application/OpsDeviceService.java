@@ -20,6 +20,7 @@ import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderDetailView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
+import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
@@ -603,9 +604,21 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ComputeConfigParamUpdateRequest trusted = new ComputeConfigParamUpdateRequest(
                 value, request.reason().trim(), trustedOperator);
         return deviceIdempotent("E6_COMPUTE_CONFIG_UPDATE", idempotencyKey, paramKey, trusted, () -> {
-            String before = configFacade.activeValueForUpdate(paramKey).orElse("");
+            LockedComputeSnapshot locked = lockComputeSnapshot();
+            String before = locked.effective().get(paramKey);
             if (before.equals(value)) {
                 return ApiResult.fail(409, "E6_VALUE_UNCHANGED");
+            }
+            Map<String, String> candidate = new LinkedHashMap<>(locked.effective());
+            candidate.put(paramKey, value);
+            String invariantError = validateComputeInvariants(candidate);
+            if (invariantError != null) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), invariantError);
+            }
+            if (e6AmplifiesFinancialOutflow(locked.effective(), candidate, Set.of(paramKey))
+                    && coverageBelowRedline()) {
+                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
             configFacade.upsertAdminValue(paramKey, value, "STRING", ComputeConfigRegistry.CONFIG_GROUP, "E6 compute config");
             String eventType = computeEventType(paramKey);
@@ -650,10 +663,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ComputeConfigBatchUpdateRequest trusted = new ComputeConfigBatchUpdateRequest(
                 Map.copyOf(normalized), request.reason().trim(), trustedOperator);
         return deviceIdempotent("E6_COMPUTE_CONFIG_BATCH", idempotencyKey, "batch", trusted, () -> {
+            LockedComputeSnapshot locked = lockComputeSnapshot();
             Map<String, String> before = new LinkedHashMap<>();
             Map<String, String> changed = new LinkedHashMap<>();
             normalized.forEach((key, value) -> {
-                String current = configFacade.activeValueForUpdate(key).orElse("");
+                String current = locked.effective().get(key);
                 before.put(key, current);
                 if (!current.equals(value)) {
                     changed.put(key, value);
@@ -661,6 +675,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             });
             if (changed.isEmpty()) {
                 return ApiResult.fail(409, "E6_VALUE_UNCHANGED");
+            }
+            Map<String, String> candidate = new LinkedHashMap<>(locked.effective());
+            candidate.putAll(changed);
+            String invariantError = validateComputeInvariants(candidate);
+            if (invariantError != null) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), invariantError);
+            }
+            if (e6AmplifiesFinancialOutflow(locked.effective(), candidate, changed.keySet())
+                    && coverageBelowRedline()) {
+                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
             changed.forEach((key, value) -> configFacade.upsertAdminValue(
                     key, value, "STRING", ComputeConfigRegistry.CONFIG_GROUP, "E6 compute config batch"));
@@ -713,6 +738,97 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         return "COMPUTE_PARAM_KEY_INVALID";
     }
+
+    /**
+     * E6 是一个整体配置，不允许只验证当前输入框。事务内按稳定顺序锁住完整快照，
+     * 缺失或已损坏的存量值回落到与只读投影完全相同的注册表默认值。
+     */
+    private LockedComputeSnapshot lockComputeSnapshot() {
+        Map<String, String> raw = new LinkedHashMap<>();
+        Map<String, String> effective = new LinkedHashMap<>();
+        for (String key : ComputeConfigRegistry.allParamKeys()) {
+            var stored = configFacade.activeValueForUpdate(key);
+            String rawValue = stored.orElse("");
+            String effectiveValue = stored
+                    .map(String::trim)
+                    .filter(value -> validateComputeValue(key, value) == null)
+                    .orElseGet(() -> ComputeConfigRegistry.defaultValue(key));
+            raw.put(key, rawValue);
+            effective.put(key, effectiveValue);
+        }
+        return new LockedComputeSnapshot(Map.copyOf(raw), Map.copyOf(effective));
+    }
+
+    /** 跨字段结构不变量：显卡档位算力严格递增，识别词在全部档位中不产生歧义。 */
+    private String validateComputeInvariants(Map<String, String> values) {
+        BigDecimal previousTops = null;
+        Set<String> keywords = new java.util.HashSet<>();
+        for (String tierId : ComputeConfigRegistry.GPU_TIER_IDS) {
+            BigDecimal tops = parseComputeNumber(values.get(ComputeConfigRegistry.gpuTierKey(tierId, "tops")));
+            if (tops == null || (previousTops != null && tops.compareTo(previousTops) <= 0)) {
+                return "COMPUTE_GPU_TOPS_ORDER_INVALID";
+            }
+            previousTops = tops;
+            for (String slot : ComputeConfigRegistry.KEYWORD_SLOTS) {
+                String keyword = values.getOrDefault(ComputeConfigRegistry.gpuTierKey(tierId, slot), "").trim();
+                if (!keyword.isBlank() && !keywords.add(keyword.toLowerCase(Locale.ROOT))) {
+                    return "COMPUTE_GPU_KEYWORD_DUPLICATE";
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * B1 资金安全方向：打开入口、提高收益/折算/TOPS、提高 H5 系数或缩短满额时长
+     * 都会扩大潜在支出；收紧方向在红线下仍保持可用，便于止损和回滚。
+     */
+    private boolean e6AmplifiesFinancialOutflow(
+            Map<String, String> before,
+            Map<String, String> candidate,
+            Set<String> changedKeys) {
+        String shareKey = ComputeConfigRegistry.flagKey("computeShareEnabled");
+        if (changedKeys.contains(shareKey)
+                && "off".equals(before.get(shareKey))
+                && "on".equals(candidate.get(shareKey))) {
+            return true;
+        }
+        String h5Key = ComputeConfigRegistry.coeffKey("h5BaseFactor");
+        if (changedKeys.contains(h5Key) && computeIncreases(before, candidate, h5Key)) {
+            return true;
+        }
+        String continuityKey = ComputeConfigRegistry.coeffKey("continuityFullHours");
+        if (changedKeys.contains(continuityKey) && computeDecreases(before, candidate, continuityKey)) {
+            return true;
+        }
+        String topsBaselineKey = ComputeConfigRegistry.yieldKey("topsBaseline");
+        if (changedKeys.contains(topsBaselineKey) && computeDecreases(before, candidate, topsBaselineKey)) {
+            return true;
+        }
+        for (String yieldKey : List.of("dailyUsdtPerBaseline", "nexPerUsdt")) {
+            String key = ComputeConfigRegistry.yieldKey(yieldKey);
+            if (changedKeys.contains(key) && computeIncreases(before, candidate, key)) {
+                return true;
+            }
+        }
+        for (String tierId : ComputeConfigRegistry.GPU_TIER_IDS) {
+            String key = ComputeConfigRegistry.gpuTierKey(tierId, "tops");
+            if (changedKeys.contains(key) && computeIncreases(before, candidate, key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean computeIncreases(Map<String, String> before, Map<String, String> candidate, String key) {
+        return parseComputeNumber(candidate.get(key)).compareTo(parseComputeNumber(before.get(key))) > 0;
+    }
+
+    private boolean computeDecreases(Map<String, String> before, Map<String, String> candidate, String key) {
+        return parseComputeNumber(candidate.get(key)).compareTo(parseComputeNumber(before.get(key))) < 0;
+    }
+
+    private record LockedComputeSnapshot(Map<String, String> raw, Map<String, String> effective) {}
 
     private BigDecimal parseComputeNumber(String v) {
         try {
@@ -1013,6 +1129,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 facts.activationStatus(),
                 facts.deviceId(),
                 facts.deviceInstanceNo(),
+                facts.activatedAt(),
                 catalogRepository.listOrderHistory(normalizedOrderNo),
                 catalogRepository.listOrderFunding(normalizedOrderNo),
                 current,
@@ -1116,6 +1233,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        String evidenceError = orderProgressEvidenceError(normalizedOrderNo, fromState, toState);
+        if (evidenceError != null) {
+            return ApiResult.fail(409, evidenceError);
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         DeviceOrderView updated = catalogRepository.updateOrderState(normalizedOrderNo, fromState, toState, now).orElse(null);
         if (updated == null) {
@@ -1132,6 +1253,60 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "idempotencyKey", idempotencyKey.trim()));
         publishOrderEvent("E4_ORDER_STATE_CHANGED", normalizedOrderNo, before, updated, request.operator());
         return ApiResult.ok(updated);
+    }
+
+    /**
+     * E4 is a projection of real payment and E5 fulfilment facts, not an
+     * independent state editor. Manual progress may only acknowledge facts
+     * already written by D1/D4 or E5; it must never mint those facts itself.
+     */
+    private String orderProgressEvidenceError(String orderNo, String fromState, String toState) {
+        if ("placed".equals(fromState) && "paid".equals(toState)) {
+            return "ORDER_PAYMENT_CONFIRMATION_REQUIRED";
+        }
+        if ("paid".equals(fromState) && "provisioning".equals(toState)) {
+            DeviceOrderFacts facts = catalogRepository.findOrderFacts(orderNo).orElse(null);
+            boolean allocated = facts != null
+                    && "PAID".equalsIgnoreCase(facts.paymentStatus())
+                    && facts.deviceId() != null
+                    && StringUtils.hasText(facts.deviceInstanceNo())
+                    && StringUtils.hasText(facts.dcLocation());
+            boolean settled = catalogRepository.listOrderFunding(orderNo).stream()
+                    .anyMatch(this::isSettledOrderFunding);
+            if (!allocated || !settled) {
+                return "ORDER_PROVISIONING_EVIDENCE_REQUIRED";
+            }
+        }
+        if ("provisioning".equals(fromState) && "activated".equals(toState)) {
+            DeviceOrderFacts facts = catalogRepository.findOrderFacts(orderNo).orElse(null);
+            boolean activatedByE5 = facts != null
+                    && facts.deviceId() != null
+                    && StringUtils.hasText(facts.deviceInstanceNo())
+                    && StringUtils.hasText(facts.dcLocation())
+                    && facts.activatedAt() != null;
+            if (!activatedByE5) {
+                return "ORDER_DEVICE_ACTIVATION_REQUIRED";
+            }
+        }
+        return null;
+    }
+
+    private boolean isSettledOrderFunding(DeviceOrderFundingView funding) {
+        if (funding == null || !StringUtils.hasText(funding.source())
+                || !StringUtils.hasText(funding.status())) {
+            return false;
+        }
+        String source = funding.source().trim().toUpperCase(Locale.ROOT);
+        String status = funding.status().trim().toUpperCase(Locale.ROOT);
+        boolean settledStatus = Set.of("PAID", "SUCCESS", "POSTED", "COMPLETED").contains(status);
+        if (!settledStatus) {
+            return false;
+        }
+        if ("D1_PAYMENT".equals(source)) {
+            return true;
+        }
+        return ("D4_LEDGER".equals(source) || "D4_BILL".equals(source))
+                && "OUT".equalsIgnoreCase(funding.direction());
     }
 
     public ApiResult<Map<String, Object>> e1GenerationGates() {
@@ -1284,6 +1459,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 if (before.compareTo(trusted.queueSaturation()) == 0) {
                     return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
                 }
+                if (trusted.queueSaturation().compareTo(before) > 0 && coverageBelowRedline()) {
+                    return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                            OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+                }
                 LocalDateTime effectiveAt = LocalDateTime.now(clock);
                 configFacade.upsertAdminValue(E2_QUEUE_SATURATION_KEY,
                         trusted.queueSaturation().stripTrailingZeros().toPlainString(), "DECIMAL", "E2",
@@ -1340,6 +1519,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             };
             if (String.valueOf(beforeValue).equals(String.valueOf(afterValue))) {
                 return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
+            }
+            if (e2TaskPricingAmplifiesFinancialOutflow(
+                    before.minReward(), before.maxReward(), parseVram(before.minVram()),
+                    "active".equals(before.status()) && !"已 kill".equals(before.killInit()),
+                    nextMin, nextMax, nextVram, nextEnabled)
+                    && coverageBelowRedline()) {
+                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
             DeviceTaskUpsertRequest write = new DeviceTaskUpsertRequest(
                     before.name(), before.price(), before.unit(), before.requirement(), before.saturation(),
@@ -1908,6 +2095,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         String dc = normalizeDc(request.dcLocation());
         String trustedOperator = operator(request.operator());
         DeviceDatacenterUpsertRequest source = normalizeDatacenterRequest(dc, request);
@@ -1935,6 +2125,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, false);
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         String dc = normalizeDc(dcLocation);
         String nextDc = StringUtils.hasText(request.dcLocation()) ? normalizeDc(request.dcLocation()) : dc;
@@ -1979,6 +2172,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (reasonGuard != null) {
             return reasonGuard;
         }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         String dc = normalizeDc(dcLocation);
         String trustedOperator = operator(request.operator());
         DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
@@ -2017,6 +2213,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         String dc = normalizeDc(dcLocation);
         String trustedOperator = operator(request.operator());
         DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
@@ -2041,6 +2240,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<Map<String, Object>> guard = requireE5Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         String dc = normalizeDc(dcLocation);
         String trustedOperator = operator(request.operator());
@@ -3603,6 +3805,21 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
     }
 
+    private boolean e2TaskPricingAmplifiesFinancialOutflow(
+            BigDecimal beforeMin,
+            BigDecimal beforeMax,
+            int beforeVram,
+            boolean beforeEnabled,
+            BigDecimal nextMin,
+            BigDecimal nextMax,
+            int nextVram,
+            boolean nextEnabled) {
+        return nextMin.compareTo(beforeMin) > 0
+                || nextMax.compareTo(beforeMax) > 0
+                || nextVram < beforeVram
+                || (!beforeEnabled && nextEnabled);
+    }
+
     private boolean e3AmplifiesFinancialOutflow(
             Map<String, String> before,
             Map<String, String> candidate,
@@ -3694,7 +3911,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private BigDecimal e3TradeinCredit(Map<String, String> config, BigDecimal ratio) {
         for (int i = 1; i <= 4; i++) {
             BigDecimal cut = e3Decimal(config, "tradeinLadderCut" + i, String.valueOf(i * 25));
-            if (ratio.compareTo(cut) <= 0) {
+            // FEAT-DEV02 defines left-closed/right-open bands:
+            // [0, cut1), [cut1, cut2) ... [cut4, +inf).
+            if (ratio.compareTo(cut) < 0) {
                 return e3Decimal(config, "tradeinLadderCredit" + i, String.valueOf(90 - i * 15));
             }
         }

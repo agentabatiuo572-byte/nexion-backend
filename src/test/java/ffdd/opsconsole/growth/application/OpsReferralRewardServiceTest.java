@@ -15,7 +15,9 @@ import static org.mockito.Mockito.never;
 
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.growth.dto.ReferralRewardParamUpdateRequest;
+import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -32,6 +34,7 @@ import java.util.Optional;
 import java.util.function.Supplier;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,6 +53,7 @@ class OpsReferralRewardServiceTest {
 
     @BeforeEach
     void setUp() {
+        A2ReplayContext.enterReplay();
         when(mapper.lockRewardMutation()).thenReturn("H8_REWARD");
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(Map.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
@@ -68,6 +72,49 @@ class OpsReferralRewardServiceTest {
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("100"), new BigDecimal("85")));
     }
 
+    @AfterEach
+    void tearDown() {
+        A2ReplayContext.exitReplay();
+    }
+
+    @Test
+    void directSettlementCallCannotBypassA2MakerChecker() {
+        A2ReplayContext.exitReplay();
+        try {
+            assertThatThrownBy(() -> service.runSettlements("idem-ref-direct",
+                    request(10, "direct settlement must be rejected")))
+                    .isInstanceOf(BizException.class)
+                    .hasMessageContaining("A2_CONFIRMATION_REQUIRED");
+
+            verify(mapper, never()).lockRewardMutation();
+            verify(mapper, never()).creditWallet(any(), any(), any());
+            verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
+                    any(), anyString(), anyString());
+        } finally {
+            A2ReplayContext.enterReplay();
+        }
+    }
+
+    @Test
+    void publicProjectionUsesPhaseAdjustedSettlementAmountsInsteadOfPrototypeDefaults() {
+        when(config.activeValue("growth.phase.month.7.newUserBonusMultiplier"))
+                .thenReturn(Optional.of("1.5"));
+        when(config.activeValue("growth.phase.month.7.inviteRewardMultiplier"))
+                .thenReturn(Optional.of("2"));
+
+        ReferralRewardPublicConfigView result = service.publicConfig();
+
+        assertThat(result.rhythmMonth()).isEqualTo(7);
+        assertThat(result.welcomeGift().lockMode()).isEqualTo("risk_bucket");
+        assertThat(result.welcomeGift().usdtAmount()).isEqualByComparingTo("7.5");
+        assertThat(result.welcomeGift().nexAmount()).isEqualByComparingTo("30");
+        assertThat(result.inviterReward().nexAmount()).isEqualByComparingTo("20");
+        assertThat(result.welcomeGift().usdtAmount().scale()).isEqualTo(6);
+        assertThat(result.welcomeGift().nexAmount().scale()).isEqualTo(6);
+        assertThat(result.inviterReward().nexAmount().scale()).isEqualTo(6);
+        assertThat(result.sources()).contains("nx_user.sponsor_user_id");
+    }
+
     @Test
     void settlesRealSponsorChainExactlyOnceAndCreditsBothWallets() {
         when(mapper.findPendingReferrals(any(LocalDateTime.class), eq(true), eq(10)))
@@ -77,7 +124,7 @@ class OpsReferralRewardServiceTest {
                 any(LocalDateTime.class), eq(true))).thenReturn(1);
 
         Map<String, Object> result = service.runSettlements("idem-ref-1",
-                new ReferralSettlementRunRequest(10, "manual reconciliation", "superadmin"));
+                request(10, "manual reconciliation"));
 
         assertThat(result).containsEntry("settled", 1).containsEntry("skipped", 0);
         verify(mapper).lockRewardMutation();
@@ -94,7 +141,7 @@ class OpsReferralRewardServiceTest {
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
 
         Map<String, Object> result = service.runSettlements("idem-ref-race",
-                new ReferralSettlementRunRequest(10, "final risk race verification", "superadmin"));
+                request(10, "final risk race verification"));
 
         assertThat(result).containsEntry("settled", 0).containsEntry("skipped", 1);
         verify(mapper, never()).creditWallet(any(), any(), any());
@@ -135,7 +182,7 @@ class OpsReferralRewardServiceTest {
         when(mapper.lockRewardMutation()).thenReturn(null);
 
         assertThatThrownBy(() -> service.runSettlements("idem-ref-no-mutex",
-                new ReferralSettlementRunRequest(10, "mutex health verification", "superadmin")))
+                request(10, "mutex health verification")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_REWARD_MUTEX_UNAVAILABLE");
 
@@ -154,7 +201,7 @@ class OpsReferralRewardServiceTest {
                 new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
 
         assertThatThrownBy(() -> service.runSettlements("idem-ref-post-b1",
-                new ReferralSettlementRunRequest(10, "post award coverage verification", "superadmin")))
+                request(10, "post award coverage verification")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_BELOW_REDLINE");
     }
@@ -164,7 +211,7 @@ class OpsReferralRewardServiceTest {
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false));
 
         assertThatThrownBy(() -> service.runSettlements("idem-ref-b1-unavailable",
-                new ReferralSettlementRunRequest(10, "coverage source verification", "superadmin")))
+                request(10, "coverage source verification")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_DATA_UNAVAILABLE");
 
@@ -190,7 +237,7 @@ class OpsReferralRewardServiceTest {
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
 
         assertThatThrownBy(() -> service.runSettlements("idem-ref-b1-run",
-                new ReferralSettlementRunRequest(10, "manual reconciliation", "superadmin")))
+                request(10, "manual reconciliation")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_BELOW_REDLINE");
 
@@ -204,7 +251,7 @@ class OpsReferralRewardServiceTest {
         when(config.activeValue("K.rewards.inviterReward.nexAmount")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.runSettlements("idem-ref-no-config",
-                new ReferralSettlementRunRequest(10, "manual reconciliation", "superadmin")))
+                request(10, "manual reconciliation")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("REFERRAL_REWARD_NOT_CONFIGURED");
 
@@ -254,6 +301,46 @@ class OpsReferralRewardServiceTest {
         verify(audit).recordRequiredInNewTransaction(argThat(request ->
                 "REFERRAL_REWARD_PARAM_UPDATE_REJECTED".equals(request.getAction())
                         && "REJECTED".equals(request.getResult())));
+    }
+
+    @Test
+    void staleApprovedRewardSnapshotCannotSettleAfterH8OrH1Changes() {
+        ReferralSettlementRunRequest approved = request(10, "approved reward snapshot");
+        when(config.activeValue("growth.phase.month.7.inviteRewardMultiplier"))
+                .thenReturn(Optional.of("1.5"));
+
+        assertThatThrownBy(() -> service.runSettlements(
+                "idem-ref-stale-snapshot", approved))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_REWARD_SNAPSHOT_CHANGED_REPROPOSE");
+
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyBoolean(), any(Integer.class));
+    }
+
+    @Test
+    void effectiveRewardRoundsOnceAndRejectsTheSharedProductCeiling() {
+        when(config.activeValue("K.rewards.inviterReward.nexAmount"))
+                .thenReturn(Optional.of("249999999.75"));
+        when(config.activeValue("growth.phase.month.7.inviteRewardMultiplier"))
+                .thenReturn(Optional.of("4.000001"));
+
+        assertThatThrownBy(service::overview)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("REFERRAL_REWARD_EFFECTIVE_AMOUNT_OVERFLOW");
+    }
+
+    private ReferralSettlementRunRequest request(int limit, String reason) {
+        if (!A2ReplayContext.isReplaying()) {
+            return new ReferralSettlementRunRequest(limit, reason, "superadmin", null, null, null);
+        }
+        Map<String, Object> overview = service.overview();
+        return new ReferralSettlementRunRequest(
+                limit,
+                reason,
+                "superadmin",
+                ((Number) overview.get("version")).longValue(),
+                ((Number) overview.get("rhythmMonth")).intValue(),
+                String.valueOf(overview.get("rewardSnapshotHash")));
     }
 
     private static BigDecimal decimal(String expected) {

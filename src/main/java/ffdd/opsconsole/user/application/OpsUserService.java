@@ -133,6 +133,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final String DEFAULT_KYC_NETWORK_WHITELIST = "TRC20 / ERC20 / BTC / ETH";
     private static final String CAPTCHA_OFF_WINDOW_KEY = RegistrationRiskCaptchaWindow.CONFIG_KEY;
     private static final String C6_CONFIG_VERSION_KEY = RegistrationRiskCaptchaWindow.VERSION_KEY;
+    private static final String C5_CONFIG_VERSION_KEY = "auth.security.c5_config_version";
     private static final String K1_REJECT_CODE = "MULTI_ACCOUNT_PARAM_BELONGS_TO_K1";
     private static final String K1_PATH = "/risk/multi-account";
     private static final String DEFAULT_SECURITY_LOOKUP_KEY = "usr_2231";
@@ -819,7 +820,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
         String scope = StringUtils.hasText(request.scope()) ? request.scope().trim().toUpperCase(Locale.ROOT) : "MASKED_LEDGER";
-        if (containsRawJsonOrUrl(scope)) {
+        if (!"MASKED_LEDGER".equals(scope)) {
             c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_REJECTED", "USER_KYC_EXPORT", "PENDING",
                     null, request.operator(), idempotencyKey, null, null, request.reason(), "C4_EXPORT_SCOPE_INVALID", "REJECTED");
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "C4_EXPORT_SCOPE_INVALID");
@@ -1337,7 +1338,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("expiresAt", expiresAt);
         detail.put("sessionsRevoked", sessionsRevoked);
         c2RequiredAudit("C2_ACCOUNT_LIST_UPSERTED", "USER_ACCOUNT_LIST", String.valueOf(request.userId()), request.userId(), operator, detail);
-        outboxService.publish("USER_ACCOUNT_LIST", String.valueOf(request.userId()), "C2_ACCOUNT_LIST_UPSERTED", detail);
+        outboxService.publish("USER_ACCOUNT_LIST", String.valueOf(request.userId()), "admin.account_list_upserted", detail);
         return ApiResult.ok(updated);
     }
 
@@ -1404,7 +1405,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "reason", reason,
                 "idempotencyKey", idempotencyKey.trim());
         c2RequiredAudit("C2_ACCOUNT_LIST_REMOVED", "USER_ACCOUNT_LIST", String.valueOf(userId), userId, operator, detail);
-        outboxService.publish("USER_ACCOUNT_LIST", String.valueOf(userId), "C2_ACCOUNT_LIST_REMOVED", detail);
+        outboxService.publish("USER_ACCOUNT_LIST", String.valueOf(userId), "admin.account_list_removed", detail);
         return ApiResult.ok(updated);
     }
 
@@ -1544,9 +1545,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         long activeSessionCount = userRepository.countActiveSessions(userId, sessionIdleDays());
+        if (activeSessionCount <= 0) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NO_ACTIVE_SESSION");
+        }
         String reason = request.reason().trim();
         String operator = operator(request.operator());
-        userRepository.revokeUserSessions(userId, reason);
+        userRepository.revokeActiveUserSessions(userId, reason, sessionIdleDays());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("userId", userId);
         response.put("revokedCount", activeSessionCount);
@@ -1556,7 +1560,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "reason", reason,
                 "idempotencyKey", idempotencyKey.trim());
         c2RequiredAudit("C2_USER_SESSIONS_REVOKED", "USER_SESSION", String.valueOf(userId), userId, operator, detail);
-        outboxService.publish("USER_SESSION", String.valueOf(userId), "C2_USER_SESSIONS_REVOKED", detail);
+        outboxService.publish("USER_SECURITY", String.valueOf(userId), "admin.session_revoked", Map.of(
+                "targetUserId", userId,
+                "operator", operator,
+                "reason", reason,
+                "revokedCount", activeSessionCount,
+                "occurredAt", LocalDateTime.now().toString()));
         return ApiResult.ok(response);
     }
 
@@ -1590,6 +1599,9 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (definition.readOnly()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        if (request.expectedVersion() == null || request.expectedVersion() < 0L) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "C5_EXPECTED_VERSION_REQUIRED");
+        }
         int nextValue;
         try {
             nextValue = normalizeCredentialParamValue(definition, request.value());
@@ -1599,20 +1611,36 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         Map<String, Object> fingerprint = Map.of(
                 "paramKey", definition.key(),
                 "value", nextValue,
-                "reason", request.reason().trim());
+                "reason", request.reason().trim(),
+                "expectedVersion", request.expectedVersion());
         return idempotentC2("C5_CREDENTIAL_PARAM:" + definition.key(), idempotencyKey, fingerprint, () -> {
+            long currentVersion = parseLong(
+                    configFacade.activeValueForUpdate(C5_CONFIG_VERSION_KEY).orElse("0"), 0L);
+            if (currentVersion != request.expectedVersion()) {
+                return ApiResult.fail(409, "C5_CONFIG_VERSION_CONFLICT");
+            }
+            configFacade.activeValueForUpdate(definition.configKey());
             configFacade.upsertAdminValue(
                     definition.configKey(),
                     String.valueOf(nextValue),
                     "NUMBER",
                     AUTH_CONFIG_GROUP,
                     request.reason().trim());
-            UserCredentialParamView updated = credentialParamView(definition, nextValue);
+            long nextVersion = Math.addExact(currentVersion, 1L);
+            configFacade.upsertAdminValue(
+                    C5_CONFIG_VERSION_KEY,
+                    String.valueOf(nextVersion),
+                    "NUMBER",
+                    AUTH_CONFIG_GROUP,
+                    request.reason().trim());
+            UserCredentialParamView updated = credentialParamView(definition, nextValue, nextVersion);
             c5RequiredAudit("C5_CREDENTIAL_PARAM_UPDATED", "AUTH_CONFIG", definition.key(), null,
                     operator(request.operator()), Map.of(
                             "paramKey", definition.key(),
                             "configKey", definition.configKey(),
                             "value", nextValue,
+                            "beforeVersion", currentVersion,
+                            "afterVersion", nextVersion,
                             "reason", request.reason().trim(),
                             "idempotencyKey", idempotencyKey.trim()));
             return ApiResult.ok(updated);
@@ -3622,10 +3650,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private UserCredentialParamView credentialParamView(CredentialParamDefinition definition) {
         int value = boundedConfigInt(definition.configKey(), definition.fallback(), definition.min(), definition.max());
-        return credentialParamView(definition, value);
+        return credentialParamView(definition, value, configLong(C5_CONFIG_VERSION_KEY, 0L));
     }
 
-    private UserCredentialParamView credentialParamView(CredentialParamDefinition definition, int value) {
+    private UserCredentialParamView credentialParamView(CredentialParamDefinition definition, int value, long version) {
         return new UserCredentialParamView(
                 definition.key(),
                 definition.name(),
@@ -3635,7 +3663,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 definition.max(),
                 definition.readOnly(),
                 definition.note(),
-                definition.configKey());
+                definition.configKey(),
+                version);
     }
 
     private UserRegistrationRiskParamView registrationRiskParamView(

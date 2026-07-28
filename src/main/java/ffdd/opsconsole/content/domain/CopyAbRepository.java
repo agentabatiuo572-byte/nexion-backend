@@ -58,6 +58,13 @@ public interface CopyAbRepository {
 
     List<CopyFrameworkParamView> listFrameworkParams();
 
+    /** Locks one framework row so compare-and-set updates cannot overwrite a concurrent operator. */
+    default Optional<CopyFrameworkParamView> findFrameworkParamForUpdate(String paramKey) {
+        return listFrameworkParams().stream()
+                .filter(row -> row.key().equals(paramKey))
+                .findFirst();
+    }
+
     List<CopyVersionOptionView> listVersionOptions();
 
     Optional<CopyVersionOptionView> findVersionOption(String versionKey);

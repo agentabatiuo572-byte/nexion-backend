@@ -22,13 +22,34 @@ public record GrowthRhythmSnapshot(
         BigDecimal binaryDailyCap,
         BigDecimal questBonusMultiplier,
         boolean complianceHoldEnabled,
-        List<String> sourceKeys) {
+        List<String> sourceKeys,
+        boolean reliable,
+        List<String> reliabilityErrors) {
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
     private static final String RHYTHM_TOTAL_MONTHS_KEY = "H1.rhythm.totalMonths";
     private static final String RHYTHM_CURRENT_MONTH_KEY = "H1.rhythm.currentMonth";
     private static final String RHYTHM_PHASE_PROGRESS_KEY = "H1.rhythm.phaseProgressPct";
     private static final List<Integer> RHYTHM_TOTAL_OPTIONS = List.of(9, 12, 15, 18, 24);
+
+    public GrowthRhythmSnapshot(
+            int totalMonths,
+            int currentMonth,
+            String currentPhase,
+            int phaseProgressPct,
+            BigDecimal newUserBonusMultiplier,
+            BigDecimal inviteRewardMultiplier,
+            BigDecimal reinvestMultiplier,
+            BigDecimal withdrawPenaltyFeeRate,
+            int withdrawCooldownDays,
+            BigDecimal binaryDailyCap,
+            BigDecimal questBonusMultiplier,
+            boolean complianceHoldEnabled,
+            List<String> sourceKeys) {
+        this(totalMonths, currentMonth, currentPhase, phaseProgressPct, newUserBonusMultiplier,
+                inviteRewardMultiplier, reinvestMultiplier, withdrawPenaltyFeeRate, withdrawCooldownDays,
+                binaryDailyCap, questBonusMultiplier, complianceHoldEnabled, sourceKeys, true, List.of());
+    }
 
     public static GrowthRhythmSnapshot from(PlatformConfigFacade configFacade, OpsReadTimeSeedPolicy readTimeSeedPolicy) {
         boolean allowFallback = false;
@@ -56,6 +77,7 @@ public record GrowthRhythmSnapshot(
             int currentMonth,
             String currentPhase,
             boolean allowFallback) {
+        List<String> reliabilityErrors = validateRequiredFacts(configFacade, totalMonths, currentMonth, currentPhase);
         return new GrowthRhythmSnapshot(
                 totalMonths,
                 currentMonth,
@@ -76,7 +98,9 @@ public record GrowthRhythmSnapshot(
                         CURRENT_MONTH_KEY,
                         CURRENT_PHASE_KEY,
                         "growth.phase.*",
-                        "growth.withdraw_nex_gate.*"));
+                        "growth.withdraw_nex_gate.*"),
+                reliabilityErrors.isEmpty(),
+                reliabilityErrors);
     }
 
     public Map<String, Object> summary() {
@@ -188,6 +212,61 @@ public record GrowthRhythmSnapshot(
 
     private static BigDecimal percent(BigDecimal ratio) {
         return ratio.multiply(BigDecimal.valueOf(100)).setScale(2, RoundingMode.HALF_UP).stripTrailingZeros();
+    }
+
+    private static List<String> validateRequiredFacts(
+            PlatformConfigFacade configFacade, int totalMonths, int currentMonth, String currentPhase) {
+        List<String> errors = new java.util.ArrayList<>();
+        if (!RHYTHM_TOTAL_OPTIONS.contains(totalMonths)) errors.add(RHYTHM_TOTAL_MONTHS_KEY);
+        if (currentMonth < 1 || currentMonth > totalMonths) errors.add(RHYTHM_CURRENT_MONTH_KEY);
+        if (currentPhase == null || !currentPhase.matches("P[1-6]")) errors.add(CURRENT_PHASE_KEY);
+        validateDecimal(configFacade, RHYTHM_PHASE_PROGRESS_KEY, BigDecimal.ZERO, new BigDecimal("100"), errors);
+        String prefix = "growth.phase.month." + currentMonth + ".";
+        validateDecimal(configFacade, prefix + "newUserBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateDecimal(configFacade, prefix + "inviteRewardMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateDecimal(configFacade, prefix + "reinvestMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateDecimal(configFacade, prefix + "withdrawPenaltyFeeRate", BigDecimal.ZERO, BigDecimal.ONE, errors);
+        validateInteger(configFacade, prefix + "withdrawCooldownDays", 0, 365, errors);
+        validateDecimal(configFacade, prefix + "binaryDailyCap", BigDecimal.ZERO, new BigDecimal("1000000000"), errors);
+        validateDecimal(configFacade, prefix + "questBonusMultiplier", new BigDecimal("0.01"), new BigDecimal("10"), errors);
+        validateInteger(configFacade, prefix + "complianceHoldEnabled", 0, 1, errors);
+        return List.copyOf(errors);
+    }
+
+    private static void validateDecimal(
+            PlatformConfigFacade configFacade,
+            String key,
+            BigDecimal min,
+            BigDecimal max,
+            List<String> errors) {
+        try {
+            BigDecimal value = configFacade.activeValue(key)
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .map(raw -> new BigDecimal(raw.replace("%", "")))
+                    .orElseThrow();
+            if (value.compareTo(min) < 0 || value.compareTo(max) > 0) errors.add(key);
+        } catch (RuntimeException ex) {
+            errors.add(key);
+        }
+    }
+
+    private static void validateInteger(
+            PlatformConfigFacade configFacade,
+            String key,
+            int min,
+            int max,
+            List<String> errors) {
+        try {
+            int value = configFacade.activeValue(key)
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .map(raw -> new BigDecimal(raw).intValueExact())
+                    .orElseThrow();
+            if (value < min || value > max) errors.add(key);
+        } catch (RuntimeException ex) {
+            errors.add(key);
+        }
     }
 
     private static int clamp(int value, int min, int max) {

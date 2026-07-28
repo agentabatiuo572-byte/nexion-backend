@@ -5,6 +5,7 @@ import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.PolicyRow;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.TrialRow;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.WalletRow;
+import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -25,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -37,6 +39,9 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AppTrialLifecycleService {
+    private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
+    private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
+
     private final AppTrialLifecycleMapper mapper;
     private final AdminIdempotencyService idempotency;
     private final TreasuryCoverageFacade coverageFacade;
@@ -62,6 +67,7 @@ public class AppTrialLifecycleService {
 
     private ApiResult<Map<String, Object>> startOnce(
             Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
+        if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         Map<String, String> policy = policyMap();
         if (!flag(policy, "phaseOpen", true)) return ApiResult.fail(409, "TRIAL_PHASE_CLOSED");
         if (mapper.trialCycleSignalCount(userId) > 0) return ApiResult.fail(409, "TRIAL_CYCLE_RISK_BLOCKED");
@@ -149,7 +155,9 @@ public class AppTrialLifecycleService {
         BigDecimal threshold = decimal(policy, "highQualityThresholdUSD", "100");
         if (preview.shadowUsdt().compareTo(threshold) < 0) return ApiResult.fail(409, "TRIAL_EXTENSION_THRESHOLD_NOT_MET");
         int days = positiveInt(policy, "extensionDays", 3);
-        if (mapper.extendTrial(row.id(), row.version(), days, now) != 1) {
+        int graceDays = nonNegativeInt(policy, "graceDays", 7);
+        LocalDateTime extendedExpiresAt = row.expiresAt().plusDays((long) graceDays + days);
+        if (mapper.extendTrial(row.id(), row.version(), extendedExpiresAt, now) != 1) {
             throw new BizException(409, "TRIAL_EXTENSION_CONFLICT");
         }
         Attribution attr = requireAttribution(userId);
@@ -174,6 +182,33 @@ public class AppTrialLifecycleService {
                 () -> redeemOnce(userId, false, "auto"));
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> settleDue(
+            Long userId, String expectedClaimNo, String idempotencyKey) {
+        requireUser(userId);
+        return once("TRIAL_SETTLE_DUE", userId, idempotencyKey, expectedClaimNo,
+                () -> settleDueOnce(userId, expectedClaimNo));
+    }
+
+    private ApiResult<Map<String, Object>> settleDueOnce(Long userId, String expectedClaimNo) {
+        TrialRow row = mapper.lockTrial(userId);
+        if (row == null || !active(row.status()) || !row.claimNo().equals(expectedClaimNo)) {
+            return ApiResult.fail(409, "TRIAL_DUE_STATE_CONFLICT");
+        }
+        Map<String, String> policy = policyMap();
+        LocalDateTime now = LocalDateTime.now();
+        String state = normalize(row.status());
+        if (row.expiresAt() == null) return ApiResult.fail(409, "TRIAL_DUE_TIME_MISSING");
+        LocalDateTime dueAt = "EXTENDED".equals(state)
+                ? row.expiresAt()
+                : row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7));
+        if (dueAt.isAfter(now)) return ApiResult.fail(409, "TRIAL_NOT_DUE");
+        if (!flag(policy, "autoChargeAtEnd", true)) {
+            return cancelOnce(userId, "auto_end");
+        }
+        return redeemOnce(userId, false, "auto");
+    }
+
     private ApiResult<Map<String, Object>> redeemOnce(Long userId, boolean early, String trigger) {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CHARGEABLE");
@@ -185,6 +220,11 @@ public class AppTrialLifecycleService {
         if (wallet == null) throw new BizException(409, "TRIAL_WALLET_UNAVAILABLE");
         if (wallet.usdt().compareTo(value.chargeUsdt()) < 0) {
             publishChargeAttempt(userId, row, trigger, "FAILED", value.chargeUsdt(), "INSUFFICIENT_FUNDS");
+            int cooldownDays = positiveInt(policy, "cooldownDays", 30);
+            if (mapper.failTrial(row.id(), row.version(), value.shadowUsdt(), value.shadowNex(),
+                    now, now.plusDays(cooldownDays), "INSUFFICIENT_FUNDS") != 1) {
+                throw new BizException(409, "TRIAL_CHARGE_FAILURE_CONFLICT");
+            }
             return ApiResult.ok(linked("ok", false, "reason", "INSUFFICIENT_FUNDS",
                     "amountUsdt", value.chargeUsdt(), "paymentRail", "NEXION_USDT_WALLET"));
         }
@@ -231,8 +271,7 @@ public class AppTrialLifecycleService {
     private Settlement settlement(TrialRow row, Map<String, String> policy, boolean early, LocalDateTime now) {
         long seconds = Math.max(0, Duration.between(row.claimedAt(), now).getSeconds());
         BigDecimal days = BigDecimal.valueOf(seconds).divide(BigDecimal.valueOf(86400), 8, RoundingMode.DOWN);
-        BigDecimal maxDays = BigDecimal.valueOf(Math.max(1,
-                Duration.between(row.claimedAt(), row.expiresAt()).toDays()));
+        BigDecimal maxDays = BigDecimal.valueOf(Math.max(1, row.durationDays() == null ? 1 : row.durationDays()));
         days = days.min(maxDays);
         BigDecimal shadowUsdt = row.dailyUsdt().multiply(days).setScale(6, RoundingMode.DOWN);
         BigDecimal shadowNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN);
@@ -261,22 +300,33 @@ public class AppTrialLifecycleService {
 
     private Map<String, Object> project(TrialRow row, Map<String, String> policy, LocalDateTime now) {
         Map<String, Object> result = new LinkedHashMap<>();
+        boolean trialGateEnabled = trialGateEnabled();
         if (row == null) {
             result.put("state", "ELIGIBLE");
-            result.put("canStart", flag(policy, "phaseOpen", true));
+            result.put("canStart", trialGateEnabled && flag(policy, "phaseOpen", true));
+            result.put("trialGateEnabled", trialGateEnabled);
             result.put("source", "nx_trial_claim");
             result.put("paymentRail", "NEXION_USDT_WALLET");
+            result.put("config", safePolicy(policy));
             return result;
         }
-        Settlement preview = active(row.status()) ? settlement(row, policy, false, now) : null;
+        String effectiveState = effectiveState(row, now);
+        Settlement preview = active(effectiveState) ? settlement(row, policy, false, now) : null;
+        int graceDays = nonNegativeInt(policy, "graceDays", 7);
         result.put("claimNo", row.claimNo());
-        result.put("state", normalize(row.status()));
-        result.put("canStart", !active(row.status())
-                && !"REDEEMED".equals(normalize(row.status()))
-                && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now)));
+        result.put("state", effectiveState);
+        result.put("canStart", !active(effectiveState)
+                && !"REDEEMED".equals(effectiveState)
+                && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now))
+                && trialGateEnabled);
+        result.put("trialGateEnabled", trialGateEnabled);
         result.put("deviceName", row.deviceName());
         result.put("claimedAt", row.claimedAt());
         result.put("expiresAt", row.expiresAt());
+        result.put("activeEndsAt", "EXTENDED".equals(effectiveState) ? null : row.expiresAt());
+        result.put("graceEndsAt", List.of("ACTIVE", "GRACE").contains(effectiveState)
+                ? row.expiresAt().plusDays(graceDays) : null);
+        result.put("extendedEndsAt", "EXTENDED".equals(effectiveState) ? row.expiresAt() : null);
         result.put("cooldownUntil", row.cooldownUntil());
         result.put("shadowUsdt", preview == null ? safe(row.shadowAccruedUsdt()) : preview.shadowUsdt());
         result.put("shadowNex", preview == null ? safe(row.shadowAccruedNex()) : preview.shadowNex());
@@ -285,6 +335,28 @@ public class AppTrialLifecycleService {
         result.put("priceUsdt", row.priceUsdt());
         result.put("paymentRail", "NEXION_USDT_WALLET");
         result.put("source", "nx_trial_claim + nx_user_wallet");
+        result.put("config", safePolicy(policy));
+        return result;
+    }
+
+    private String effectiveState(TrialRow row, LocalDateTime now) {
+        String state = normalize(row.status());
+        if (List.of("CLAIMED", "ACTIVE").contains(state)
+                && row.expiresAt() != null && !row.expiresAt().isAfter(now)) {
+            return "GRACE";
+        }
+        return state;
+    }
+
+    private Map<String, Object> safePolicy(Map<String, String> policy) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String key : List.of(
+                "trialDays", "graceDays", "extensionDays", "discountRate", "discountCapUSD",
+                "trialOffsetCapUSD", "autoChargeAtEnd", "highQualityThresholdUSD", "trialProductId",
+                "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "cooldownDays", "phaseOpen",
+                "autoPushEnabled", "autoPushDelayMs", "autoPushCooldownHours", "autoPushMaxPerSession")) {
+            if (policy.containsKey(key)) result.put(key, policy.get(key));
+        }
         return result;
     }
 
@@ -333,9 +405,23 @@ public class AppTrialLifecycleService {
                 PolicyRow::policyKey, PolicyRow::currentValue, (left, right) -> right, LinkedHashMap::new));
     }
 
+    private boolean trialGateEnabled() {
+        return KillSwitchState.enabled(
+                Optional.ofNullable(mapper.emergencyValue(TRIAL_KILLSWITCH_KEY)),
+                Optional.ofNullable(mapper.emergencyValue(TRIAL_LEGACY_KILLSWITCH_KEY)));
+    }
+
     private int positiveInt(Map<String, String> policy, String key, int fallback) {
         try {
             return Math.max(1, new BigDecimal(policy.getOrDefault(key, String.valueOf(fallback))).intValueExact());
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private int nonNegativeInt(Map<String, String> policy, String key, int fallback) {
+        try {
+            return Math.max(0, new BigDecimal(policy.getOrDefault(key, String.valueOf(fallback))).intValueExact());
         } catch (RuntimeException ignored) {
             return fallback;
         }

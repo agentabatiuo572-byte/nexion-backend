@@ -17,7 +17,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    c.team_volume_usd AS teamGvUsd,
                    c.required_downline_count AS legCount,
                    c.required_downline_rank AS legRank,
+                   c.unilevel_depth AS unilevelDepth,
+                   c.peer_bonus_rate AS peerBonusRate,
                    c.leadership_votes AS votes,
+                   c.status AS visible,
                    COALESCE(c.physical_reward, '') AS physicalReward,
                    COUNT(m.id) AS pop
               FROM nx_v_rank_config c
@@ -28,7 +31,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND c.status = 1
              GROUP BY c.id, c.rank_code, c.title_cn, c.self_buy_usd, c.direct_refs,
                       c.team_volume_usd, c.required_downline_count, c.required_downline_rank,
-                      c.leadership_votes, c.physical_reward, c.sort_order
+                      c.unilevel_depth, c.peer_bonus_rate, c.leadership_votes,
+                      c.status, c.physical_reward, c.sort_order
              ORDER BY c.sort_order ASC, c.id ASC
             """)
     List<Map<String, Object>> vRankRows();
@@ -286,7 +290,15 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     int deleteVRankReward(@Param("rank") String rank, @Param("rewardId") String rewardId);
 
     @Select("""
-            SELECT COALESCE(SUM(m.volume), 0) AS weeklyGmvUsd,
+            SELECT (
+                     SELECT COALESCE(SUM(o.subtotal_usdt), 0)
+                       FROM nx_order o
+                      WHERE o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
+                        AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
+                        AND o.paid_at IS NOT NULL
+                        AND YEARWEEK(o.paid_at, 1) = YEARWEEK(NOW(), 1)
+                        AND o.is_deleted = 0
+                   ) AS weeklyGmvUsd,
                    (
                      SELECT COALESCE(SUM(e.amount_usdt), 0)
                        FROM nx_commission_event e
@@ -301,7 +313,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                         AND LOWER(e.commission_type) = 'leadership'
                         AND e.created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
                    ) AS monthLeadershipUsd,
-                   COUNT(DISTINCT m.member_user_id) AS participantCount
+                   COUNT(DISTINCT CASE
+                     WHEN m.user_id = m.member_user_id
+                      AND m.v_rank REGEXP '^V([1-9]|1[0-2])$'
+                     THEN m.member_user_id END) AS participantCount
               FROM nx_team_member m
              WHERE m.is_deleted = 0
             """)
@@ -372,7 +387,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT ranked.rank_no AS `rank`,
-                   CONCAT('U', LPAD(ranked.member_user_id, 8, '0')) AS userId,
+                   CONCAT('U', LPAD(ranked.member_user_id, GREATEST(8, CHAR_LENGTH(CAST(ranked.member_user_id AS CHAR))), '0')) AS userId,
                    CONCAT('$', ROUND(ranked.volume, 0)) AS gmvLabel,
                    CASE
                      WHEN a.action_type IS NOT NULL THEN COALESCE(a.reason, 'F4 已执行反欺诈处置')
@@ -468,26 +483,29 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     Map<String, Object> leaderboardSummary();
 
     @Select("""
-            SELECT CONCAT('U', LPAD(user_id, 8, '0')) AS user,
-                   CAST(ROUND(left_volume, 0) AS SIGNED) AS trackA,
-                   CAST(ROUND(right_volume, 0) AS SIGNED) AS trackB,
-                   CAST(ROUND(matched_volume, 0) AS SIGNED) AS matchAmount,
-                   CAST(ROUND(amount_usdt, 0) AS SIGNED) AS todayPaid,
+            SELECT s.user_id AS ownerUserId,
+                   CONCAT('U', LPAD(s.user_id, GREATEST(8, CHAR_LENGTH(CAST(s.user_id AS CHAR))), '0')) AS user,
+                   DATE_FORMAT(u.created_at,'%Y-%m') AS cohort,
+                   CAST(ROUND(s.left_volume, 0) AS SIGNED) AS trackA,
+                   CAST(ROUND(s.right_volume, 0) AS SIGNED) AS trackB,
+                   CAST(ROUND(s.matched_volume, 0) AS SIGNED) AS matchAmount,
+                   CAST(ROUND(s.amount_usdt, 0) AS SIGNED) AS todayPaid,
                    CASE
-                     WHEN UPPER(status) IN ('PAID', 'SETTLED', 'UNLOCKED') THEN 'paid'
-                     WHEN UPPER(status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 'blocked'
-                     ELSE LOWER(status)
+                     WHEN UPPER(s.status) IN ('PAID', 'SETTLED', 'UNLOCKED') THEN 'paid'
+                     WHEN UPPER(s.status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 'blocked'
+                     ELSE LOWER(s.status)
                    END AS state,
                    CASE
-                     WHEN UPPER(status) IN ('PAID', 'SETTLED', 'UNLOCKED') THEN 'ok'
-                     WHEN UPPER(status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 'warn'
+                     WHEN UPPER(s.status) IN ('PAID', 'SETTLED', 'UNLOCKED') THEN 'ok'
+                     WHEN UPPER(s.status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 'warn'
                      ELSE ''
                    END AS tone,
-                   settlement_date AS settlementDate,
+                   s.settlement_date AS settlementDate,
                    'nx_binary_commission_settlement' AS source
-              FROM nx_binary_commission_settlement
-             WHERE is_deleted = 0
-             ORDER BY settlement_date DESC, id DESC
+              FROM nx_binary_commission_settlement s
+              LEFT JOIN nx_user u ON u.id=s.user_id AND u.is_deleted=0
+             WHERE s.is_deleted = 0
+             ORDER BY s.settlement_date DESC, s.id DESC
              LIMIT #{limit}
             """)
     List<Map<String, Object>> binarySettlements(@Param("limit") int limit);
@@ -514,7 +532,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT CONCAT('CM-', id) AS id,
                    LOWER(commission_type) AS kind,
-                   CONCAT('U', LPAD(user_id, 8, '0')) AS user,
+                   CONCAT('U', LPAD(user_id, GREATEST(8, CHAR_LENGTH(CAST(user_id AS CHAR))), '0')) AS user,
                    CASE
                      WHEN UPPER(currency) = 'NEX' THEN amount_nex
                      ELSE amount_usdt
@@ -915,7 +933,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT id,
                    user_id AS userId,
-                   amount_usdt AS amountUsdt,
+                   CASE
+                     WHEN UPPER(currency) = 'NEX' THEN amount_nex
+                     ELSE amount_usdt
+                   END AS amount,
                    currency
               FROM nx_commission_event
              WHERE UPPER(status) = 'COOLING'
@@ -927,21 +948,19 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> listCoolingDueForUnlock(@Param("limit") int limit);
 
-    /**
-     * F4: V3+ 自循环用户 + 领导池票权(nx_v_rank_config.leadership_votes),供周结算按票权分配池。
-     * poolUnlockVRank=V3+(PRD line234);仅 v_rank V3-V12 且 votes>0 的用户参与。
-     */
+    /** F4: 按 F.pool.unlockVRank 动态门槛读取自循环用户与领导池票权。 */
     @Select("""
             SELECT m.user_id AS userId, c.leadership_votes AS votes
               FROM nx_team_member m
               JOIN nx_v_rank_config c ON c.rank_code = m.v_rank AND c.is_deleted = 0
              WHERE m.user_id = m.member_user_id
-               AND m.v_rank REGEXP '^V([3-9]|1[0-2])$'
+               AND m.v_rank REGEXP '^V([1-9]|1[0-2])$'
+               AND CAST(SUBSTRING(m.v_rank, 2) AS UNSIGNED) >= #{minRank}
                AND c.leadership_votes > 0
                AND m.is_deleted = 0
              ORDER BY m.user_id ASC
             """)
-    List<Map<String, Object>> listV3PlusVoters();
+    List<Map<String, Object>> listLeadershipVoters(@Param("minRank") int minRank);
 
     /**
      * F4: 平台某周(ISO YEARWEEK)已付订单 USDT 小计之和(领导池注入数据源)。
@@ -962,12 +981,38 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("SELECT YEARWEEK(NOW(), 1)")
     int currentYearWeek();
 
+    /** F4: one-row-per-week mutex; unique week_code + FOR UPDATE is the durable CAS boundary. */
+    @Insert("""
+            INSERT IGNORE INTO nx_team_f4_settlement_mutex
+              (week_code, created_at, updated_at)
+            VALUES (#{weekCode}, NOW(), NOW())
+            """)
+    int ensureLeadershipSettlementMutex(@Param("weekCode") int weekCode);
+
+    @Select("""
+            SELECT id
+              FROM nx_team_f4_settlement_mutex
+             WHERE week_code = #{weekCode}
+             FOR UPDATE
+            """)
+    Long lockLeadershipSettlementMutex(@Param("weekCode") int weekCode);
+
+    @Select("""
+            SELECT COALESCE(SUM(amount_usdt), 0)
+              FROM nx_commission_event
+             WHERE LOWER(commission_type) = 'leadership'
+               AND created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+               AND is_deleted = 0
+            """)
+    java.math.BigDecimal monthlyLeadershipAmount();
+
     /** F4 幂等:某周(weekKey)领导池是否已结算(commission_type=leadership + remark 含 weekKey)。 */
     @Select("""
             SELECT COUNT(1)
               FROM nx_commission_event
              WHERE LOWER(commission_type) = 'leadership'
                AND remark LIKE CONCAT('%', #{weekKey}, '%')
+               AND is_deleted = 0
             """)
     int countLeadershipByWeek(@Param("weekKey") String weekKey);
 
@@ -1021,7 +1066,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    l.to_code              AS toCode,
                    l.reason,
                    l.operator,
-                   IF(l.reason LIKE '[MANUAL]%', 1, 0) AS isManual,
+                   l.snapshot,
+                   l.trigger_event_id       AS triggerEventId,
+                   l.audit_no               AS auditNo,
+                   l.is_manual              AS isManual,
                    u.nickname,
                    (SELECT d.cohort_id FROM nx_janus_device d
                      WHERE d.user_id = l.user_id AND d.cohort_id IS NOT NULL

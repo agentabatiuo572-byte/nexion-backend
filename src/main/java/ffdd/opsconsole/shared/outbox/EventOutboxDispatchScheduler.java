@@ -36,7 +36,9 @@ public class EventOutboxDispatchScheduler {
             "admin.user_frozen",
             "admin.user_unfrozen",
             "admin.user_impersonation_started",
-            "admin.user_impersonation_ended");
+            "admin.user_impersonation_ended",
+            "admin.account_list_upserted",
+            "admin.account_list_removed");
     static final List<String> C5_SECURITY_EVENT_TYPES = List.of(
             "admin.2fa_disabled",
             "admin.password_reset_requested",
@@ -44,6 +46,27 @@ public class EventOutboxDispatchScheduler {
             "admin.session_revoked",
             "auth.login_locked",
             "auth.refresh_token_reuse_detected");
+    static final List<String> C3_ASSET_ADJUSTMENT_EVENT_TYPES = List.of(
+            "admin.balance_adjusted",
+            "admin.bill_adjusted");
+    static final List<String> D1_TOPUP_LIFECYCLE_EVENT_TYPES = List.of(
+            "wallet.topup_initiated",
+            "wallet.topup_confirmed");
+    static final List<String> D2_WITHDRAWAL_LIFECYCLE_EVENT_TYPES = List.of(
+            "withdraw.submitted",
+            "withdraw.approved",
+            "withdraw.rejected",
+            "withdraw.delayed",
+            "withdraw.frozen",
+            "withdraw.unfrozen",
+            "withdraw.refunded",
+            "withdraw.review_due",
+            "withdraw.confirmed");
+    static final List<String> D3_TREASURY_LIFECYCLE_EVENT_TYPES = List.of(
+            "admin.treasury_forecast_config_changed",
+            "admin.treasury_reserve_injected");
+    static final String D6_FX_QUOTE_CHANGED_EVENT_TYPE = "admin.fx_quote_updated";
+    static final String D4_WALLET_LEDGER_EVENT_TYPE = "wallet.ledger_posted";
 
     private final EventOutboxService outboxService;
     private final ApplicationEventPublisher eventPublisher;
@@ -58,10 +81,16 @@ public class EventOutboxDispatchScheduler {
         List<String> supportedEventTypes = new java.util.ArrayList<>(
                 List.of(SUPPORTED_EVENT_TYPE, TAMPER_EVENT_TYPE, TAMPER_CONFIG_EVENT_TYPE,
                         D5_WITHDRAWAL_LIMIT_CHANGED_EVENT_TYPE,
+                        D4_WALLET_LEDGER_EVENT_TYPE,
+                        D6_FX_QUOTE_CHANGED_EVENT_TYPE,
                         K4_WITHDRAWAL_ESCALATED_EVENT_TYPE,
                         VRANK_PROMOTION_COMPLETED_EVENT_TYPE));
         supportedEventTypes.addAll(C2_HIGH_RISK_EVENT_TYPES);
         supportedEventTypes.addAll(C5_SECURITY_EVENT_TYPES);
+        supportedEventTypes.addAll(C3_ASSET_ADJUSTMENT_EVENT_TYPES);
+        supportedEventTypes.addAll(D1_TOPUP_LIFECYCLE_EVENT_TYPES);
+        supportedEventTypes.addAll(D2_WITHDRAWAL_LIFECYCLE_EVENT_TYPES);
+        supportedEventTypes.addAll(D3_TREASURY_LIFECYCLE_EVENT_TYPES);
         supportedEventTypes.addAll(H3_QUEST_FACT_EVENT_TYPES);
         supportedEventTypes.addAll(F1_PASSIVE_EVAL_EVENT_TYPES);
         for (String eventType : supportedEventTypes) {

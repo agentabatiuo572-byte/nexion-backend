@@ -52,18 +52,22 @@ class OpsRiskRadarServiceTest {
         when(mapper.abnormalAccountCategories()).thenReturn(List.of(
                 Map.of("category", "multi-account", "label", "反多账户命中", "count", 2),
                 Map.of("category", "arbitrage", "label", "套利可疑", "count", 1)));
+        when(mapper.abnormalAccountCount()).thenReturn(3L);
+        when(mapper.killSwitchStates()).thenReturn(List.of(
+                Map.of("gateKey", "withdraw", "settingValue", "enabled"),
+                Map.of("gateKey", "staking", "settingValue", "enabled"),
+                Map.of("gateKey", "genesis", "settingValue", "enabled"),
+                Map.of("gateKey", "exchange", "settingValue", "enabled"),
+                Map.of("gateKey", "trial", "settingValue", "enabled")));
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
                 new BigDecimal("120"), new BigDecimal("100"), true,
                 new BigDecimal("1000"), new BigDecimal("833.33"), BigDecimal.ONE));
         when(config.activeValue("risk.bankrun-yellow-pct")).thenReturn(Optional.of("20"));
         when(config.activeValue("risk.bankrun-red-pct")).thenReturn(Optional.of("40"));
         when(config.activeValue("risk.bankrun-threshold-version")).thenReturn(Optional.of("3"));
-        for (String gate : List.of("withdraw", "staking", "genesis", "exchange", "trial")) {
-            when(config.activeValue("killswitch." + gate)).thenReturn(Optional.of("enabled"));
-            when(config.activeValue("J.killswitch." + gate)).thenReturn(Optional.empty());
-        }
         when(config.activeValue("risk.alert-subscription.channels")).thenReturn(Optional.of("inApp,email"));
         when(config.activeValue("risk.alert-subscription.webhook-url")).thenReturn(Optional.of(""));
+        when(config.activeValue("risk.alert-subscription.version")).thenReturn(Optional.of("0"));
     }
 
     @Test
@@ -83,6 +87,58 @@ class OpsRiskRadarServiceTest {
         Map<?, ?> backlog = (Map<?, ?>) radar.get("withdrawBacklog");
         assertThat(backlog.get("byState").toString())
                 .contains("submitted", "review-passed", "processing", "slaHours=48");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void usesTheCanonicalJ1EnabledDefaultWhenAGateRowIsMissing() {
+        when(mapper.killSwitchStates()).thenReturn(List.of(
+                Map.of("gateKey", "withdraw", "settingValue", "enabled"),
+                Map.of("gateKey", "staking"),
+                Map.of("gateKey", "genesis", "settingValue", "enabled"),
+                Map.of("gateKey", "exchange", "settingValue", "disabled"),
+                Map.of("gateKey", "trial", "settingValue", "enabled")));
+
+        List<Map<String, Object>> gates =
+                (List<Map<String, Object>>) service.radar().getData().get("killSwitches");
+
+        Map<String, Object> staking = gates.stream()
+                .filter(gate -> "staking".equals(gate.get("key")))
+                .findFirst()
+                .orElseThrow();
+        Map<String, Object> exchange = gates.stream()
+                .filter(gate -> "exchange".equals(gate.get("key")))
+                .findFirst()
+                .orElseThrow();
+        assertThat(staking).containsEntry("enabled", true).containsEntry("defaulted", true);
+        assertThat(exchange).containsEntry("enabled", false).containsEntry("defaulted", false);
+    }
+
+    @Test
+    void rejectsAnInvalidExplicitJ1GateValue() {
+        when(mapper.killSwitchStates()).thenReturn(List.of(
+                Map.of("gateKey", "withdraw", "settingValue", "enabled"),
+                Map.of("gateKey", "staking", "settingValue", "unknown"),
+                Map.of("gateKey", "genesis", "settingValue", "enabled"),
+                Map.of("gateKey", "exchange", "settingValue", "enabled"),
+                Map.of("gateKey", "trial", "settingValue", "enabled")));
+
+        assertThatThrownBy(service::radar)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("B5_KILL_SWITCH_SOURCE_INVALID");
+    }
+
+    @Test
+    void rejectsAnIncompleteJ1GateProjection() {
+        when(mapper.killSwitchStates()).thenReturn(List.of(
+                Map.of("gateKey", "withdraw", "settingValue", "enabled"),
+                Map.of("gateKey", "staking"),
+                Map.of("gateKey", "genesis", "settingValue", "enabled"),
+                Map.of("gateKey", "exchange", "settingValue", "enabled")));
+
+        assertThatThrownBy(service::radar)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("B5_KILL_SWITCH_SOURCE_UNAVAILABLE");
     }
 
     @Test

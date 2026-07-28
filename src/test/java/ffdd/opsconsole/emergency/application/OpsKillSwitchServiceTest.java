@@ -183,19 +183,80 @@ class OpsKillSwitchServiceTest {
 
     @Test
     void maturityGapRuleRejectsFreeTextAndPersistsCanonicalUsdtNumber() {
+        emergencyRepository.settings.put("emergency.autorule.maturityGap", "40000");
         var invalid = service.updateAutoRule(
                 "maturityGap",
                 "idem-j1-rule-invalid",
-                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest("abc", "invalid threshold", "superadmin"));
+                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest(
+                        "abc", "40000", "invalid threshold", "superadmin"));
         var valid = service.updateAutoRule(
                 "maturityGap",
                 "idem-j1-rule-valid",
-                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest("50000.00", "valid threshold", "superadmin"));
+                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest(
+                        "50000.00", "40000", "valid threshold", "superadmin"));
 
         assertThat(invalid.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(invalid.getMessage()).isEqualTo("AUTO_RULE_THRESHOLD_MUST_BE_POSITIVE_USDT");
         assertThat(valid.getCode()).isZero();
         assertThat(emergencyRepository.settings).containsEntry("emergency.autorule.maturityGap", "50000");
+    }
+
+    @Test
+    void staleEmergencySlaBaselineCannotOverwriteAConcurrentWinner() {
+        emergencyRepository.settings.put("ops.J.emergency.autoConfirmMins", "30");
+
+        var first = service.updateEmergencySla(
+                "autoConfirmMins",
+                "idem-j1-sla-first",
+                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest(
+                        "45", "30", "first operator", "superadmin"));
+        var stale = service.updateEmergencySla(
+                "autoConfirmMins",
+                "idem-j1-sla-stale",
+                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest(
+                        "60", "30", "stale operator", "superadmin"));
+
+        assertThat(first.getCode()).as(first.getMessage()).isZero();
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("J1_CONFIG_STALE_VERSION");
+        assertThat(emergencyRepository.settings)
+                .containsEntry("ops.J.emergency.autoConfirmMins", "45");
+    }
+
+    @Test
+    void missingExpectedValueAndNoOpConfigWritesFailClosed() {
+        emergencyRepository.settings.put("emergency.autorule.maturityGap", "50000");
+
+        var missingExpected = service.updateAutoRule(
+                "maturityGap",
+                "idem-j1-rule-no-expected",
+                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest(
+                        "60000", null, "missing baseline", "superadmin"));
+        var noChange = service.updateAutoRule(
+                "maturityGap",
+                "idem-j1-rule-no-change",
+                new ffdd.opsconsole.emergency.dto.EmergencyConfigUpdateRequest(
+                        "50000", "50000", "same value", "superadmin"));
+
+        assertThat(missingExpected.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(missingExpected.getMessage()).isEqualTo("AUTO_RULE_EXPECTED_VALUE_REQUIRED");
+        assertThat(noChange.getCode()).isEqualTo(409);
+        assertThat(noChange.getMessage()).isEqualTo("J1_CONFIG_NO_CHANGES");
+        assertThat(emergencyRepository.settings)
+                .containsEntry("emergency.autorule.maturityGap", "50000");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void genesisRestoreIsClassifiedAsImmediateCoverageImpact() {
+        var result = service.matrix();
+        List<Map<String, Object>> gates = (List<Map<String, Object>>) result.getData().get("activeGates");
+
+        assertThat(gates).filteredOn(row -> "genesis".equals(row.get("key")))
+                .singleElement()
+                .satisfies(row -> assertThat(row)
+                        .containsEntry("coveragePrecheckRequired", true)
+                        .containsEntry("coverageImpactCategory", "immediate"));
     }
 
     @Test

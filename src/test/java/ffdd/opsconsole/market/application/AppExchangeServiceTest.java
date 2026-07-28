@@ -37,12 +37,13 @@ class AppExchangeServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final RiskKycReviewFacade riskKycReviewFacade = mock(RiskKycReviewFacade.class);
+    private final G2ExchangeFeeAllocationService feeAllocationService = mock(G2ExchangeFeeAllocationService.class);
     private AppExchangeService service;
 
     @BeforeEach
     void setUp() {
         service = new AppExchangeService(mapper, config, idempotency, outbox, audit,
-                riskKycReviewFacade, new ObjectMapper(),
+                riskKycReviewFacade, feeAllocationService, new ObjectMapper(),
                 Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC));
         doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
@@ -57,6 +58,13 @@ class AppExchangeServiceTest {
         when(mapper.platformTodayUsdt()).thenReturn(BigDecimal.ZERO);
         when(mapper.userOrders(7L)).thenReturn(List.of());
         when(mapper.insertOrder(any())).thenReturn(1);
+        when(feeAllocationService.allocate(anyString(), any(BigDecimal.class), any(BigDecimal.class)))
+                .thenAnswer(invocation -> {
+                    BigDecimal totalFee = invocation.getArgument(1, BigDecimal.class).setScale(6);
+                    BigDecimal burnPool = totalFee.multiply(new BigDecimal("0.30")).setScale(6);
+                    return new G2ExchangeFeeAllocationService.Allocation(
+                            totalFee, burnPool, totalFee.subtract(burnPool));
+                });
     }
 
     @Test

@@ -44,6 +44,10 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
         overview.put("activeUsers", mapper.countActiveUsers());
         overview.put("kycPending", mapper.countKycPending());
         overview.put("frozenUsers", mapper.countFrozenUsers());
+        boolean riskAuthorityAvailable = mapper.countActiveRiskModels() == 1 && mapper.countFreshRiskScores() > 0;
+        overview.put("riskAuthorityAvailable", riskAuthorityAvailable);
+        overview.put("highRiskUsers", riskAuthorityAvailable ? mapper.countHighRiskUsers() : null);
+        overview.put("highRiskThreshold", riskAuthorityAvailable ? mapper.activeHighRiskThreshold() : null);
         overview.put("activeSessions", mapper.countActiveSessions());
         overview.put("twoFactorEnabledUsers", mapper.countTwoFactorEnabledUsers());
         overview.put("lockedShort", mapper.countActiveShortLocks(10));
@@ -258,7 +262,7 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     public PageResult<UserSessionView> pageSessions(Long userId, int pageNum, int pageSize, int idleDays) {
         int normalizedPageNum = page(pageNum);
         int normalizedPageSize = pageSize(pageSize);
-        long total = mapper.countSessions(userId);
+        long total = mapper.countSessionsByUser(userId);
         List<UserSessionView> records = total == 0
                 ? List.of()
                 : mapper.pageSessions(userId, (normalizedPageNum - 1) * normalizedPageSize, normalizedPageSize,
@@ -411,6 +415,11 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     @Override
     public void revokeUserSessions(Long userId, String reason) {
         mapper.revokeUserSessions(userId);
+    }
+
+    @Override
+    public void revokeActiveUserSessions(Long userId, String reason, int idleDays) {
+        mapper.revokeActiveUserSessions(userId, Math.max(1, Math.min(idleDays, 90)));
     }
 
     @Override

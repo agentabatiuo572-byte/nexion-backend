@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.dto;
 import java.util.Map;
 
 public record SupportLoadConfigUpdateRequest(
+        Long expectedVersion,
         Boolean autoBalance,
         Integer defaultCap,
         Integer burstCap,

@@ -32,13 +32,56 @@ public interface SupportTicketRepository {
 
     void appendReply(SupportTicketView ticket, String body, String operator, LocalDateTime now);
 
+    default boolean appendReplyCas(SupportTicketView ticket, String body, String operator, LocalDateTime now) {
+        appendReply(ticket, body, operator, now);
+        return true;
+    }
+
     void updateStatus(SupportTicketView ticket, String status, String operator, LocalDateTime now);
+
+    default boolean updateStatusCas(SupportTicketView ticket, String status, String operator, LocalDateTime now) {
+        updateStatus(ticket, status, operator, now);
+        return true;
+    }
 
     void updatePriority(SupportTicketView ticket, String priority, LocalDateTime now);
 
+    default boolean updatePriorityCas(SupportTicketView ticket, String priority, LocalDateTime now) {
+        updatePriority(ticket, priority, now);
+        return true;
+    }
+
     void assign(SupportTicketView ticket, Long assignedAdminId, String assignedAdminName, LocalDateTime now);
+
+    default boolean assignCas(
+            SupportTicketView ticket,
+            Long assignedAdminId,
+            String assignedAdminName,
+            LocalDateTime now) {
+        assign(ticket, assignedAdminId, assignedAdminName, now);
+        return true;
+    }
 
     void archive(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now);
 
+    default boolean archiveCas(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now) {
+        archive(ticket, archived, operator, now);
+        return true;
+    }
+
     void appendSystemTrace(SupportTicketView ticket, String body, LocalDateTime now);
+
+    default boolean appendSystemTraceCas(SupportTicketView ticket, String body, LocalDateTime now) {
+        appendSystemTrace(ticket, body, now);
+        return true;
+    }
+
+    default boolean appendInternalNoteCas(
+            SupportTicketView ticket,
+            String body,
+            String operator,
+            LocalDateTime now) {
+        appendSystemTrace(ticket, "内部备注 · " + operator + "：" + body, now);
+        return true;
+    }
 }

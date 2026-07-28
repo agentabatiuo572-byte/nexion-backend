@@ -36,7 +36,23 @@ public interface ConversationRepository {
 
     boolean acceptTransfer(ContentConversationView conversation, String ownerAgentId, String ownerAgentName, String operator, LocalDateTime now);
 
-    boolean returnTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
+    default boolean returnTransfer(
+            ContentConversationView conversation,
+            String target,
+            String reason,
+            String operator,
+            LocalDateTime now) {
+        return returnTransfer(conversation, reason, operator, now);
+    }
+
+    /** Compatibility seam for older repository fakes; production overrides the explicit-target command. */
+    default boolean returnTransfer(
+            ContentConversationView conversation,
+            String reason,
+            String operator,
+            LocalDateTime now) {
+        throw new UnsupportedOperationException("EXPLICIT_RETURN_TARGET_REQUIRED");
+    }
 
     boolean waitTransfer(ContentConversationView conversation, String reason, String operator, LocalDateTime now);
 

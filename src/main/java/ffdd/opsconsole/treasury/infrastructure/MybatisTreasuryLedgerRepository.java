@@ -2,6 +2,7 @@ package ffdd.opsconsole.treasury.infrastructure;
 
 
 import lombok.RequiredArgsConstructor;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper;
@@ -11,6 +12,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository {
     private final TreasuryLedgerMapper mapper;
+    private final EventOutboxService outboxService;
 
     @Override
     public long countDeposits(LocalDateTime since, String status) {
@@ -225,11 +230,13 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    @Transactional
     public void refundWithdrawal(String withdrawalNo, Long userId, BigDecimal amount, String asset, String reason) {
         refundWithdrawal(withdrawalNo, userId, amount, asset, BigDecimal.ZERO, reason);
     }
 
     @Override
+    @Transactional
     public void refundWithdrawal(
             String withdrawalNo,
             Long userId,
@@ -247,7 +254,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         if (mapper.releasePendingWithdrawalWithNex(userId, safeAmount, safeNexBurned) != 1) {
             throw new IllegalStateException("WITHDRAWAL_PENDING_FUNDS_INCONSISTENT");
         }
-        if (mapper.insertLedgerEntry(
+        insertImmutableLedgerEntry(
                 compactKey("D2-REFUND-", safeBiz(withdrawalNo), 96),
                 userId,
                 "WITHDRAW_REFUND",
@@ -256,11 +263,9 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                 safeAmount,
                 usdtBefore.add(safeAmount),
                 "SUCCESS",
-                trim(reason)) != 1) {
-            throw new IllegalStateException("WITHDRAWAL_REFUND_LEDGER_WRITE_FAILED");
-        }
+                trim(reason));
         if (safeNexBurned.signum() > 0) {
-            if (mapper.insertLedgerEntry(
+            insertImmutableLedgerEntry(
                     compactKey("D2-NEX-REFUND-", safeBiz(withdrawalNo), 96),
                     userId,
                     "WITHDRAW_FEE_OFFSET_REFUND",
@@ -269,9 +274,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                     safeNexBurned,
                     nexBefore.add(safeNexBurned),
                     "SUCCESS",
-                    trim(reason)) != 1) {
-                throw new IllegalStateException("WITHDRAWAL_NEX_REFUND_LEDGER_WRITE_FAILED");
-            }
+                    trim(reason));
         }
     }
 
@@ -355,32 +358,142 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public boolean userExists(Long userId) {
+        return userId != null && userId > 0 && mapper.countActiveUser(userId) > 0;
+    }
+
+    @Override
     @Transactional
     public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                                 BigDecimal amount, String status, String remark) {
-        Long safeUserId = userId == null ? 0L : userId;
-        String normalizedAsset = upper(asset, "USDT");
-        String normalizedDirection = upper(direction, "IN");
-        BigDecimal safeAmount = amount == null ? BigDecimal.ZERO : amount.abs();
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_USER_REQUIRED");
+        }
+        String normalizedBizNo = requiredUpperOrOriginal(bizNo, "D4_LEDGER_BIZ_NO_REQUIRED", false);
+        String normalizedBizType = requiredUpperOrOriginal(bizType, "D4_LEDGER_BIZ_TYPE_REQUIRED", true);
+        String normalizedAsset = requiredUpperOrOriginal(asset, "D4_LEDGER_ASSET_REQUIRED", true);
+        String normalizedDirection = requiredUpperOrOriginal(direction, "D4_LEDGER_DIRECTION_REQUIRED", true);
+        String normalizedStatus = requiredUpperOrOriginal(status, "D4_LEDGER_STATUS_REQUIRED", true);
+        if (!java.util.Set.of("USDT", "NEX").contains(normalizedAsset)) {
+            throw new IllegalArgumentException("D4_LEDGER_ASSET_INVALID");
+        }
+        if (!java.util.Set.of("IN", "OUT").contains(normalizedDirection)) {
+            throw new IllegalArgumentException("D4_LEDGER_DIRECTION_INVALID");
+        }
+        if (!java.util.Set.of("PENDING", "SUCCESS", "POSTED", "COMPLETED", "CONFIRMED",
+                "FAILED", "REJECTED", "CANCELLED").contains(normalizedStatus)) {
+            throw new IllegalArgumentException("D4_LEDGER_STATUS_INVALID");
+        }
+        if (amount == null || amount.signum() <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_AMOUNT_MUST_BE_POSITIVE");
+        }
+        Long safeUserId = userId;
+        BigDecimal safeAmount = amount.abs();
+        String uniqueKey = "D4_BIZ_" + UUID.nameUUIDFromBytes(
+                (normalizedBizNo + "|" + normalizedAsset + "|" + normalizedDirection)
+                        .getBytes(StandardCharsets.UTF_8));
+        mapper.ensureLedgerMutex(uniqueKey);
+        if (!uniqueKey.equals(mapper.lockLedgerMutex(uniqueKey))) {
+            throw new IllegalStateException("D4_LEDGER_IDEMPOTENCY_MUTEX_UNAVAILABLE");
+        }
         String lockKey = "D4_LEDGER_" + safeUserId + "_" + normalizedAsset;
         mapper.ensureLedgerMutex(lockKey);
         if (!lockKey.equals(mapper.lockLedgerMutex(lockKey))) {
             throw new IllegalStateException("D4_LEDGER_MUTEX_UNAVAILABLE");
         }
+        WalletLedgerEntity existing = mapper.findLedgerEntry(
+                normalizedBizNo, normalizedAsset, normalizedDirection);
+        if (existing != null) {
+            assertSameLedgerFingerprint(
+                    existing, safeUserId, normalizedBizType, safeAmount, normalizedStatus, trim(remark));
+            return;
+        }
         BigDecimal current = currentUserBalance(safeUserId, normalizedAsset).orElse(BigDecimal.ZERO);
         BigDecimal balanceAfter = "OUT".equals(normalizedDirection)
                 ? current.subtract(safeAmount)
                 : current.add(safeAmount);
-        mapper.insertLedgerEntry(
-                trim(bizNo),
+        if (balanceAfter.signum() < 0) {
+            throw new IllegalStateException("D4_LEDGER_INSUFFICIENT_BALANCE");
+        }
+        insertImmutableLedgerEntry(
+                normalizedBizNo,
                 safeUserId,
-                upper(bizType, "ADJUSTMENT"),
+                normalizedBizType,
                 normalizedAsset,
                 normalizedDirection,
                 safeAmount,
                 balanceAfter,
-                upper(status, "SUCCESS"),
+                normalizedStatus,
                 trim(remark));
+    }
+
+    private void insertImmutableLedgerEntry(
+            String bizNo,
+            Long userId,
+            String bizType,
+            String asset,
+            String direction,
+            BigDecimal amount,
+            BigDecimal balanceAfter,
+            String status,
+            String remark) {
+        WalletLedgerEntity existing = mapper.findLedgerEntry(bizNo, asset, direction);
+        if (existing != null) {
+            assertSameLedgerFingerprint(existing, userId, bizType, amount, status, remark);
+            return;
+        }
+        int inserted;
+        try {
+            inserted = mapper.insertLedgerEntry(
+                    bizNo, userId, bizType, asset, direction, amount, balanceAfter, status, remark);
+        } catch (DuplicateKeyException duplicate) {
+            existing = mapper.findLedgerEntry(bizNo, asset, direction);
+            assertSameLedgerFingerprint(existing, userId, bizType, amount, status, remark);
+            return;
+        }
+        if (inserted == 1) {
+            outboxService.publish("WALLET_LEDGER", bizNo, "wallet.ledger_posted", Map.of(
+                    "bizNo", bizNo,
+                    "userId", userId,
+                    "bizType", bizType,
+                    "asset", asset,
+                    "direction", direction,
+                    "amount", amount,
+                    "balanceAfter", balanceAfter,
+                    "status", status));
+            return;
+        }
+        existing = mapper.findLedgerEntry(bizNo, asset, direction);
+        assertSameLedgerFingerprint(existing, userId, bizType, amount, status, remark);
+    }
+
+    private void assertSameLedgerFingerprint(
+            WalletLedgerEntity existing,
+            Long userId,
+            String bizType,
+            BigDecimal amount,
+            String status,
+            String remark) {
+        if (existing == null
+                || !java.util.Objects.equals(existing.getUserId(), userId)
+                || !sameDecimal(existing.getAmount(), amount)
+                || !java.util.Objects.equals(upper(existing.getBizType(), ""), upper(bizType, ""))
+                || !java.util.Objects.equals(upper(existing.getStatus(), ""), upper(status, ""))
+                || !java.util.Objects.equals(trim(existing.getRemark()), trim(remark))) {
+            throw new IllegalStateException("D4_LEDGER_IDEMPOTENCY_CONFLICT");
+        }
+    }
+
+    private boolean sameDecimal(BigDecimal left, BigDecimal right) {
+        return left != null && right != null && left.compareTo(right) == 0;
+    }
+
+    private String requiredUpperOrOriginal(String value, String error, boolean uppercase) {
+        String normalized = trim(value);
+        if (normalized == null || normalized.isBlank()) {
+            throw new IllegalArgumentException(error);
+        }
+        return uppercase ? normalized.toUpperCase(Locale.ROOT) : normalized;
     }
 
     private BigDecimal nz(BigDecimal value) {

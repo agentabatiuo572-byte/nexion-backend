@@ -82,6 +82,18 @@ public class MybatisContentExperimentRuntimeRepository implements ContentExperim
     }
 
     @Override
+    public List<CopyBody> findPublishedCopiesByPosition(String positionKey) {
+        List<ContentExperimentRuntimeRows.CopyBodyRow> rows = mapper.findPublishedCopiesByPosition(positionKey);
+        if (rows == null) {
+            return List.of();
+        }
+        return rows.stream()
+                .map(this::copy)
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    @Override
     public Optional<CopyBody> findCopyVersion(String copyKey, String version) {
         return copy(mapper.findCopyVersion(copyKey, version));
     }

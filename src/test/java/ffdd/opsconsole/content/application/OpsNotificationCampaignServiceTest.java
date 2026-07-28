@@ -336,6 +336,34 @@ class OpsNotificationCampaignServiceTest {
     }
 
     @Test
+    void updateDraftRejectsOversizedTextBeforePersistence() {
+        NotificationCampaignDraftRequest base = draftRequest();
+        NotificationCampaignDraftRequest oversized = new NotificationCampaignDraftRequest(
+                base.name(),
+                "x".repeat(161),
+                base.titleVi(),
+                base.titleEn(),
+                base.bodyZh(),
+                base.bodyVi(),
+                base.bodyEn(),
+                base.tier(),
+                base.audienceTarget(),
+                base.budget(),
+                base.operator(),
+                base.reason(),
+                base.kind(),
+                base.ctaLabel(),
+                base.ctaHref(),
+                base.expectedRevision());
+
+        var result = service.updateDraft("CMP-2619", "idem-i3-draft-too-long", oversized);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+        assertThat(repository.campaigns.get("CMP-2619").name()).contains("草稿");
+    }
+
+    @Test
     void updateDraftRejectsStaleRevisionWithoutOverwritingNewerDraft() {
         var first = service.updateDraft("CMP-2619", "idem-i3-draft-revision-1", draftRequest(0L));
         assertThat(first.getCode()).isZero();
@@ -389,6 +417,7 @@ class OpsNotificationCampaignServiceTest {
     void updateCriticalCapIsLocked() {
         var result = service.updateCapRule("critical", "idem-i3-cap", new NotificationCapUpdateRequest(
                 "10 条",
+                "∞ 永不淘汰",
                 "Marina K.",
                 "尝试调低 critical"));
 
@@ -400,6 +429,7 @@ class OpsNotificationCampaignServiceTest {
     void updateCapPersistsAndAudits() {
         var result = service.updateCapRule("normal", "idem-i3-cap", new NotificationCapUpdateRequest(
                 "180 条",
+                "200 条",
                 "Marina K.",
                 "压降普通通知容量"));
 
@@ -416,6 +446,7 @@ class OpsNotificationCampaignServiceTest {
 
         var result = service.updateCapRule("high", "idem-i3-cap-locked", new NotificationCapUpdateRequest(
                 "30 条",
+                "50 条",
                 "Marina K.",
                 "锁定档位后调整通知容量"));
 
@@ -428,6 +459,7 @@ class OpsNotificationCampaignServiceTest {
         // 默认无锁(countActiveByTarget=0),normal 档直通并写入
         var result = service.updateCapRule("normal", "idem-i3-cap-nolock", new NotificationCapUpdateRequest(
                 "150 条",
+                "200 条",
                 "Marina K.",
                 "无锁状态下调整通知容量"));
 
@@ -436,9 +468,23 @@ class OpsNotificationCampaignServiceTest {
     }
 
     @Test
+    void updateCapRejectsStaleExpectedValueWithoutOverwriting() {
+        var result = service.updateCapRule("normal", "idem-i3-cap-stale", new NotificationCapUpdateRequest(
+                "150 条",
+                "180 条",
+                "Marina K.",
+                "使用旧页面调整通知容量"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("NOTIFICATION_CAP_STALE_VERSION");
+        assertThat(repository.caps.get("normal").cap()).isEqualTo("200 条");
+    }
+
+    @Test
     void updateCapRejectsFreeTextInsteadOfSilentlyUsingFallback() {
         var result = service.updateCapRule("normal", "idem-i3-cap-text", new NotificationCapUpdateRequest(
                 "很多条",
+                "200 条",
                 "Marina K.",
                 "验证容量必须使用明确数字"));
 
@@ -450,6 +496,7 @@ class OpsNotificationCampaignServiceTest {
     void updateCapRejectsValuesOutsideSupportedRange() {
         var result = service.updateCapRule("normal", "idem-i3-cap-range", new NotificationCapUpdateRequest(
                 "10001",
+                "200 条",
                 "Marina K.",
                 "验证容量不能超过系统上限"));
 
@@ -461,6 +508,7 @@ class OpsNotificationCampaignServiceTest {
     void updateCapRejectsExponentNotation() {
         var result = service.updateCapRule("normal", "idem-i3-cap-exponent", new NotificationCapUpdateRequest(
                 "1e2",
+                "200 条",
                 "Marina K.",
                 "验证容量不能使用指数格式"));
 
@@ -777,9 +825,18 @@ class OpsNotificationCampaignServiceTest {
         }
 
         @Override
-        public void updateCapRule(String tier, String cap, String operator, LocalDateTime now) {
+        public boolean updateCapRuleIfCurrent(
+                String tier,
+                String cap,
+                String expectedCap,
+                String operator,
+                LocalDateTime now) {
             NotificationCapRuleView current = caps.get(tier);
+            if (current == null || !current.cap().equals(expectedCap) || current.locked()) {
+                return false;
+            }
             caps.put(tier, new NotificationCapRuleView(tier, cap, current.policy(), current.locked()));
+            return true;
         }
 
         private static NotificationCampaignRow campaign(String id, String name, String tier, String status, String schedule, String sent, String read, BigDecimal budget) {

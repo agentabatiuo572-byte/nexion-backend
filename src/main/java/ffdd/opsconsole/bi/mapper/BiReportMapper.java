@@ -157,12 +157,24 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     long countA4FamilyEvents(@Param("familyKey") String familyKey);
 
     @Select("""
-            SELECT event_name AS eventName,
+            SELECT event_id AS eventId,
+                   event_name AS eventName,
                    COALESCE(event_ts, created_at) AS eventTs,
                    COALESCE(
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')), ''),
-                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.anon_id')), '')
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.userId')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.anon_id')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.anonId')), '')
                    ) AS actorId,
+                   COALESCE(
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.source_user_id')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.sourceUserId')), '')
+                   ) AS sourceActorId,
+                   COALESCE(
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.kind')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.commission_type')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.tier')), '')
+                   ) AS commissionKind,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
                    COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
@@ -210,10 +222,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                  'wallet.reinvest', 'withdraw.submitted', 'app.dau',
                  'trial.claim_sheet_shown', 'trial.started', 'trial.redeemed'
                )
-               AND (
-                 is_server_authoritative = 1
-                 OR event_name IN ('trial.claim_sheet_shown', 'trial.started', 'trial.redeemed')
-               )
+               AND is_server_authoritative = 1
              ORDER BY event_ts ASC, id ASC
             """)
     List<Map<String, Object>> selectL2EventFacts();
@@ -252,7 +261,16 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             SELECT event_id AS eventId,
                    event_name AS eventName,
                    COALESCE(event_ts, created_at) AS eventTs,
-                   JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')) AS actorId,
+                   COALESCE(
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.userId')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.anon_id')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.anonId')), '')
+                   ) AS actorId,
+                   COALESCE(
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.source_user_id')), ''),
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.sourceUserId')), '')
+                   ) AS sourceActorId,
                    COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
@@ -267,22 +285,31 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    JSON_UNQUOTE(JSON_EXTRACT(payload, '$.status')) AS status,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.tier')), ''),
                             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.layer')), ''),
-                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.commission_type')), '')) AS tier,
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.commission_type')), ''),
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.kind')), '')) AS tier,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.quest_id')), ''),
                             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.questId')), ''),
-                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.task_id')), '')) AS questKey,
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.task_id')), ''),
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.taskId')), '')) AS questKey,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.relationship_id')), ''),
                             CONCAT_WS(':',
-                              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.parent_id')), ''),
-                              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')), ''))) AS relationshipKey,
+                              COALESCE(
+                                NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.parent_id')), ''),
+                                NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.parentId')), '')),
+                              COALESCE(
+                                NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')), ''),
+                                NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.userId')), '')))) AS relationshipKey,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.v_rank')), ''),
-                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.vrank')), '')) AS vRank,
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.vrank')), ''),
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.vRank')), '')) AS vRank,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.team_size')),
                             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.teamSize'))) AS teamSize,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.amount_usdt')),
+                            JSON_UNQUOTE(JSON_EXTRACT(payload, '$.amountUsdt')),
                             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.amount')),
                             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.gmv_usdt')), '0') AS amountUsdt,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.amount_nex')),
+                            JSON_UNQUOTE(JSON_EXTRACT(payload, '$.amountNex')),
                             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.nex_amount')), '0') AS amountNex,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.baseline_usdt')),
                             JSON_UNQUOTE(JSON_EXTRACT(payload, '$.baselineUsdt')), '0') AS baselineUsdt,
@@ -300,7 +327,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                  'referral.bound', 'referral.invite_sent', 'commission.paid', 'checkout.completed',
                  'auth.register_completed', 'store.viewed', 'app.dau', 'phase.transitioned', 'phase.dial_changed'
                )
-               AND (is_server_authoritative = 1 OR event_name = 'store.viewed')
+               AND is_server_authoritative = 1
                AND COALESCE(event_ts, created_at) >= DATE_SUB(CURRENT_DATE, INTERVAL 400 DAY)
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
@@ -323,9 +350,9 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
              WHERE is_deleted = 0
                AND level BETWEEN 1 AND #{depth}
                AND created_at >= CASE LOWER(#{period})
-                 WHEN 'day' THEN CURRENT_DATE
-                 WHEN 'month' THEN DATE_SUB(CURRENT_DATE, INTERVAL 1 MONTH)
-                 ELSE DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY)
+                 WHEN 'day' THEN DATE_SUB(NOW(), INTERVAL 1 DAY)
+                 WHEN 'month' THEN DATE_SUB(NOW(), INTERVAL 30 DAY)
+                 ELSE DATE_SUB(NOW(), INTERVAL 7 DAY)
                END
              ORDER BY created_at DESC, id DESC
              LIMIT #{limit}

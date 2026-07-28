@@ -25,6 +25,12 @@ public class AppWithdrawalController {
         return userId == null ? forbidden() : service.list(userId);
     }
 
+    @GetMapping("/policy")
+    public ApiResult<Map<String, Object>> policy(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.policy(userId);
+    }
+
     @PostMapping
     public ApiResult<Map<String, Object>> submit(
             @RequestBody WithdrawalRequest request,

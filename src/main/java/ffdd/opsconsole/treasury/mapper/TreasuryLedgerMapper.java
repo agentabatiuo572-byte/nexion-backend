@@ -22,17 +22,6 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                 #{userId}, #{bizNo}, #{bizType}, #{asset}, #{direction}, #{amount}, #{balanceAfter}, #{status}, #{remark},
                 NOW(), NOW(), 0
             )
-            ON DUPLICATE KEY UPDATE
-                user_id = VALUES(user_id),
-                biz_type = VALUES(biz_type),
-                asset = VALUES(asset),
-                direction = VALUES(direction),
-                amount = VALUES(amount),
-                balance_after = VALUES(balance_after),
-                status = VALUES(status),
-                remark = VALUES(remark),
-                updated_at = VALUES(updated_at),
-                is_deleted = 0
             """)
     int insertLedgerEntry(@Param("bizNo") String bizNo,
                           @Param("userId") Long userId,
@@ -43,6 +32,20 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                           @Param("balanceAfter") BigDecimal balanceAfter,
                           @Param("status") String status,
                           @Param("remark") String remark);
+
+    @Select("""
+            SELECT *
+              FROM nx_wallet_ledger
+             WHERE biz_no = #{bizNo}
+               AND asset = #{asset}
+               AND direction = #{direction}
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    ffdd.opsconsole.treasury.infrastructure.WalletLedgerEntity findLedgerEntry(
+            @Param("bizNo") String bizNo,
+            @Param("asset") String asset,
+            @Param("direction") String direction);
 
     @Select("""
             <script>
@@ -464,10 +467,10 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
 
     @Select("""
             SELECT COALESCE(SUM(received_vnd / NULLIF(locked_fx_rate_vnd_per_usdt, 0)), 0)
-              FROM nx_vietqr_reconciliation
+             FROM nx_vietqr_reconciliation
              WHERE is_deleted = 0
                AND status = 'OPEN'
-               AND view_type IN ('ORPHAN', 'MISMATCH', 'LATE')
+               AND received_vnd > 0
             """)
     BigDecimal pendingUnverifiedDepositUsdt();
 
@@ -572,11 +575,11 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                <choose>
                  <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
                    AND (CASE
-                     WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' THEN 'bonus'
+                     WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' OR UPPER(l.biz_type) LIKE '%REWARD%' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%TOPUP%' OR UPPER(l.biz_type) LIKE '%DEPOSIT%' OR UPPER(l.biz_type) LIKE '%RECHARGE%' THEN 'topup'
                      WHEN UPPER(l.biz_type) LIKE '%WITHDRAW%' OR UPPER(l.biz_type) LIKE '%PAYOUT%' THEN 'withdraw'
                      WHEN UPPER(l.biz_type) LIKE '%COMMISSION%' THEN 'commission'
-                     WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
                      WHEN UPPER(l.biz_type) LIKE '%SWAP%' OR UPPER(l.biz_type) LIKE '%EXCHANGE%' OR UPPER(l.biz_type) LIKE '%CONVERT%' THEN 'swap'
                      ELSE 'earning'
                    END) = #{type}
@@ -592,7 +595,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
              <if test='keyword != null and keyword != ""'>
                AND (l.biz_no LIKE CONCAT('%', #{keyword}, '%')
                     OR l.remark LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(l.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
             </script>
@@ -606,7 +609,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             <script>
             SELECT l.id,
                    l.user_id AS userId,
-                   CONCAT('U', LPAD(l.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) AS userNo,
                    u.nickname AS nickname,
                    l.biz_no AS bizNo,
                    l.biz_type AS bizType,
@@ -625,11 +628,11 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                <choose>
                  <when test="type == 'swap' or type == 'topup' or type == 'withdraw' or type == 'earning' or type == 'commission' or type == 'refund' or type == 'bonus'">
                    AND (CASE
-                     WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' THEN 'bonus'
+                     WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
+                     WHEN UPPER(l.biz_type) LIKE '%BONUS%' OR UPPER(l.biz_type) LIKE '%TRIAL%' OR UPPER(l.biz_type) LIKE '%REWARD%' THEN 'bonus'
                      WHEN UPPER(l.biz_type) LIKE '%TOPUP%' OR UPPER(l.biz_type) LIKE '%DEPOSIT%' OR UPPER(l.biz_type) LIKE '%RECHARGE%' THEN 'topup'
                      WHEN UPPER(l.biz_type) LIKE '%WITHDRAW%' OR UPPER(l.biz_type) LIKE '%PAYOUT%' THEN 'withdraw'
                      WHEN UPPER(l.biz_type) LIKE '%COMMISSION%' THEN 'commission'
-                     WHEN UPPER(l.biz_type) LIKE '%REFUND%' OR UPPER(l.biz_type) LIKE '%CHARGEBACK%' OR UPPER(l.biz_type) LIKE '%REVERSAL%' THEN 'refund'
                      WHEN UPPER(l.biz_type) LIKE '%SWAP%' OR UPPER(l.biz_type) LIKE '%EXCHANGE%' OR UPPER(l.biz_type) LIKE '%CONVERT%' THEN 'swap'
                      ELSE 'earning'
                    END) = #{type}
@@ -645,7 +648,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
              <if test='keyword != null and keyword != ""'>
                AND (l.biz_no LIKE CONCAT('%', #{keyword}, '%')
                     OR l.remark LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(l.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
              ORDER BY l.created_at DESC, l.id DESC
@@ -662,7 +665,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     @Select("""
             SELECT l.id,
                    l.user_id AS userId,
-                   CONCAT('U', LPAD(l.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) AS userNo,
                    u.nickname AS nickname,
                    l.biz_no AS bizNo,
                    l.biz_type AS bizType,
@@ -702,6 +705,9 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
              LIMIT 1
             """)
     BigDecimal actualUserBalance(@Param("userId") Long userId, @Param("asset") String asset);
+
+    @Select("SELECT COUNT(1) FROM nx_user WHERE id = #{userId} AND is_deleted = 0")
+    long countActiveUser(@Param("userId") Long userId);
 
     @Insert("""
             INSERT IGNORE INTO nx_admin_operation_mutex(lock_key, updated_at)

@@ -126,10 +126,31 @@ public class AuditReplayBusinessPermissionGuard {
         if ("K".equals(domain)) {
             return delegatedKDescriptor(operation, params);
         }
+        if ("J".equals(domain)) {
+            return delegatedJDescriptor(operation, params);
+        }
         if ("E".equals(domain)) {
             return delegatedEDescriptor(operation, params);
         }
         return null;
+    }
+
+    private DelegatedProposalDescriptor delegatedJDescriptor(
+            String operation, Map<String, Object> params) {
+        String code = value(params, "code").toUpperCase(Locale.ROOT);
+        if (!"j4_playbook_execute".equals(operation)
+                || !code.matches("^SOP-[A-Z0-9-]{1,64}$")) {
+            return null;
+        }
+        return new DelegatedProposalDescriptor(
+                "执行应急剧本 · " + code,
+                code,
+                "演练就绪",
+                "批准后逐步执行",
+                "J4",
+                "sos",
+                false,
+                new AuditLockTarget("J", "playbook", code));
     }
 
     private DelegatedProposalDescriptor delegatedEDescriptor(String operation, Map<String, Object> params) {
@@ -344,6 +365,13 @@ public class AuditReplayBusinessPermissionGuard {
                 case "k2_row_boardflag" -> "risk_k2_row_boardflag";
                 default -> null;
             };
+            case "J" -> switch (operation) {
+                case "j4_playbook_execute" -> "emergency_j4_playbook_execute";
+                case "j4_playbook_rollback" -> "emergency_j4_playbook_execute";
+                case "j2_country_manage" -> "emergency_j2_write";
+                case "j2_emergency_block" -> "emergency_j2_emergency_block";
+                default -> null;
+            };
             case "H" -> switch (operation) {
                 case "h1_phase_dial" -> "growth_h1_write";
                 case "h1_phase_control", "h1_phase_override" -> "growth_h1_control_pin_write";
@@ -379,6 +407,9 @@ public class AuditReplayBusinessPermissionGuard {
             // 按 params.value 目标状态分流 dispose/reject;细分由 OpsTeamService.updateCommissionEventStatus 二次校验兜底。
             case "F" -> switch (operation) {
                 case "f_commission_status" -> f5CommissionAuthority(command.params());
+                case "f_vrank_override" -> "network_f1_promote_user";
+                case "f_reward_payout_action" -> f1RewardPayoutAuthority(command.params());
+                case "f4_pool_settle" -> "network_f4_pool_fund";
                 default -> null;
             };
             default -> null;
@@ -394,6 +425,12 @@ public class AuditReplayBusinessPermissionGuard {
         String targetValue = value(params, "value").toLowerCase(Locale.ROOT);
         boolean isReject = Set.of("rejected", "reversed", "异常回退", "驳回", "红冲").contains(targetValue);
         return isReject ? "network_f5_commission_reject" : "network_f5_commission_dispose";
+    }
+
+    private String f1RewardPayoutAuthority(Map<String, Object> params) {
+        return "reissue".equalsIgnoreCase(value(params, "action"))
+                ? "network_f1_reward_reissue"
+                : "network_f1_reward_reverse";
     }
 
     private String c5UnlockAuthority(Map<String, Object> params) {

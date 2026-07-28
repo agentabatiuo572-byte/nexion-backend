@@ -623,7 +623,7 @@ class OpsRiskServiceTest {
                 new RiskArbitrageActionRequest("linked account evidence", "superadmin", 0L, 0L));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().disposition()).isEqualTo("已标记套利");
+        assertThat(result.getData().disposition()).isEqualTo("account_flagged");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("K2_ARBITRAGE_MARKED");

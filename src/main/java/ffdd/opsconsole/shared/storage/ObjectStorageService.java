@@ -4,10 +4,12 @@ package ffdd.opsconsole.shared.storage;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.exception.BizException;
 import io.minio.BucketExistsArgs;
+import io.minio.GetObjectArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
 import io.minio.http.Method;
 import java.io.InputStream;
 import java.time.Duration;
@@ -64,6 +66,44 @@ public class ObjectStorageService {
     public String presignPut(String objectKey, String contentType, Duration expiry) {
         normalizeContentType(contentType);
         return presign(objectKey, Method.PUT, expiry);
+    }
+
+    public InputStream get(String objectKey) {
+        validateObjectKey(objectKey);
+        try {
+            return minioClient.getObject(GetObjectArgs.builder()
+                    .bucket(bucket())
+                    .object(objectKey.trim())
+                    .build());
+        } catch (Exception ex) {
+            log.warn("Object storage download failed, endpoint={}, bucket={}, objectKey={}, errorType={}, error={}",
+                    properties.getEndpoint(), bucket(), objectKey,
+                    ex.getClass().getName(), ex.getMessage(), ex);
+            throw new BizException(500, storageFailureMessage("下载", ex));
+        }
+    }
+
+    public void remove(String objectKey) {
+        validateObjectKey(objectKey);
+        try {
+            minioClient.removeObject(RemoveObjectArgs.builder()
+                    .bucket(bucket())
+                    .object(objectKey.trim())
+                    .build());
+        } catch (Exception ex) {
+            log.warn("Object storage delete failed, endpoint={}, bucket={}, objectKey={}, errorType={}, error={}",
+                    properties.getEndpoint(), bucket(), objectKey,
+                    ex.getClass().getName(), ex.getMessage(), ex);
+            throw new BizException(500, storageFailureMessage("清理", ex));
+        }
+    }
+
+    public void removeQuietly(String objectKey) {
+        try {
+            remove(objectKey);
+        } catch (RuntimeException ex) {
+            log.error("Object storage rollback cleanup failed for {}", objectKey, ex);
+        }
     }
 
     private String presign(String objectKey, Method method, Duration expiry) {

@@ -10,6 +10,10 @@ public record GrowthQuestEventRequest(
         Boolean trackable,
         String condition,
         String geo,
+        Integer targetValue,
+        String href,
+        java.time.LocalDateTime startsAt,
+        java.time.LocalDateTime endsAt,
         String reason,
         String operator) {
 }

@@ -1,11 +1,12 @@
 package ffdd.opsconsole.bi.web;
 
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.bi.application.OpsBiService;
-import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
+import ffdd.opsconsole.bi.domain.BiReportStreamDownload;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
 import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
@@ -30,12 +31,14 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/bi")
 @RequiredArgsConstructor
 public class OpsBiController {
     private final OpsBiService biService;
+    private final ObjectMapper objectMapper;
 
     @GetMapping("/overview")
     @PreAuthorize("hasAnyAuthority('bi_l1_read','bi_l2_read','bi_l3_read','bi_l4_read','bi_l5_read','bi_l6_read')")
@@ -53,11 +56,13 @@ public class OpsBiController {
     @PreAuthorize("hasAuthority('bi_l1_read')")
     public ApiResult<Map<String, Object>> kpi(
             @RequestParam(value = "window", required = false) String window,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
             @RequestParam(value = "ref", required = false) String ref) {
-        return biService.kpiOverview(window, cohort, phase, locale, ref);
+        return biService.kpiOverview(l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
     @GetMapping("/kpi/{kpiId}/drilldown")
@@ -65,11 +70,13 @@ public class OpsBiController {
     public ApiResult<Map<String, Object>> kpiDrilldown(
             @PathVariable int kpiId,
             @RequestParam(value = "window", required = false) String window,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
             @RequestParam(value = "ref", required = false) String ref) {
-        return biService.kpiDrilldown(kpiId, window, cohort, phase, locale, ref);
+        return biService.kpiDrilldown(kpiId, l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
     @GetMapping("/kpi/trend")
@@ -77,11 +84,21 @@ public class OpsBiController {
     public ApiResult<Map<String, Object>> kpiTrend(
             @RequestParam("kpiId") int kpiId,
             @RequestParam(value = "window", required = false) String window,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to,
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
             @RequestParam(value = "ref", required = false) String ref) {
-        return biService.kpiTrend(kpiId, window, cohort, phase, locale, ref);
+        return biService.kpiTrend(kpiId, l1Window(window, from, to), cohort, phase, locale, ref);
+    }
+
+    private String l1Window(String window, String from, String to) {
+        if (window != null && "custom".equalsIgnoreCase(window.trim())) {
+            return "custom|" + (from == null ? "" : from.trim())
+                    + "|" + (to == null ? "" : to.trim());
+        }
+        return window;
     }
 
     @GetMapping("/funnel/overview")
@@ -105,15 +122,21 @@ public class OpsBiController {
     @PreAuthorize("hasAuthority('bi_l2_read')")
     public ApiResult<Map<String, Object>> retentionCohortMatrix(
             @RequestParam(value = "cohortRange", required = false) String cohortRange,
-            @RequestParam(value = "window", required = false) String window) {
-        return biService.retentionCohortMatrix(cohortRange, window);
+            @RequestParam(value = "window", required = false) String window,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "locale", required = false) String locale,
+            @RequestParam(value = "ref", required = false) String ref) {
+        return biService.retentionCohortMatrix(cohortRange, window, phase, locale, ref);
     }
 
     @GetMapping("/retention/curve")
     @PreAuthorize("hasAuthority('bi_l2_read')")
     public ApiResult<Map<String, Object>> retentionCurve(
-            @RequestParam(value = "cohort", required = false) String cohort) {
-        return biService.retentionCurve(cohort);
+            @RequestParam(value = "cohort", required = false) String cohort,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "locale", required = false) String locale,
+            @RequestParam(value = "ref", required = false) String ref) {
+        return biService.retentionCurve(cohort, phase, locale, ref);
     }
 
     @GetMapping("/funnel/cross")
@@ -121,8 +144,12 @@ public class OpsBiController {
     public ApiResult<Map<String, Object>> funnelCross(
             @RequestParam(value = "dim1", required = false) String dim1,
             @RequestParam(value = "dim2", required = false) String dim2,
-            @RequestParam(value = "metric", required = false) String metric) {
-        return biService.funnelCross(dim1, dim2, metric);
+            @RequestParam(value = "metric", required = false) String metric,
+            @RequestParam(value = "cohort", required = false) String cohort,
+            @RequestParam(value = "phase", required = false) String phase,
+            @RequestParam(value = "locale", required = false) String locale,
+            @RequestParam(value = "ref", required = false) String ref) {
+        return biService.funnelCross(dim1, dim2, metric, cohort, phase, locale, ref);
     }
 
     @GetMapping("/finance/overview")
@@ -244,28 +271,36 @@ public class OpsBiController {
     }
 
     @GetMapping("/exports/{reportId}/download-token")
-    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','user_c4_export')")
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_regulatory_generate','user_c4_export')")
     public ApiResult<Map<String, Object>> downloadToken(@PathVariable String reportId) {
         return biService.downloadToken(reportId);
     }
 
     @GetMapping("/exports/{reportId}/download")
-    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','user_c4_export')")
-    public ResponseEntity<?> downloadFile(@PathVariable String reportId,
-                                          @RequestParam(value = "token", required = false) String downloadToken) {
-        ApiResult<BiReportDownloadFile> result = biService.downloadFile(reportId, downloadToken);
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_regulatory_generate','user_c4_export')")
+    public ResponseEntity<StreamingResponseBody> downloadFile(
+            @PathVariable String reportId,
+            @RequestParam(value = "token", required = false) String downloadToken) {
+        ApiResult<BiReportStreamDownload> result = biService.downloadStreamFile(reportId, downloadToken);
         if (result.getCode() != 0) {
+            StreamingResponseBody errorBody = output -> objectMapper.writeValue(output, result);
             return ResponseEntity.status(result.getCode())
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(result);
+                    .body(errorBody);
         }
-        BiReportDownloadFile file = result.getData();
+        BiReportStreamDownload file = result.getData();
+        StreamingResponseBody body = output -> {
+            try (var input = file.inputStream()) {
+                input.transferTo(output);
+            }
+            file.onComplete().run();
+        };
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(file.contentType()))
-                .contentLength(file.body().length)
+                .contentLength(file.contentLength())
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         ContentDisposition.attachment().filename(file.fileName(), StandardCharsets.UTF_8).build().toString())
-                .body(file.body());
+                .body(body);
     }
 
     @PostMapping("/reports/{reportId}/{action}")

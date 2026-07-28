@@ -58,6 +58,26 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
     int countDirectMembers(@Param("ownerUserId") Long ownerUserId);
 
     @Select("""
+            SELECT COUNT(1)
+              FROM nx_binary_leg_assignment a
+              JOIN nx_team_member m
+                ON m.user_id=a.owner_user_id AND m.member_user_id=a.member_user_id
+               AND m.level=1 AND m.is_deleted=0
+             WHERE a.owner_user_id=#{ownerUserId} AND a.leg=#{leg}
+            """)
+    int countAssignmentsByLeg(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("leg") String leg);
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_binary_leg_assignment
+             WHERE owner_user_id=#{ownerUserId}
+               AND assigned_by='SYSTEM_AUTO_PLACEMENT'
+            """)
+    int countAutoPlacedMembers(@Param("ownerUserId") Long ownerUserId);
+
+    @Select("""
             SELECT a.owner_user_id ownerUserId,a.member_user_id memberUserId,a.leg
               FROM nx_binary_leg_assignment a
               JOIN nx_team_member m
@@ -68,6 +88,18 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
              FOR UPDATE
             """)
     List<BinaryLegAssignmentRow> listAssignmentsForUpdate(@Param("ownerUserId") Long ownerUserId);
+
+    @Select("""
+            SELECT m.member_user_id
+              FROM nx_team_member m
+              LEFT JOIN nx_binary_leg_assignment a
+                ON a.owner_user_id=m.user_id AND a.member_user_id=m.member_user_id
+             WHERE m.user_id=#{ownerUserId} AND m.level=1 AND m.is_deleted=0
+               AND a.id IS NULL
+             ORDER BY m.member_user_id
+             FOR UPDATE
+            """)
+    List<Long> listUnassignedDirectMembersForUpdate(@Param("ownerUserId") Long ownerUserId);
 
     @Select("""
             WITH RECURSIVE assigned_tree AS (
@@ -210,6 +242,75 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             @Param("monthStart") LocalDateTime monthStart,
             @Param("monthEnd") LocalDateTime monthEnd);
 
+    @Select("""
+            SELECT COALESCE(SUM(CASE WHEN leg='A' THEN amount_usdt ELSE 0 END),0) leftVolume,
+                   COALESCE(SUM(CASE WHEN leg='B' THEN amount_usdt ELSE 0 END),0) rightVolume
+              FROM nx_binary_paid_order_volume
+             WHERE owner_user_id=#{ownerUserId}
+               AND status='ACTIVE' AND is_deleted=0
+               AND paid_at<#{windowEnd}
+            """)
+    LegVolumeSnapshot carriedLegVolumes(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("windowEnd") LocalDateTime windowEnd);
+
+    @Select("""
+            SELECT COALESCE(SUM(matched_volume),0)
+              FROM nx_binary_commission_settlement
+             WHERE user_id=#{ownerUserId} AND settlement_date<#{windowEnd}
+               AND is_deleted=0 AND status<>'BLOCKED'
+            """)
+    BigDecimal consumedMatchedBefore(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("windowEnd") LocalDate windowEnd);
+
+    @Select("""
+            SELECT COALESCE(MAX(through_volume_id_inclusive),0)
+              FROM nx_binary_volume_cursor
+             WHERE owner_user_id=#{ownerUserId}
+            """)
+    Long latestPairResetThroughVolumeId(@Param("ownerUserId") Long ownerUserId);
+
+    @Select("""
+            SELECT v.order_no
+              FROM nx_binary_paid_order_volume v
+             WHERE v.owner_user_id=#{ownerUserId}
+               AND v.id<=COALESCE((
+                    SELECT MAX(c.through_volume_id_inclusive)
+                      FROM nx_binary_volume_cursor c
+                     WHERE c.owner_user_id=#{ownerUserId}
+                   ),0)
+            """)
+    List<String> listPairResetConsumedOrderNos(@Param("ownerUserId") Long ownerUserId);
+
+    @Select("""
+            SELECT COALESCE(MAX(id),0)
+              FROM nx_binary_paid_order_volume
+             WHERE owner_user_id=#{ownerUserId}
+               AND status='ACTIVE' AND is_deleted=0
+               AND paid_at>=#{monthStart} AND paid_at<#{windowEnd}
+            """)
+    Long latestActiveVolumeIdInWindow(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("monthStart") LocalDateTime monthStart,
+            @Param("windowEnd") LocalDateTime windowEnd);
+
+    @Select("""
+            SELECT COALESCE(SUM(CASE WHEN leg='A' THEN amount_usdt ELSE 0 END),0) leftVolume,
+                   COALESCE(SUM(CASE WHEN leg='B' THEN amount_usdt ELSE 0 END),0) rightVolume
+              FROM nx_binary_paid_order_volume
+             WHERE owner_user_id=#{ownerUserId}
+               AND id>#{fromVolumeId} AND id<=#{throughVolumeId}
+               AND status='ACTIVE' AND is_deleted=0
+               AND paid_at>=#{monthStart} AND paid_at<#{windowEnd}
+            """)
+    LegVolumeSnapshot pairResetLegVolumes(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("fromVolumeId") Long fromVolumeId,
+            @Param("throughVolumeId") Long throughVolumeId,
+            @Param("monthStart") LocalDateTime monthStart,
+            @Param("windowEnd") LocalDateTime windowEnd);
+
     @Insert("""
             INSERT IGNORE INTO nx_binary_settlement_mutex
               (owner_user_id,settlement_date,created_at,updated_at)
@@ -277,9 +378,32 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             VALUES
               (#{row.userId},#{row.settlementDate},#{row.leftUserId},#{row.rightUserId},
                #{row.leftVolume},#{row.rightVolume},#{row.matchedVolume},#{row.amountUsdt},
-               #{row.dailyCapUsdt},#{row.commissionEventId},#{row.status},NOW(),NOW(),0)
+               #{row.dailyCapUsdt},
+               #{row.commissionEventId},#{row.status},NOW(),NOW(),0)
             """)
     int insertSettlement(@Param("row") BinarySettlementRow row);
+
+    @Insert("""
+            INSERT INTO nx_binary_volume_cursor
+              (owner_user_id,settlement_date,from_volume_id_exclusive,
+               through_volume_id_inclusive,left_volume,right_volume,matched_volume,
+               policy,created_at)
+            SELECT #{ownerUserId},#{settlementDate},#{fromVolumeId},#{throughVolumeId},
+                   #{leftVolume},#{rightVolume},#{matchedVolume},'PER_PAIR_CLEAR',NOW()
+             WHERE COALESCE((
+                    SELECT MAX(c.through_volume_id_inclusive)
+                      FROM nx_binary_volume_cursor c
+                     WHERE c.owner_user_id=#{ownerUserId}
+                   ),0)=#{fromVolumeId}
+            """)
+    int insertPairResetCursorCas(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("settlementDate") LocalDate settlementDate,
+            @Param("fromVolumeId") Long fromVolumeId,
+            @Param("throughVolumeId") Long throughVolumeId,
+            @Param("leftVolume") BigDecimal leftVolume,
+            @Param("rightVolume") BigDecimal rightVolume,
+            @Param("matchedVolume") BigDecimal matchedVolume);
 
     @Insert("""
             INSERT INTO nx_commission_event
@@ -304,6 +428,17 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
     int linkSettlementEvent(@Param("ownerUserId") Long ownerUserId,
                             @Param("settlementDate") LocalDate settlementDate,
                             @Param("commissionEventId") Long commissionEventId);
+
+    @Select("""
+            SELECT id,amount_usdt amountUsdt,status,created_at createdAt,unlock_at unlockAt
+              FROM nx_commission_event
+             WHERE user_id=#{ownerUserId} AND commission_type='binary' AND is_deleted=0
+             ORDER BY created_at DESC,id DESC
+             LIMIT #{limit}
+            """)
+    List<AppBinaryCommissionEventRow> listRecentBinaryCommissionEvents(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("limit") int limit);
 
     record BinaryLegAssignmentRow(Long ownerUserId, Long memberUserId, String leg) { }
 
@@ -339,4 +474,11 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             BigDecimal amountUsdt,
             String remark,
             int coolingDays) { }
+
+    record AppBinaryCommissionEventRow(
+            Long id,
+            BigDecimal amountUsdt,
+            String status,
+            LocalDateTime createdAt,
+            LocalDateTime unlockAt) { }
 }

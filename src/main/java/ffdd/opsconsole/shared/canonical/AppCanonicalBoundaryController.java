@@ -30,7 +30,7 @@ public class AppCanonicalBoundaryController {
         if (clientStatus != null && result.getData() != null) {
             String serverState = String.valueOf(result.getData().get("state"));
             if (!serverState.equalsIgnoreCase(clientStatus.trim())) {
-                return ApiResult.fail(409, "TRIAL_STATE_CONFLICT");
+                return service.rejectTrialStateTamper(userId);
             }
         }
         return result;
@@ -132,7 +132,11 @@ public class AppCanonicalBoundaryController {
         if (userId == null) return forbidden();
         TrialChargeRequest body = request == null ? new TrialChargeRequest(null, null) : request;
         if (body.chargeSucceeded() != null || body.chargeFailRate() != null) {
-            return ApiResult.fail(409, "CLIENT_CHARGE_OUTCOME_REJECTED");
+            // Keep the canonical rejection behind the same persistent idempotency scope as the
+            // previous endpoint implementation. A lost 409 response retried with the same key
+            // must not create a second J3/K4/B5 tamper event.
+            return service.chargeTrial(
+                    userId, body.chargeSucceeded(), body.chargeFailRate(), idempotencyKey);
         }
         return trialLifecycleService.charge(userId, idempotencyKey);
     }

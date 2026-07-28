@@ -29,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -42,6 +43,7 @@ public class OpsRiskRadarService {
     private static final String THRESHOLD_VERSION_KEY = "risk.bankrun-threshold-version";
     private static final String SUBSCRIPTION_CHANNELS_KEY = "risk.alert-subscription.channels";
     private static final String SUBSCRIPTION_WEBHOOK_KEY = "risk.alert-subscription.webhook-url";
+    private static final String SUBSCRIPTION_VERSION_KEY = "risk.alert-subscription.version";
     private static final String THRESHOLD_SCOPE = "B5_BANKRUN_THRESHOLDS";
     private static final String SUBSCRIPTION_SCOPE = "B5_ALERT_SUBSCRIPTION";
     private static final String TRIAGE_SCOPE = "B5_TRIAGE";
@@ -89,7 +91,7 @@ public class OpsRiskRadarService {
 
         List<Map<String, Object>> backlog = canonicalBacklog(mapper.withdrawalBacklog());
         List<Map<String, Object>> abnormal = canonicalAbnormal(mapper.abnormalAccountCategories());
-        long abnormalCount = abnormal.stream().mapToLong(row -> whole(row.get("count"))).sum();
+        long abnormalCount = mapper.abnormalAccountCount();
         long backlogCount = backlog.stream().mapToLong(row -> whole(row.get("count"))).sum();
         BigDecimal backlogAmount = backlog.stream()
                 .map(row -> decimal(row.get("amountUsdt")))
@@ -225,14 +227,21 @@ public class OpsRiskRadarService {
         String actor = AdminActorResolver.resolve(request.operator());
         requireActor(actor);
         String channels = String.join(",", enabledChannels(inApp, email, webhook));
-        String hash = hash(channels + "|" + (webhookUrl == null ? "" : webhookUrl) + "|" + actor);
+        long expectedVersion = request.expectedVersion() == null ? -1 : request.expectedVersion();
+        String hash = hash(channels + "|" + (webhookUrl == null ? "" : webhookUrl) + "|"
+                + expectedVersion + "|" + actor);
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 SUBSCRIPTION_SCOPE, idempotencyKey, hash, ApiResult.class,
-                () -> updateSubscriptionNew(channels, webhook ? webhookUrl : "", actor));
+                () -> updateSubscriptionNew(channels, webhook ? webhookUrl : "", expectedVersion, actor));
     }
 
     @Transactional
-    ApiResult<Map<String, Object>> updateSubscriptionNew(String channels, String webhookUrl, String actor) {
+    ApiResult<Map<String, Object>> updateSubscriptionNew(
+            String channels, String webhookUrl, long expectedVersion, String actor) {
+        long currentVersion = configVersion(SUBSCRIPTION_VERSION_KEY, true);
+        if (expectedVersion != currentVersion) {
+            throw new BizException(409, "B5_SUBSCRIPTION_VERSION_CONFLICT");
+        }
         Map<String, Object> before = subscriptionView();
         configFacade.upsertAdminValue(
                 SUBSCRIPTION_CHANNELS_KEY, channels,
@@ -240,6 +249,9 @@ public class OpsRiskRadarService {
         configFacade.upsertAdminValue(
                 SUBSCRIPTION_WEBHOOK_KEY, webhookUrl,
                 "STRING", "risk_alert_subscription", "B1/B5 shared Webhook endpoint");
+        configFacade.upsertAdminValue(
+                SUBSCRIPTION_VERSION_KEY, String.valueOf(currentVersion + 1),
+                "NUMBER", "risk_alert_subscription", "B1/B5 shared subscription version");
         Map<String, Object> after = subscriptionView();
         auditRequired("B5_ALERT_SUBSCRIPTION_CHANGED", "B5_SUBSCRIPTION", "shared", actor, section(
                 "role", roleResolver.resolve(),
@@ -278,13 +290,31 @@ public class OpsRiskRadarService {
 
     private List<Map<String, Object>> killSwitches() {
         List<Map<String, Object>> rows = new ArrayList<>();
+        Map<String, String> states = new LinkedHashMap<>();
+        List<Map<String, Object>> sourceRows = mapper.killSwitchStates();
+        if (sourceRows == null) {
+            throw new BizException(503, "B5_KILL_SWITCH_SOURCE_UNAVAILABLE");
+        }
+        for (Map<String, Object> row : sourceRows) {
+            String key = text(row.get("gateKey"));
+            if (key != null) states.put(key, text(row.get("settingValue")));
+        }
+        if (!states.keySet().containsAll(GATES)) {
+            throw new BizException(503, "B5_KILL_SWITCH_SOURCE_UNAVAILABLE");
+        }
         for (String gate : GATES) {
-            boolean enabled = KillSwitchState.enabled(
-                    configFacade.activeValue("killswitch." + gate),
-                    configFacade.activeValue("J.killswitch." + gate));
+            String rawValue = states.get(gate);
+            boolean defaulted = rawValue == null;
+            String value = defaulted ? "" : rawValue.toLowerCase(Locale.ROOT);
+            if (!defaulted && !Set.of("enabled", "enable", "on", "true", "1",
+                    "disabled", "disable", "off", "false", "0").contains(value)) {
+                throw new BizException(503, "B5_KILL_SWITCH_SOURCE_INVALID");
+            }
+            boolean enabled = KillSwitchState.enabled(Optional.ofNullable(rawValue), Optional.empty());
             rows.add(section(
                     "key", gate,
                     "enabled", enabled,
+                    "defaulted", defaulted,
                     "light", enabled ? "green" : "red",
                     "source", "J1:killswitch." + gate));
         }
@@ -343,11 +373,13 @@ public class OpsRiskRadarService {
         Set<String> channels = Set.of(configFacade.activeValue(SUBSCRIPTION_CHANNELS_KEY)
                 .orElse("inApp,email").split(","));
         String webhookUrl = configFacade.activeValue(SUBSCRIPTION_WEBHOOK_KEY).orElse("");
+        long version = configVersion(SUBSCRIPTION_VERSION_KEY, false);
         return section(
                 "inApp", channels.contains("inApp"),
                 "email", channels.contains("email"),
                 "webhook", channels.contains("webhook"),
                 "webhookUrl", webhookUrl,
+                "version", version,
                 "sharedWith", "B1");
     }
 
@@ -426,7 +458,7 @@ public class OpsRiskRadarService {
             if (version < 0) throw new NumberFormatException();
             return version;
         } catch (NumberFormatException ex) {
-            throw new BizException(500, "B5_THRESHOLD_VERSION_INVALID");
+            throw new BizException(500, "B5_CONFIG_VERSION_INVALID");
         }
     }
 

@@ -30,6 +30,16 @@ public class AppCopyExperimentController {
                 : service.deliver(userId, copyKey);
     }
 
+    @GetMapping("/positions/{positionKey}")
+    public ApiResult<AppCopyDeliveryView> deliverByPosition(
+            @PathVariable String positionKey,
+            Authentication authentication) {
+        Long userId = authenticatedUserId(authentication);
+        return userId == null
+                ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
+                : service.deliverByPosition(userId, positionKey);
+    }
+
     @PostMapping("/experiments/{experimentId}/convert")
     public ApiResult<AppExperimentConversionView> convert(
             @PathVariable String experimentId,

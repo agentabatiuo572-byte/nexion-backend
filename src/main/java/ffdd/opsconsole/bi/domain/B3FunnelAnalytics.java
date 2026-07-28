@@ -30,6 +30,7 @@ public final class B3FunnelAnalytics {
     private static final List<String> MAIN_EVENTS = List.of(
             "auth.register_completed",
             "kyc.express_verified",
+            "store.viewed",
             "checkout.completed",
             "wallet.reinvest",
             "withdraw.submitted");
@@ -50,18 +51,21 @@ public final class B3FunnelAnalytics {
 
     public static Map<String, Object> calculate(
             List<Map<String, Object>> rawRows, String cohort, String phase, String ref) {
+        return calculate(rawRows, cohort, phase, ref, "purchase");
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows, String cohort, String phase, String ref, String trendStage) {
         List<EventFact> allEvents = facts(rawRows);
         long relevantRaw = rawRows == null ? 0 : rawRows.stream()
                 .filter(row -> MAIN_EVENTS.contains(text(row, "eventName", "event_name")))
                 .count();
         long relevantIdentified = allEvents.stream().filter(event -> MAIN_EVENTS.contains(event.name())).count();
         if (relevantRaw != relevantIdentified) {
-            return linked(
-                    "available", false,
-                    "reason", "ACTOR_COVERAGE_INCOMPLETE",
-                    "message", "存在缺少用户标识或事件时间的主漏斗事实，已停止计算，避免产生伪转化率",
-                    "filters", filters(cohort, phase, ref),
-                    "sources", List.of("nx_event_outbox", "nx_event_schema_registry"));
+            return unavailable(
+                    "ACTOR_COVERAGE_INCOMPLETE",
+                    "存在缺少用户标识或事件时间的主漏斗事实，已停止计算，避免产生伪转化率",
+                    cohort, phase, ref);
         }
 
         List<EventFact> registrations = named(allEvents, "auth.register_completed");
@@ -74,6 +78,12 @@ public final class B3FunnelAnalytics {
                 .filter(event -> blank(phase) || event.phase().equalsIgnoreCase(phase))
                 .filter(event -> blank(ref) || event.ref().equalsIgnoreCase(ref))
                 .toList();
+        if (selectedRegistrations.isEmpty()) {
+            return unavailable(
+                    "EMPTY_REGISTRATION_DENOMINATOR",
+                    "当前筛选范围没有可确认的注册用户，转化率不可计算；请检查 A4 注册事件或调整筛选条件。",
+                    cohort, phase, ref);
+        }
         Map<String, List<EventFact>> byActor = allEvents.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
         Map<String, EventFact> registered = firstByActor(selectedRegistrations);
@@ -102,7 +112,7 @@ public final class B3FunnelAnalytics {
                     "source", "nx_event_outbox:" + STAGE_EVENTS.get(index)));
         }
 
-        Map<String, Object> aux = auxMetrics(allEvents, registered);
+        Map<String, Object> aux = auxMetrics(allEvents, registered, byActor);
         return linked(
                 "available", true,
                 "module", "B3",
@@ -111,7 +121,7 @@ public final class B3FunnelAnalytics {
                 "filterOptions", linked("cohorts", cohorts, "phases", phases, "refs", refs),
                 "stages", stages,
                 "auxMetrics", aux,
-                "trend", trendFromEvents(allEvents, "purchase", phase, ref),
+                "trend", trendFromEvents(allEvents, normalizeStage(trendStage), phase, ref),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"),
                 "sourceStatement", "仅统计 schema_registered=1 且权威性满足 A4 规则的事件；主漏斗按同一用户严格有序推进");
     }
@@ -157,7 +167,9 @@ public final class B3FunnelAnalytics {
     }
 
     private static Map<String, Object> auxMetrics(
-            List<EventFact> events, Map<String, EventFact> registered) {
+            List<EventFact> events,
+            Map<String, EventFact> registered,
+            Map<String, List<EventFact>> byActor) {
         Set<String> day0Actors = new LinkedHashSet<>();
         Set<String> matureActors = new LinkedHashSet<>();
         Set<String> day7Actors = new LinkedHashSet<>();
@@ -183,7 +195,15 @@ public final class B3FunnelAnalytics {
                 if (retained) day7Actors.add(actor);
             }
         }
+        Map<String, EventFact> storeViewed = nextStage(byActor, registered, "store.viewed");
+        Map<String, EventFact> purchasedFromStore = nextStage(byActor, storeViewed, "checkout.completed");
         return linked(
+                "storeViewRate", percent(storeViewed.size(), registered.size()),
+                "storeViewNumerator", storeViewed.size(),
+                "storeViewDenominator", registered.size(),
+                "purchaseFromStoreRate", percent(purchasedFromStore.size(), storeViewed.size()),
+                "purchaseFromStoreNumerator", purchasedFromStore.size(),
+                "purchaseFromStoreDenominator", storeViewed.size(),
                 "day0AccessRate", percent(day0Actors.size(), registered.size()),
                 "day0Numerator", day0Actors.size(),
                 "day0Denominator", registered.size(),
@@ -193,6 +213,38 @@ public final class B3FunnelAnalytics {
                 "day7Denominator", matureActors.size(),
                 "day7Target", 60,
                 "day7Mature", !matureActors.isEmpty());
+    }
+
+    private static Map<String, Object> unavailable(
+            String reason, String message, String cohort, String phase, String ref) {
+        return linked(
+                "available", false,
+                "module", "B3",
+                "reason", reason,
+                "message", message,
+                "generatedAt", LocalDateTime.now().toString(),
+                "filters", filters(cohort, phase, ref),
+                "filterOptions", linked("cohorts", List.of(), "phases", List.of(), "refs", List.of()),
+                "stages", List.of(),
+                "auxMetrics", linked(
+                        "storeViewRate", null,
+                        "storeViewNumerator", 0,
+                        "storeViewDenominator", 0,
+                        "purchaseFromStoreRate", null,
+                        "purchaseFromStoreNumerator", 0,
+                        "purchaseFromStoreDenominator", 0,
+                        "day0AccessRate", null,
+                        "day0Numerator", 0,
+                        "day0Denominator", 0,
+                        "day0Target", 95,
+                        "day7Retention", null,
+                        "day7Numerator", 0,
+                        "day7Denominator", 0,
+                        "day7Target", 60,
+                        "day7Mature", false),
+                "trend", List.of(),
+                "sources", List.of("nx_event_outbox", "nx_event_schema_registry"),
+                "sourceStatement", "A4 权威事件事实不足，当前已停止计算");
     }
 
     private static Map<String, Object> filters(String cohort, String phase, String ref) {

@@ -21,6 +21,7 @@ public record PlatformMenuTreeOverview(
             String routePath,
             String icon,
             Integer sortOrder,
-            Integer status) {
+            Integer status,
+            String version) {
     }
 }

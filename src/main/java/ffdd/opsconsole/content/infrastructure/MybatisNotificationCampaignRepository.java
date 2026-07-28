@@ -298,15 +298,18 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
-    public void updateCapRule(String tier, String cap, String operator, LocalDateTime now) {
-        NotificationCapRuleEntity entity = findCapEntity(tier);
-        if (entity == null) {
-            return;
-        }
-        entity.setCapLabel(cap.trim());
-        entity.setLastOperator(operator(operator));
-        entity.setUpdatedAt(now);
-        capRuleMapper.updateById(entity);
+    public boolean updateCapRuleIfCurrent(
+            String tier,
+            String cap,
+            String expectedCap,
+            String operator,
+            LocalDateTime now) {
+        return capRuleMapper.updateIfCurrent(
+                tier,
+                cap.trim(),
+                expectedCap.trim(),
+                operator(operator),
+                now) == 1;
     }
 
     private NotificationCampaignEntity findEntity(String campaignNo) {

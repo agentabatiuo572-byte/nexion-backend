@@ -29,6 +29,12 @@ public class AppGenesisController {
         return userId == null ? forbidden() : service.account(userId);
     }
 
+    @GetMapping("/api/genesis/eligibility")
+    public ApiResult<Map<String, Object>> eligibility(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.eligibility(userId);
+    }
+
     @PostMapping("/api/genesis/purchase")
     public ApiResult<Map<String, Object>> purchase(
             @RequestBody AppGenesisService.PurchaseRequest request,

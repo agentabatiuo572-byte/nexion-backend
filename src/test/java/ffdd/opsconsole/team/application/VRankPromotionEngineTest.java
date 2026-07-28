@@ -135,20 +135,20 @@ class VRankPromotionEngineTest {
     }
 
     @Test
-    void evaluateReachesV2WhenSelfBuyAndTeamVolumeSatisfy() {
-        // V0→V1(selfBuy 500,directRefs 3)→V2(teamVolume 5000)
+    void evaluateAdvancesOnlyOneRankPerTriggerWhenMultipleRanksQualify() {
+        // 同一快照同时满足 V1/V2,但单个触发事件只能 V0→V1,下一事件再评 V2。
         commissionRepository.memberVRanks.put(1002L, "V0");
         performanceRepository.snapshot = new VRankEvaluationSnapshot(
                 new BigDecimal("500"), new BigDecimal("6000"), 3, Map.of());
 
         String result = engine.evaluate(VRankPromotionContext.systemEvaluation(1002L));
 
-        assertThat(result).isEqualTo("V2");
-        assertThat(commissionRepository.memberVRanks.get(1002L)).isEqualTo("V2");
+        assertThat(result).isEqualTo("V1");
+        assertThat(commissionRepository.memberVRanks.get(1002L)).isEqualTo("V1");
         assertThat(commissionRepository.userLevelLogs).hasSize(1);
         Map<String, Object> log = commissionRepository.userLevelLogs.get(0);
-        assertThat(log).containsEntry("fromCode", "V0").containsEntry("toCode", "V2");
-        assertThat((String) log.get("auditNo")).startsWith("VRANK-1002-V0-V2-");
+        assertThat(log).containsEntry("fromCode", "V0").containsEntry("toCode", "V1");
+        assertThat((String) log.get("auditNo")).startsWith("VRANK-1002-V0-V1-");
         assertThat(log.get("snapshotJson")).asString().contains("selfBuyUSD");
     }
 

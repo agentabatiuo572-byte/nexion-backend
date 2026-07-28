@@ -41,7 +41,28 @@ class GeoBlockPolicyServiceTest {
                 .isEqualTo("GEO_LIMITED");
         assertThat(service.evaluate("IR", "POST", "/api/content/learning/courses/course-1/quiz").code())
                 .isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/stakes").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/stakes/STK-1/claim").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/stakes/STK-1/early-withdraw").code())
+                .isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/repurchase/orders").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/repurchase/orders/RPS-1/claim").code())
+                .isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/repurchase/orders/RPS-1/early-withdraw").code())
+                .isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/trial/start").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/trial/charge").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/trial/cancel").blocked()).isFalse();
+        assertThat(service.evaluate("IR", "POST", "/api/quests/DAILY-1/claim").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/events/EVENT-1/claim").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/events/EVENT-1/spin").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/points/sign-in").code()).isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/earnings/milestones/evaluate").code())
+                .isEqualTo("GEO_LIMITED");
+        assertThat(service.evaluate("IR", "POST", "/api/vouchers/VCH-1/claim").code())
+                .isEqualTo("GEO_LIMITED");
         assertThat(service.evaluate("IR", "POST", "/api/content/learning/courses/course-1/start").blocked()).isFalse();
+        assertThat(service.evaluate("IR", "POST", "/api/events/EVENT-1/join").blocked()).isFalse();
         assertThat(service.evaluate("IR", "POST", "/api/profile/finance-note").blocked()).isFalse();
         assertThat(service.evaluate("IR", "GET", "/api/app/wallet/withdrawals").blocked()).isFalse();
     }

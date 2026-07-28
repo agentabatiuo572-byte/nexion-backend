@@ -137,6 +137,35 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public Optional<I18nMessagePairView> findMessagePairForUpdate(String messageKey) {
+        I18nMessageVersionEntity latest = messageVersionMapper.selectOne(
+                new LambdaQueryWrapper<I18nMessageVersionEntity>()
+                        .eq(I18nMessageVersionEntity::getMessageKey, messageKey.trim())
+                        .eq(I18nMessageVersionEntity::getIsDeleted, 0)
+                        .orderByDesc(I18nMessageVersionEntity::getVersionNo)
+                        .last("LIMIT 1 FOR UPDATE"));
+        return Optional.ofNullable(latest).map(this::toVersionPair);
+    }
+
+    @Override
+    public Optional<I18nMessagePairView> findPublishedMessagePairForUpdate(String messageKey) {
+        I18nMessageVersionEntity published = messageVersionMapper.selectOne(
+                new LambdaQueryWrapper<I18nMessageVersionEntity>()
+                        .eq(I18nMessageVersionEntity::getMessageKey, messageKey.trim())
+                        .eq(I18nMessageVersionEntity::getStatus, "PUBLISHED")
+                        .eq(I18nMessageVersionEntity::getIsDeleted, 0)
+                        .orderByDesc(I18nMessageVersionEntity::getVersionNo)
+                        .last("LIMIT 1 FOR UPDATE"));
+        if (published == null) return Optional.empty();
+        List<I18nMessageEntity> rows = messageRows(messageKey).stream()
+                .filter(row -> Integer.valueOf(1).equals(row.getStatus()))
+                .toList();
+        return rows.isEmpty()
+                ? Optional.empty()
+                : Optional.of(toPair(messageKey, rows, versionLabel(published.getVersionNo()), "published"));
+    }
+
+    @Override
     public List<I18nMessagePairView> listMessagePairs() {
         Map<String, I18nMessagePairView> result = new LinkedHashMap<>();
         messageMapper.selectList(new LambdaQueryWrapper<I18nMessageEntity>()
@@ -148,6 +177,34 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                         .orderByDesc(I18nMessageVersionEntity::getVersionNo))
                 .forEach(row -> result.putIfAbsent(row.getMessageKey(), toVersionPair(row)));
         return new ArrayList<>(result.values());
+    }
+
+    @Override
+    public List<I18nMessagePairView> listMessageVersions(String messageKey) {
+        if (!StringUtils.hasText(messageKey)) return List.of();
+        return messageVersionMapper.selectList(new LambdaQueryWrapper<I18nMessageVersionEntity>()
+                        .eq(I18nMessageVersionEntity::getMessageKey, messageKey.trim())
+                        .eq(I18nMessageVersionEntity::getIsDeleted, 0)
+                        .orderByDesc(I18nMessageVersionEntity::getVersionNo))
+                .stream()
+                .map(this::toVersionPair)
+                .toList();
+    }
+
+    @Override
+    public Optional<I18nMessagePairView> findMessageVersionForUpdate(String messageKey, String version) {
+        if (!StringUtils.hasText(messageKey) || !StringUtils.hasText(version)
+                || !version.trim().matches("(?i)^v[1-9][0-9]{0,8}$")) {
+            return Optional.empty();
+        }
+        int versionNo = Integer.parseInt(version.trim().substring(1));
+        return Optional.ofNullable(messageVersionMapper.selectOne(
+                        new LambdaQueryWrapper<I18nMessageVersionEntity>()
+                                .eq(I18nMessageVersionEntity::getMessageKey, messageKey.trim())
+                                .eq(I18nMessageVersionEntity::getVersionNo, versionNo)
+                                .eq(I18nMessageVersionEntity::getIsDeleted, 0)
+                                .last("LIMIT 1 FOR UPDATE")))
+                .map(this::toVersionPair);
     }
 
     @Override
@@ -187,6 +244,57 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         if (published == null) throw new IllegalArgumentException(key);
         published.setStatus("ARCHIVED"); published.setUpdatedAt(now); messageVersionMapper.updateById(published);
         return toVersionPair(published);
+    }
+
+    @Override
+    public I18nMessagePairView restoreMessageVersion(
+            String messageKey,
+            String targetVersion,
+            String expectedCurrentVersion,
+            LocalDateTime now) {
+        String key = messageKey.trim();
+        I18nMessageVersionEntity current = messageVersionMapper.selectOne(
+                new LambdaQueryWrapper<I18nMessageVersionEntity>()
+                        .eq(I18nMessageVersionEntity::getMessageKey, key)
+                        .eq(I18nMessageVersionEntity::getIsDeleted, 0)
+                        .orderByDesc(I18nMessageVersionEntity::getVersionNo)
+                        .last("LIMIT 1 FOR UPDATE"));
+        if (current == null || !versionLabel(current.getVersionNo()).equals(expectedCurrentVersion)) {
+            throw new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT");
+        }
+        I18nMessageVersionEntity target = messageVersionMapper.selectOne(
+                new LambdaQueryWrapper<I18nMessageVersionEntity>()
+                        .eq(I18nMessageVersionEntity::getMessageKey, key)
+                        .eq(I18nMessageVersionEntity::getVersionNo, Integer.parseInt(targetVersion.substring(1)))
+                        .eq(I18nMessageVersionEntity::getIsDeleted, 0)
+                        .last("LIMIT 1 FOR UPDATE"));
+        if (target == null || !"ARCHIVED".equalsIgnoreCase(target.getStatus())) {
+            throw new IllegalStateException("I18N_ROLLBACK_TARGET_INVALID");
+        }
+        messageVersionMapper.selectList(new LambdaQueryWrapper<I18nMessageVersionEntity>()
+                        .eq(I18nMessageVersionEntity::getMessageKey, key)
+                        .eq(I18nMessageVersionEntity::getStatus, "PUBLISHED")
+                        .eq(I18nMessageVersionEntity::getIsDeleted, 0))
+                .forEach(previous -> {
+                    previous.setStatus("ARCHIVED");
+                    previous.setUpdatedAt(now);
+                    messageVersionMapper.updateById(previous);
+                });
+        I18nMessageVersionEntity restored = new I18nMessageVersionEntity();
+        restored.setMessageKey(key);
+        restored.setVersionNo(value(current.getVersionNo()) + 1);
+        restored.setZhValue(target.getZhValue());
+        restored.setEnValue(target.getEnValue());
+        restored.setViValue(target.getViValue());
+        restored.setStatus("PUBLISHED");
+        restored.setCreatedAt(now);
+        restored.setUpdatedAt(now);
+        restored.setIsDeleted(0);
+        messageVersionMapper.insert(restored);
+        upsertMessage(key, "zh-CN", restored.getZhValue(), 1, now);
+        upsertMessage(key, "en-US", restored.getEnValue(), 1, now);
+        upsertMessage(key, "vi-VN", restored.getViValue(), 1, now);
+        return toVersionPair(restored);
     }
 
     @Override

@@ -89,6 +89,14 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     }
 
     @Override
+    public void lockTrustSection(String sectionKey) {
+        trustSectionMapper.selectOne(new LambdaQueryWrapper<TrustSectionEntity>()
+                .eq(TrustSectionEntity::getSectionKey, normalize(sectionKey))
+                .eq(TrustSectionEntity::getIsDeleted, 0)
+                .last("FOR UPDATE"));
+    }
+
+    @Override
     public List<TrustSectionVersionView> listTrustSectionVersions() {
         return trustSectionVersionMapper.selectList(new LambdaQueryWrapper<TrustSectionVersionEntity>()
                         .eq(TrustSectionVersionEntity::getIsDeleted, 0)
@@ -100,6 +108,15 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     @Override
     public Optional<TrustSectionVersionView> findTrustSectionVersion(String sectionKey, String version) {
         return Optional.ofNullable(findTrustSectionVersionEntity(sectionKey, version)).map(this::toTrustSectionVersion);
+    }
+
+    @Override
+    public void lockTrustSectionVersion(String sectionKey, String version) {
+        trustSectionVersionMapper.selectOne(new LambdaQueryWrapper<TrustSectionVersionEntity>()
+                .eq(TrustSectionVersionEntity::getSectionKey, normalize(sectionKey))
+                .eq(TrustSectionVersionEntity::getVersionLabel, normalize(version))
+                .eq(TrustSectionVersionEntity::getIsDeleted, 0)
+                .last("FOR UPDATE"));
     }
 
     @Override
@@ -330,6 +347,11 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 .stream()
                 .map(this::toGateAction)
                 .toList();
+    }
+
+    @Override
+    public void lockGateActions() {
+        disclosureGateActionMapper.lockAllActive();
     }
 
     @Override

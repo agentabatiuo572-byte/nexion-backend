@@ -159,6 +159,25 @@ class OpsBiServiceTest {
     }
 
     @Test
+    void l4RejectsUnknownSlicesAndMalformedCustomRangesInsteadOfFallingBack() {
+        assertThat(service.operationsOverview("garbage", "ALL", null, null))
+                .extracting(ApiResult::getCode, ApiResult::getMessage)
+                .containsExactly(400, "L4_PERIOD_INVALID");
+        assertThat(service.operationsOverview("week", "P9", null, null))
+                .extracting(ApiResult::getCode, ApiResult::getMessage)
+                .containsExactly(400, "L4_PHASE_INVALID");
+        assertThat(service.operationsOverview("week", "ALL", "2026-07-01", "2026-07-02"))
+                .extracting(ApiResult::getCode, ApiResult::getMessage)
+                .containsExactly(400, "L4_RANGE_NOT_SUPPORTED");
+        assertThat(service.operationsOverview("custom", "ALL", "bad", "2026-07-02"))
+                .extracting(ApiResult::getCode, ApiResult::getMessage)
+                .containsExactly(400, "L4_CUSTOM_RANGE_INVALID");
+        assertThat(service.operationsOverview("custom", "ALL", "2026-07-03", "2026-07-02"))
+                .extracting(ApiResult::getCode, ApiResult::getMessage)
+                .containsExactly(400, "L4_CUSTOM_RANGE_INVALID");
+    }
+
+    @Test
     void exportOverviewOnlyAdvertisesImplementedL5Capabilities() {
         ApiResult<Map<String, Object>> result = service.exportOverview();
 
@@ -356,28 +375,74 @@ class OpsBiServiceTest {
     }
 
     @Test
-    void sensitiveFinanceReportIsRejectedUntilTheDetailSnapshotSourceExists() {
+    void sensitiveFinanceDetailRequiresExactPermissionAndCreatesAnApprovalBoundMaskedSnapshot() {
         when(permissionCache.getPermissionCodes(1L)).thenReturn(java.util.Set.of("bi_l3_write", "bi_l5_write"));
+        ledgerRepository.counts.put(null, 100_001L);
 
         ApiResult<Map<String, Object>> denied = service.createReport(
                 "idem-sensitive-finance-denied",
                 new BiReportCreateRequest(
-                        "export sensitive finance details", "forged-client", "财务资金明细", "当前快照",
-                        "收入/兑付/用户级资金明细", "高(含手机 / 地址)", "默认脱敏", "财务管理员", "L3-FINANCE-DETAIL"));
+                        "export sensitive finance details", "forged-client", "财务资金明细",
+                        "2026-07-01/2026-07-31",
+                        "交易时间,用户编码（脱敏）,业务编号,账单类型,资产,方向,金额,余额,状态",
+                        "HIGH_PII", "MASKED", "财务管理员", "L3-FINANCE-DETAIL"));
 
-        assertThat(denied.getCode()).isEqualTo(OpsErrorCode.RETIRED_FEATURE.httpStatus());
-        assertThat(denied.getMessage()).isEqualTo("AGGREGATE_EXPORT_MUST_BE_NON_SENSITIVE");
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).isEqualTo("PERMISSION_DENIED");
         assertThat(reportRepository.report.reportId()).isEqualTo("EXP-1");
 
+        ledgerRepository.counts.put(null, 1L);
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                1L, 7L, "U00000007", "真实姓名不可导出", "=FORMULA", "WITHDRAW_NET_PRINCIPAL",
+                "USDT", "OUT", new BigDecimal("10.00"), new BigDecimal("90.00"),
+                "POSTED", "sensitive remark", LocalDateTime.parse("2026-07-10T09:30:00"),
+                LocalDateTime.parse("2026-07-10T09:30:00")));
         when(permissionCache.getPermissionCodes(1L)).thenReturn(java.util.Set.of("bi_l3_export_detail"));
         ApiResult<Map<String, Object>> allowed = service.createReport(
                 "idem-sensitive-finance-allowed",
                 new BiReportCreateRequest(
-                        "export sensitive finance details", "forged-client", "财务资金明细", "当前快照",
-                        "收入/兑付/用户级资金明细", "高(含手机 / 地址)", "默认脱敏", "财务管理员", "L3-FINANCE-DETAIL"));
+                        "export sensitive finance details", "forged-client", "财务资金明细",
+                        "2026-07-01/2026-07-31",
+                        "交易时间,用户编码（脱敏）,业务编号,账单类型,资产,方向,金额,余额,状态",
+                        "HIGH_PII", "MASKED", "财务管理员", "L3-FINANCE-DETAIL"));
 
-        assertThat(allowed.getCode()).isEqualTo(OpsErrorCode.RETIRED_FEATURE.httpStatus());
-        assertThat(allowed.getMessage()).isEqualTo("AGGREGATE_EXPORT_MUST_BE_NON_SENSITIVE");
+        assertThat(allowed.getCode()).isZero();
+        assertThat(reportRepository.report.type()).isEqualTo("FINANCE_AGG");
+        assertThat(reportRepository.report.containsPii()).isTrue();
+        assertThat(reportRepository.report.maskingPolicy()).isEqualTo("MASKED");
+        assertThat(reportRepository.report.status()).isEqualTo("PENDING_CONFIRM");
+        assertThat(reportRepository.report.rowCount()).isEqualTo(1L);
+        assertThat(reportRepository.snapshots.get(reportRepository.report.reportId()))
+                .contains("\"U0***07\"")
+                .contains("\"'=FORMULA\"")
+                .doesNotContain("真实姓名不可导出")
+                .doesNotContain("sensitive remark");
+    }
+
+    @Test
+    void financeDetailRejectsAnInvalidRangeAndAnOversizedSnapshotBeforePersistence() {
+        when(permissionCache.getPermissionCodes(1L)).thenReturn(java.util.Set.of("bi_l3_export_detail"));
+        BiReportCreateRequest invalidRange = new BiReportCreateRequest(
+                "export sensitive finance details", "forged-client", "财务资金明细",
+                "2026-07-31/2026-07-01", "用户编码（脱敏）,金额",
+                "HIGH_PII", "MASKED", "财务管理员", "L3-FINANCE-DETAIL");
+
+        ApiResult<Map<String, Object>> invalid = service.createReport("idem-detail-range", invalidRange);
+
+        assertThat(invalid.getCode()).isEqualTo(400);
+        assertThat(invalid.getMessage()).isEqualTo("FINANCE_DETAIL_SCOPE_INVALID");
+        assertThat(reportRepository.report.reportId()).isEqualTo("EXP-1");
+
+        ledgerRepository.counts.put(null, 100_001L);
+        ApiResult<Map<String, Object>> oversized = service.createReport(
+                "idem-detail-row-cap",
+                new BiReportCreateRequest(
+                        "export sensitive finance details", "forged-client", "财务资金明细",
+                        "2026-07-01/2026-07-31", "用户编码（脱敏）,金额",
+                        "HIGH_PII", "MASKED", "财务管理员", "L3-FINANCE-DETAIL"));
+
+        assertThat(oversized.getCode()).isEqualTo(422);
+        assertThat(oversized.getMessage()).isEqualTo("FINANCE_DETAIL_ROW_CAP_EXCEEDED");
         assertThat(reportRepository.report.reportId()).isEqualTo("EXP-1");
     }
 
@@ -1185,7 +1250,7 @@ class OpsBiServiceTest {
 
         @Override
         public long countLedgerBills(String type, Long userId, String keyword) {
-            return counts.getOrDefault(type, counts.getOrDefault(null, 0L));
+            return type == null ? counts.getOrDefault(null, 0L) : counts.getOrDefault(type, 0L);
         }
 
         @Override

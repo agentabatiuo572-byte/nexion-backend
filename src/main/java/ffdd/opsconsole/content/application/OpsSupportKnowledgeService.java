@@ -13,6 +13,7 @@ import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
@@ -39,6 +40,7 @@ public class OpsSupportKnowledgeService {
 
     private final SupportKnowledgeRepository knowledgeRepository;
     private final AuditLogService auditLogService;
+    private final EventOutboxService eventOutboxService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
@@ -72,6 +74,7 @@ public class OpsSupportKnowledgeService {
                 "status", created.status(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishFaqEvent(created, "create", request.operator(), request.reason());
         return ApiResult.ok(created);
     }
 
@@ -89,13 +92,22 @@ public class OpsSupportKnowledgeService {
         if (current == null) {
             return ApiResult.fail(404, "SUPPORT_FAQ_NOT_FOUND");
         }
-        knowledgeRepository.updateFaq(current.id(), normalizeFaqRequest(request), LocalDateTime.now(clock));
+        if (!validFaqExpectation(request.expectedStatus(), request.expectedVersion())
+                || !current.status().equals(normalizeStatus(request.expectedStatus()))
+                || !current.version().equals(request.expectedVersion())) {
+            return ApiResult.fail(409, "SUPPORT_FAQ_CONCURRENT_MODIFICATION");
+        }
+        if (!knowledgeRepository.updateFaqCas(
+                current.id(), normalizeFaqRequest(request), request.expectedStatus(), request.expectedVersion(), LocalDateTime.now(clock))) {
+            return ApiResult.fail(409, "SUPPORT_FAQ_CONCURRENT_MODIFICATION");
+        }
         SupportFaqView updated = findFaq(current.id());
         audit("M4_SUPPORT_FAQ_UPDATED", current.id(), request.operator(), Map.of(
                 "fromStatus", current.status(),
                 "toStatus", normalizeStatus(request.status()),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishFaqEvent(updated, "update", request.operator(), request.reason());
         return ApiResult.ok(updated);
     }
 
@@ -111,24 +123,33 @@ public class OpsSupportKnowledgeService {
         if (request == null || !STATUSES.contains(normalizeStatus(request.status()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_FAQ_STATUS_UNSUPPORTED");
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (!validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         SupportFaqView current = findFaq(faqId);
         if (current == null) {
             return ApiResult.fail(404, "SUPPORT_FAQ_NOT_FOUND");
         }
+        if (!validFaqExpectation(request.expectedStatus(), request.expectedVersion())
+                || !current.status().equals(normalizeStatus(request.expectedStatus()))
+                || !current.version().equals(request.expectedVersion())) {
+            return ApiResult.fail(409, "SUPPORT_FAQ_CONCURRENT_MODIFICATION");
+        }
         String target = normalizeStatus(request.status());
         if (target.equals(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        knowledgeRepository.updateFaqStatus(current.id(), target, LocalDateTime.now(clock));
+        if (!knowledgeRepository.updateFaqStatusCas(
+                current.id(), target, request.expectedStatus(), request.expectedVersion(), LocalDateTime.now(clock))) {
+            return ApiResult.fail(409, "SUPPORT_FAQ_CONCURRENT_MODIFICATION");
+        }
         SupportFaqView updated = findFaq(current.id());
         audit("M4_SUPPORT_FAQ_STATUS_CHANGED", current.id(), request.operator(), Map.of(
                 "from", current.status(),
                 "to", target,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishFaqEvent(updated, target.equals("PUBLISHED") ? "publish" : "unpublish", request.operator(), request.reason());
         return ApiResult.ok(updated);
     }
 
@@ -141,18 +162,30 @@ public class OpsSupportKnowledgeService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (request == null || !validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         SupportFaqView current = findFaq(faqId);
         if (current == null) {
             return ApiResult.fail(404, "SUPPORT_FAQ_NOT_FOUND");
         }
-        knowledgeRepository.deleteFaq(current.id(), LocalDateTime.now(clock));
+        if (!validFaqExpectation(request.expectedStatus(), request.expectedVersion())
+                || !current.status().equals(normalizeStatus(request.expectedStatus()))
+                || !current.version().equals(request.expectedVersion())) {
+            return ApiResult.fail(409, "SUPPORT_FAQ_CONCURRENT_MODIFICATION");
+        }
+        if (!knowledgeRepository.deleteFaqCas(
+                current.id(), request.expectedStatus(), request.expectedVersion(), LocalDateTime.now(clock))) {
+            return ApiResult.fail(409, "SUPPORT_FAQ_CONCURRENT_MODIFICATION");
+        }
         audit("M4_SUPPORT_FAQ_DELETED", current.id(), request.operator(), Map.of(
                 "category", current.category(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishFaqEvent(new SupportFaqView(
+                current.id(), current.category(), current.question(), current.answer(), current.status(),
+                current.surface(), current.language(), current.sortOrder(), current.version() + 1, LocalDateTime.now(clock)),
+                "delete", request.operator(), request.reason());
         return ApiResult.ok();
     }
 
@@ -173,10 +206,20 @@ public class OpsSupportKnowledgeService {
         if (!StringUtils.hasText(request.queue()) || !StringUtils.hasText(request.escalation())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_SLA_QUEUE_REQUIRED");
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (!validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
-        knowledgeRepository.upsertSla(normalizedCategory, request, LocalDateTime.now(clock));
+        SupportSlaView current = knowledgeRepository.listSla().stream()
+                .filter(row -> normalizedCategory.equals(row.category()))
+                .findFirst()
+                .orElse(null);
+        if (current == null || request.expectedVersion() == null || request.expectedVersion() < 1
+                || !request.expectedVersion().equals(current.version())) {
+            return ApiResult.fail(409, "SUPPORT_SLA_CONCURRENT_MODIFICATION");
+        }
+        if (!knowledgeRepository.updateSlaCas(normalizedCategory, request, request.expectedVersion(), LocalDateTime.now(clock))) {
+            return ApiResult.fail(409, "SUPPORT_SLA_CONCURRENT_MODIFICATION");
+        }
         SupportSlaView updated = knowledgeRepository.listSla().stream()
                 .filter(row -> normalizedCategory.equals(row.category()))
                 .findFirst()
@@ -186,6 +229,7 @@ public class OpsSupportKnowledgeService {
                         request.resolutionHours(),
                         request.queue().trim(),
                         request.escalation().trim(),
+                        request.expectedVersion() + 1,
                         LocalDateTime.now(clock)));
         audit("M4_SUPPORT_SLA_CHANGED", normalizedCategory, request.operator(), Map.of(
                 "firstResponseMins", updated.firstResponseMins(),
@@ -249,7 +293,7 @@ public class OpsSupportKnowledgeService {
         if (request.sortOrder() == null || request.sortOrder() < 0 || request.sortOrder() > 999999) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_FAQ_SORT_ORDER_INVALID");
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (!validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -268,6 +312,8 @@ public class OpsSupportKnowledgeService {
                 normalizeStatus(request.status()),
                 normalizeLanguage(request.language()),
                 request.sortOrder(),
+                request.expectedStatus(),
+                request.expectedVersion(),
                 operator(request.operator()),
                 request.reason().trim());
     }
@@ -303,8 +349,33 @@ public class OpsSupportKnowledgeService {
         return AdminActorResolver.resolve(StringUtils.hasText(operator) ? operator.trim() : "system");
     }
 
+    private boolean validReason(String reason) {
+        return StringUtils.hasText(reason)
+                && reason.trim().length() >= 8
+                && reason.trim().length() <= 200;
+    }
+
+    private boolean validFaqExpectation(String expectedStatus, Integer expectedVersion) {
+        return STATUSES.contains(normalizeStatus(expectedStatus))
+                && expectedVersion != null
+                && expectedVersion >= 1;
+    }
+
+    private void publishFaqEvent(SupportFaqView faq, String action, String actor, String reason) {
+        eventOutboxService.publish("SUPPORT_FAQ", faq.id(), "admin.support_faq_updated", Map.of(
+                "faq_id", faq.id(),
+                "action", action,
+                "category", faq.category(),
+                "status", faq.status(),
+                "version", faq.version(),
+                "language", faq.language(),
+                "surface", faq.surface(),
+                "operator", operator(actor),
+                "reason", reason.trim()));
+    }
+
     private void audit(String action, String resourceId, String operator, Map<String, Object> detail) {
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("SUPPORT_KNOWLEDGE")
                 .resourceId(resourceId)

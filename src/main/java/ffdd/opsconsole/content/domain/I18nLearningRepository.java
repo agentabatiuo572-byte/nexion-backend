@@ -18,7 +18,25 @@ public interface I18nLearningRepository {
 
     Optional<I18nMessagePairView> findDraftMessagePair(String messageKey);
 
+    default Optional<I18nMessagePairView> findMessagePairForUpdate(String messageKey) {
+        return findMessagePair(messageKey);
+    }
+
+    default Optional<I18nMessagePairView> findPublishedMessagePairForUpdate(String messageKey) {
+        return findPublishedMessagePair(messageKey);
+    }
+
     List<I18nMessagePairView> listMessagePairs();
+
+    default List<I18nMessagePairView> listMessageVersions(String messageKey) {
+        return findMessagePair(messageKey).map(List::of).orElseGet(List::of);
+    }
+
+    default Optional<I18nMessagePairView> findMessageVersionForUpdate(String messageKey, String version) {
+        return listMessageVersions(messageKey).stream()
+                .filter(row -> row.version().equalsIgnoreCase(version))
+                .findFirst();
+    }
 
     default Map<String, String> listPublishedMessages(String namespace, String locale) { return Map.of(); }
 
@@ -29,6 +47,14 @@ public interface I18nLearningRepository {
     }
 
     I18nMessagePairView archiveMessage(String messageKey, LocalDateTime now);
+
+    default I18nMessagePairView restoreMessageVersion(
+            String messageKey,
+            String targetVersion,
+            String expectedCurrentVersion,
+            LocalDateTime now) {
+        throw new UnsupportedOperationException("I18N_MESSAGE_VERSION_RESTORE_NOT_AVAILABLE");
+    }
 
     List<I18nIntegrityIssueView> listIntegrityIssues();
 

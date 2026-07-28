@@ -303,6 +303,22 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     }
 
     @Override
+    public Optional<CopyFrameworkParamView> findFrameworkParamForUpdate(String paramKey) {
+        CopyFrameworkParamEntity entity = frameworkMapper.selectOne(
+                new LambdaQueryWrapper<CopyFrameworkParamEntity>()
+                        .eq(CopyFrameworkParamEntity::getParamKey, paramKey)
+                        .eq(CopyFrameworkParamEntity::getIsDeleted, 0)
+                        .last("LIMIT 1 FOR UPDATE"));
+        return entity == null
+                ? Optional.empty()
+                : Optional.of(new CopyFrameworkParamView(
+                        entity.getParamKey(),
+                        entity.getParamName(),
+                        entity.getCurrentValue(),
+                        entity.getDescription()));
+    }
+
+    @Override
     public void saveDraft(String copyKey, CopyDraftSaveRequest request, LocalDateTime now) {
         CopyContentEntity copy = findCopyEntity(copyKey);
         if (copy == null) {

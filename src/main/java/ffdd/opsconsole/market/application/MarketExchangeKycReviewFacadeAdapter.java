@@ -4,6 +4,7 @@ import ffdd.opsconsole.market.domain.NexMarketRepository;
 import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -20,7 +21,8 @@ public class MarketExchangeKycReviewFacadeAdapter implements MarketExchangeKycRe
         if (!StringUtils.hasText(exchangeNo)) {
             return false;
         }
-        boolean updated = marketRepository.updateExchangeStatus(exchangeNo.trim(), "QUEUED");
+        boolean updated = marketRepository.updateExchangeStatusIfCurrent(
+                exchangeNo.trim(), "QUEUED", List.of("KYC_REQUIRED"));
         audit("G2_EXCHANGE_RELEASED_BY_C4", exchangeNo.trim(), "QUEUED", updated, reason, operator);
         return updated;
     }
@@ -30,7 +32,8 @@ public class MarketExchangeKycReviewFacadeAdapter implements MarketExchangeKycRe
         if (!StringUtils.hasText(exchangeNo)) {
             return false;
         }
-        boolean updated = marketRepository.updateExchangeStatus(exchangeNo.trim(), "CANCELLED");
+        boolean updated = marketRepository.updateExchangeStatusIfCurrent(
+                exchangeNo.trim(), "CANCELLED", List.of("KYC_REQUIRED"));
         audit("G2_EXCHANGE_REJECTED_BY_C4", exchangeNo.trim(), "CANCELLED", updated, reason, operator);
         return updated;
     }

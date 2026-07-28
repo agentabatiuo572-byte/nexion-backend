@@ -79,7 +79,11 @@ class OpsNotificationCampaignControllerTest {
 
     @Test
     void updateCapDelegatesWithIdempotencyHeader() {
-        NotificationCapUpdateRequest request = new NotificationCapUpdateRequest("180 条", "Marina K.", "调整普通容量");
+        NotificationCapUpdateRequest request = new NotificationCapUpdateRequest(
+                "180 条",
+                "200 条",
+                "Marina K.",
+                "调整普通容量");
         when(campaignService.updateCapRule("normal", "idem-i3-cap", request)).thenReturn(ApiResult.ok(null));
 
         assertThat(controller.updateCapRule("normal", "idem-i3-cap", request).getCode()).isZero();

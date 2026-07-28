@@ -55,6 +55,84 @@ public interface AppGrowthEngagementMapper {
             """)
     QuestReward lockClaimableQuest(@Param("userId") Long userId, @Param("questCode") String questCode);
 
+    @Select("""
+            SELECT m.mission_code questCode,
+                   m.mission_name name,
+                   m.mission_type layer,
+                   m.reward_points rewardNex,
+                   CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
+                     WHEN 'COMPLETED' THEN 'COMPLETED'
+                     WHEN 'CLAIMABLE' THEN 'CLAIMABLE'
+                     WHEN 'CLAIMED' THEN 'CLAIMED'
+                     ELSE 'PENDING'
+                   END status,
+                   m.updated_at updatedAt
+              FROM nx_mission m
+              LEFT JOIN nx_user_mission um
+                ON um.mission_id=m.id AND um.user_id=#{userId} AND um.is_deleted=0
+             WHERE m.status=1
+               AND m.is_deleted=0
+               AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
+             ORDER BY FIELD(m.mission_type,'DAY_ONE','WEEKLY_T1','WEEKLY_T2'),m.id
+            """)
+    List<Map<String, Object>> questState(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT q.quest_code eventCode,
+                   LOWER(q.target_type) kind,
+                   CASE
+                     WHEN q.status=2 OR (q.ends_at IS NOT NULL AND q.ends_at<UTC_TIMESTAMP()) THEN 'ended'
+                     WHEN q.status=0 OR (q.starts_at IS NOT NULL AND q.starts_at>UTC_TIMESTAMP()) THEN 'upcoming'
+                     ELSE 'ongoing'
+                   END state,
+                   q.quest_name title,
+                   COALESCE(q.description,'') subtitle,
+                   q.reward_name rewardName,
+                   UPPER(q.reward_type) rewardType,
+                   q.reward_amount rewardAmount,
+                   CASE WHEN q.badge_achievement_code='FEATURED' THEN 1 ELSE 0 END featured,
+                   CASE WHEN LOWER(q.target_type)<>'wheel' AND q.target_value>0 THEN 1 ELSE 0 END trackable,
+                   q.target_value targetValue,
+                   COALESCE(u.progress_value,0) progressValue,
+                   CASE
+                     WHEN UPPER(COALESCE(u.claim_status,''))='CLAIMED' THEN 'CLAIMED'
+                     WHEN u.id IS NOT NULL AND
+                          (u.progress_value>=q.target_value
+                           OR UPPER(COALESCE(u.claim_status,'')) IN ('COMPLETED','CLAIMABLE'))
+                       THEN 'CLAIMABLE'
+                     WHEN u.id IS NOT NULL THEN 'JOINED'
+                     ELSE 'AVAILABLE'
+                   END userStatus,
+                   q.geo_scope geo,
+                   COALESCE(q.cta_href,'') href,
+                   q.starts_at startsAt,
+                   q.ends_at endsAt,
+                   q.updated_at updatedAt
+              FROM nx_event_quest q
+              LEFT JOIN nx_user_event_quest u
+                ON u.quest_id=q.id AND u.user_id=#{userId} AND u.is_deleted=0
+             WHERE q.is_deleted=0
+             ORDER BY q.sort_order,q.id
+            """)
+    List<Map<String, Object>> eventState(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT banner_code bannerCode,
+                   base_reward baseReward,
+                   multiplier,
+                   countdown_days countdownDays,
+                   countdown_hours countdownHours,
+                   target_device targetDevice,
+                   target_daily targetDaily,
+                   LOWER(status) status,
+                   updated_at updatedAt
+              FROM nx_growth_promo_banner
+             WHERE is_deleted=0
+             ORDER BY sort_order,id
+             LIMIT 1
+            """)
+    Map<String, Object> questPromoBanner();
+
     @Update("""
             UPDATE nx_user_mission SET mission_status='CLAIMED',updated_at=NOW()
              WHERE user_id=#{userId} AND mission_id=#{missionId}
@@ -206,10 +284,25 @@ public interface AppGrowthEngagementMapper {
     int ensureUserStreak(@Param("userId") Long userId);
 
     @Select("""
-            SELECT current_streak currentStreak,longest_streak longestStreak,last_check_in_date lastCheckInDate
+            SELECT current_streak currentStreak,longest_streak longestStreak,
+                   streak_savers streakSavers,last_check_in_date lastCheckInDate
               FROM nx_user_streak WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE
             """)
     StreakState lockStreak(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_streak
+               SET current_streak=#{restoredStreak},
+                   streak_savers=streak_savers-1,
+                   last_check_in_date=#{effectiveLastCheckInDate},
+                   updated_at=NOW()
+             WHERE user_id=#{userId} AND is_deleted=0 AND streak_savers>0
+               AND last_check_in_date<#{effectiveLastCheckInDate}
+            """)
+    int useStreakSaver(
+            @Param("userId") Long userId,
+            @Param("restoredStreak") int restoredStreak,
+            @Param("effectiveLastCheckInDate") LocalDate effectiveLastCheckInDate);
 
     @Insert("""
             INSERT IGNORE INTO nx_daily_check_in
@@ -295,15 +388,76 @@ public interface AppGrowthEngagementMapper {
     @Select("""
             SELECT COALESCE(s.current_streak,0) currentStreak,
                    COALESCE(s.longest_streak,0) longestStreak,
+                   COALESCE(s.streak_savers,0) streakSavers,
                    s.last_check_in_date lastCheckInDate,
-                   COALESCE((SELECT SUM(p.points) FROM nx_points_ledger p
-                              WHERE p.user_id=#{userId} AND p.is_deleted=0),0) pointBalance,
                    EXISTS(SELECT 1 FROM nx_daily_check_in c
-                           WHERE c.user_id=#{userId} AND c.check_in_date=CURDATE() AND c.is_deleted=0) checkedInToday
+                           WHERE c.user_id=#{userId} AND c.check_in_date=#{today} AND c.is_deleted=0) checkedInToday
               FROM (SELECT #{userId} user_id) anchor
               LEFT JOIN nx_user_streak s ON s.user_id=anchor.user_id AND s.is_deleted=0
             """)
-    Map<String, Object> pointState(@Param("userId") Long userId);
+    Map<String, Object> pointState(@Param("userId") Long userId, @Param("today") LocalDate today);
+
+    @Select("""
+            SELECT rule_key `key`,current_value `value`
+              FROM nx_growth_checkin_rule
+             WHERE is_deleted=0
+             ORDER BY sort_order,id
+            """)
+    List<Map<String, Object>> checkInRuleState();
+
+    @Select("""
+            SELECT p.id powerUpId,p.power_up_code powerUpCode,p.power_up_name name,
+                   p.unlock_streak_days unlockStreakDays,p.target_path targetPath,
+                   p.effect_type effectType,p.effect_value effectValue,
+                   CASE WHEN UPPER(COALESCE(u.power_up_status,''))='ACTIVATED' THEN 'ACTIVATED'
+                        WHEN COALESCE(s.current_streak,0)>=p.unlock_streak_days THEN 'AVAILABLE'
+                        ELSE 'LOCKED' END status
+              FROM nx_streak_power_up p
+              LEFT JOIN nx_user_streak s ON s.user_id=#{userId} AND s.is_deleted=0
+              LEFT JOIN nx_user_streak_power_up u
+                ON u.user_id=#{userId} AND u.power_up_code=p.power_up_code AND u.is_deleted=0
+             WHERE p.status=1 AND p.is_deleted=0
+             ORDER BY p.sort_order,p.unlock_streak_days,p.id
+            """)
+    List<Map<String, Object>> streakPowerUpState(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT CONCAT(LEFT(u.nickname,1),'***') name,u.country_code countryCode,
+                   s.current_streak streak
+              FROM nx_user_streak s
+              JOIN nx_user u ON u.id=s.user_id AND u.status='ACTIVE' AND u.is_deleted=0
+             WHERE s.current_streak>0 AND s.is_deleted=0
+             ORDER BY s.current_streak DESC,s.longest_streak DESC,s.user_id
+             LIMIT 5
+            """)
+    List<Map<String, Object>> topStreakers();
+
+    @Select("""
+            SELECT p.id powerUpId,p.power_up_code powerUpCode,
+                   p.badge_achievement_code badgeCode,p.duration_days durationDays
+              FROM nx_streak_power_up p
+              JOIN nx_user_streak s
+                ON s.user_id=#{userId} AND s.is_deleted=0
+               AND s.current_streak>=p.unlock_streak_days
+              LEFT JOIN nx_user_streak_power_up u
+                ON u.user_id=#{userId} AND u.power_up_code=p.power_up_code AND u.is_deleted=0
+             WHERE p.id=#{powerUpId} AND p.status=1 AND p.is_deleted=0
+               AND (u.id IS NULL OR UPPER(u.power_up_status)<>'ACTIVATED')
+             LIMIT 1 FOR UPDATE
+            """)
+    StreakPowerUp lockActivatablePowerUp(
+            @Param("userId") Long userId, @Param("powerUpId") Long powerUpId);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_user_streak_power_up
+              (user_id,power_up_id,power_up_code,power_up_status,unlocked_at,activated_at,
+               expires_at,created_at,updated_at,is_deleted)
+            VALUES
+              (#{userId},#{row.powerUpId},#{row.powerUpCode},'ACTIVATED',NOW(),NOW(),
+               CASE WHEN #{row.durationDays}>0 THEN DATE_ADD(NOW(),INTERVAL #{row.durationDays} DAY) ELSE NULL END,
+               NOW(),NOW(),0)
+            """)
+    int activatePowerUp(@Param("userId") Long userId, @Param("row") StreakPowerUp row);
 
     @Select("""
             SELECT m.id milestoneId,m.milestone_day milestoneDay,m.reward_type rewardType,
@@ -336,12 +490,31 @@ public interface AppGrowthEngagementMapper {
                    v.amount_usd amountUsd,v.percent_value percentValue,v.min_purchase_usd minPurchaseUsd,
                    v.max_discount_usd maxDiscountUsd,v.applicable_skus applicableSkus,
                    v.audience,v.claim_surfaces claimSurfaces,v.start_at startAt,v.end_at endAt,
+                   v.popup_enabled popupEnabled,v.stack_with_trial stackWithTrial,
+                   v.stack_with_others stackWithOthers,v.splittable,
+                   v.status definitionStatus,v.is_deleted definitionDeleted,
                    g.grant_id grantId,COALESCE(g.status,'UNCLAIMED') grantStatus,g.used_order_no usedOrderNo
               FROM nx_growth_voucher v
               LEFT JOIN nx_growth_voucher_grant g
-                ON g.voucher_id=v.voucher_id AND g.user_id=#{userId} AND g.is_deleted=0
-             WHERE v.is_deleted=0 AND LOWER(v.status)='active'
-               AND (v.start_at=0 OR v.start_at<=#{nowMillis}) AND (v.end_at=0 OR v.end_at>=#{nowMillis})
+                ON g.id = (
+                  SELECT gg.id
+                    FROM nx_growth_voucher_grant gg
+                   WHERE gg.voucher_id=v.voucher_id
+                     AND gg.user_id=#{userId}
+                     AND gg.is_deleted=0
+                   ORDER BY CASE UPPER(gg.status)
+                              WHEN 'AVAILABLE' THEN 0
+                              WHEN 'USED' THEN 1
+                              WHEN 'REVOKED' THEN 2
+                              ELSE 3
+                            END,
+                            gg.granted_at,gg.id
+                   LIMIT 1
+                )
+             WHERE g.id IS NOT NULL
+                OR (v.is_deleted=0 AND LOWER(v.status)='active'
+                    AND (v.start_at=0 OR v.start_at<=#{nowMillis})
+                    AND (v.end_at=0 OR v.end_at>=#{nowMillis}))
              ORDER BY v.updated_at DESC,v.id DESC
             """)
     List<Map<String, Object>> voucherState(
@@ -366,7 +539,8 @@ public interface AppGrowthEngagementMapper {
             String badgeCode) {
     }
 
-    record StreakState(Integer currentStreak, Integer longestStreak, LocalDate lastCheckInDate) {
+    record StreakState(
+            Integer currentStreak, Integer longestStreak, Integer streakSavers, LocalDate lastCheckInDate) {
     }
 
     record DailyMilestone(
@@ -379,5 +553,9 @@ public interface AppGrowthEngagementMapper {
 
     record EarningMilestone(
             String milestoneId, BigDecimal thresholdUsdt, BigDecimal rewardNex, BigDecimal lifetimeEarningsUsdt) {
+    }
+
+    record StreakPowerUp(
+            Long powerUpId, String powerUpCode, String badgeCode, Integer durationDays) {
     }
 }

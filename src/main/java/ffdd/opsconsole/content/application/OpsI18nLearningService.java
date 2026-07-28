@@ -17,6 +17,7 @@ import ffdd.opsconsole.content.domain.TutorialRewardRange;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
 import ffdd.opsconsole.content.dto.I18nIntegrityFixRequest;
 import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
+import ffdd.opsconsole.content.dto.I18nVersionActionRequest;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningQuizQuestionRequest;
@@ -28,6 +29,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -67,6 +69,7 @@ public class OpsI18nLearningService {
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
     private static final Pattern MANUAL_URL_PATTERN = Pattern.compile("https?://|href\\s*=|href=#", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HTML_TAG_PATTERN = Pattern.compile("<\\s*/?\\s*[a-z][^>]*>", Pattern.CASE_INSENSITIVE);
     private static final Pattern SUNSET_PATTERN = Pattern.compile("premium|nex\\s*v?2|nexv2|points|积分", Pattern.CASE_INSENSITIVE);
     private static final Pattern COURSE_ID_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9-]{2,80}$");
     private static final Pattern COURSE_VERSION_PATTERN = Pattern.compile("^v[1-9][0-9]{0,8}$", Pattern.CASE_INSENSITIVE);
@@ -78,6 +81,7 @@ public class OpsI18nLearningService {
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final AuditObjectLockMapper lockMapper;
+    private final EventOutboxService eventOutboxService;
 
     public ApiResult<I18nLearningOverview> overview() {
         return ApiResult.ok(currentOverview());
@@ -102,6 +106,11 @@ public class OpsI18nLearningService {
         if (guard != null) {
             return fail(guard);
         }
+        I18nMessagePairView current = learningRepository.findMessagePairForUpdate(messageKey.trim()).orElse(null);
+        if (current != null && (!StringUtils.hasText(request.expectedVersion())
+                || !request.expectedVersion().trim().equals(current.version()))) {
+            return ApiResult.fail(409, "I18N_MESSAGE_VERSION_CONFLICT");
+        }
         I18nMessagePairView saved = learningRepository.saveMessagePair(messageKey.trim(), request.zh().trim(), request.en().trim(), request.vi().trim(), "draft", now());
         audit("I6_I18N_DRAFT_SAVED", "I18N_MESSAGE", messageKey.trim(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "languages", "zh+en+vi",
@@ -115,8 +124,8 @@ public class OpsI18nLearningService {
         if (guard != null) {
             return fail(guard);
         }
-        I18nMessagePairView draft = learningRepository.findDraftMessagePair(messageKey.trim()).orElse(null);
-        if (draft == null) {
+        I18nMessagePairView draft = learningRepository.findMessagePairForUpdate(messageKey.trim()).orElse(null);
+        if (draft == null || !"draft".equals(draft.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "I18N_DRAFT_VERSION_NOT_FOUND");
         }
         if (!StringUtils.hasText(request.expectedVersion()) || !request.expectedVersion().trim().equals(draft.version())) {
@@ -129,6 +138,11 @@ public class OpsI18nLearningService {
         audit("I6_I18N_MESSAGE_PUBLISHED", "I18N_MESSAGE", messageKey.trim(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "languages", "zh+en+vi",
                 "placeholders", String.join(",", published.placeholders())));
+        eventOutboxService.publish("I18N_MESSAGE", messageKey.trim(), "admin.i18n_published", Map.of(
+                "message_key", messageKey.trim(),
+                "version", published.version(),
+                "locale_set", "zh-CN,en-US,vi-VN",
+                "operator", operator(request.operator())));
         return ApiResult.ok(published);
     }
 
@@ -221,16 +235,84 @@ public class OpsI18nLearningService {
     }
 
     @Transactional
-    public ApiResult<I18nMessagePairView> archiveLocalizedMessage(String messageKey, String idempotencyKey, I18nActionRequest request) {
-        ApiResult<Void> guard = requireAction(idempotencyKey, request);
+    public ApiResult<I18nMessagePairView> archiveLocalizedMessage(String messageKey, String idempotencyKey, I18nVersionActionRequest request) {
+        ApiResult<Void> guard = requireVersionAction(idempotencyKey, request);
         if (guard != null) return fail(guard);
-        if (!StringUtils.hasText(messageKey) || learningRepository.findPublishedMessagePair(messageKey.trim()).isEmpty()) {
+        I18nMessagePairView current = !StringUtils.hasText(messageKey)
+                ? null
+                : learningRepository.findPublishedMessagePairForUpdate(messageKey.trim()).orElse(null);
+        if (current == null) {
             return ApiResult.fail(404, "I18N_MESSAGE_NOT_FOUND");
+        }
+        if (!request.expectedVersion().trim().equals(current.version())) {
+            return ApiResult.fail(409, "I18N_MESSAGE_VERSION_CONFLICT");
         }
         I18nMessagePairView archived = learningRepository.archiveMessage(messageKey.trim(), now());
         audit("I6_I18N_MESSAGE_ARCHIVED", "I18N_MESSAGE", messageKey.trim(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "version", archived.version(), "languages", "zh+en+vi"));
+        eventOutboxService.publish("I18N_MESSAGE", messageKey.trim(), "admin.i18n_rolledback", Map.of(
+                "message_key", messageKey.trim(),
+                "from_version", current.version(),
+                "to_status", "ARCHIVED",
+                "locale_set", "zh-CN,en-US,vi-VN",
+                "operator", operator(request.operator())));
         return ApiResult.ok(archived);
+    }
+
+    public ApiResult<List<I18nMessagePairView>> messageVersions(String messageKey) {
+        if (!StringUtils.hasText(messageKey) || !MESSAGE_KEY_PATTERN.matcher(messageKey.trim()).matches()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_MESSAGE_KEY_INVALID");
+        }
+        return ApiResult.ok(learningRepository.listMessageVersions(messageKey.trim()));
+    }
+
+    @Transactional
+    public ApiResult<I18nMessagePairView> rollbackLocalizedMessage(
+            String messageKey,
+            String targetVersion,
+            String idempotencyKey,
+            I18nVersionActionRequest request) {
+        ApiResult<Void> guard = requireVersionAction(idempotencyKey, request);
+        if (guard != null) return fail(guard);
+        if (!StringUtils.hasText(messageKey) || !MESSAGE_KEY_PATTERN.matcher(messageKey.trim()).matches()
+                || !StringUtils.hasText(targetVersion) || !targetVersion.trim().matches("(?i)^v[1-9][0-9]{0,8}$")) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_ROLLBACK_TARGET_INVALID");
+        }
+        I18nMessagePairView current = learningRepository.findMessagePairForUpdate(messageKey.trim()).orElse(null);
+        if (current == null) return ApiResult.fail(404, "I18N_MESSAGE_NOT_FOUND");
+        if (!request.expectedVersion().trim().equals(current.version())) {
+            return ApiResult.fail(409, "I18N_MESSAGE_VERSION_CONFLICT");
+        }
+        if ("draft".equals(current.status())) {
+            return ApiResult.fail(409, "I18N_DRAFT_MUST_BE_PUBLISHED_OR_REMOVED_BEFORE_ROLLBACK");
+        }
+        I18nMessagePairView target = learningRepository
+                .findMessageVersionForUpdate(messageKey.trim(), targetVersion.trim())
+                .orElse(null);
+        if (target == null || !"archived".equals(target.status())) {
+            return ApiResult.fail(422, "I18N_ROLLBACK_TARGET_INVALID");
+        }
+        I18nMessagePairView restored;
+        try {
+            restored = learningRepository.restoreMessageVersion(
+                    messageKey.trim(), target.version(), current.version(), now());
+        } catch (IllegalStateException ex) {
+            return ApiResult.fail(409, ex.getMessage());
+        }
+        audit("I6_I18N_MESSAGE_ROLLED_BACK", "I18N_MESSAGE", messageKey.trim(), request.operator(),
+                idempotencyKey, request.reason(), Map.of(
+                        "fromVersion", current.version(),
+                        "targetVersion", target.version(),
+                        "publishedVersion", restored.version(),
+                        "languages", "zh+en+vi"));
+        eventOutboxService.publish("I18N_MESSAGE", messageKey.trim(), "admin.i18n_rolledback", Map.of(
+                "message_key", messageKey.trim(),
+                "from_version", current.version(),
+                "to_version", target.version(),
+                "published_version", restored.version(),
+                "locale_set", "zh-CN,en-US,vi-VN",
+                "operator", operator(request.operator())));
+        return ApiResult.ok(restored);
     }
 
     @Transactional
@@ -730,6 +812,15 @@ public class OpsI18nLearningService {
         return requireIdempotencyAndReason(idempotencyKey, request == null ? null : request.reason());
     }
 
+    private ApiResult<Void> requireVersionAction(String idempotencyKey, I18nVersionActionRequest request) {
+        ApiResult<Void> action = requireIdempotencyAndReason(idempotencyKey, request == null ? null : request.reason());
+        if (action != null) return action;
+        if (!StringUtils.hasText(request.expectedVersion())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_EXPECTED_VERSION_REQUIRED");
+        }
+        return null;
+    }
+
     private ApiResult<Void> requireIdempotencyAndReason(String idempotencyKey, String reason) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
@@ -795,7 +886,9 @@ public class OpsI18nLearningService {
     private boolean containsUnsafeText(String... values) {
         for (String value : values) {
             if (StringUtils.hasText(value)
-                    && (JSON_LIKE_PATTERN.matcher(value).find() || MANUAL_URL_PATTERN.matcher(value).find())) {
+                    && (JSON_LIKE_PATTERN.matcher(value).find()
+                    || MANUAL_URL_PATTERN.matcher(value).find()
+                    || HTML_TAG_PATTERN.matcher(value).find())) {
                 return true;
             }
         }

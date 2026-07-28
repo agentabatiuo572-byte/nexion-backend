@@ -43,7 +43,8 @@ public class OpsBinarySettlementController {
             Authentication authentication) {
         AdminActor actor = authenticatedAdmin(authentication);
         return ApiResult.ok(service.settleAsAdmin(
-                request.ownerUserId(), request.settlementDate(), actor.id(), actor.username()));
+                request.ownerUserId(), request.settlementDate(), request.reason(),
+                actor.id(), actor.username()));
     }
 
     private AdminActor authenticatedAdmin(Authentication authentication) {

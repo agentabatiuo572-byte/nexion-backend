@@ -25,6 +25,7 @@ import java.util.Map;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -83,6 +84,11 @@ public class OpsPlatformMenuService {
             if (parent == null) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PARENT_MENU_NOT_FOUND");
             }
+            if (parent.getParentId() != null) {
+                return rejectMutation(parent, "CREATE_CHILD", 422, "PARENT_MENU_DEPTH_INVALID",
+                        request.reason(), request.operator(), idempotencyKey,
+                        Map.of("parentCode", parent.getMenuCode()));
+            }
             parentId = parent.getId();
         }
         AdminMenuEntity entity = existing == null ? new AdminMenuEntity() : existing;
@@ -124,6 +130,11 @@ public class OpsPlatformMenuService {
         AdminMenuEntity entity = loadActiveForUpdate(menuId);
         if (entity == null) {
             return ApiResult.fail(404, "MENU_NODE_NOT_FOUND");
+        }
+        ApiResult<Void> versionGuard = requireVersion(request.expectedVersion(), versionOf(entity));
+        if (versionGuard != null) {
+            return rejectMutation(entity, "UPDATE", versionGuard.getCode(), versionGuard.getMessage(),
+                    request.reason(), request.operator(), idempotencyKey, Map.of());
         }
         ApiResult<Void> statusGuard = validateStatusChange(entity, request.status());
         if (statusGuard != null) {
@@ -176,6 +187,11 @@ public class OpsPlatformMenuService {
         AdminMenuEntity entity = loadActiveForUpdate(menuId);
         if (entity == null) {
             return ApiResult.fail(404, "MENU_NODE_NOT_FOUND");
+        }
+        ApiResult<Void> versionGuard = requireVersion(request.expectedVersion(), versionOf(entity));
+        if (versionGuard != null) {
+            return rejectMutation(entity, "DELETE", versionGuard.getCode(), versionGuard.getMessage(),
+                    request.reason(), request.operator(), idempotencyKey, Map.of());
         }
         if (!menuMapper.selectChildren(menuId).isEmpty()) {
             return rejectMutation(entity, "DELETE", 409, "MENU_NODE_HAS_CHILDREN",
@@ -252,7 +268,23 @@ public class OpsPlatformMenuService {
 
     private MenuNodeView toView(AdminMenuEntity e) {
         return new MenuNodeView(e.getId(), e.getMenuCode(), e.getMenuName(), e.getMenuNameZh(),
-                e.getParentId(), e.getRoutePath(), e.getIcon(), e.getSortOrder(), e.getStatus());
+                e.getParentId(), e.getRoutePath(), e.getIcon(), e.getSortOrder(), e.getStatus(), versionOf(e));
+    }
+
+    private String versionOf(AdminMenuEntity entity) {
+        return entity.getUpdatedAt() == null
+                ? "0"
+                : entity.getUpdatedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+    }
+
+    private ApiResult<Void> requireVersion(String expectedVersion, String currentVersion) {
+        if (!StringUtils.hasText(expectedVersion)) {
+            return ApiResult.fail(422, "MENU_EXPECTED_VERSION_REQUIRED");
+        }
+        if (!expectedVersion.trim().equals(currentVersion)) {
+            return ApiResult.fail(409, "MENU_VERSION_STALE");
+        }
+        return null;
     }
 
     private ApiResult<Void> requireMutation(String idempotencyKey, String reason, String operator) {

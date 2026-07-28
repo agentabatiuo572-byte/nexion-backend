@@ -65,6 +65,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/users")
@@ -76,13 +78,38 @@ public class OpsUserController {
 
     @GetMapping("/overview")
     @PreAuthorize("hasAuthority('user_c1_read')")
-    public ApiResult<Map<String, Object>> overview() {
-        return userService.overview();
+    public ApiResult<Map<String, Object>> overview(Authentication authentication) {
+        ApiResult<Map<String, Object>> result = userService.overview();
+        if (result.getData() == null) return result;
+        boolean canReadK4 = authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(authority -> "risk_k4_read".equals(authority.getAuthority())
+                        || "ROLE_SUPER_ADMIN".equals(authority.getAuthority()));
+        if (!canReadK4) {
+            Map<String, Object> projected = new java.util.LinkedHashMap<>(result.getData());
+            projected.remove("riskAuthorityAvailable");
+            projected.remove("highRiskUsers");
+            projected.remove("highRiskThreshold");
+            return ApiResult.ok(projected);
+        }
+        return result;
+    }
+
+    ApiResult<Map<String, Object>> overview() {
+        return overview(SecurityContextHolder.getContext().getAuthentication());
     }
 
     @GetMapping("/profiles")
     @PreAuthorize("hasAuthority('user_c1_read')")
-    public ApiResult<PageResult<UserProfileListView>> profiles(@ModelAttribute UserQueryRequest request) {
+    public ApiResult<PageResult<UserProfileListView>> profiles(
+            @ModelAttribute UserQueryRequest request, Authentication authentication) {
+        boolean riskFilter = request != null && (request.riskMin() != null
+                || (request.riskBand() != null && !request.riskBand().isBlank()));
+        boolean canReadK4 = authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(authority -> "risk_k4_read".equals(authority.getAuthority())
+                        || "ROLE_SUPER_ADMIN".equals(authority.getAuthority()));
+        if (riskFilter && !canReadK4) {
+            return ApiResult.fail(403, "C1_RISK_FILTER_FORBIDDEN");
+        }
         ApiResult<PageResult<UserAccountView>> result = userService.profilePage(request);
         if (result.getCode() != 0 || result.getData() == null) {
             return ApiResult.fail(result.getCode(), result.getMessage());
@@ -95,6 +122,10 @@ public class OpsUserController {
                         .map(record -> UserProfileListView.from(record, roleCode))
                         .toList();
         return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
+    }
+
+    ApiResult<PageResult<UserProfileListView>> profiles(UserQueryRequest request) {
+        return profiles(request, SecurityContextHolder.getContext().getAuthentication());
     }
 
     @GetMapping("/kyc/overview")

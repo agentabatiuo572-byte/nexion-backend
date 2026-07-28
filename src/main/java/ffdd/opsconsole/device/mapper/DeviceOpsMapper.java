@@ -15,7 +15,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     String DEVICE_COLUMNS = """
             d.id,
             d.user_id AS userId,
-            CONCAT('U', LPAD(d.user_id, 8, '0')) AS userNo,
+            CONCAT('U', LPAD(d.user_id, GREATEST(8, LENGTH(CAST(d.user_id AS CHAR))), '0')) AS userNo,
             COALESCE(NULLIF(u.nickname, ''), CONCAT('user-', d.user_id), '未绑定用户') AS nickname,
             d.instance_no AS instanceNo,
             d.name,
@@ -117,7 +117,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                     OR d.name LIKE CONCAT('%', #{keyword}, '%')
                     OR d.product_code LIKE CONCAT('%', #{keyword}, '%')
                     OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(d.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(d.user_id, GREATEST(8, LENGTH(CAST(d.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
             </script>
@@ -154,7 +154,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                     OR d.name LIKE CONCAT('%', #{keyword}, '%')
                     OR d.product_code LIKE CONCAT('%', #{keyword}, '%')
                     OR d.source_order_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(d.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(d.user_id, GREATEST(8, LENGTH(CAST(d.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%'))
              </if>
              ORDER BY COALESCE(d.last_seen_at, d.updated_at, d.created_at) DESC

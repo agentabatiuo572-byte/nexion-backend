@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 public record SupportLoadRebalanceRequest(
+        Long expectedVersion,
         List<Map<String, Object>> agents,
         String operator,
         String reason) {

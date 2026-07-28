@@ -39,7 +39,27 @@ public record AdminAccountOverview(
             String tfaResetAt,
             String credentialDeliveryStatus,
             List<SessionRecord> sessionDetails,
-            List<RoleHistoryRecord> roleHistory) {
+            List<RoleHistoryRecord> roleHistory,
+            String version,
+            String temporaryPassword) {
+        public OperatorRecord(
+                String id,
+                String name,
+                String username,
+                String email,
+                String role,
+                boolean tfa,
+                String status,
+                String lastLogin,
+                int sessions,
+                String tfaResetAt,
+                String credentialDeliveryStatus,
+                List<SessionRecord> sessionDetails,
+                List<RoleHistoryRecord> roleHistory) {
+            this(id, name, username, email, role, tfa, status, lastLogin, sessions,
+                    tfaResetAt, credentialDeliveryStatus, sessionDetails, roleHistory, "0", null);
+        }
+
         public OperatorRecord(
                 String id,
                 String name,
@@ -53,7 +73,7 @@ public record AdminAccountOverview(
                 String tfaResetAt,
                 String credentialDeliveryStatus) {
             this(id, name, username, email, role, tfa, status, lastLogin, sessions,
-                    tfaResetAt, credentialDeliveryStatus, List.of(), List.of());
+                    tfaResetAt, credentialDeliveryStatus, List.of(), List.of(), "0", null);
         }
     }
 

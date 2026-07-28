@@ -31,8 +31,9 @@ public class OpsFunnelController {
     public ApiResult<Map<String, Object>> overview(
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
-            @RequestParam(value = "ref", required = false) String ref) {
-        return funnelService.overview(cohort, phase, ref);
+            @RequestParam(value = "ref", required = false) String ref,
+            @RequestParam(value = "stage", required = false) String stage) {
+        return funnelService.overview(cohort, phase, ref, stage);
     }
 
     @GetMapping("/aux-metrics")

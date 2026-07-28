@@ -161,6 +161,28 @@ public class OpsEmergencyControlController {
         return emergencyControlService.executePlaybook(code, idempotencyKey, request);
     }
 
+    @PostMapping("/sop/playbooks/{code}/executions/{executionId}/cancel")
+    @PreAuthorize("hasAuthority('emergency_j4_playbook_execute')")
+    public ApiResult<Map<String, Object>> cancelPlaybookExecution(
+            @PathVariable String code,
+            @PathVariable String executionId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody SopPlaybookRunRequest request) {
+        return emergencyControlService.cancelPlaybookExecution(
+                code, executionId, idempotencyKey, request);
+    }
+
+    @PostMapping("/sop/playbooks/{code}/executions/{executionId}/resume")
+    @PreAuthorize("hasAuthority('emergency_j4_playbook_execute')")
+    public ApiResult<Map<String, Object>> resumePlaybookExecution(
+            @PathVariable String code,
+            @PathVariable String executionId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody SopPlaybookRunRequest request) {
+        return emergencyControlService.resumePlaybookExecution(
+                code, executionId, idempotencyKey, request);
+    }
+
     @PostMapping("/sop/playbooks/{code}/executions/{executionId}/rollback")
     @PreAuthorize("hasAuthority('emergency_j4_playbook_execute') and hasAuthority('emergency_j1_gate_resume')")
     public ApiResult<Map<String, Object>> rollbackPlaybookExecution(

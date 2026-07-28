@@ -61,20 +61,38 @@ public interface L3FinanceFactMapper extends BaseMapper<Object> {
 
     @Select("""
             <script>
-            SELECT COUNT(*) AS submitted,
-                   COALESCE(SUM(CASE WHEN UPPER(w.status) IN ('COMPLETED', 'CONFIRMED') THEN 1 ELSE 0 END), 0) AS confirmed,
-                   COALESCE(SUM(CASE WHEN UPPER(w.status) IN ('REJECTED', 'REFUNDED') THEN 1 ELSE 0 END), 0) AS rejected,
-                   COALESCE(SUM(CASE WHEN UPPER(w.status) = 'DELAYED' THEN 1 ELSE 0 END), 0) AS delayedCount,
-                   COALESCE(SUM(CASE WHEN UPPER(w.status) = 'FROZEN' THEN 1 ELSE 0 END), 0) AS frozen,
+            SELECT COUNT(DISTINCT CASE WHEN e.event_type = 'withdraw.submitted' THEN e.aggregate_id END) AS submitted,
+                   COUNT(DISTINCT CASE WHEN e.event_type = 'withdraw.confirmed' THEN e.aggregate_id END) AS confirmed,
+                   COUNT(DISTINCT CASE WHEN e.event_type = 'withdraw.rejected' THEN e.aggregate_id END) AS rejected,
+                   COUNT(DISTINCT CASE WHEN e.event_type = 'withdraw.delayed' THEN e.aggregate_id END) AS delayedCount,
+                   COUNT(DISTINCT CASE WHEN e.event_type = 'withdraw.frozen' THEN e.aggregate_id END) AS frozen,
                    AVG(CASE
-                         WHEN UPPER(w.status) IN ('COMPLETED', 'CONFIRMED') AND w.completed_at IS NOT NULL
-                         THEN TIMESTAMPDIFF(SECOND, w.created_at, w.completed_at) / 3600.0
+                         WHEN e.event_type = 'withdraw.confirmed'
+                              AND submitted.submitted_at IS NOT NULL
+                              AND e.event_ts >= submitted.submitted_at
+                         THEN TIMESTAMPDIFF(SECOND, submitted.submitted_at, e.event_ts) / 3600.0
                        END) AS avgLatencyHours
-              FROM nx_withdrawal_order w
+              FROM nx_event_outbox e
+              JOIN nx_withdrawal_order w
+                ON w.withdrawal_no = e.aggregate_id AND w.is_deleted = 0
+              LEFT JOIN (
+                SELECT aggregate_id, MIN(event_ts) AS submitted_at
+                  FROM nx_event_outbox
+                 WHERE is_deleted = 0
+                   AND aggregate_type = 'WITHDRAWAL'
+                   AND event_type = 'withdraw.submitted'
+                   AND is_server_authoritative = 1
+                 GROUP BY aggregate_id
+              ) submitted ON submitted.aggregate_id = e.aggregate_id
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
-             WHERE w.is_deleted = 0
-               AND w.created_at >= #{from}
-               AND w.created_at &lt; #{to}
+             WHERE e.is_deleted = 0
+               AND e.aggregate_type = 'WITHDRAWAL'
+               AND e.is_server_authoritative = 1
+               AND e.event_type IN (
+                 'withdraw.submitted', 'withdraw.confirmed', 'withdraw.rejected',
+                 'withdraw.delayed', 'withdraw.frozen')
+               AND e.event_ts >= #{from}
+               AND e.event_ts &lt; #{to}
                <if test="cohort != null and cohort != ''">
                AND DATE_FORMAT(u.created_at, '%Y-%m') = #{cohort}
                </if>

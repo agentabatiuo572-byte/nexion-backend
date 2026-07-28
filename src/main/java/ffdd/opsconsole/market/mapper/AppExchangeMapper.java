@@ -101,6 +101,67 @@ public interface AppExchangeMapper {
     int insertLedger(LedgerWrite row);
 
     @Select("""
+            SELECT total_fee_usdt AS totalFeeUsdt,burn_pool_usdt AS burnPoolUsdt,
+                   fee_buffer_usdt AS feeBufferUsdt,price_usdt AS priceUsdt
+              FROM nx_exchange_fee_allocation
+             WHERE exchange_no=#{exchangeNo} AND is_deleted=0
+            """)
+    FeeAllocationRow feeAllocation(@Param("exchangeNo") String exchangeNo);
+
+    @Select("""
+            SELECT balance_usdt AS balanceUsdt,version
+              FROM nx_nex_buyback_burn_pool_account WHERE id=1 FOR UPDATE
+            """)
+    BalanceVersion lockBuybackBurnPool();
+
+    @Select("""
+            SELECT balance_usdt AS balanceUsdt,version
+              FROM nx_topup_fee_buffer_account WHERE id=1 FOR UPDATE
+            """)
+    BalanceVersion lockFeeBuffer();
+
+    @Update("""
+            UPDATE nx_nex_buyback_burn_pool_account
+               SET balance_usdt=#{balance},version=version+1,updated_at=NOW()
+             WHERE id=1 AND version=#{version}
+            """)
+    int updateBuybackBurnPool(@Param("balance") BigDecimal balance,@Param("version") Long version);
+
+    @Update("""
+            UPDATE nx_topup_fee_buffer_account
+               SET balance_usdt=#{balance},version=version+1,updated_at=NOW()
+             WHERE id=1 AND version=#{version}
+            """)
+    int updateFeeBuffer(@Param("balance") BigDecimal balance,@Param("version") Long version);
+
+    @Insert("""
+            INSERT INTO nx_nex_buyback_burn_pool_ledger
+              (entry_no,exchange_no,direction,amount_usdt,balance_after_usdt,nex_equivalent,
+               price_usdt,idempotency_key,created_at,updated_at,is_deleted)
+            VALUES(#{entryNo},#{exchangeNo},'IN',#{amountUsdt},#{balanceAfterUsdt},#{nexEquivalent},
+                   #{priceUsdt},#{idempotencyKey},NOW(),NOW(),0)
+            """)
+    int insertBuybackBurnPoolLedger(BuybackBurnLedgerWrite row);
+
+    @Insert("""
+            INSERT INTO nx_topup_fee_buffer_ledger
+              (entry_no,biz_no,direction,amount_usdt,balance_after_usdt,reason,operator,
+               idempotency_key,created_at,updated_at,is_deleted)
+            VALUES(#{entryNo},#{exchangeNo},'IN',#{amountUsdt},#{balanceAfterUsdt},
+                   'G2 exchange fee 70% allocation','system:g2',#{idempotencyKey},NOW(),NOW(),0)
+            """)
+    int insertExchangeFeeBufferLedger(FeeBufferLedgerWrite row);
+
+    @Insert("""
+            INSERT INTO nx_exchange_fee_allocation
+              (exchange_no,total_fee_usdt,burn_ratio,burn_pool_usdt,fee_buffer_usdt,
+               price_usdt,nex_equivalent,created_at,updated_at,is_deleted)
+            VALUES(#{exchangeNo},#{totalFeeUsdt},0.300000,#{burnPoolUsdt},#{feeBufferUsdt},
+                   #{priceUsdt},#{nexEquivalent},NOW(),NOW(),0)
+            """)
+    int insertFeeAllocation(FeeAllocationWrite row);
+
+    @Select("""
             SELECT exchange_no AS exchangeNo,from_asset AS fromAsset,to_asset AS toAsset,
                    from_amount AS fromAmount,to_amount AS toAmount,rate,UPPER(status) AS status,
                    created_at AS createdAt
@@ -143,6 +204,16 @@ public interface AppExchangeMapper {
                          BigDecimal toAmount,BigDecimal rate,String status) {}
     record LedgerWrite(Long userId,String bizNo,String asset,String direction,BigDecimal amount,
                        BigDecimal balanceAfter,String remark) {}
+    record BalanceVersion(BigDecimal balanceUsdt,Long version) {}
+    record FeeAllocationRow(BigDecimal totalFeeUsdt,BigDecimal burnPoolUsdt,
+                            BigDecimal feeBufferUsdt,BigDecimal priceUsdt) {}
+    record BuybackBurnLedgerWrite(String entryNo,String exchangeNo,BigDecimal amountUsdt,
+                                  BigDecimal balanceAfterUsdt,BigDecimal nexEquivalent,
+                                  BigDecimal priceUsdt,String idempotencyKey) {}
+    record FeeBufferLedgerWrite(String entryNo,String exchangeNo,BigDecimal amountUsdt,
+                                BigDecimal balanceAfterUsdt,String idempotencyKey) {}
+    record FeeAllocationWrite(String exchangeNo,BigDecimal totalFeeUsdt,BigDecimal burnPoolUsdt,
+                              BigDecimal feeBufferUsdt,BigDecimal priceUsdt,BigDecimal nexEquivalent) {}
     record ExchangeRow(String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
                        BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt) {}
     record QueuedRow(Long userId,String exchangeNo,String fromAsset,BigDecimal fromAmount) {}

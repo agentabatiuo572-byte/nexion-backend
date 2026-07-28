@@ -9,5 +9,6 @@ public record UserCredentialParamView(
         int max,
         boolean readOnly,
         String note,
-        String configKey) {
+        String configKey,
+        long version) {
 }

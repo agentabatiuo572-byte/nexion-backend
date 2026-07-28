@@ -41,14 +41,20 @@ public class OpsBillsController {
 
     @GetMapping("/users/{userId}")
     @PreAuthorize("hasAnyAuthority('finance_d4_read','finance_d4_user_read')")
-    public ApiResult<Map<String, Object>> userLedger(@PathVariable Long userId) {
-        return treasuryService.userLedger(userId);
+    public ApiResult<Map<String, Object>> userLedger(
+            @PathVariable Long userId,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        return treasuryService.userLedger(userId, from, to);
     }
 
     @GetMapping("/running-balance")
     @PreAuthorize("hasAnyAuthority('finance_d4_read','finance_d4_user_read')")
-    public ApiResult<Map<String, Object>> runningBalance(@RequestParam Long userId) {
-        return treasuryService.runningBalance(userId);
+    public ApiResult<Map<String, Object>> runningBalance(
+            @RequestParam Long userId,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        return treasuryService.runningBalance(userId, from, to);
     }
 
     @GetMapping(value = "/export", produces = "text/csv")

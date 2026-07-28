@@ -2,6 +2,7 @@ package ffdd.opsconsole.shared.security;
 
 
 import jakarta.servlet.FilterChain;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
@@ -55,8 +56,16 @@ public class SecurityConfig {
                         .accessDeniedHandler((request, response, exception) ->
                                 writeJsonError(response, HttpServletResponse.SC_FORBIDDEN, "ACCESS_DENIED")))
                 .authorizeHttpRequests(auth -> auth
+                        // The original REQUEST dispatch is authenticated before a StreamingResponseBody
+                        // starts. ASYNC is a container-managed continuation of that authorized request;
+                        // re-authorizing it after the response is committed produces a false 403/error dispatch.
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/platform").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/referral-rewards").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/task-pricing", "/api/config/phone-tiers").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/v-ranks").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/commission/rates").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/market/nex").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/genesis/state").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/repurchase").permitAll()

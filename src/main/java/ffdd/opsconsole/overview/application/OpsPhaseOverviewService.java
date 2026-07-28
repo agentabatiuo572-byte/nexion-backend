@@ -10,7 +10,6 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -37,7 +36,7 @@ public class OpsPhaseOverviewService {
             dial("withdrawCooldownDays", "提现冷却", "天", "D 域 V1 已生效", true),
             dial("binaryDailyCap", "双轨日封顶", "USDT", "F 域 V2 后生效", false),
             dial("questBonusMultiplier", "任务加成", "倍", "H3 域 V3 后生效", false),
-            dial("complianceHoldEnabled", "Compliance hold", "", "D 域 V1 已生效", true));
+            dial("complianceHoldEnabled", "增强合规审查", "", "D 域 V1 已生效", true));
 
     private final OpsPhaseMapper mapper;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -47,6 +46,9 @@ public class OpsPhaseOverviewService {
         Filter filter = filter(granularity, month, phase);
         GrowthRhythmSnapshot current = requireSnapshot(growthRhythmFacade.snapshot());
         int selectedMonth = filter.month() == null ? current.currentMonth() : parseMonth(filter.month(), current.totalMonths());
+        GrowthRhythmSnapshot selected = selectedMonth == current.currentMonth()
+                ? current
+                : requireSnapshot(growthRhythmFacade.snapshotAtMonth(selectedMonth));
         Distribution distribution = distribution(current.totalMonths(), filter.phase());
         Map<String, Object> response = linked(
                 "available", distribution.totalUsers() > 0,
@@ -67,14 +69,14 @@ public class OpsPhaseOverviewService {
                 "distribution", "MONTH".equals(filter.granularity()) ? distribution.months() : distribution.phases(),
                 "dials", dialRows(current),
                 "nextPivot", nextPivot(current),
-                "monthLeverCombo", leverCombo(selectedMonth),
+                "monthLeverCombo", leverCombo(selected),
                 "attributionLinks", List.of(
                         linked("key", "H1", "label", "H1 Phase 效果归因", "href", h1AttributionHref(filter.phase(), current.currentPhase())),
                         linked("key", "B3", "label", "B3 转化归因", "href", "/overview/funnel?phase=" + valueOrAll(filter.phase())),
-                        linked("key", "B1", "label", "B1 资金归因", "href", "/overview/dual-ledger?phase=" + valueOrAll(filter.phase())),
-                        linked("key", "B2", "label", "B2 到期与资金池归因", "href", "/overview/liquidity?phase=" + valueOrAll(filter.phase()))),
-                "sourceStatement", "H1 GrowthRhythmFacade server-canonical；B4 不本地重算或写入 dial",
-                "sources", List.of("H1 GrowthRhythmFacade", "nx_user.created_at", "A2 admin audit"),
+                        linked("key", "B1", "label", "B1 全局资金健康", "href", "/overview/dual-ledger"),
+                        linked("key", "B2", "label", "B2 全局到期与资金池", "href", "/overview/liquidity")),
+                "sourceStatement", "H1 当前月权威节奏；B4 只读展示，不在本地重算或修改",
+                "sources", List.of("H1 当前月权威值", "账户创建时间聚合", "A2 管理审计"),
                 "asOf", OffsetDateTime.now().toString());
         audit("admin.phase_overview_viewed", "GET", "READ", linked(
                 "granularity", filter.granularity(),
@@ -117,18 +119,20 @@ public class OpsPhaseOverviewService {
             throw new BizException(422, "B4_PHASE_DISTRIBUTION_EMPTY");
         }
         boolean byMonth = "MONTH".equals(filter.granularity());
+        List<Map<String, Object>> filteredRows = (byMonth ? distribution.months() : distribution.phases()).stream()
+                .filter(row -> filter.phase() == null || filter.phase().equals(row.get("phase")))
+                .toList();
         StringBuilder csv = new StringBuilder("\uFEFF")
                 .append(byMonth ? "month,phase,user_count,selected_month\r\n" : "phase,user_count,selected_phase\r\n");
         if (byMonth) {
-            for (Map<String, Object> row : distribution.months()) {
+            for (Map<String, Object> row : filteredRows) {
                 csv.append(csv(row.get("month"))).append(',')
                         .append(csv(row.get("phase"))).append(',')
                         .append(csv(row.get("userCount"))).append(',')
                         .append(csv(selectedMonth)).append("\r\n");
             }
         } else {
-            for (Map<String, Object> row : distribution.phases()) {
-                if (filter.phase() != null && !filter.phase().equals(row.get("phase"))) continue;
+            for (Map<String, Object> row : filteredRows) {
                 csv.append(csv(row.get("phase"))).append(',')
                         .append(csv(row.get("userCount"))).append(',')
                         .append(csv(valueOrAll(filter.phase()))).append("\r\n");
@@ -140,7 +144,7 @@ public class OpsPhaseOverviewService {
                         "granularity", filter.granularity(),
                         "month", selectedMonth,
                         "phase", valueOrAll(filter.phase())),
-                "rowCount", byMonth ? distribution.months().size() : distribution.phases().size(),
+                "rowCount", filteredRows.size(),
                 "containsPii", false,
                 "maskingPolicy", "AGGREGATE_ONLY",
                 "format", "CSV"));
@@ -195,7 +199,7 @@ public class OpsPhaseOverviewService {
                     "label", definition.label(),
                     "currentValue", value,
                     "unit", definition.unit(),
-                    "source", "H1 server-canonical@" + current.currentMonth(),
+                    "source", "H1 月 " + current.currentMonth() + " 权威值",
                     "v1Status", definition.v1Status(),
                     "v1Active", definition.v1Active(),
                     "adjustHref", "/growth/phase?dial=" + definition.key()
@@ -209,7 +213,7 @@ public class OpsPhaseOverviewService {
                     "atMonth", null,
                     "daysLeft", null,
                     "changes", List.of(),
-                    "basis", "H1 currentMonth + phaseProgressPct",
+                    "basis", "H1 当前月份",
                     "message", "已到节奏最后一个月");
         }
         int nextMonth = current.currentMonth() + 1;
@@ -223,16 +227,12 @@ public class OpsPhaseOverviewService {
                         + " → " + display(after.get(dial.key()), dial.unit()));
             }
         }
-        int daysLeft = Math.max(0, new BigDecimal(100 - current.phaseProgressPct())
-                .multiply(new BigDecimal("0.30"))
-                .setScale(0, RoundingMode.CEILING)
-                .intValue());
         return linked(
                 "atMonth", nextMonth,
-                "daysLeft", daysLeft,
+                "daysLeft", null,
                 "changes", changes,
-                "basis", "H1 currentMonth + phaseProgressPct",
-                "message", "距月 " + nextMonth + " 拐点");
+                "basis", "H1 尚未提供下一切换时间",
+                "message", "月 " + nextMonth + " 的配置变化已确认，切换时间暂不可用");
     }
 
     private GrowthRhythmSnapshot requireSnapshot(GrowthRhythmSnapshot snapshot) {
@@ -241,7 +241,9 @@ public class OpsPhaseOverviewService {
                 || snapshot.currentMonth() < 1
                 || snapshot.currentMonth() > snapshot.totalMonths()
                 || !PHASE.matcher(String.valueOf(snapshot.currentPhase())).matches()
-                || snapshot.dials().size() != DIALS.size()) {
+                || snapshot.dials().size() != DIALS.size()
+                || !snapshot.reliable()
+                || !snapshot.reliabilityErrors().isEmpty()) {
             throw new BizException(503, "B4_H1_RHYTHM_UNAVAILABLE");
         }
         return snapshot;
@@ -284,29 +286,27 @@ public class OpsPhaseOverviewService {
         return result;
     }
 
-    private List<Map<String, Object>> leverCombo(int month) {
-        return switch (Math.max(1, Math.min(12, month))) {
-            case 1, 2 -> List.of(
-                    lever("获客", "新用户加成 + 任务加成", "降低首日上手成本"),
-                    lever("推荐", "邀请加成", "放大可信社交扩散"));
-            case 3, 4 -> List.of(
-                    lever("留存", "邀请加成回落", "从补贴转向产品价值"),
-                    lever("设备", "Pro 使用深度", "承接早期用户升级"));
-            case 5, 6 -> List.of(
-                    lever("复投", "复投加成 2×", "用成长奖励抵消衰减"),
-                    lever("产品", "Pro v2 上市 FOMO", "提供新增购买理由"),
-                    lever("网络", "Network Royalty Pool", "建立长期成长感"));
-            case 7, 8 -> List.of(
-                    lever("控流出", "双轨日封顶收紧", "降低佣金峰值"),
-                    lever("提现", "冷却延长", "平滑月内资金压力"));
-            case 9, 10 -> List.of(
-                    lever("合规", "Compliance hold", "增强高压期审查"),
-                    lever("提现", "惩罚费率 25%", "降低非必要流出"));
-            default -> List.of(
-                    lever("软收场", "提现惩罚费率 30%", "保护兑付覆盖"),
-                    lever("合规", "Compliance hold", "维持增强审查"),
-                    lever("留存", "核心权益维持", "承接长期用户"));
-        };
+    private List<Map<String, Object>> leverCombo(GrowthRhythmSnapshot snapshot) {
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        if (snapshot.newUserBonusMultiplier().compareTo(BigDecimal.ONE) > 0) {
+            candidates.add(lever("获客", "新用户加成 " + snapshot.newUserBonusMultiplier() + " 倍", "降低新用户上手成本"));
+        }
+        if (snapshot.inviteRewardMultiplier().compareTo(BigDecimal.ONE) > 0) {
+            candidates.add(lever("推荐", "邀请加成 " + snapshot.inviteRewardMultiplier() + " 倍", "增强可信推荐"));
+        }
+        if (snapshot.reinvestMultiplier().compareTo(BigDecimal.ONE) > 0) {
+            candidates.add(lever("复投", "复投加成 " + snapshot.reinvestMultiplier() + " 倍", "鼓励继续持有"));
+        }
+        if (snapshot.questBonusMultiplier().compareTo(BigDecimal.ONE) > 0) {
+            candidates.add(lever("任务", "任务加成 " + snapshot.questBonusMultiplier() + " 倍", "提升任务参与"));
+        }
+        if (snapshot.complianceHoldEnabled()) {
+            candidates.add(lever("合规", "增强合规审查已开启", "加强高风险期审查"));
+        }
+        candidates.add(lever("提现", "费率 " + snapshot.withdrawPenaltyFeeRate() + "% / 冷却 "
+                + snapshot.withdrawCooldownDays() + " 天", "控制资金流出节奏"));
+        candidates.add(lever("结算", "双轨日封顶 " + snapshot.binaryDailyCap() + " USDT", "限制单日佣金峰值"));
+        return List.copyOf(candidates.subList(0, Math.min(3, candidates.size())));
     }
 
     private Map<String, Object> lever(String key, String label, String purpose) {
@@ -319,7 +319,7 @@ public class OpsPhaseOverviewService {
     }
 
     private void audit(String action, String method, String result, Map<String, Object> detail) {
-        auditLogService.record(auditRequest(action, method, result, detail));
+        auditLogService.recordRequired(auditRequest(action, method, result, detail));
     }
 
     private void auditRequired(String action, String method, String result, Map<String, Object> detail) {

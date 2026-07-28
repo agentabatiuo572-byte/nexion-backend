@@ -136,8 +136,16 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
                           @Param("title") String title, @Param("body") String body,
                           @Param("href") String href);
 
-    @Update("UPDATE nx_user SET nickname = #{nickname}, updated_at = NOW() WHERE id = #{userId} AND is_deleted = 0")
-    int resetNickname(@Param("userId") Long userId, @Param("nickname") String nickname);
+    @Update("""
+            UPDATE nx_user
+               SET nickname = #{nickname}, updated_at = NOW()
+             WHERE id = #{userId} AND is_deleted = 0
+               AND nickname = #{expectedNickname}
+            """)
+    int resetNickname(
+            @Param("userId") Long userId,
+            @Param("nickname") String nickname,
+            @Param("expectedNickname") String expectedNickname);
 
     @Select("SELECT nickname FROM nx_user WHERE id = #{userId} AND is_deleted = 0 LIMIT 1")
     String currentNickname(@Param("userId") Long userId);

@@ -31,7 +31,7 @@ public class OpsBiExportController {
     private final OpsBiExportQueryService exportQueryService;
 
     @PostMapping("/request")
-    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l4_write')")
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write')")
     public ApiResult<Map<String, Object>> request(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody BiReportCreateRequest request) {

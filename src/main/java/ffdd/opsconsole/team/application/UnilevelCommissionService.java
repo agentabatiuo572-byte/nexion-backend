@@ -1,6 +1,7 @@
 package ffdd.opsconsole.team.application;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -50,9 +51,13 @@ public class UnilevelCommissionService {
     private static final String CURRENCY_NEX = "NEX";
     private static final String STATUS_COOLING = "COOLING";
 
-    /** F2 depthGate 配置 key(PRD line231:默认 L4 层起需上级 ≥ depthGateRank V2)。 */
-    private static final String CONFIG_KEY_DEPTH_GATE_LAYER = "F.unilevel.depthGate";
-    private static final String CONFIG_KEY_DEPTH_GATE_RANK = "F.unilevel.depthGateRank";
+    /**
+     * F2 operator config is persisted by OpsTeamService below the team.ui namespace.
+     * Keep settlement reads on the same canonical keys so an approved operator
+     * change cannot become a display-only value.
+     */
+    private static final String CONFIG_KEY_DEPTH_GATE_LAYER = "team.ui.F.unilevel.depthGate";
+    private static final String CONFIG_KEY_DEPTH_GATE_RANK = "team.ui.F.unilevel.depthGateRank";
     private static final String DEFAULT_DEPTH_GATE_LAYER = "L4";
     private static final String DEFAULT_DEPTH_GATE_RANK = "V2";
 
@@ -61,8 +66,9 @@ public class UnilevelCommissionService {
     private static final int DEFAULT_COOLING_DAYS = 30;
 
     /** F2 InfluenceScore clamp 边界配置 key(PRD line1400/1529 默认 1.0/5.0)。 */
-    private static final String CONFIG_KEY_INFLUENCE_CLAMP_MIN = "F.commission.influenceScore.clampMin";
-    private static final String CONFIG_KEY_INFLUENCE_CLAMP_MAX = "F.commission.influenceScore.clampMax";
+    private static final String CONFIG_KEY_INFLUENCE_CLAMP_MIN = "team.ui.F.influence.clampMin";
+    private static final String CONFIG_KEY_INFLUENCE_CLAMP_MAX = "team.ui.F.influence.clampMax";
+    private static final String CONFIG_KEY_PROMO_WEEK_MULTIPLIER = "team.ui.F.promo.weekMultiplier";
     private static final double DEFAULT_INFLUENCE_CLAMP_MIN = 1.0;
     private static final double DEFAULT_INFLUENCE_CLAMP_MAX = 5.0;
 
@@ -70,6 +76,7 @@ public class UnilevelCommissionService {
     private final TeamCommissionRepository commissionRepository;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final PlatformConfigFacade configFacade;
+    private final EventOutboxService eventOutboxService;
 
     /**
      * 结算一笔订单的 unilevel 网络佣金:给 buyer 的 L1-L7 上级按对应层费率派发 USDT 佣金。
@@ -99,6 +106,7 @@ public class UnilevelCommissionService {
         int coolingDays = resolveCoolingDays();
         int depthGateLayer = resolveDepthGateLayer();
         int depthGateRankNum = parseRankNum(resolveDepthGateRank());
+        BigDecimal promoMultiplier = resolvePromoMultiplier();
         int settled = 0;
         int skippedIdempotent = 0;
         int skippedDepthGate = 0;
@@ -144,6 +152,7 @@ public class UnilevelCommissionService {
             BigDecimal finalUsdt = (influenceScore == null)
                     ? usdtAmount
                     : usdtAmount.multiply(influenceScore).setScale(6, RoundingMode.HALF_UP);
+            finalUsdt = finalUsdt.multiply(promoMultiplier).setScale(6, RoundingMode.HALF_UP);
             if (layer >= 2) {
                 log.info("F2 InfluenceScore applied: order={} ancestor={} layer={} score={} finalUsdt={}",
                         orderNo, ancestor, layer, influenceScore, finalUsdt);
@@ -161,6 +170,19 @@ public class UnilevelCommissionService {
             ledgerPostingFacade.postLedgerEntry(
                     "F2-NETWORK-" + usdtEventId, ancestor, "TEAM_COMMISSION", CURRENCY_USDT,
                     "IN", finalUsdt, "PENDING", "F2 unilevel commission | " + remark);
+            eventOutboxService.publish(
+                    "NETWORK_COMMISSION",
+                    String.valueOf(usdtEventId),
+                    "commission.paid",
+                    Map.of(
+                            "userId", ancestor,
+                            "kind", COMMISSION_NETWORK,
+                            "currency", CURRENCY_USDT,
+                            "amount", finalUsdt,
+                            "sourceUserId", buyerUserId,
+                            "layer", layer,
+                            "orderNo", orderNo,
+                            "commissionEventId", usdtEventId));
 
             // ② NEX commission_event(nex_per_usd × finalUsdt 佣金;nexAmount>0 才派发,L2-L7 经 finalUsdt 隐式乘 InfluenceScore)+ D4 IN/PENDING
             BigDecimal nexPerUsd = nexPerUsdByLevel.get("L" + layer);
@@ -213,16 +235,22 @@ public class UnilevelCommissionService {
         return map;
     }
 
-    /** F2 层暂停开关:读 F.unilevel.L{n}.paused(true 暂停该层派发)。 */
+    /** F2 层暂停开关:读 operator canonical team.ui.F.unilevel.L{n}.paused。 */
     private boolean isLayerPaused(int layer) {
-        return "true".equalsIgnoreCase(
-                configFacade.activeValue("F.unilevel.L" + layer + ".paused").orElse("false"));
+        String value = configFacade.activeValue("team.ui.F.unilevel.L" + layer + ".paused").orElse("off");
+        return "true".equalsIgnoreCase(value)
+                || "on".equalsIgnoreCase(value)
+                || "1".equals(value.trim());
     }
 
     /** F2 depthGate 层(读 F.unilevel.depthGate,默认 "L4"→解析 4;非法回退 4)。 */
     private int resolveDepthGateLayer() {
         String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_LAYER).orElse(DEFAULT_DEPTH_GATE_LAYER);
-        String digits = raw == null ? "" : raw.trim().replaceAll("[^0-9]", "");
+        String normalized = raw == null ? "" : raw.trim().toUpperCase();
+        if (!normalized.matches("L?[1-7]")) {
+            return 4;
+        }
+        String digits = normalized.replaceAll("[^0-9]", "");
         try {
             int n = Integer.parseInt(digits);
             return n > 0 ? n : Integer.parseInt(DEFAULT_DEPTH_GATE_LAYER.replaceAll("[^0-9]", ""));
@@ -245,6 +273,24 @@ public class UnilevelCommissionService {
                 })
                 .filter(d -> d >= 0)
                 .orElse(DEFAULT_COOLING_DAYS);
+    }
+
+    /**
+     * Approved promo multiplier. Missing/invalid/out-of-range values fail closed
+     * to 1.0; the admin write side constrains the normal range to 1.0-3.0.
+     */
+    private BigDecimal resolvePromoMultiplier() {
+        return configFacade.activeValue(CONFIG_KEY_PROMO_WEEK_MULTIPLIER)
+                .map(value -> {
+                    try {
+                        return new BigDecimal(value.trim().replace("×", ""));
+                    } catch (NumberFormatException ignored) {
+                        return null;
+                    }
+                })
+                .filter(value -> value.compareTo(BigDecimal.ONE) >= 0
+                        && value.compareTo(BigDecimal.valueOf(3)) <= 0)
+                .orElse(BigDecimal.ONE);
     }
 
     /**

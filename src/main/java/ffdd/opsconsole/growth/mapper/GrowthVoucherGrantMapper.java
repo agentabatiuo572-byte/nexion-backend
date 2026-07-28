@@ -61,6 +61,24 @@ public interface GrowthVoucherGrantMapper {
             @Param("voucherId") String voucherId,
             @Param("nowMillis") long nowMillis);
 
+    @Select("""
+            SELECT issuance_limit
+              FROM nx_growth_voucher
+             WHERE voucher_id = #{voucherId}
+               AND is_deleted = 0
+               AND status = 'active'
+             LIMIT 1
+            """)
+    Long issuanceLimit(@Param("voucherId") String voucherId);
+
+    @Select("""
+            SELECT COUNT(1)
+             FROM nx_growth_voucher_grant
+             WHERE voucher_id = #{voucherId}
+               AND is_deleted = 0
+            """)
+    long issuedCount(@Param("voucherId") String voucherId);
+
     @Insert("""
             INSERT IGNORE INTO nx_growth_voucher_grant (
                 grant_id, grant_key, voucher_id, user_id, source_type, source_id,

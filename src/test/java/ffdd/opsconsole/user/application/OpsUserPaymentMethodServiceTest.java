@@ -72,10 +72,11 @@ class OpsUserPaymentMethodServiceTest {
     void nicknameResetUsesStableSystemNicknameWithoutUserSuppliedText() {
         when(mapper.userExists(42L)).thenReturn(true);
         when(mapper.currentNickname(42L)).thenReturn("old-name");
-        when(mapper.resetNickname(eq(42L), anyString())).thenReturn(1);
+        when(mapper.resetNickname(eq(42L), anyString(), eq("old-name"))).thenReturn(1);
 
         Map<String, Object> result = service.resetNickname(42L, "idem-nick-1",
-                new UserPaymentMethodCommandRequest("inappropriate nickname confirmed", null, "superadmin"));
+                new UserPaymentMethodCommandRequest(
+                        "inappropriate nickname confirmed", null, "old-name", "superadmin"));
 
         assertThat(result.get("nickname").toString()).startsWith("Nexion-").hasSize(15);
         verify(audit).recordRequired(any());

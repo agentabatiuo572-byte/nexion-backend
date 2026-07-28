@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS nx_user (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   country_code VARCHAR(8) NOT NULL,
   phone VARCHAR(32) NOT NULL,
+  client_ip VARCHAR(64) NOT NULL,
   password_hash VARCHAR(128) NOT NULL,
   nickname VARCHAR(64) NOT NULL,
   avatar_url VARCHAR(512) NULL,
@@ -2540,6 +2541,9 @@ CREATE TABLE IF NOT EXISTS nx_growth_wheel_tier (
   probability_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
   real_outflow TINYINT NOT NULL DEFAULT 0,
   reward_kind VARCHAR(64) NOT NULL DEFAULT '',
+  reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  voucher_id VARCHAR(80) NULL,
+  daily_stock INT NOT NULL DEFAULT 0,
   sort_order INT NOT NULL DEFAULT 100,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -2581,6 +2585,14 @@ CREATE TABLE IF NOT EXISTS nx_growth_promo_banner (
   UNIQUE KEY uk_growth_promo_banner_code (banner_code),
   KEY idx_growth_promo_banner_status (status, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_growth_promo_banner
+  (banner_code, base_reward, multiplier, countdown_days, countdown_hours,
+   target_device, target_daily, status, sort_order, created_at, updated_at, is_deleted)
+VALUES
+  ('HOME_WEEKLY_UPSELL', '800', '1.5', 4, 12, 'StellarBox Pro', '1.50',
+   'paused', 10, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE banner_code = VALUES(banner_code);
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'source_order_no') = 0,
   'ALTER TABLE nx_user_device ADD COLUMN source_order_no VARCHAR(96) NULL AFTER user_id',
@@ -3596,6 +3608,7 @@ CREATE TABLE IF NOT EXISTS nx_event_quest (
   quest_name VARCHAR(128) NOT NULL,
   description VARCHAR(512) NULL,
   geo_scope VARCHAR(64) NOT NULL DEFAULT '',
+  cta_href VARCHAR(255) NOT NULL DEFAULT '',
   starts_at DATETIME NULL,
   ends_at DATETIME NULL,
   target_type VARCHAR(64) NOT NULL,
@@ -4489,6 +4502,7 @@ CREATE TABLE IF NOT EXISTS nx_support_sla_rule (
   resolution_hours INT NOT NULL,
   queue VARCHAR(64) NOT NULL,
   escalation VARCHAR(128) NOT NULL,
+  version BIGINT NOT NULL DEFAULT 1,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -4496,6 +4510,11 @@ CREATE TABLE IF NOT EXISTS nx_support_sla_rule (
   UNIQUE KEY uk_support_sla_category (category),
   KEY idx_support_sla_status (status, category)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_support_sla_rule' AND COLUMN_NAME = 'version') = 0,
+  'ALTER TABLE nx_support_sla_rule ADD COLUMN version BIGINT NOT NULL DEFAULT 1 AFTER escalation',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_conversation (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -4508,6 +4527,7 @@ CREATE TABLE IF NOT EXISTS nx_conversation (
   unread_count INT NOT NULL DEFAULT 0,
   last_message VARCHAR(512) NULL,
   last_message_at DATETIME NULL,
+  version BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -4516,6 +4536,11 @@ CREATE TABLE IF NOT EXISTS nx_conversation (
   KEY idx_conversation_owner (owner_agent_id, status),
   KEY idx_conversation_user_time (user_id, last_message_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_conversation' AND COLUMN_NAME = 'version') = 0,
+  'ALTER TABLE nx_conversation ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER last_message_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_conversation_transfer (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -4593,6 +4618,7 @@ CREATE TABLE IF NOT EXISTS nx_support_ticket (
   closed_at DATETIME NULL,
   archived TINYINT NOT NULL DEFAULT 0,
   archived_at DATETIME NULL,
+  version BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -4958,7 +4984,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_operation_mutex (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES
-('G4_CONFIG'), ('H1_RHYTHM'), ('H4_EVENT'), ('H4_WHEEL'), ('H5_MILESTONE'), ('H8_REWARD');
+('G4_CONFIG'), ('H1_RHYTHM'), ('H3_CONFIG'), ('H4_EVENT'), ('H4_WHEEL'), ('H5_MILESTONE'), ('H8_REWARD');
 
 CREATE TABLE IF NOT EXISTS nx_genesis_admin_simulation (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -4992,6 +5018,23 @@ CREATE TABLE IF NOT EXISTS nx_user_otp_challenge (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_otp_challenge_no (challenge_no),
   KEY idx_user_otp_active (user_id, expires_at, consumed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_registration_otp (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  challenge_no VARCHAR(96) NOT NULL,
+  country_code VARCHAR(8) NOT NULL,
+  phone VARCHAR(32) NOT NULL,
+  code_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  consumed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_registration_otp_no (challenge_no),
+  KEY idx_user_registration_otp_phone (country_code,phone,expires_at,consumed_at),
+  KEY idx_user_registration_otp_ip (client_ip,created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_c5_kyc_reverification_consumption (

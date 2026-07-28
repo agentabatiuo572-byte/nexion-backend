@@ -18,6 +18,8 @@ public class C2HighRiskAdminAlertConsumer {
             "admin.user_unfrozen",
             "admin.user_impersonation_started",
             "admin.user_impersonation_ended",
+            "admin.account_list_upserted",
+            "admin.account_list_removed",
             "admin.2fa_disabled",
             "admin.password_reset_requested",
             "admin.user_unlocked",
@@ -33,6 +35,7 @@ public class C2HighRiskAdminAlertConsumer {
                 || !EVENT_TYPES.contains(message.getEventType())
                 || !("USER".equals(message.getAggregateType())
                     || "USER_IMPERSONATION".equals(message.getAggregateType())
+                    || "USER_ACCOUNT_LIST".equals(message.getAggregateType())
                     || "USER_SECURITY".equals(message.getAggregateType()))) {
             return;
         }

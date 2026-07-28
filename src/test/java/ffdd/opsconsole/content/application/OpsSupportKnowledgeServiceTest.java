@@ -1,6 +1,9 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -14,6 +17,7 @@ import ffdd.opsconsole.content.dto.SupportKnowledgeDeleteRequest;
 import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -27,12 +31,14 @@ import org.mockito.ArgumentCaptor;
 class OpsSupportKnowledgeServiceTest {
     private final FakeSupportKnowledgeRepository knowledgeRepository = new FakeSupportKnowledgeRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final OpsSupportKnowledgeService service = service();
 
     private OpsSupportKnowledgeService service() {
         return new OpsSupportKnowledgeService(
                 knowledgeRepository,
                 auditLogService,
+                eventOutboxService,
                 Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
     }
@@ -54,9 +60,14 @@ class OpsSupportKnowledgeServiceTest {
         assertThat(knowledgeRepository.faqs).hasSize(2);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("M4_SUPPORT_FAQ_CREATED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("SUPPORT_KNOWLEDGE");
+        verify(eventOutboxService).publish(
+                eq("SUPPORT_FAQ"),
+                anyString(),
+                eq("admin.support_faq_updated"),
+                any());
     }
 
     @Test
@@ -79,6 +90,8 @@ class OpsSupportKnowledgeServiceTest {
                 "DRAFT",
                 "en-US",
                 20,
+                "PUBLISHED",
+                1,
                 "Marina K.",
                 "更新 KYC FAQ 文案"));
 
@@ -91,8 +104,10 @@ class OpsSupportKnowledgeServiceTest {
     void publishRejectsSameStateWith409() {
         var result = service.updateFaqStatus("FAQ-001", "idem-m4-publish", new SupportFaqStatusRequest(
                 "PUBLISHED",
+                "PUBLISHED",
+                1,
                 "Marina K.",
-                "发布已有内容"));
+                "发布已有内容操作留档"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -113,8 +128,10 @@ class OpsSupportKnowledgeServiceTest {
 
         var result = service.updateFaqStatus("FAQ-001", "idem-m4-publish", new SupportFaqStatusRequest(
                 "PUBLISHED",
+                "DRAFT",
+                1,
                 "Marina K.",
-                "帮助中心发布"));
+                "帮助中心内容发布留档"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("PUBLISHED");
@@ -122,14 +139,16 @@ class OpsSupportKnowledgeServiceTest {
 
     @Test
     void deleteFaqRequiresReason() {
-        var result = service.deleteFaq("FAQ-001", "idem-m4-delete", new SupportKnowledgeDeleteRequest("Marina K.", "短"));
+        var result = service.deleteFaq("FAQ-001", "idem-m4-delete", new SupportKnowledgeDeleteRequest(
+                "PUBLISHED", 1, "Marina K.", "短"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
     }
 
     @Test
     void deleteFaqRemovesFromOverview() {
-        var result = service.deleteFaq("FAQ-001", "idem-m4-delete", new SupportKnowledgeDeleteRequest("Marina K.", "归档重复 FAQ"));
+        var result = service.deleteFaq("FAQ-001", "idem-m4-delete", new SupportKnowledgeDeleteRequest(
+                "PUBLISHED", 1, "Marina K.", "归档重复 FAQ 内容"));
 
         assertThat(result.getCode()).isZero();
         assertThat(service.overview().getData().faqs()).isEmpty();
@@ -142,6 +161,7 @@ class OpsSupportKnowledgeServiceTest {
                 12,
                 "支付台",
                 "D2 withdrawal review",
+                1L,
                 "Marina K.",
                 "同步 SLA"));
 
@@ -155,6 +175,7 @@ class OpsSupportKnowledgeServiceTest {
                 8,
                 "支付台",
                 "D2 withdrawal review",
+                1L,
                 "Marina K.",
                 "提现 SLA 收紧"));
 

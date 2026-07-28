@@ -40,11 +40,23 @@ public class GrowthVoucherGrantFacadeAdapter implements VoucherGrantFacade {
     @Transactional(rollbackFor = Exception.class)
     public VoucherGrantResult grant(VoucherGrantCommand command) {
         ValidGrant request = validate(command);
+        VoucherGrantResult replay = replayOrConflict(request);
+        if (replay != null) {
+            return replay;
+        }
         if (mapper.lockActiveUser(request.userId()) == null) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "H7_VOUCHER_USER_NOT_ACTIVE");
         }
         if (mapper.lockGrantableVoucher(request.voucherId(), System.currentTimeMillis()) == null) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "H7_VOUCHER_NOT_GRANTABLE");
+        }
+        replay = replayOrConflict(request);
+        if (replay != null) {
+            return replay;
+        }
+        Long issuanceLimit = mapper.issuanceLimit(request.voucherId());
+        if (issuanceLimit != null && issuanceLimit > 0 && mapper.issuedCount(request.voucherId()) >= issuanceLimit) {
+            throw new BizException(409, "H7_VOUCHER_INVENTORY_EXHAUSTED");
         }
 
         String grantId = "VGR-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
@@ -133,6 +145,17 @@ public class GrowthVoucherGrantFacadeAdapter implements VoucherGrantFacade {
                 && longValue(existing.get("userId")) == request.userId()
                 && Objects.equals(String.valueOf(existing.get("sourceType")), request.sourceType())
                 && Objects.equals(String.valueOf(existing.get("sourceId")), request.sourceId());
+    }
+
+    private VoucherGrantResult replayOrConflict(ValidGrant request) {
+        Map<String, Object> existing = mapper.findByGrantKey(request.grantKey());
+        if (existing == null || existing.isEmpty()) {
+            return null;
+        }
+        if (sameGrant(existing, request)) {
+            return new VoucherGrantResult(String.valueOf(existing.get("grantId")), true);
+        }
+        throw new BizException(409, "H7_VOUCHER_GRANT_IDEMPOTENCY_CONFLICT");
     }
 
     private long longValue(Object value) {

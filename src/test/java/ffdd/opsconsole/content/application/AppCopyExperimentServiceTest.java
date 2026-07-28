@@ -72,6 +72,34 @@ class AppCopyExperimentServiceTest {
     }
 
     @Test
+    void positionDeliveryResolvesTheOnlyPublishedCopyAndUsesTheExperimentPath() {
+        when(repository.findPublishedCopiesByPosition("home.conversion-banner"))
+                .thenReturn(List.of(copy("v7", "published zh")));
+        stubPublishedCopy();
+        when(repository.findRunningExperimentForUpdate(COPY_KEY)).thenReturn(Optional.empty());
+
+        ApiResult<AppCopyDeliveryView> result =
+                service.deliverByPosition(USER_ID, "home.conversion-banner");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().copyKey()).isEqualTo(COPY_KEY);
+        verify(repository).findRunningExperimentForUpdate(COPY_KEY);
+    }
+
+    @Test
+    void positionDeliveryFailsClosedWhenMoreThanOnePublishedCopyTargetsTheSlot() {
+        when(repository.findPublishedCopiesByPosition("home.conversion-banner"))
+                .thenReturn(List.of(copy("v7", "first"), copy("v6", "second")));
+
+        ApiResult<AppCopyDeliveryView> result =
+                service.deliverByPosition(USER_ID, "home.conversion-banner");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("CONTENT_COPY_POSITION_AMBIGUOUS");
+        verify(repository, never()).findRunningExperimentForUpdate(anyString());
+    }
+
+    @Test
     void ineligibleUserFallsBackWithoutCreatingAssignment() {
         stubPublishedCopy();
         when(repository.findRunningExperimentForUpdate(COPY_KEY)).thenReturn(Optional.of(experiment()));

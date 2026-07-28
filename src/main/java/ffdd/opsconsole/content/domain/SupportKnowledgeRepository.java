@@ -17,11 +17,31 @@ public interface SupportKnowledgeRepository {
 
     void updateFaq(String faqId, SupportFaqUpsertRequest request, LocalDateTime now);
 
+    default boolean updateFaqCas(String faqId, SupportFaqUpsertRequest request, String expectedStatus, Integer expectedVersion, LocalDateTime now) {
+        updateFaq(faqId, request, now);
+        return true;
+    }
+
     void updateFaqStatus(String faqId, String status, LocalDateTime now);
 
+    default boolean updateFaqStatusCas(String faqId, String status, String expectedStatus, Integer expectedVersion, LocalDateTime now) {
+        updateFaqStatus(faqId, status, now);
+        return true;
+    }
+
     void deleteFaq(String faqId, LocalDateTime now);
+
+    default boolean deleteFaqCas(String faqId, String expectedStatus, Integer expectedVersion, LocalDateTime now) {
+        deleteFaq(faqId, now);
+        return true;
+    }
 
     List<SupportSlaView> listSla();
 
     void upsertSla(String category, SupportSlaUpdateRequest request, LocalDateTime now);
+
+    default boolean updateSlaCas(String category, SupportSlaUpdateRequest request, Long expectedVersion, LocalDateTime now) {
+        upsertSla(category, request, now);
+        return true;
+    }
 }

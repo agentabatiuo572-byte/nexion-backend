@@ -447,7 +447,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "usdtPoolUsd", usdtPoolUsd,
                 "nexPoolUsd", nexPoolUsd,
                 "interestUsd", marketRepository.stakingEstimatedInterestUsdt(),
-                "positionCount", pendingCount + activeCount + matureCount + claimedCount + earlyWithdrawnMonth + slashedCount + refundedCount,
+                "positionCount", pendingCount + activeCount + matureCount,
                 "activeCount", activeCount,
                 "matureCount", matureCount,
                 "pendingCount", pendingCount,
@@ -1065,11 +1065,27 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (guard != null) {
             return guard;
         }
-        List<NexMarketCurveFrame> before = loadCurve();
+        List<NexMarketCurveFrame> before = configFacade.activeValueForUpdate(WEEKLY_CURVE_KEY)
+                .or(() -> configFacade.activeValue(WEEKLY_CURVE_KEY))
+                .filter(StringUtils::hasText)
+                .map(this::readCurve)
+                .orElse(List.of());
         if (before.size() != 7) {
             return ApiResult.fail(503, "G3_WEEKLY_CURVE_INVALID");
         }
+        if (!A2ReplayContext.isReplaying()) {
+            if (request.expectedFrames() == null) {
+                return validation("G3_EXPECTED_CURVE_REQUIRED");
+            }
+            List<NexMarketCurveFrame> expected = normalizeFrames(request.expectedFrames());
+            if (!before.equals(expected)) {
+                return ApiResult.fail(409, "G3_STATE_CONFLICT");
+            }
+        }
         List<NexMarketCurveFrame> frames = normalizeFrames(request.frames());
+        if (before.equals(frames)) {
+            return validation("G3_NO_CHANGES");
+        }
         if (curveFieldChanged(before, frames, "targetPrice")) {
             ApiResult<Map<String, Object>> permission = requirePermission("finprod_g3_curve_target_price_write");
             if (permission != null) return permission;
@@ -1097,11 +1113,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         String curveJson = writeCurve(frames);
         configFacade.upsertAdminValue(WEEKLY_CURVE_KEY, curveJson, "JSON", "wallet", "G3 weekly NEX market curve");
         int activeDayIndex = effectiveActiveDayIndex();
-        applyFrame(frameFor(frames, activeDayIndex), frames);
-        audit("G3_WEEKLY_CURVE_CHANGED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
+        auditRequired("G3_WEEKLY_CURVE_CHANGED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
                 "oldPeakPrice", weekPeak(before),
                 "newPeakPrice", weekPeak(frames),
                 "activeDayIndex", activeDayIndex,
+                "currentPriceUnchangedUntilAdvance", true,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return overview();
@@ -1130,19 +1146,40 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!StringUtils.hasText(request.value())) {
             return validation("VALUE_REQUIRED");
         }
-        String value = request.value().trim();
-        if ("schedule".equals(controlKey)) {
-            NexMarketSchedule schedule = NexMarketSchedule.parse(value);
-            if (schedule.fallback()) {
-                return validation("G3_SCHEDULE_INVALID");
-            }
-            value = schedule.displayValue();
+        String value;
+        try {
+            value = normalizeControlValue(controlKey, request.value());
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
         }
         String configKey = CONTROL_PREFIX + controlKey;
+        String currentValue = configFacade.activeValueForUpdate(configKey)
+                .or(() -> configFacade.activeValue(configKey))
+                .filter(StringUtils::hasText)
+                .orElse(controlDefaultValue(controlKey));
+        if (!A2ReplayContext.isReplaying()) {
+            if (!StringUtils.hasText(request.expectedValue())) {
+                return validation("G3_EXPECTED_VALUE_REQUIRED");
+            }
+            String expectedValue;
+            try {
+                expectedValue = normalizeControlValue(controlKey, request.expectedValue());
+            } catch (IllegalArgumentException ex) {
+                return validation("G3_EXPECTED_VALUE_INVALID");
+            }
+            if (!normalizeControlValue(controlKey, currentValue).equals(expectedValue)) {
+                return ApiResult.fail(409, "G3_STATE_CONFLICT");
+            }
+        }
+        String normalizedCurrent = normalizeControlValue(controlKey, currentValue);
+        if (normalizedCurrent.equals(value)) {
+            return validation("G3_NO_CHANGES");
+        }
         configFacade.upsertAdminValue(configKey, value, "STRING", "wallet", "G3 NEX market curve control");
-        audit("G3_CONTROL_CHANGED", "NEX_MARKET_CONTROL", configKey, request.operator(), Map.of(
+        auditRequired("G3_CONTROL_CHANGED", "NEX_MARKET_CONTROL", configKey, request.operator(), Map.of(
                 "controlKey", controlKey,
-                "value", value,
+                "oldValue", normalizedCurrent,
+                "newValue", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return overview();
@@ -1175,6 +1212,22 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return validation("VALUE_REQUIRED");
         }
         String value = request.value().trim();
+        String configKey = overrideConfigKey(overrideKey);
+        String lockedValue = configFacade.activeValueForUpdate(configKey)
+                .or(() -> configFacade.activeValue(configKey))
+                .orElse(null);
+        String currentValue = overrideCurrentValue(overrideKey, lockedValue);
+        if (!A2ReplayContext.isReplaying()) {
+            if (!StringUtils.hasText(request.expectedValue())) {
+                return validation("G3_EXPECTED_VALUE_REQUIRED");
+            }
+            if (!overrideValuesEqual(overrideKey, currentValue, request.expectedValue())) {
+                return ApiResult.fail(409, "G3_STATE_CONFLICT");
+            }
+        }
+        if (overrideValuesEqual(overrideKey, currentValue, value)) {
+            return validation("G3_NO_CHANGES");
+        }
         ApiResult<Map<String, Object>> result = switch (overrideKey) {
             case "currentPrice" -> updateCurrentPriceOverride(idempotencyKey, value, request);
             case "volatilityPct" -> updateNumericOverride(
@@ -1206,8 +1259,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
         NexMarketCurveFrame activeFrame = frameFor(frames, nextDayIndex);
+        if (activeFrame.targetPrice().compareTo(currentPrice()) > 0) {
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            if (redline != null) {
+                return redline;
+            }
+        }
         applyFrame(activeFrame, frames);
-        audit("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
+        auditRequired("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, request.operator(), Map.of(
                 "activeDayIndex", activeFrame.dayIndex(),
                 "targetPrice", activeFrame.targetPrice(),
                 "pumpProbability", activeFrame.pumpProbability(),
@@ -1227,8 +1286,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return;
         }
         NexMarketCurveFrame activeFrame = frameFor(frames, nextAdvanceDayIndex());
+        if (activeFrame.targetPrice().compareTo(currentPrice()) > 0) {
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            if (redline != null) {
+                throw new BizException(redline.getCode(), redline.getMessage());
+            }
+        }
         applyFrame(activeFrame, frames);
-        audit("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, "system", Map.of(
+        auditRequired("G3_DAILY_FRAME_ADVANCED", "NEX_MARKET_CURVE", WEEKLY_CURVE_KEY, "system", Map.of(
                 "activeDayIndex", activeFrame.dayIndex(),
                 "targetPrice", activeFrame.targetPrice(),
                 "pumpProbability", activeFrame.pumpProbability(),
@@ -1310,7 +1375,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             BigDecimal max,
             String remark) {
         BigDecimal numeric = parseDecimal(value, null);
-        if (numeric == null || numeric.compareTo(BigDecimal.ZERO) <= 0 || (max != null && numeric.compareTo(max) > 0)) {
+        boolean zeroAllowed = "volatilityPct".equals(overrideKey) || "deviationPct".equals(overrideKey);
+        if (numeric == null
+                || (zeroAllowed ? numeric.compareTo(BigDecimal.ZERO) < 0 : numeric.compareTo(BigDecimal.ZERO) <= 0)
+                || (max != null && numeric.compareTo(max) > 0)) {
             return validation("NUMERIC_VALUE_INVALID");
         }
         String oldValue = readText(configKey, "");
@@ -1330,6 +1398,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (value.length() > 80) {
             return validation("TEXT_VALUE_TOO_LONG");
         }
+        if ("oracle".equals(overrideKey) && !List.of("内部做市", "外部喂价").contains(value)) {
+            return validation("G3_ORACLE_INVALID");
+        }
         String oldValue = readText(configKey, "");
         configFacade.upsertAdminValue(configKey, value, "STRING", "wallet", remark);
         auditOverride(overrideKey, configKey, oldValue, value, idempotencyKey, request);
@@ -1345,6 +1416,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return validation("BOOLEAN_VALUE_INVALID");
         }
         String oldValue = readText(PAUSED_KEY, "false");
+        boolean before = Boolean.TRUE.equals(parseBooleanValue(oldValue));
+        if (before && !parsed) {
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            if (redline != null) {
+                return redline;
+            }
+        }
         configFacade.upsertAdminValue(PAUSED_KEY, parsed.toString(), "BOOLEAN", "wallet", "G3 NEX market engine pause override");
         auditOverride("paused", PAUSED_KEY, oldValue, parsed, idempotencyKey, request);
         return overview();
@@ -1375,7 +1453,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             }
             BigDecimal price = requirePositive(frame.targetPrice(), "targetPrice").setScale(8, RoundingMode.HALF_UP);
             BigDecimal pump = normalizeProbability(frame.pumpProbability());
-            BigDecimal volatility = requirePositive(frame.volatilityPct(), "volatilityPct").setScale(4, RoundingMode.HALF_UP);
+            BigDecimal volatility = requireNonNegative(frame.volatilityPct(), "volatilityPct").setScale(4, RoundingMode.HALF_UP);
             if (volatility.compareTo(BigDecimal.valueOf(20)) > 0) {
                 throw new IllegalArgumentException("volatilityPct must be <= 20");
             }
@@ -1591,7 +1669,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private BigDecimal normalizeProbability(BigDecimal raw) {
-        BigDecimal value = requirePositive(raw, "pumpProbability");
+        BigDecimal value = requireNonNegative(raw, "pumpProbability");
         if (value.compareTo(BigDecimal.ONE) > 0) {
             value = value.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
         }
@@ -1604,6 +1682,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private BigDecimal requirePositive(BigDecimal value, String name) {
         if (value == null || value.compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException(name + " must be positive");
+        }
+        return value;
+    }
+
+    private BigDecimal requireNonNegative(BigDecimal value, String name) {
+        if (value == null || value.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException(name + " must be non-negative");
         }
         return value;
     }
@@ -1623,6 +1708,88 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "false", "disabled", "off", "0", "running" -> Boolean.FALSE;
             default -> null;
         };
+    }
+
+    private String normalizeControlValue(String controlKey, String rawValue) {
+        String value = rawValue == null ? "" : rawValue.trim();
+        return switch (controlKey) {
+            case "schedule" -> {
+                NexMarketSchedule schedule = NexMarketSchedule.parse(value);
+                if (schedule.fallback()) {
+                    throw new IllegalArgumentException("G3_SCHEDULE_INVALID");
+                }
+                yield schedule.displayValue();
+            }
+            case "pin" -> {
+                if ("未钉住".equals(value) || value.matches("D[1-7]")) {
+                    yield value;
+                }
+                throw new IllegalArgumentException("G3_PIN_INVALID");
+            }
+            case "loop" -> {
+                if ("循环".equals(value)) {
+                    yield value;
+                }
+                if ("停末值".equals(value) || "停在末值".equals(value)) {
+                    yield "停在末值";
+                }
+                throw new IllegalArgumentException("G3_LOOP_INVALID");
+            }
+            default -> throw new IllegalArgumentException("G3_CONTROL_KEY_INVALID");
+        };
+    }
+
+    private String controlDefaultValue(String controlKey) {
+        return switch (controlKey) {
+            case "schedule" -> NexMarketSchedule.DEFAULT_DISPLAY;
+            case "pin" -> "未钉住";
+            case "loop" -> "循环";
+            default -> "";
+        };
+    }
+
+    private String overrideConfigKey(String overrideKey) {
+        return switch (overrideKey) {
+            case "currentPrice" -> CURRENT_PRICE_KEY;
+            case "volatilityPct" -> VOLATILITY_KEY;
+            case "oracle" -> ORACLE_KEY;
+            case "deviationPct" -> DEVIATION_KEY;
+            case "costBasis" -> COST_BASIS_KEY;
+            case "paused" -> PAUSED_KEY;
+            default -> throw new IllegalArgumentException("G3_OVERRIDE_KEY_INVALID");
+        };
+    }
+
+    private String overrideCurrentValue(String overrideKey, String lockedValue) {
+        if (StringUtils.hasText(lockedValue)) {
+            return lockedValue.trim();
+        }
+        return switch (overrideKey) {
+            case "currentPrice" -> currentPrice().stripTrailingZeros().toPlainString();
+            case "volatilityPct" -> {
+                NexMarketCurveFrame active = frameFor(loadCurve(), effectiveActiveDayIndex());
+                yield active == null ? "" : active.volatilityPct().stripTrailingZeros().toPlainString();
+            }
+            case "oracle" -> "内部做市";
+            case "deviationPct" -> "5";
+            case "costBasis" -> "0.085";
+            case "paused" -> "false";
+            default -> "";
+        };
+    }
+
+    private boolean overrideValuesEqual(String overrideKey, String left, String right) {
+        if ("paused".equals(overrideKey)) {
+            Boolean leftValue = parseBooleanValue(left);
+            Boolean rightValue = parseBooleanValue(right);
+            return leftValue != null && leftValue.equals(rightValue);
+        }
+        if ("oracle".equals(overrideKey)) {
+            return left != null && right != null && left.trim().equals(right.trim());
+        }
+        BigDecimal leftValue = parseDecimal(left, null);
+        BigDecimal rightValue = parseDecimal(right, null);
+        return leftValue != null && rightValue != null && leftValue.compareTo(rightValue) == 0;
     }
 
     private String readText(String configKey, String fallback) {
@@ -1675,7 +1842,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         control.put("key", key);
         control.put("name", name);
         control.put("description", description);
-        control.put("value", readText(CONTROL_PREFIX + key, defaultValue));
+        String value = readText(CONTROL_PREFIX + key, defaultValue);
+        try {
+            value = normalizeControlValue(key, value);
+        } catch (IllegalArgumentException ignored) {
+            // Existing invalid values remain visible on read so operators can
+            // diagnose them; every new write is validated and canonicalized.
+        }
+        control.put("value", value);
         return control;
     }
 
@@ -2989,7 +3163,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Object newValue,
             String idempotencyKey,
             NexMarketValueUpdateRequest request) {
-        audit("G3_OVERRIDE_CHANGED", "NEX_MARKET_OVERRIDE", configKey, request.operator(), Map.of(
+        auditRequired("G3_OVERRIDE_CHANGED", "NEX_MARKET_OVERRIDE", configKey, request.operator(), Map.of(
                 "overrideKey", overrideKey,
                 "oldValue", oldValue,
                 "newValue", newValue,

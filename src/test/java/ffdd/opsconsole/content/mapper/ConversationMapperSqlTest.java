@@ -31,21 +31,21 @@ class ConversationMapperSqlTest {
 
     @Test
     void allMutableConversationHeadersUseExpectedStateCas() throws Exception {
-        String transfer = updateSql("markTransferred", String.class, String.class, String.class, LocalDateTime.class);
-        String accept = updateSql("acceptConversation", String.class, String.class, String.class, LocalDateTime.class);
-        String returned = updateSql("returnConversation", String.class, String.class, String.class, LocalDateTime.class);
-        String wait = updateSql("markTransferWait", String.class, String.class, LocalDateTime.class);
-        String reply = updateSql("replyConversation", String.class, String.class, String.class, LocalDateTime.class);
-        String status = updateSql("updateConversationStatus", String.class, String.class, String.class, LocalDateTime.class);
-        String fallback = updateSql("fallbackConversation", String.class, String.class, String.class, LocalDateTime.class);
+        String transfer = updateSql("markTransferred", String.class, String.class, String.class, Long.class, LocalDateTime.class);
+        String accept = updateSql("acceptConversation", String.class, String.class, String.class, Long.class, LocalDateTime.class);
+        String returned = updateSql("returnConversation", String.class, String.class, String.class, Long.class, LocalDateTime.class);
+        String wait = updateSql("markTransferWait", String.class, String.class, Long.class, LocalDateTime.class);
+        String reply = updateSql("replyConversation", String.class, String.class, String.class, Long.class, LocalDateTime.class);
+        String status = updateSql("updateConversationStatus", String.class, String.class, String.class, Long.class, LocalDateTime.class);
+        String fallback = updateSql("fallbackConversation", String.class, String.class, String.class, Long.class, LocalDateTime.class);
 
-        assertThat(transfer).contains("status='OPEN'");
-        assertThat(accept).contains("status='TRANSFERRED'");
-        assertThat(returned).contains("status='TRANSFERRED'");
-        assertThat(wait).contains("status='TRANSFERRED'").contains("status='PENDING'");
-        assertThat(reply).contains("status=#{expectedStatus}");
-        assertThat(status).contains("status=#{expectedStatus}");
-        assertThat(fallback).contains("status='TRANSFERRED'");
+        assertThat(transfer).contains("status='OPEN'", "version=#{expectedVersion}");
+        assertThat(accept).contains("status='TRANSFERRED'", "version=#{expectedVersion}");
+        assertThat(returned).contains("status='TRANSFERRED'", "version=#{expectedVersion}");
+        assertThat(wait).contains("status='TRANSFERRED'", "status='PENDING'", "version=#{expectedVersion}");
+        assertThat(reply).contains("status=#{expectedStatus}", "version=#{expectedVersion}");
+        assertThat(status).contains("status=#{expectedStatus}", "version=#{expectedVersion}");
+        assertThat(fallback).contains("status='TRANSFERRED'", "version=#{expectedVersion}");
     }
 
     @Test
@@ -111,13 +111,14 @@ class ConversationMapperSqlTest {
     @Test
     void ticketConversionIsAnAtomicTerminalClaim() throws Exception {
         String sql = String.join("\n", ConversationMapper.class
-                .getMethod("markConvertedToTicket", String.class, String.class, LocalDateTime.class)
+                .getMethod("markConvertedToTicket", String.class, String.class, Long.class, LocalDateTime.class)
                 .getAnnotation(Update.class)
                 .value());
 
         assertThat(sql)
                 .contains("status='CLOSED'")
                 .contains("status<>'CLOSED'")
+                .contains("version=#{expectedVersion}")
                 .contains("last_message=#{message}");
     }
 

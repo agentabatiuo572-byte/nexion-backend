@@ -7,6 +7,7 @@ import ffdd.opsconsole.finance.dto.VietQrBankAccountCommandRequest;
 import ffdd.opsconsole.finance.dto.VietQrBankAccountCreateRequest;
 import ffdd.opsconsole.finance.dto.VietQrConfigUpdateRequest;
 import ffdd.opsconsole.finance.dto.VietQrReconciliationCommandRequest;
+import ffdd.opsconsole.finance.dto.VietQrReceiptRegistrationRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -54,6 +55,18 @@ public class OpsVietnamPaymentController {
                 "VIETQR_RECONCILIATION",
                 String.valueOf(id),
                 () -> service.reconcile(id, action, idempotencyKey, request));
+    }
+
+    @PostMapping("/vietqr/receipts")
+    @PreAuthorize("hasAuthority('finance_d1_bank_reconcile')")
+    public ApiResult<Map<String, Object>> registerVietQrReceipt(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) VietQrReceiptRegistrationRequest request) {
+        return auditedWrite(
+                "D1_VIETQR_RECEIPT_REGISTER_REJECTED",
+                "VIETQR_RECONCILIATION",
+                request == null ? "NEW" : String.valueOf(request.paymentReference()),
+                () -> service.registerVietQrReceipt(idempotencyKey, request));
     }
 
     @PostMapping("/vietqr/accounts")

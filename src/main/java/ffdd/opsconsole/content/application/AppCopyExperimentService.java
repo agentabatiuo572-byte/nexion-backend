@@ -37,6 +37,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppCopyExperimentService {
     private static final Pattern COPY_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{1,95}$");
+    private static final Pattern POSITION_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{1,95}$");
     private static final Pattern EXPERIMENT_ID_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$");
     private static final Pattern CONVERSION_KEY_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9:._-]{0,95}$");
     private static final int BUCKET_COUNT = 10_000;
@@ -83,6 +84,22 @@ public class AppCopyExperimentService {
         repository.insertAssignmentIfAbsent(computed);
         Assignment persisted = repository.findAssignment(experiment.experimentId(), userId).orElse(computed);
         return assignedView(normalizedCopyKey, persisted);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<AppCopyDeliveryView> deliverByPosition(long userId, String positionKey) {
+        if (userId <= 0 || !StringUtils.hasText(positionKey)
+                || !POSITION_KEY_PATTERN.matcher(positionKey.trim()).matches()) {
+            return ApiResult.fail(422, "CONTENT_COPY_POSITION_REQUEST_INVALID");
+        }
+        List<CopyBody> matches = repository.findPublishedCopiesByPosition(positionKey.trim());
+        if (matches == null || matches.isEmpty()) {
+            return ApiResult.fail(404, "CONTENT_COPY_POSITION_NOT_FOUND");
+        }
+        if (matches.size() != 1) {
+            return ApiResult.fail(409, "CONTENT_COPY_POSITION_AMBIGUOUS");
+        }
+        return deliver(userId, matches.get(0).copyKey());
     }
 
     @Transactional(rollbackFor = Exception.class)

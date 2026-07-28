@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.web;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -13,10 +14,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import ffdd.opsconsole.finance.application.D5WithdrawalAuthorization;
 import ffdd.opsconsole.finance.application.OpsFinanceService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminRbacAuthorizationFilter;
 import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
 import ffdd.opsconsole.shared.security.SecurityConfig;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +41,8 @@ class OpsWithdrawalLimitsControllerTest {
     @MockBean private OpsFinanceService financeService;
     @MockBean private JwtAuthenticationFilter jwtAuthenticationFilter;
     @MockBean private AdminRbacAuthorizationFilter adminRbacAuthorizationFilter;
+    @MockBean private AuditLogService auditLogService;
+    @MockBean private AdminIdempotencyService idempotencyService;
 
     @BeforeEach
     void continueFilters() throws Exception {
@@ -48,6 +56,15 @@ class OpsWithdrawalLimitsControllerTest {
             chain.doFilter(invocation.getArgument(0), invocation.getArgument(1));
             return null;
         }).when(adminRbacAuthorizationFilter).doFilter(any(), any(), any());
+        Set<String> claimedAuditKeys = new HashSet<>();
+        when(idempotencyService.execute(
+                org.mockito.ArgumentMatchers.eq("D5_WITHDRAWAL_LIMITS_REJECTED_AUDIT"),
+                anyString(), anyString(), org.mockito.ArgumentMatchers.eq(Boolean.class), any()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(1, String.class);
+                    if (!claimedAuditKeys.add(key)) return Boolean.TRUE;
+                    return ((Supplier<Boolean>) invocation.getArgument(4)).get();
+                });
     }
 
     @Test
@@ -87,5 +104,25 @@ class OpsWithdrawalLimitsControllerTest {
                         .content("{\"expectedVersion\":1,\"dailyLimitCount\":3}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("REASON_REQUIRED"));
+        verify(auditLogService).recordRequiredInNewTransaction(any());
+    }
+
+    @Test
+    void replayedRejectedCommandWritesOneA2AuditForTheSameIdempotencyKey() throws Exception {
+        when(financeService.updateWithdrawalLimits(anyString(), any()))
+                .thenReturn(new ApiResult<>(409, "CONFIG_VERSION_CONFLICT", null));
+        String body = "{\"expectedVersion\":0,\"dailyLimitCount\":1,\"reason\":\"stale version acceptance test\"}";
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mockMvc.perform(put("/api/admin/withdraw/limits")
+                            .with(user("lead").authorities(() -> "finance_d5_daily_limit_write"))
+                            .header("Idempotency-Key", "d5-repeat-rejected")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.code").value("CONFIG_VERSION_CONFLICT"));
+        }
+
+        verify(auditLogService, org.mockito.Mockito.times(1)).recordRequiredInNewTransaction(any());
     }
 }

@@ -57,7 +57,11 @@ public record WithdrawalOrderView(
         Integer k4BandLowMax,
         Integer k4BandHighMin,
         Integer k4AutoEscalateScore,
-        String k3RiskRoute) {
+        String k3RiskRoute,
+        BigDecimal networkFeeRate,
+        BigDecimal networkFeeMin,
+        BigDecimal networkFeeMax,
+        BigDecimal networkFee) {
 
     public WithdrawalOrderView(
             Long id,
@@ -98,7 +102,8 @@ public record WithdrawalOrderView(
                 userNo, nickname, phoneMasked, kycStatus, userStatus, riskScore, hitRules, riskReason,
                 withdrawalCount24h, statusHistory, auditTrail,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null);
+                null, null, null, null, null,
+                null, null, null, null);
     }
 
     public WithdrawalOrderView(
@@ -128,6 +133,7 @@ public record WithdrawalOrderView(
                 nextBroadcastAt, lastBroadcastError, broadcastDeadAt, createdAt, updatedAt,
                 null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null);
+                null, null, null, null, null,
+                null, null, null, null);
     }
 }

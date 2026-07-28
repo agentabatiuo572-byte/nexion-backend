@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
@@ -25,6 +26,7 @@ import java.util.stream.Collectors;
  * keeps every conversion numerator inside the previous stage's same-user set.
  */
 public final class L2FunnelAnalytics {
+    private static final ZoneOffset BUSINESS_TIME_OFFSET = ZoneOffset.ofHours(8);
     private static final List<String> MAIN_EVENTS = List.of(
             "auth.register_completed",
             "kyc.express_verified",
@@ -37,6 +39,15 @@ public final class L2FunnelAnalytics {
     }
 
     public static Map<String, Object> calculate(List<Map<String, Object>> rawRows) {
+        return calculate(rawRows, null, null, null, null);
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows,
+            String cohort,
+            String phase,
+            String locale,
+            String ref) {
         long totalRelevant = rawRows == null ? 0 : rawRows.stream()
                 .filter(row -> MAIN_EVENTS.contains(text(row, "eventName", "event_name")))
                 .count();
@@ -53,15 +64,27 @@ public final class L2FunnelAnalytics {
                     "message", "存在缺少 user_id 的主漏斗事件，不能安全计算同用户转化率",
                     "actorCoverage", totalRelevant == 0 ? 1D : percent(identifiedRelevant, totalRelevant));
         }
-        List<EventFact> registrations = named(events, "auth.register_completed");
+        List<EventFact> allRegistrations = named(events, "auth.register_completed");
+        Map<String, EventFact> allRegistered = firstByActor(allRegistrations);
+        Set<String> selectedActors = allRegistered.entrySet().stream()
+                .filter(entry -> matchesFilters(entry.getValue(), cohort, phase, locale, ref))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        List<EventFact> selectedEvents = events.stream()
+                .filter(event -> selectedActors.contains(event.actor()))
+                .toList();
+        List<EventFact> registrations = named(selectedEvents, "auth.register_completed");
         if (registrations.isEmpty()) {
             return Map.of(
                     "available", false,
                     "reason", "NO_REGISTRATION_COHORT",
-                    "message", "没有可识别的注册 cohort，不能计算同用户逐级转化或留存率");
+                    "message", hasFilters(cohort, phase, locale, ref)
+                            ? "当前切片没有可识别的注册 cohort，不能计算同用户逐级转化或留存率"
+                            : "没有可识别的注册 cohort，不能计算同用户逐级转化或留存率",
+                    "filters", filterMap(cohort, phase, locale, ref));
         }
 
-        Map<String, List<EventFact>> byActor = events.stream()
+        Map<String, List<EventFact>> byActor = selectedEvents.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
         Map<String, EventFact> registered = firstByActor(registrations);
         Map<String, EventFact> verified = nextStage(byActor, registered, "kyc.express_verified");
@@ -106,12 +129,12 @@ public final class L2FunnelAnalytics {
                     "v1", index == 3));
         }
 
-        List<Map<String, Object>> cohorts = cohortRows(events, registered, false);
-        Map<String, Object> curves = cohortCurves(events, registered, cohorts, false);
-        List<Map<String, Object>> monthlyCohorts = cohortRows(events, registered, true);
-        Map<String, Object> monthlyCurves = cohortCurves(events, registered, monthlyCohorts, true);
-        List<Map<String, Object>> trial = trialRows(events);
-        Map<String, Object> cross = crossAnalysis(events, registered, verified, firstPurchase);
+        List<Map<String, Object>> cohorts = cohortRows(selectedEvents, registered, false);
+        Map<String, Object> curves = cohortCurves(selectedEvents, registered, cohorts, false);
+        List<Map<String, Object>> monthlyCohorts = cohortRows(selectedEvents, registered, true);
+        Map<String, Object> monthlyCurves = cohortCurves(selectedEvents, registered, monthlyCohorts, true);
+        List<Map<String, Object>> trial = trialRows(selectedEvents);
+        Map<String, Object> cross = crossAnalysis(selectedEvents, registered, verified, firstPurchase);
         Map<String, Object> latestMature = cohorts.stream()
                 .filter(row -> row.get("d7") instanceof Number)
                 .reduce((left, right) -> right)
@@ -128,14 +151,45 @@ public final class L2FunnelAnalytics {
                 "monthlyCurves", monthlyCurves,
                 "crossAnalysis", cross,
                 "stageEvents", stageEvents,
+                "filters", filterMap(cohort, phase, locale, ref),
                 "day7Kpi", linked("value", latestMature.get("d7"), "target", 60),
                 "quality", linked(
                         "sameUserJoin", true,
                         "stageOrderEnforced", true,
                         "actorCoverage", totalRelevant == 0 ? 1D : percent(identifiedRelevant, totalRelevant),
                         "retentionEvent", "app.dau",
-                        "incompleteRatesAreNull", true),
+                        "incompleteRatesAreNull", true,
+                        "businessTimeZone", "UTC+08:00",
+                        "lateArrivals", "included_on_next_query"),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"));
+    }
+
+    private static boolean matchesFilters(
+            EventFact registration,
+            String cohort,
+            String phase,
+            String locale,
+            String ref) {
+        return (!hasText(cohort) || cohortKey(registration, cohort.trim().matches("\\d{4}-\\d{2}")).equals(cohort.trim()))
+                && (!hasText(phase) || registration.phase().equalsIgnoreCase(phase.trim()))
+                && (!hasText(locale) || registration.locale().equalsIgnoreCase(normalizeLocale(locale.trim())))
+                && (!hasText(ref) || registration.ref().equalsIgnoreCase(ref.trim()));
+    }
+
+    private static boolean hasFilters(String cohort, String phase, String locale, String ref) {
+        return hasText(cohort) || hasText(phase) || hasText(locale) || hasText(ref);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static Map<String, Object> filterMap(String cohort, String phase, String locale, String ref) {
+        return linked(
+                "cohort", hasText(cohort) ? cohort.trim() : "",
+                "phase", hasText(phase) ? phase.trim().toUpperCase(Locale.ROOT) : "",
+                "locale", hasText(locale) ? normalizeLocale(locale.trim()) : "",
+                "ref", hasText(ref) ? ref.trim() : "");
     }
 
     private static Map<String, EventFact> firstByActor(List<EventFact> events) {
@@ -217,8 +271,9 @@ public final class L2FunnelAnalytics {
             Set<String> actors,
             int day) {
         if (actors.isEmpty()) return null;
+        LocalDateTime now = LocalDateTime.now(BUSINESS_TIME_OFFSET);
         boolean mature = actors.stream().allMatch(actor ->
-                registered.get(actor).at().toLocalDate().plusDays(day).isBefore(LocalDate.now().plusDays(1)));
+                !registered.get(actor).at().plusDays(day).isAfter(now));
         if (!mature) return null;
         long active = actors.stream().filter(actor -> events.stream().anyMatch(event ->
                 event.actor().equals(actor)
@@ -257,7 +312,13 @@ public final class L2FunnelAnalytics {
             Map<String, EventFact> registered,
             Map<String, EventFact> verified,
             Map<String, EventFact> purchased) {
-        List<String> locales = List.of("en", "zh", "es", "pt");
+        List<String> locales = registered.values().stream()
+                .map(EventFact::locale)
+                .filter(value -> !value.equals("und"))
+                .distinct()
+                .sorted()
+                .toList();
+        if (locales.isEmpty()) locales = List.of("en", "vi", "zh");
         Map<String, List<EventFact>> byActor = events.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
         Map<String, EventFact> claimedTrial = firstByActor(named(events, "trial.claim_sheet_shown"));
@@ -266,7 +327,7 @@ public final class L2FunnelAnalytics {
         List<String> groups = registered.values().stream()
                 .map(event -> event.ref() + " · " + event.phase())
                 .distinct()
-                .limit(4)
+                .sorted()
                 .toList();
         List<String> safeGroups = groups.isEmpty() ? List.of("direct · unknown") : groups;
         return linked(
@@ -300,7 +361,7 @@ public final class L2FunnelAnalytics {
             row.add(valid.isEmpty() ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
             rows.add(row);
         }
-        return linked("rows", rows, "alert", List.of(-1, -1), "unit", "%",
+        return linked("columns", locales, "rows", rows, "alert", List.of(-1, -1), "unit", "%",
                 "msg", linked("pre", message, "bold", "", "post", ""));
     }
 
@@ -323,7 +384,7 @@ public final class L2FunnelAnalytics {
             row.add(valid.isEmpty() ? null : round(valid.stream().mapToDouble(Double::doubleValue).average().orElse(0)));
             rows.add(row);
         }
-        return linked("rows", rows, "alert", List.of(-1, -1), "unit", "%",
+        return linked("columns", locales, "rows", rows, "alert", List.of(-1, -1), "unit", "%",
                 "msg", linked("pre", "Day7 app.dau ÷ 注册 cohort；未成熟窗口显示为空", "bold", "", "post", ""));
     }
 

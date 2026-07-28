@@ -20,6 +20,8 @@ public record GrowthVoucherRequest(
         Boolean stackWithTrial,
         Boolean stackWithOthers,
         Boolean splittable,
+        Long issuanceLimit,
+        Long expectedVersion,
         String status,
         String reason,
         String operator) {

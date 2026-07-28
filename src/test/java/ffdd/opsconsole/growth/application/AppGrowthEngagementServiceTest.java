@@ -22,6 +22,7 @@ import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DailyMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EarningMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EventReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestReward;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakPowerUp;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.VoucherClaimDefinition;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -33,6 +34,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,6 +53,7 @@ class AppGrowthEngagementServiceTest {
     @BeforeEach
     void setUp() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        when(mapper.findActiveUser(42L)).thenReturn(42L);
         when(mapper.attribution(42L)).thenReturn(new Attribution("P3", 5, "2026-W30"));
         when(rhythm.snapshot()).thenReturn(new GrowthRhythmSnapshot(
                 24, 3, "P2", 50, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
@@ -61,6 +64,35 @@ class AppGrowthEngagementServiceTest {
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class),
                 org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+    }
+
+    @Test
+    void questStateUsesOnlyPersistedDefinitionsUserProgressPromoAndH1Multiplier() {
+        when(mapper.questState(42L)).thenReturn(List.of(Map.of(
+                "questCode", "H3_FIRST_ORDER_STARTED",
+                "name", "Start your first order",
+                "layer", "DAY_ONE",
+                "rewardNex", 50,
+                "status", "CLAIMABLE")));
+        when(mapper.questPromoBanner()).thenReturn(Map.of(
+                "bannerCode", "HOME_WEEKLY_UPSELL",
+                "baseReward", "800",
+                "multiplier", "1.5",
+                "countdownDays", 4,
+                "countdownHours", 12,
+                "targetDevice", "StellarBox Pro",
+                "targetDaily", "1.5",
+                "status", "active"));
+
+        var result = service.questState(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("questBonusMultiplier", new BigDecimal("1.5"))
+                .containsEntry("rhythmMonth", 3);
+        assertThat(result.getData().get("quests")).asList().singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("questCode"))
+                .isEqualTo("H3_FIRST_ORDER_STARTED");
+        assertThat(result.getData().get("source").toString()).contains("nx_mission", "nx_user_mission");
     }
 
     @Test
@@ -112,27 +144,64 @@ class AppGrowthEngagementServiceTest {
     @Test
     void guaranteedLuckyCheckInPersistsServerDecisionAndPublishesLuckyEvent() {
         when(mapper.dailyMissionId()).thenReturn(2L);
-        when(mapper.lockStreak(42L)).thenReturn(new StreakState(6, 6, LocalDate.now().minusDays(1)));
-        when(mapper.checkInRule("baseline")).thenReturn("1");
+        when(mapper.lockStreak(42L)).thenReturn(new StreakState(6, 6, 1, LocalDate.now().minusDays(1)));
+        when(mapper.checkInRule("baseline")).thenReturn("2");
         when(mapper.checkInRule("bonus7")).thenReturn("5");
         when(mapper.checkInRule("p2")).thenReturn("100");
         when(mapper.checkInRule("p15")).thenReturn("0");
-        when(mapper.insertCheckIn(eq(42L), eq(2L), eq(LocalDate.now()), eq(1),
-                eq(new BigDecimal("2.0")), eq(1), eq(5), eq(7))).thenReturn(1);
+        when(mapper.insertCheckIn(eq(42L), eq(2L), eq(LocalDate.now()), eq(2),
+                eq(new BigDecimal("2.0")), eq(2), eq(5), eq(9))).thenReturn(1);
         when(mapper.updateStreak(42L, 7, LocalDate.now())).thenReturn(1);
-        when(mapper.currentPointsBalance(42L)).thenReturn(10);
-        when(mapper.insertPointsLedger(42L, "DAILY:42:" + LocalDate.now(), "DAILY_CHECK_IN", 7, 17))
-                .thenReturn(1);
+        wallet(new BigDecimal("10"));
 
         var result = service.checkIn(42L, "daily-key");
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("multiplier", new BigDecimal("2.0")).containsEntry("streakDays", 7);
+        assertThat(result.getData()).containsEntry("rewardNex", new BigDecimal("9.000000"))
+                .containsEntry("multiplier", new BigDecimal("2.0")).containsEntry("streakDays", 7);
+        verify(mapper).insertNexLedger(
+                42L, "DAILY:42:" + LocalDate.now(), "DAILY_CHECK_IN", new BigDecimal("9.000000"),
+                new BigDecimal("19.000000"), "H5 daily check-in");
         verify(outbox).publishUserEvent(
                 eq("DAILY_CHECK_IN"), anyString(), eq("daily.checkin"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
         verify(outbox).publishUserEvent(
                 eq("DAILY_CHECK_IN"), anyString(), eq("daily.lucky_triggered"), eq(42L),
+                eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @Test
+    void streakSaverIsServerAuthoritativeIdempotentAndCannotBeUsedBeforeBreak() {
+        when(mapper.lockStreak(42L)).thenReturn(
+                new StreakState(0, 12, 1, LocalDate.now().minusDays(3)));
+        when(mapper.useStreakSaver(42L, 12, LocalDate.now().minusDays(1))).thenReturn(1);
+
+        var result = service.useStreakSaver(42L, "saver-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("restoredStreak", 12).containsEntry("streakSavers", 0);
+        verify(audit).recordRequired(any());
+        verify(outbox).publishUserEvent(
+                eq("USER_STREAK"), eq("42"), eq("daily.streak_restored"), eq(42L),
+                eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @Test
+    void powerUpActivationUsesServerEligibilityBadgeAuditAndOutbox() {
+        StreakPowerUp powerUp = new StreakPowerUp(
+                8L, "STREAK_BADGE", "STREAK_14_BADGE", 0);
+        when(mapper.lockActivatablePowerUp(42L, 8L)).thenReturn(powerUp);
+        when(mapper.activatePowerUp(42L, powerUp)).thenReturn(1);
+        when(mapper.unlockAchievement(42L, "STREAK_14_BADGE")).thenReturn(1);
+
+        var result = service.activateStreakPowerUp(42L, 8L, "power-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("powerUpId", 8L)
+                .containsEntry("status", "ACTIVATED");
+        verify(outbox).publishUserEvent(
+                eq("USER_STREAK_POWER_UP"), eq("42:STREAK_BADGE"),
+                eq("daily.power_up_activated"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
     }
 
@@ -171,6 +240,27 @@ class AppGrowthEngagementServiceTest {
         verify(outbox).publishUserEvent(
                 eq("VOUCHER_GRANT"), eq("G-1"), eq("voucher.claimed"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @Test
+    void claimedVoucherRemainsVisibleWhenDefinitionIsPausedOrDeletedAndExpiresByServerTime() {
+        when(mapper.voucherState(eq(42L), anyLong())).thenReturn(List.of(Map.ofEntries(
+                Map.entry("voucherId", "V-CLAIMED"),
+                Map.entry("voucherName", "Already owned"),
+                Map.entry("audience", "all"),
+                Map.entry("definitionStatus", "paused"),
+                Map.entry("definitionDeleted", 1),
+                Map.entry("grantId", "G-CLAIMED"),
+                Map.entry("grantStatus", "AVAILABLE"),
+                Map.entry("endAt", 1L))));
+
+        var result = service.voucherState(42L);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> row = ((List<Map<String, Object>>) result.getData().get("vouchers")).get(0);
+
+        assertThat(row).containsEntry("grantStatus", "EXPIRED");
+        assertThat(row).containsEntry("claimable", false);
+        assertThat(row).containsEntry("definitionDeleted", 1);
     }
 
     @Test

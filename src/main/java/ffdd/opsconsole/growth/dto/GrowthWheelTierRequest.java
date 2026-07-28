@@ -12,6 +12,22 @@ public record GrowthWheelTierRequest(
         BigDecimal probabilityPct,
         Integer realOutflow,
         String rewardKind,
+        BigDecimal rewardAmount,
+        String voucherId,
+        Integer dailyStock,
         String reason,
-        String operator) {
+        String operator,
+        String expectedSignature) {
+
+    public GrowthWheelTierRequest(
+            String tierName,
+            String rewardName,
+            BigDecimal probabilityPct,
+            Integer realOutflow,
+            String rewardKind,
+            String reason,
+            String operator) {
+        this(tierName, rewardName, probabilityPct, realOutflow, rewardKind,
+                null, null, null, reason, operator, null);
+    }
 }

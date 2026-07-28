@@ -98,6 +98,10 @@ public class OpsTeamService implements AuditReplayable {
             // F2 版税费率类:promo 周倍率/peer 平级比例/unilevel 版税费率 → royalty_rate(HIGH)。
             Map.entry("F.promo.weekMultiplier", "network_f2_royalty_rate"),
             Map.entry("F.peer.rate", "network_f2_royalty_rate"),
+            Map.entry("F.influence.clampMin", "network_f2_policy_amplify"),
+            Map.entry("F.influence.clampMax", "network_f2_policy_amplify"),
+            Map.entry("F.cooldown", "network_f2_policy_amplify"),
+            Map.entry("F.partner.tiers", "network_f2_policy_amplify"),
             // F3 双轨类:matchRate 阈值类放大 → match_rate(HIGH);threshold/spillover/settlePeriod 等走 write。
             Map.entry("F.binary.matchRate", "network_f3_match_rate"),
             Map.entry("F.binary.threshold", "network_f3_match_rate"),
@@ -208,6 +212,7 @@ public class OpsTeamService implements AuditReplayable {
     private final VRankPromotionEngine vRankPromotionEngine;
     private final VRankRewardDispatcher vRankRewardDispatcher;
     private final EventOutboxService eventOutboxService;
+    private final LeadershipPoolService leadershipPoolService;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
@@ -642,6 +647,9 @@ public class OpsTeamService implements AuditReplayable {
             String key) {
         String value = normalizeUiValue(request.value());
         int layerNo = unilevelLayerNo(key);
+        if (layerNo == 1 && !key.startsWith("F.unilevel.nex.")) {
+            return ApiResult.fail(422, "F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
+        }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("F", "unilevel_rule", "L" + layerNo) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -1149,7 +1157,10 @@ public class OpsTeamService implements AuditReplayable {
         row.put("teamGv", fields.contains("teamGv") ? moneyCompact(intValue(raw.get("teamGvUsd"), 0)) : null);
         row.put("legCount", fields.contains("legCount") ? intValue(raw.get("legCount"), 0) : null);
         row.put("legRank", fields.contains("legRank") ? textValue(raw, "legRank", "") : null);
+        row.put("unilevelDepth", textValue(raw, "unilevelDepth", ""));
+        row.put("peerBonusRate", decimalValue(raw.get("peerBonusRate"), BigDecimal.ZERO));
         row.put("votes", intValue(raw.get("votes"), 0));
+        row.put("visible", boolValue(raw.get("visible"), true));
         row.put("pop", intValue(raw.get("pop"), 0));
         row.put("rewards", activeRewards(level));
         row.put("source", "nx_v_rank_config + nx_team_member");
@@ -1315,15 +1326,17 @@ public class OpsTeamService implements AuditReplayable {
         config.put("settlePeriod", configText("F.binary.settlePeriod", ""));
         config.put("residualPolicy", configText("F.binary.residualPolicy", ""));
         config.put("residualPool", moneyCompact(intValue(summary.get("residualPoolUsd"), 0)));
-        config.put("residualSub", "来自 nx_binary_commission_settlement");
+        config.put("residualSub", "未匹配体量按当前沉淀策略处理");
         return config;
     }
 
     private Map<String, Object> f3DailyCap() {
         GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
         Map<String, Object> cap = new LinkedHashMap<>();
-        cap.put("currentLabel", configText("F3.dailyCap.currentLabel", ""));
-        cap.put("windowLabel", configText("F3.dailyCap.windowLabel", ""));
+        cap.put("currentLabel", rhythm.binaryDailyCap() == null
+                ? ""
+                : moneyCompact(rhythm.binaryDailyCap().setScale(0, RoundingMode.HALF_UP).intValue()));
+        cap.put("windowLabel", "月 " + rhythm.currentMonth() + " · " + rhythm.currentPhase());
         cap.put("nextTrigger", configText("F3.dailyCap.nextTrigger", ""));
         cap.put("nextLabel", configText("F3.dailyCap.nextLabel", ""));
         cap.put("currentMonth", rhythm.currentMonth());
@@ -1347,7 +1360,11 @@ public class OpsTeamService implements AuditReplayable {
 
     private Map<String, Object> normalizeBinarySettlementMap(Map<String, Object> raw) {
         Map<String, Object> row = new LinkedHashMap<>();
+        Long ownerUserId = parseLongFromMap(raw.get("ownerUserId"));
+        row.put("ownerUserId", ownerUserId == null ? 0L : ownerUserId);
         row.put("user", String.valueOf(raw.getOrDefault("user", "")));
+        row.put("settlementDate", String.valueOf(raw.getOrDefault("settlementDate", "")));
+        row.put("cohort", String.valueOf(raw.getOrDefault("cohort", "")));
         row.put("trackA", intValue(raw.get("trackA"), 0));
         row.put("trackB", intValue(raw.get("trackB"), 0));
         row.put("matchAmount", intValue(raw.get("matchAmount"), 0));
@@ -1391,8 +1408,8 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("topN", topN);
         pool.put("topSharePct", leadershipTopConcentrationPct(ranks, topN));
         pool.put("unlockRank", unlockRank);
-        pool.put("settlementWindow", "");
-        pool.put("settlementDispatchWindow", "");
+        pool.put("settlementWindow", "周日 23:59 UTC");
+        pool.put("settlementDispatchWindow", "周一 00:00 UTC");
         pool.put("quotaRows", quotaRows);
         pool.put("quotaMonthlyStockLabel", String.valueOf(quotaCap));
         pool.put("quotaMonthlyStockTotal", quotaCap);
@@ -1915,9 +1932,12 @@ public class OpsTeamService implements AuditReplayable {
             if (!node.isObject()) {
                 throw new IllegalArgumentException("F_PARTNER_TIERS_SCHEMA_INVALID");
             }
-            var bronze = node.get("bronze");
-            var silver = node.get("silver");
-            var gold = node.get("gold");
+            // Current contract: Standard / Verified / Premium / Diamond.
+            // Legacy Bronze / Silver / Gold is accepted only for rolling
+            // compatibility with already persisted rows.
+            var bronze = node.has("standard") ? node.get("standard") : node.get("bronze");
+            var silver = node.has("verified") ? node.get("verified") : node.get("silver");
+            var gold = node.has("premium") ? node.get("premium") : node.get("gold");
             var diamond = node.get("diamond");
             if (bronze == null || silver == null || gold == null || diamond == null
                     || !bronze.isNumber() || !silver.isNumber() || !gold.isNumber() || !diamond.isNumber()) {
@@ -2581,6 +2601,9 @@ public class OpsTeamService implements AuditReplayable {
                 && lockMapper.countActiveByTarget("F", "vrank_override", String.valueOf(userId)) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         String operator = resolveOperator("MANUAL", request.operator());
         String manualReason = "[MANUAL] " + request.reason().trim();
         boolean updated = commissionRepository.updateMemberVRank(userId, targetV);
@@ -2747,6 +2770,9 @@ public class OpsTeamService implements AuditReplayable {
         row.put("toCode", textValue(raw, "toCode", ""));
         row.put("reason", textValue(raw, "reason", ""));
         row.put("operator", textValue(raw, "operator", ""));
+        row.put("snapshot", raw.getOrDefault("snapshot", ""));
+        row.put("triggerEventId", textValue(raw, "triggerEventId", ""));
+        row.put("auditNo", textValue(raw, "auditNo", ""));
         row.put("isManual", boolValue(raw.get("isManual"), false));
         row.put("cohort", raw.getOrDefault("cohort", ""));
         row.put("nickname", textValue(raw, "nickname", ""));
@@ -2827,6 +2853,13 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     "PAYOUT_REISSUE_REQUIRES_REVERSED: current=" + currentStatus);
         }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "vrank_reward_payout", payoutId.trim()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         String rewardType = String.valueOf(original.getOrDefault("rewardType", "")).toLowerCase(Locale.ROOT);
         Long userId = parseLongFromMap(original.get("userId"));
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
@@ -2873,6 +2906,18 @@ public class OpsTeamService implements AuditReplayable {
                 "amount", amount,
                 "reason", reason,
                 "idempotencyKey", idempotencyKey.trim()));
+        eventOutboxService.publish(
+                "VRANK_REWARD_PAYOUT",
+                payoutId.trim(),
+                "VRANK_REWARD_PAYOUT_REISSUED",
+                Map.of(
+                        "payoutId", payoutId.trim(),
+                        "userId", userId == null ? "" : userId,
+                        "rankCode", rankCode,
+                        "rewardType", rewardType,
+                        "amount", amount,
+                        "operator", operator,
+                        "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("payoutId", payoutId);
         response.put("previousStatus", currentStatus);
@@ -2911,9 +2956,16 @@ public class OpsTeamService implements AuditReplayable {
         }
         String currentStatus = String.valueOf(original.getOrDefault("status", "")).toUpperCase(Locale.ROOT);
         // 状态机:仅 GRANTED/REISSUED/PENDING_GRANT 允许 → REVERSED;REVERSED 已终态
-        if ("REVERSED".equals(currentStatus)) {
+        if (!Set.of("GRANTED", "REISSUED", "PENDING_GRANT").contains(currentStatus)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                    "PAYOUT_ALREADY_REVERSED");
+                    "PAYOUT_REVERSE_STATE_INVALID: current=" + currentStatus);
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "vrank_reward_payout", payoutId.trim()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         String rewardType = String.valueOf(original.getOrDefault("rewardType", "")).toLowerCase(Locale.ROOT);
         Long userId = parseLongFromMap(original.get("userId"));
@@ -2956,6 +3008,18 @@ public class OpsTeamService implements AuditReplayable {
                 "commissionEventId", commissionEventId == null ? "" : commissionEventId,
                 "reason", reason,
                 "idempotencyKey", idempotencyKey.trim()));
+        eventOutboxService.publish(
+                "VRANK_REWARD_PAYOUT",
+                payoutId.trim(),
+                "VRANK_REWARD_PAYOUT_REVERSED",
+                Map.of(
+                        "payoutId", payoutId.trim(),
+                        "userId", userId == null ? "" : userId,
+                        "rankCode", rankCode,
+                        "rewardType", rewardType,
+                        "amount", amount,
+                        "operator", operator,
+                        "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("payoutId", payoutId);
         response.put("previousStatus", currentStatus);
@@ -3063,6 +3127,30 @@ public class OpsTeamService implements AuditReplayable {
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
                 String eventId = commissionStatusEventId(key).orElse("");
                 return updateCommissionEventStatus(idem, req, key, eventId);
+            }
+            case "f_vrank_override" -> {
+                Long userId = parseLongFromMap(p.get("userId"));
+                return overrideVRank(userId, idem, new VRankOverrideRequest(
+                        str(p, "targetV"), str(p, "direction"), reason, operator));
+            }
+            case "f_reward_payout_action" -> {
+                String payoutId = str(p, "payoutId");
+                String action = str(p, "action");
+                VRankRewardPayoutActionRequest request =
+                        new VRankRewardPayoutActionRequest(reason, operator);
+                if ("reissue".equalsIgnoreCase(action)) {
+                    return reissueRewardPayout(payoutId, idem, request);
+                }
+                if ("reverse".equalsIgnoreCase(action)) {
+                    return reverseRewardPayout(payoutId, idem, request);
+                }
+                return ApiResult.fail(422, "F1_PAYOUT_ACTION_INVALID");
+            }
+            case "f4_pool_settle" -> {
+                int settled = leadershipPoolService.injectAndSettleApprovedCurrentWeek(operator, reason);
+                return ApiResult.ok(Map.of(
+                        "settled", settled,
+                        "source", "F4_A2_APPROVED_REPLAY"));
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());

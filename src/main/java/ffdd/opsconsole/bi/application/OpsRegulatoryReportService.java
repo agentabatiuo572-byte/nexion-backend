@@ -141,6 +141,19 @@ public class OpsRegulatoryReportService {
                         "idempotencyKey", idempotencyKey,
                         "dataMinimization", "AGGREGATE_ONLY_NO_USER_ROWS"))
                 .build());
+        reportRepository.publishReportExported(reportId, linked(
+                "reportId", reportId,
+                "exportType", "REGULATORY",
+                "scope", scope,
+                "rowCount", metrics.size(),
+                "containsPii", false,
+                "maskingPolicy", "MASKED",
+                "operator", AdminActorResolver.resolve(null),
+                "reason", request.reason().trim(),
+                "format", "CSV",
+                "templateCode", templateCode,
+                "jurisdictionCode", disclosure.jurisdictionCode(),
+                "disclosureVersion", disclosure.disclosureVersion()));
         return ApiResult.ok(linked(
                 "created", created,
                 "taskStatus", "READY",
@@ -299,7 +312,8 @@ public class OpsRegulatoryReportService {
 
     private String csvCell(Object raw) {
         String value = raw == null ? "" : String.valueOf(raw);
-        if (!value.isEmpty() && "=+-@".indexOf(value.charAt(0)) >= 0) value = "'" + value;
+        String stripped = value.stripLeading();
+        if (!stripped.isEmpty() && "=+-@".indexOf(stripped.charAt(0)) >= 0) value = "'" + value;
         return "\"" + value.replace("\"", "\"\"").replace("\r", " ").replace("\n", " ") + "\"";
     }
 

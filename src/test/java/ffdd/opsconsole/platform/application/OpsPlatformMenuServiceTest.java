@@ -95,7 +95,8 @@ class OpsPlatformMenuServiceTest {
                 menuMapper, roleMenuMapper, permissionMapper, mock(AuditLogService.class), passThroughIdempotency());
 
         var result = service.deleteNode(91L, "idem-delete-menu",
-                new ffdd.opsconsole.platform.dto.AdminAccountActionRequest("remove unused menu", "superadmin"));
+                new ffdd.opsconsole.platform.dto.AdminAccountActionRequest(
+                        "remove unused menu", "superadmin", "0"));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("MENU_NODE_HAS_PERMISSIONS");
@@ -122,7 +123,7 @@ class OpsPlatformMenuServiceTest {
 
         var result = service.updateNode(91L, "idem-disable-parent",
                 new PlatformMenuNodeUpdateRequest(null, null, null, null, null,
-                        0, "disable parent with child", "mallory"));
+                        0, "disable parent with child", "mallory", "0"));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("MENU_NODE_HAS_ACTIVE_CHILDREN");
@@ -226,7 +227,8 @@ class OpsPlatformMenuServiceTest {
                 menuMapper, roleMenuMapper, permissionMapper, auditLogService, passThroughIdempotency());
 
         var result = service.deleteNode(91L, "idem-delete-role-menu",
-                new ffdd.opsconsole.platform.dto.AdminAccountActionRequest("delete role bound menu", "superadmin"));
+                new ffdd.opsconsole.platform.dto.AdminAccountActionRequest(
+                        "delete role bound menu", "superadmin", "0"));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("MENU_NODE_HAS_ROLE_BINDINGS");
@@ -280,6 +282,30 @@ class OpsPlatformMenuServiceTest {
         verify(menuMapper, never()).selectActiveForUpdate(any(Long.class));
     }
 
+    @Test
+    void staleVersionFailsClosedAndIsAudited() {
+        AdminMenuMapper menuMapper = mock(AdminMenuMapper.class);
+        AuditLogService auditLogService = mock(AuditLogService.class);
+        AdminMenuEntity menu = activeMenu(91L, "A9", null);
+        when(menuMapper.selectActiveForUpdate(91L)).thenReturn(menu);
+        OpsPlatformMenuService service = new OpsPlatformMenuService(
+                menuMapper, mock(AdminRoleMenuMapper.class), mock(AdminPermissionMapper.class),
+                auditLogService, passThroughIdempotency());
+
+        var result = service.updateNode(91L, "idem-stale-menu",
+                new PlatformMenuNodeUpdateRequest(
+                        "New name", null, null, null, null, null,
+                        "update stale menu", "superadmin", "stale-version"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("MENU_VERSION_STALE");
+        verify(menuMapper, never()).updateById(any(AdminMenuEntity.class));
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequiredInNewTransaction(audit.capture());
+        assertThat(audit.getValue().getDetail()).isInstanceOfSatisfying(Map.class, detail ->
+                assertThat(detail).containsEntry("rejectionCode", "MENU_VERSION_STALE"));
+    }
+
     private AdminIdempotencyService passThroughIdempotency() {
         AdminIdempotencyService service = mock(AdminIdempotencyService.class);
         when(service.execute(any(String.class), any(String.class), any(String.class),
@@ -289,7 +315,7 @@ class OpsPlatformMenuServiceTest {
 
     private PlatformMenuNodeUpdateRequest updateStatus(int status, String reason) {
         return new PlatformMenuNodeUpdateRequest(null, null, null, null, null,
-                status, reason, "superadmin");
+                status, reason, "superadmin", "0");
     }
 
     private AdminMenuEntity activeMenu(long id, String code, Long parentId) {

@@ -1,8 +1,10 @@
 package ffdd.opsconsole.risk.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
@@ -13,6 +15,34 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class RiskKycReviewFacadeAdapterTest {
+    @Test
+    void malformedLargeWithdrawalSignalFailsClosedBeforeReadingThreshold() {
+        RiskOpsRepository repository = mock(RiskOpsRepository.class);
+        AuditLogService audit = mock(AuditLogService.class);
+        RiskKycReviewFacadeAdapter facade = new RiskKycReviewFacadeAdapter(repository, audit);
+
+        assertThatThrownBy(() -> facade.triggerLargeWithdrawalReview(
+                " ", new BigDecimal("999"), "PENDING", "WD-BAD", "system:d2", "invalid user"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("K5_LARGE_WITHDRAWAL_REVIEW_INPUT_REQUIRED");
+
+        verifyNoInteractions(repository, audit);
+    }
+
+    @Test
+    void malformedLargeExchangeSignalFailsClosedEvenWhenAmountWouldBeBelowThreshold() {
+        RiskOpsRepository repository = mock(RiskOpsRepository.class);
+        AuditLogService audit = mock(AuditLogService.class);
+        RiskKycReviewFacadeAdapter facade = new RiskKycReviewFacadeAdapter(repository, audit);
+
+        assertThatThrownBy(() -> facade.triggerLargeExchangeReview(
+                "usr-g2", new BigDecimal("1"), "PENDING", " ", "system:g2", "invalid source"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("K5_LARGE_EXCHANGE_REVIEW_INPUT_REQUIRED");
+
+        verifyNoInteractions(repository, audit);
+    }
+
     @Test
     void g2CumulativeTriggerCreatesTicketWithG2OwnedThresholdAndRequiredAudit() {
         RiskOpsRepository repository = mock(RiskOpsRepository.class);

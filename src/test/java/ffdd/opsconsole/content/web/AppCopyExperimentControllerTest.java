@@ -33,6 +33,19 @@ class AppCopyExperimentControllerTest {
     }
 
     @Test
+    void authenticatedUserReceivesCopyForTheVisiblePosition() {
+        var authentication = userAuthentication("42", "USER");
+        var view = new AppCopyDeliveryView("home.hero", "v3", "中", "en", "vi", null, null);
+        when(service.deliverByPosition(42L, "home.conversion-banner")).thenReturn(ApiResult.ok(view));
+
+        ApiResult<AppCopyDeliveryView> result =
+                controller.deliverByPosition("home.conversion-banner", authentication);
+
+        assertThat(result.getData()).isEqualTo(view);
+        verify(service).deliverByPosition(42L, "home.conversion-banner");
+    }
+
+    @Test
     void authenticatedUserReportsIdempotentConversion() {
         var authentication = userAuthentication("42", "USER");
         var view = new AppExperimentConversionView("EXP-1", "checkout:ORD-1", true);

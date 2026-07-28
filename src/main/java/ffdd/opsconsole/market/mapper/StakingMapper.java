@@ -260,7 +260,7 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
     @Select("""
             SELECT sp.id,
                    sp.user_id AS userId,
-                   CONCAT('U', LPAD(sp.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(sp.user_id, GREATEST(8, LENGTH(CAST(sp.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(usr.nickname, CONCAT('user-', sp.user_id)) AS nickname,
                    sp.position_no AS positionNo,
                    sp.product_code AS productCode,

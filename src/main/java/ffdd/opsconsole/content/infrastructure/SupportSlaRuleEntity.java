@@ -14,5 +14,6 @@ public class SupportSlaRuleEntity extends BaseEntity {
     private Integer resolutionHours;
     private String queue;
     private String escalation;
+    private Long version;
     private Integer status;
 }

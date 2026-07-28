@@ -26,4 +26,15 @@ class DeviceCatalogMapperE4SqlTest {
 
         assertThat(sql).contains("#{expectedState}").contains("UPDATE nx_order o");
     }
+
+    @Test
+    void orderAgeIsHumanReadableInsteadOfAnUnboundedRawMinuteCounter() throws Exception {
+        Method page = DeviceCatalogMapper.class.getMethod(
+                "pageOrders", String.class, String.class, long.class, long.class);
+        String sql = String.join(" ", page.getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("'分钟'", "'小时'", "'天'")
+                .doesNotContain("CONCAT(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),'m')");
+    }
 }

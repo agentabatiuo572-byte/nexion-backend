@@ -3,8 +3,10 @@ package ffdd.opsconsole.growth.application;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.dto.ReferralRewardParamUpdateRequest;
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
+import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -23,6 +25,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -40,6 +43,11 @@ import org.springframework.util.StringUtils;
 public class OpsReferralRewardService {
     private static final String EFFECTIVE_AT_KEY = "K.rewards.referral.effectiveAt";
     private static final String VERSION_KEY = "K.rewards.referral.version";
+    // This product ceiling is exact in JavaScript and remains below DECIMAL(18,6).
+    private static final BigDecimal MAX_EFFECTIVE_REWARD = new BigDecimal("999999999.000000");
+    // H1 payout multipliers are bounded to 4x. Capping the editable base here
+    // prevents a later valid H1 change from making H8 unreadable or unpayable.
+    private static final BigDecimal MAX_INVITER_BASE = new BigDecimal("249999999.750000");
     private static final Map<String, String> STORAGE_KEYS = Map.of(
             "newcomer.usdt", "K.rewards.welcomeGift.usdtAmount",
             "newcomer.nex", "K.rewards.welcomeGift.nexAmount",
@@ -65,8 +73,12 @@ public class OpsReferralRewardService {
         PARAMS.stream().sorted().forEach(key -> params.put(key,
                 "newcomer.lockMode".equals(key) ? lockMode() : amount(key)));
         EffectiveRewards effectiveRewards = effectiveRewards();
-        LocalDateTime effectiveAt = effectiveAtOrNow();
-        boolean holdRisky = "risk_bucket".equals(lockMode());
+        LocalDateTime effectiveAt = effectiveAtRequired();
+        String currentLockMode = lockMode();
+        long currentVersion = version(config.activeValue(VERSION_KEY).orElse("1"));
+        String snapshotHash = rewardSnapshotHash(
+                currentVersion, effectiveAt, currentLockMode, effectiveRewards);
+        boolean holdRisky = "risk_bucket".equals(currentLockMode);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("params", params);
         result.put("rhythmMonth", effectiveRewards.rhythmMonth());
@@ -82,9 +94,32 @@ public class OpsReferralRewardService {
         result.put("recentSettlements", mapper.recentSettlements(20));
         result.put("source", "nx_user.sponsor_user_id");
         result.put("settlementMode", "REAL_WALLET_LEDGER");
-        result.put("effectiveAt", effectiveAt);
-        result.put("version", version(config.activeValue(VERSION_KEY).orElse("1")));
+        result.put("effectiveAt", effectiveAt.toInstant(ZoneOffset.UTC));
+        result.put("version", currentVersion);
+        result.put("rewardSnapshotHash", snapshotHash);
         return result;
+    }
+
+    /**
+     * App/H5 登录前展示使用的服务端权威奖励投影。
+     *
+     * <p>这里返回 H1 当月倍率生效后的真实发放金额，而不是后台配置的基础金额；
+     * 任一配置或 H1 节奏不可用时沿用现有 fail-closed 异常，不回退到原型常量。
+     */
+    public ReferralRewardPublicConfigView publicConfig() {
+        EffectiveRewards rewards = effectiveRewards();
+        return new ReferralRewardPublicConfigView(
+                new ReferralRewardPublicConfigView.WelcomeGift(
+                        lockMode(), rewards.newcomerUsdt(), rewards.newcomerNex()),
+                new ReferralRewardPublicConfigView.InviterReward(rewards.inviterNex()),
+                rewards.rhythmMonth(),
+                rewards.newcomerMultiplier(),
+                rewards.inviterMultiplier(),
+                effectiveAtRequired().toInstant(ZoneOffset.UTC),
+                List.of(
+                        "nx_config_item:K.rewards.*",
+                        "nx_config_item:growth.phase.month.*",
+                        "nx_user.sponsor_user_id"));
     }
 
     @Transactional
@@ -145,13 +180,21 @@ public class OpsReferralRewardService {
         try {
             validateIdempotency(idempotencyKey);
             String reason = requireReason(request == null ? null : request.reason());
-            int limit = Math.min(100, Math.max(1, request.limit() == null ? 20 : request.limit()));
+            if (!A2ReplayContext.isReplaying()) {
+                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                        "A2_CONFIRMATION_REQUIRED");
+            }
+            int limit = Math.min(100, Math.max(
+                    1,
+                    request == null || request.limit() == null ? 20 : request.limit()));
             // The database mutex survives until commit, serializes all H8 batches across
             // instances, and also freezes the reward configuration for the whole batch.
             requireRewardMutex();
+            RewardSnapshot snapshot = rewardSnapshot();
+            requireApprovedSnapshot(request, snapshot);
             return idempotency.execute("REFERRAL_REWARD_SETTLEMENT", idempotencyKey,
-                    hash(limit + ":" + reason), Map.class,
-                    () -> settle(limit, reason, actor(request.operator()), idempotencyKey));
+                    hash(limit + ":" + snapshot.hash() + ":" + reason), Map.class,
+                    () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot));
         } catch (RuntimeException ex) {
             rejectedAudit("REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED", "batch",
                     request == null ? null : request.operator(), idempotencyKey,
@@ -160,16 +203,21 @@ public class OpsReferralRewardService {
         }
     }
 
-    private Map<String, Object> settle(int limit, String reason, String operator, String key) {
+    private Map<String, Object> settle(
+            int limit,
+            String reason,
+            String operator,
+            String key,
+            RewardSnapshot snapshot) {
         requireHealthyCoverage();
-        LocalDateTime effectiveAt = effectiveAtRequired();
-        EffectiveRewards effectiveRewards = effectiveRewards();
+        LocalDateTime effectiveAt = snapshot.effectiveAt();
+        EffectiveRewards effectiveRewards = snapshot.rewards();
         BigDecimal newcomerMultiplier = effectiveRewards.newcomerMultiplier();
         BigDecimal inviterMultiplier = effectiveRewards.inviterMultiplier();
         BigDecimal newcomerUsdt = effectiveRewards.newcomerUsdt();
         BigDecimal newcomerNex = effectiveRewards.newcomerNex();
         BigDecimal inviterNex = effectiveRewards.inviterNex();
-        String lockMode = lockMode();
+        String lockMode = snapshot.lockMode();
         String configSnapshot = "usdt=" + newcomerUsdt.toPlainString() + ",newcomerNex="
                 + newcomerNex.toPlainString() + ",inviterNex=" + inviterNex.toPlainString()
                 + ",newcomerMultiplier=" + newcomerMultiplier.toPlainString()
@@ -224,9 +272,20 @@ public class OpsReferralRewardService {
         }
         return new EffectiveRewards(
                 rhythm.currentMonth(), newcomerMultiplier, inviterMultiplier,
-                amount("newcomer.usdt").multiply(newcomerMultiplier),
-                amount("newcomer.nex").multiply(newcomerMultiplier),
-                amount("inviter.nex").multiply(inviterMultiplier));
+                effectiveAmount(amount("newcomer.usdt"), newcomerMultiplier),
+                effectiveAmount(amount("newcomer.nex"), newcomerMultiplier),
+                effectiveAmount(amount("inviter.nex"), inviterMultiplier));
+    }
+
+    /** 钱包、结算表、D4 与 App/PC 展示共用六位小数，不把数据库隐式舍入当业务规则。 */
+    private BigDecimal effectiveAmount(BigDecimal base, BigDecimal multiplier) {
+        BigDecimal effective = base.multiply(multiplier).setScale(6, RoundingMode.HALF_UP);
+        if (effective.signum() < 0 || effective.compareTo(MAX_EFFECTIVE_REWARD) > 0) {
+            throw new BizException(
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "REFERRAL_REWARD_EFFECTIVE_AMOUNT_OVERFLOW");
+        }
+        return effective;
     }
 
     private record EffectiveRewards(
@@ -236,6 +295,58 @@ public class OpsReferralRewardService {
             BigDecimal newcomerUsdt,
             BigDecimal newcomerNex,
             BigDecimal inviterNex) {
+    }
+
+    private record RewardSnapshot(
+            long h8Version,
+            LocalDateTime effectiveAt,
+            String lockMode,
+            EffectiveRewards rewards,
+            String hash) {
+    }
+
+    private RewardSnapshot rewardSnapshot() {
+        long currentVersion = version(config.activeValue(VERSION_KEY).orElse("1"));
+        LocalDateTime effectiveAt = effectiveAtRequired();
+        String currentLockMode = lockMode();
+        EffectiveRewards rewards = effectiveRewards();
+        return new RewardSnapshot(
+                currentVersion,
+                effectiveAt,
+                currentLockMode,
+                rewards,
+                rewardSnapshotHash(currentVersion, effectiveAt, currentLockMode, rewards));
+    }
+
+    private String rewardSnapshotHash(
+            long h8Version,
+            LocalDateTime effectiveAt,
+            String currentLockMode,
+            EffectiveRewards rewards) {
+        String canonical = "h8Version=" + h8Version
+                + "|effectiveAt=" + effectiveAt
+                + "|lockMode=" + currentLockMode
+                + "|rhythmMonth=" + rewards.rhythmMonth()
+                + "|newcomerMultiplier=" + rewards.newcomerMultiplier().toPlainString()
+                + "|inviterMultiplier=" + rewards.inviterMultiplier().toPlainString()
+                + "|newcomerUsdt=" + rewards.newcomerUsdt().toPlainString()
+                + "|newcomerNex=" + rewards.newcomerNex().toPlainString()
+                + "|inviterNex=" + rewards.inviterNex().toPlainString();
+        return hash(canonical);
+    }
+
+    private void requireApprovedSnapshot(
+            ReferralSettlementRunRequest request,
+            RewardSnapshot current) {
+        if (request == null
+                || request.expectedH8Version() == null
+                || request.expectedRhythmMonth() == null
+                || !StringUtils.hasText(request.rewardSnapshotHash())
+                || request.expectedH8Version().longValue() != current.h8Version()
+                || request.expectedRhythmMonth().intValue() != current.rewards().rhythmMonth()
+                || !current.hash().equalsIgnoreCase(request.rewardSnapshotHash().trim())) {
+            throw new BizException(409, "H8_REWARD_SNAPSHOT_CHANGED_REPROPOSE");
+        }
     }
 
     private void requireRewardMutex() {
@@ -284,7 +395,7 @@ public class OpsReferralRewardService {
         try {
             BigDecimal parsed = new BigDecimal(value).setScale(6, RoundingMode.UNNECESSARY);
             BigDecimal max = "newcomer.usdt".equals(key) ? new BigDecimal("50")
-                    : "newcomer.nex".equals(key) ? new BigDecimal("500") : new BigDecimal("999999999999.999999");
+                    : "newcomer.nex".equals(key) ? new BigDecimal("500") : MAX_INVITER_BASE;
             if (parsed.signum() < 0 || parsed.compareTo(max) > 0) {
                 throw new NumberFormatException();
             }
@@ -319,24 +430,15 @@ public class OpsReferralRewardService {
     }
 
     private LocalDateTime effectiveAtRequired() {
-        String raw = config.activeValue(EFFECTIVE_AT_KEY).orElseGet(() -> {
-            String initialized = Instant.now().toString();
-            config.upsertAdminValue(EFFECTIVE_AT_KEY, initialized, "DATETIME", "GROWTH_REFERRAL",
-                    "H8 activation time; historical referrals are never retroactively paid");
-            return initialized;
-        });
+        String raw = config.activeValue(EFFECTIVE_AT_KEY).orElseThrow(() ->
+                new BizException(
+                        OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                        "REFERRAL_REWARD_EFFECTIVE_AT_MISSING"));
         try {
             return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC);
         } catch (RuntimeException ex) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_EFFECTIVE_AT_INVALID");
         }
-    }
-
-    private LocalDateTime effectiveAtOrNow() {
-        return config.activeValue(EFFECTIVE_AT_KEY).map(raw -> {
-            try { return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC); }
-            catch (RuntimeException ignored) { return LocalDateTime.now(ZoneOffset.UTC); }
-        }).orElseGet(() -> LocalDateTime.now(ZoneOffset.UTC));
     }
 
     private void audit(String action, String resourceId, String operator, String key, Map<String, Object> detail) {

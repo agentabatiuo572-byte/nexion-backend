@@ -93,6 +93,7 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         entity.setLastMessageAt(now);
         entity.setArchived(false);
         entity.setArchivedAt(null);
+        entity.setVersion(0L);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
@@ -100,39 +101,105 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         insertMessage(entity.getId(), ticketNo, userId, "user", "用户", body, now);
         return findByTicketNo(ticketNo).orElseGet(() -> new SupportTicketView(
                 entity.getId(), ticketNo, entity.getUserId(), category, priority, "OPEN", title, headerSummary(body),
-                assignedAdminId, assignedAdminName, 0, 1, 1, now, null, now, now, false, null));
+                assignedAdminId, assignedAdminName, 0, 1, 1, now, null, now, now, false, null,
+                0L, false));
     }
 
     @Override
     public void appendReply(SupportTicketView ticket, String body, String operator, LocalDateTime now) {
-        ticketMapper.appendReplyHeader(ticket.ticketNo(), headerSummary(body), now);
+        ticketMapper.appendReplyHeader(ticket.ticketNo(), headerSummary(body), ticket.status(), safeVersion(ticket), now);
         insertMessage(ticket.id(), ticket.ticketNo(), null, "agent", operator, body, now);
     }
 
     @Override
+    public boolean appendReplyCas(SupportTicketView ticket, String body, String operator, LocalDateTime now) {
+        if (ticketMapper.appendReplyHeader(
+                ticket.ticketNo(), headerSummary(body), ticket.status(), safeVersion(ticket), now) != 1) {
+            return false;
+        }
+        insertMessage(ticket.id(), ticket.ticketNo(), null, "agent", operator, body, now);
+        return true;
+    }
+
+    @Override
     public void updateStatus(SupportTicketView ticket, String status, String operator, LocalDateTime now) {
-        ticketMapper.updateStatus(ticket.ticketNo(), status, now);
+        ticketMapper.updateStatus(ticket.ticketNo(), status, ticket.status(), safeVersion(ticket), now);
+    }
+
+    @Override
+    public boolean updateStatusCas(SupportTicketView ticket, String status, String operator, LocalDateTime now) {
+        return ticketMapper.updateStatus(
+                ticket.ticketNo(), status, ticket.status(), safeVersion(ticket), now) == 1;
     }
 
     @Override
     public void updatePriority(SupportTicketView ticket, String priority, LocalDateTime now) {
-        ticketMapper.updatePriority(ticket.ticketNo(), priority, now);
+        ticketMapper.updatePriority(ticket.ticketNo(), priority, ticket.status(), safeVersion(ticket), now);
+    }
+
+    @Override
+    public boolean updatePriorityCas(SupportTicketView ticket, String priority, LocalDateTime now) {
+        return ticketMapper.updatePriority(
+                ticket.ticketNo(), priority, ticket.status(), safeVersion(ticket), now) == 1;
     }
 
     @Override
     public void assign(SupportTicketView ticket, Long assignedAdminId, String assignedAdminName, LocalDateTime now) {
-        ticketMapper.assign(ticket.ticketNo(), assignedAdminId, assignedAdminName, now);
+        ticketMapper.assign(
+                ticket.ticketNo(), assignedAdminId, assignedAdminName,
+                ticket.status(), safeVersion(ticket), now);
+    }
+
+    @Override
+    public boolean assignCas(
+            SupportTicketView ticket,
+            Long assignedAdminId,
+            String assignedAdminName,
+            LocalDateTime now) {
+        return ticketMapper.assign(
+                ticket.ticketNo(), assignedAdminId, assignedAdminName,
+                ticket.status(), safeVersion(ticket), now) == 1;
     }
 
     @Override
     public void archive(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now) {
-        ticketMapper.archive(ticket.ticketNo(), archived, now);
+        ticketMapper.archive(ticket.ticketNo(), archived, ticket.status(), safeVersion(ticket), now);
+    }
+
+    @Override
+    public boolean archiveCas(SupportTicketView ticket, boolean archived, String operator, LocalDateTime now) {
+        return ticketMapper.archive(
+                ticket.ticketNo(), archived, ticket.status(), safeVersion(ticket), now) == 1;
     }
 
     @Override
     public void appendSystemTrace(SupportTicketView ticket, String body, LocalDateTime now) {
         ticketMapper.appendSystemTraceHeader(ticket.ticketNo(), headerSummary(body), now);
         insertMessage(ticket.id(), ticket.ticketNo(), null, "system", "系统", body, now);
+    }
+
+    @Override
+    public boolean appendSystemTraceCas(SupportTicketView ticket, String body, LocalDateTime now) {
+        if (ticketMapper.appendSystemTraceHeaderCas(
+                ticket.ticketNo(), headerSummary(body), ticket.status(), safeVersion(ticket), now) != 1) {
+            return false;
+        }
+        insertMessage(ticket.id(), ticket.ticketNo(), null, "system", "系统", body, now);
+        return true;
+    }
+
+    @Override
+    public boolean appendInternalNoteCas(
+            SupportTicketView ticket,
+            String body,
+            String operator,
+            LocalDateTime now) {
+        if (ticketMapper.appendInternalNoteHeader(
+                ticket.ticketNo(), ticket.status(), safeVersion(ticket), now) != 1) {
+            return false;
+        }
+        insertMessage(ticket.id(), ticket.ticketNo(), null, "internal", operator, body, now);
+        return true;
     }
 
     private void insertMessage(Long ticketId, String ticketNo, Long senderId, String senderType, String senderName, String content, LocalDateTime now) {
@@ -179,6 +246,10 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
     private String normalizeScope(String value) {
         String scope = trim(value);
         return scope == null || scope.isBlank() || "all".equalsIgnoreCase(scope) ? null : scope.toLowerCase();
+    }
+
+    private long safeVersion(SupportTicketView ticket) {
+        return ticket.version() == null ? 0L : ticket.version();
     }
 
 }

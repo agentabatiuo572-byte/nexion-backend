@@ -4,5 +4,9 @@ import java.util.List;
 
 public record SupportTicketDetail(
         SupportTicketView ticket,
-        List<SupportTicketMessageView> messages) {
+        List<SupportTicketMessageView> messages,
+        SupportTicketSlaTarget slaTarget) {
+    public SupportTicketDetail(SupportTicketView ticket, List<SupportTicketMessageView> messages) {
+        this(ticket, messages, null);
+    }
 }

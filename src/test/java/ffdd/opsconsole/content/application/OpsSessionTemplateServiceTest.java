@@ -3,8 +3,11 @@ package ffdd.opsconsole.content.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.content.domain.I18nLearningRepository;
+import ffdd.opsconsole.content.domain.I18nMessagePairView;
 import ffdd.opsconsole.content.domain.SessionReplyTemplateView;
 import ffdd.opsconsole.content.domain.SessionScriptView;
 import ffdd.opsconsole.content.domain.SessionTemplateRepository;
@@ -21,6 +24,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -39,12 +43,16 @@ import org.springframework.transaction.annotation.Transactional;
 
 class OpsSessionTemplateServiceTest {
     private final FakeSessionTemplateRepository templateRepository = new FakeSessionTemplateRepository();
+    private final I18nLearningRepository i18nLearningRepository = mock(I18nLearningRepository.class);
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final OpsSessionTemplateService service = new OpsSessionTemplateService(
             templateRepository,
+            i18nLearningRepository,
             configFacade,
             auditLogService,
+            eventOutboxService,
             Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
             ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
 
@@ -296,6 +304,17 @@ class OpsSessionTemplateServiceTest {
 
         assertThat(created.getCode()).isZero();
         assertThat(created.getData().id()).startsWith("RT-");
+        when(i18nLearningRepository.findPublishedMessagePair(
+                "conversation.template." + created.getData().id().toLowerCase()))
+                .thenReturn(Optional.of(new I18nMessagePairView(
+                        "conversation.template." + created.getData().id().toLowerCase(),
+                        "conversation",
+                        "Received, I will verify your account first.",
+                        created.getData().text(),
+                        "Đã nhận, tôi sẽ kiểm tra tài khoản của bạn trước.",
+                        "published",
+                        "v1",
+                        List.of())));
 
         var status = service.updateReplyTemplateStatus(created.getData().id(), "idem-m5-template-status", new SessionReplyTemplateStatusRequest(
                 "published",
@@ -304,6 +323,46 @@ class OpsSessionTemplateServiceTest {
 
         assertThat(status.getCode()).isZero();
         assertThat(status.getData().status()).isEqualTo("published");
+    }
+
+    @Test
+    void draftPublicationFailsClosedUntilMatchingI6CopyIsPublished() {
+        var created = service.createScript("idem-m5-i6-script", new SessionScriptCreateRequest(
+                "开场",
+                "你好 {user},我是你的专属客服。",
+                "—",
+                "全量用户",
+                "draft",
+                "Marina K.",
+                "新增需要双语镜像的话术"));
+        String messageKey = "conversation.script." + created.getData().id().toLowerCase();
+
+        var missing = service.updateScriptStatus(created.getData().id(), "idem-m5-i6-missing", new SessionScriptStatusRequest(
+                "published",
+                "Marina K.",
+                "双语镜像缺失时禁止发布"));
+        when(i18nLearningRepository.findPublishedMessagePair(messageKey))
+                .thenReturn(Optional.of(new I18nMessagePairView(
+                        messageKey,
+                        "conversation",
+                        "Hello, I am your dedicated advisor.",
+                        created.getData().text(),
+                        "Xin chào, tôi là cố vấn chuyên trách của bạn.",
+                        "published",
+                        "v1",
+                        List.of())));
+        var mismatch = service.updateScriptStatus(created.getData().id(), "idem-m5-i6-mismatch", new SessionScriptStatusRequest(
+                "published",
+                "Marina K.",
+                "占位符不一致时禁止发布"));
+
+        assertThat(missing.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(missing.getMessage()).isEqualTo("SESSION_TEMPLATE_I18N_NOT_PUBLISHED");
+        assertThat(mismatch.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(mismatch.getMessage()).isEqualTo("SESSION_TEMPLATE_I18N_MISMATCH");
+        assertThat(templateRepository.findScript(created.getData().id())).get()
+                .extracting(SessionScriptView::status)
+                .isEqualTo("draft");
     }
 
     @Test

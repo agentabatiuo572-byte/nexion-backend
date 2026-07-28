@@ -333,7 +333,13 @@ class OpsNovaServiceTest {
                 "Marina K.",
                 "新增行情推送模板"));
 
-        var result = service.updateTemplateStatus("market", "idem-i2-publish", new NovaTemplateStatusRequest(
+        var published = service.updateTemplateStatus("market", "idem-i2-publish", new NovaTemplateStatusRequest(
+                "PUBLISHED",
+                "Marina K.",
+                "发布行情推送模板"));
+        assertThat(published.getCode()).isZero();
+
+        var result = service.updateTemplateStatus("market", "idem-i2-archive", new NovaTemplateStatusRequest(
                 "ARCHIVED",
                 "Marina K.",
                 "归档旧行情推送模板"));
@@ -343,6 +349,11 @@ class OpsNovaServiceTest {
         assertThat(novaRepository.template("market")).get()
                 .extracting(NovaTemplateView::status)
                 .isEqualTo("ARCHIVED");
+
+        var invalidReplay = service.updateTemplateStatus("market", "idem-i2-republish-archived",
+                new NovaTemplateStatusRequest("PUBLISHED", "Marina K.", "尝试重新发布已归档模板"));
+        assertThat(invalidReplay.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(invalidReplay.getMessage()).isEqualTo("NOVA_TEMPLATE_TRANSITION_INVALID");
     }
 
     @Test

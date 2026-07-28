@@ -3,6 +3,8 @@ package ffdd.opsconsole.finance.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.finance.infrastructure.DepositOrderEntity;
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -30,7 +32,9 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
             SELECT id, bank_code AS bankCode, bank_name AS bankName,
                    CONCAT(LEFT(account_holder, 4), ' ***') AS holderMasked,
                    account_number_last4 AS accountLast4,
-                   daily_cap_vnd AS dailyCapVnd, received_today_vnd AS receivedTodayVnd,
+                   daily_cap_vnd AS dailyCapVnd,
+                   CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                        THEN received_today_vnd ELSE 0 END AS receivedTodayVnd,
                    status, fuse_reason AS fuseReason, version, updated_at AS updatedAt
               FROM nx_vietqr_bank_account
              WHERE is_deleted = 0
@@ -54,6 +58,7 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
                    locked_fx_rate_vnd_per_usdt AS lockedFxRateVndPerUsdt,
                    credited_usdt AS creditedUsdt, payment_reference AS paymentReference,
                    note, expires_at AS expiresAt, received_at AS receivedAt,
+                   intent_transition_required AS intentTransitionRequired,
                    version, created_at AS createdAt, updated_at AS updatedAt
               FROM nx_vietqr_reconciliation
              WHERE is_deleted = 0
@@ -71,15 +76,18 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
               FROM nx_vietqr_reconciliation
              WHERE is_deleted = 0
                AND status = 'OPEN'
-               AND view_type IN ('ORPHAN', 'MISMATCH', 'LATE')
+               AND received_vnd > 0
             """)
     BigDecimal sumPendingUnverifiedDepositUsdt();
 
     @Select("""
             SELECT id, reconciliation_no AS reconciliationNo, intent_no AS intentNo,
-                   user_id AS userId, view_type AS viewType, status,
-                   received_vnd AS receivedVnd,
+                   user_id AS userId, bank_account_id AS bankAccountId,
+                   view_type AS viewType, status, payable_vnd AS payableVnd,
+                   received_vnd AS receivedVnd, payment_reference AS paymentReference,
                    locked_fx_rate_vnd_per_usdt AS lockedFxRateVndPerUsdt,
+                   received_at AS receivedAt,
+                   intent_transition_required AS intentTransitionRequired,
                    version
               FROM nx_vietqr_reconciliation
              WHERE id = #{id} AND is_deleted = 0
@@ -106,6 +114,54 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
             @Param("creditedUsdt") BigDecimal creditedUsdt,
             @Param("note") String note);
 
+    @Insert("""
+            INSERT INTO nx_vietqr_reconciliation (
+                reconciliation_no, intent_no, user_id, bank_account_id,
+                view_type, status, payable_vnd, received_vnd,
+                locked_fx_rate_vnd_per_usdt, credited_usdt,
+                payment_reference, note, expires_at, received_at,
+                intent_transition_required,
+                version, created_at, updated_at, is_deleted
+            ) VALUES (
+                #{reconciliationNo}, #{intentNo}, #{userId}, #{bankAccountId},
+                #{viewType}, 'OPEN', #{payableVnd}, #{receivedVnd},
+                #{lockedFxRateVndPerUsdt}, 0,
+                #{paymentReference}, #{note}, #{expiresAt}, #{receivedAt},
+                #{intentTransitionRequired},
+                0, NOW(), NOW(), 0
+            )
+            """)
+    int insertVietQrReceipt(
+            @Param("reconciliationNo") String reconciliationNo,
+            @Param("intentNo") String intentNo,
+            @Param("userId") Long userId,
+            @Param("bankAccountId") Long bankAccountId,
+            @Param("viewType") String viewType,
+            @Param("payableVnd") BigDecimal payableVnd,
+            @Param("receivedVnd") BigDecimal receivedVnd,
+            @Param("lockedFxRateVndPerUsdt") BigDecimal lockedFxRateVndPerUsdt,
+            @Param("paymentReference") String paymentReference,
+            @Param("note") String note,
+            @Param("expiresAt") LocalDateTime expiresAt,
+            @Param("receivedAt") LocalDateTime receivedAt,
+            @Param("intentTransitionRequired") boolean intentTransitionRequired);
+
+    @Select("""
+            SELECT id, reconciliation_no AS reconciliationNo, intent_no AS intentNo,
+                   user_id AS userId, bank_account_id AS bankAccountId,
+                   view_type AS viewType, status, payable_vnd AS payableVnd,
+                   received_vnd AS receivedVnd,
+                   locked_fx_rate_vnd_per_usdt AS lockedFxRateVndPerUsdt,
+                   payment_reference AS paymentReference, received_at AS receivedAt,
+                   intent_transition_required AS intentTransitionRequired,
+                   version
+              FROM nx_vietqr_reconciliation
+             WHERE payment_reference = #{paymentReference} AND is_deleted = 0
+             LIMIT 1
+            """)
+    Map<String, Object> findVietQrReceiptByPaymentReference(
+            @Param("paymentReference") String paymentReference);
+
     @Select("""
             SELECT usdt_available AS usdtAvailable, version
               FROM nx_user_wallet
@@ -113,6 +169,55 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
              FOR UPDATE
             """)
     Map<String, Object> findUsdtWalletForUpdate(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT id, daily_cap_vnd AS dailyCapVnd,
+                   CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                        THEN received_today_vnd ELSE 0 END AS receivedTodayVnd,
+                   status, version
+              FROM nx_vietqr_bank_account
+             WHERE id = #{id} AND is_deleted = 0
+             FOR UPDATE
+            """)
+    Map<String, Object> findVietQrBankAccountForUpdate(@Param("id") Long id);
+
+    @Update("""
+            UPDATE nx_vietqr_bank_account
+               SET status = CASE
+                       WHEN #{receivedBusinessDate} = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                        AND (CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                                  THEN received_today_vnd ELSE 0 END) + #{receivedVnd}
+                            > daily_cap_vnd
+                       THEN 'FUSED'
+                       ELSE status
+                   END,
+                   fuse_reason = CASE
+                       WHEN #{receivedBusinessDate} = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                        AND (CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                                  THEN received_today_vnd ELSE 0 END) + #{receivedVnd}
+                            > daily_cap_vnd
+                       THEN 'DAILY_CAP_EXCEEDED_AFTER_RECEIPT'
+                       ELSE fuse_reason
+                   END,
+                   received_today_vnd = CASE
+                       WHEN #{receivedBusinessDate} = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                       THEN CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                                 THEN received_today_vnd + #{receivedVnd}
+                                 ELSE #{receivedVnd} END
+                       ELSE received_today_vnd
+                   END,
+                   received_business_date = CASE
+                       WHEN #{receivedBusinessDate} = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                       THEN DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                       ELSE received_business_date
+                   END,
+                   version = version + 1, updated_at = NOW()
+             WHERE id = #{id} AND is_deleted = 0
+            """)
+    int addVietQrBankReceivedToday(
+            @Param("id") Long id,
+            @Param("receivedVnd") BigDecimal receivedVnd,
+            @Param("receivedBusinessDate") LocalDate receivedBusinessDate);
 
     @Update("""
             UPDATE nx_user_wallet
@@ -146,12 +251,13 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
             INSERT INTO nx_vietqr_bank_account (
                 bank_code, bank_name, account_holder, account_number_encrypted,
                 account_number_hash, account_number_last4,
-                daily_cap_vnd, received_today_vnd, status,
+                daily_cap_vnd, received_today_vnd, received_business_date, status,
                 created_at, updated_at, is_deleted, version
             ) VALUES (
                 #{bankCode}, #{bankName}, #{accountHolder}, #{accountNumberEncrypted},
                 #{accountNumberHash}, #{accountNumberLast4},
-                #{dailyCapVnd}, 0, 'ACTIVE', NOW(), NOW(), 0, 0
+                #{dailyCapVnd}, 0, DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR)),
+                'ACTIVE', NOW(), NOW(), 0, 0
             )
             """)
     int insertVietQrBankAccount(
@@ -167,7 +273,9 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
             SELECT id, bank_code AS bankCode, bank_name AS bankName,
                    CONCAT(LEFT(account_holder, 4), ' ***') AS holderMasked,
                    account_number_last4 AS accountLast4,
-                   daily_cap_vnd AS dailyCapVnd, received_today_vnd AS receivedTodayVnd,
+                   daily_cap_vnd AS dailyCapVnd,
+                   CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                        THEN received_today_vnd ELSE 0 END AS receivedTodayVnd,
                    status, fuse_reason AS fuseReason, version, updated_at AS updatedAt
               FROM nx_vietqr_bank_account
              WHERE id = #{id} AND is_deleted = 0

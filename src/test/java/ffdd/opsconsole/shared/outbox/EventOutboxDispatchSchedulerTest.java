@@ -90,6 +90,33 @@ class EventOutboxDispatchSchedulerTest {
         verify(service).markPublished("event-h3");
     }
 
+    @Test
+    void d6QuoteChangesUseTheDurableDispatchAndPublicationState() {
+        EventOutboxMessage message = message("event-d6");
+        message.setEventType(EventOutboxDispatchScheduler.D6_FX_QUOTE_CHANGED_EVENT_TYPE);
+        when(service.listPendingByEventType(
+                EventOutboxDispatchScheduler.D6_FX_QUOTE_CHANGED_EVENT_TYPE, 100))
+                .thenReturn(List.of(message));
+
+        scheduler.dispatchPending();
+
+        verify(publisher).publishEvent(message);
+        verify(service).markPublished("event-d6");
+    }
+
+    @Test
+    void confirmedWithdrawalUsesTheDurableD2DispatchAndPublicationState() {
+        EventOutboxMessage message = message("event-withdraw-confirmed");
+        String eventType = "withdraw.confirmed";
+        message.setEventType(eventType);
+        when(service.listPendingByEventType(eventType, 100)).thenReturn(List.of(message));
+
+        scheduler.dispatchPending();
+
+        verify(publisher).publishEvent(message);
+        verify(service).markPublished("event-withdraw-confirmed");
+    }
+
     private EventOutboxMessage message(String eventId) {
         EventOutboxMessage message = new EventOutboxMessage();
         message.setEventId(eventId);

@@ -77,7 +77,8 @@ class TreasuryLedgerMapperSqlContractTest {
         assertThat(liabilitySql)
                 .contains("FROM nx_vietqr_reconciliation")
                 .contains("status = 'OPEN'")
-                .contains("'ORPHAN', 'MISMATCH', 'LATE'");
+                .contains("received_vnd > 0")
+                .doesNotContain("view_type");
         assertThat(reserveSql)
                 .contains("FROM nx_vietqr_reconciliation")
                 .contains("'OPEN', 'CREDITED', 'RETURN_PENDING'")

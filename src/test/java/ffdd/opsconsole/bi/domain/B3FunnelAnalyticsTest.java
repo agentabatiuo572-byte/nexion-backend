@@ -16,6 +16,7 @@ class B3FunnelAnalyticsTest {
         Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
                 event("auth.register_completed", "kept", mature, "P3", "partner-a"),
                 event("kyc.express_verified", "kept", mature.plusHours(1), "P3", "partner-a"),
+                event("store.viewed", "kept", mature.plusMinutes(90), "P3", "partner-a"),
                 event("checkout.completed", "kept", mature.plusHours(2), "P3", "partner-a"),
                 event("wallet.reinvest", "kept", mature.plusHours(3), "P3", "partner-a"),
                 event("withdraw.submitted", "kept", mature.plusHours(4), "P3", "partner-a"),
@@ -33,6 +34,8 @@ class B3FunnelAnalyticsTest {
                 .extracting(row -> row.get("distinctUsers"))
                 .containsExactly(1, 1, 1, 1, 1);
         assertThat(map(result.get("auxMetrics")))
+                .containsEntry("storeViewRate", 100D)
+                .containsEntry("purchaseFromStoreRate", 100D)
                 .containsEntry("day0AccessRate", 100D)
                 .containsEntry("day7Retention", 100D);
         assertThat(map(result.get("filters")))
@@ -62,6 +65,22 @@ class B3FunnelAnalyticsTest {
                 null, "P1", "direct");
 
         assertThat(rows(result.get("stages")).get(3).get("distinctUsers")).isEqualTo(1);
+    }
+
+    @Test
+    void emptyRegistrationDenominatorReturnsACompleteFailClosedShape() {
+        Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
+                event("withdraw.submitted", "orphan", LocalDateTime.now().minusHours(1), "P2", "direct")),
+                null, "P2", "direct");
+
+        assertThat(result)
+                .containsEntry("available", false)
+                .containsEntry("reason", "EMPTY_REGISTRATION_DENOMINATOR");
+        assertThat(rows(result.get("stages"))).isEmpty();
+        assertThat(rows(result.get("trend"))).isEmpty();
+        assertThat(map(result.get("auxMetrics")))
+                .containsEntry("storeViewDenominator", 0)
+                .containsEntry("day0Denominator", 0);
     }
 
     private static Map<String, Object> event(

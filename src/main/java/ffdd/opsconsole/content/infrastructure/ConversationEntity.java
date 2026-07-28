@@ -19,4 +19,5 @@ public class ConversationEntity extends BaseEntity {
     private Integer unreadCount;
     private String lastMessage;
     private LocalDateTime lastMessageAt;
+    private Long version;
 }

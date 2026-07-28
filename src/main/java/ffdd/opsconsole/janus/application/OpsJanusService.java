@@ -216,6 +216,25 @@ public class OpsJanusService {
         Optional<Map<String, Object>> command = repository.findPendingDeviceCommand(userId, sid);
         if (command.isEmpty()) return ApiResult.ok(Map.of("hasCommand", false));
         Map<String, Object> response = new LinkedHashMap<>(command.get());
+        String desiredStatus = String.valueOf(response.getOrDefault("desiredStatus", "")).trim().toUpperCase(Locale.ROOT);
+        String remoteKey = String.valueOf(response.getOrDefault("remoteUrlKey", "")).trim();
+        Integer remoteVersion = positiveNumber(response.get("remoteTargetVersion"));
+        Long remoteCatalogVersion = positiveLongNumber(response.get("remoteTargetCatalogVersion"));
+        boolean remoteStatus = Set.of("HIT", "ACTIVATED", "MANUAL_FORCED").contains(desiredStatus);
+        boolean hasAnyRemoteBinding = StringUtils.hasText(remoteKey)
+                || response.get("remoteTargetVersion") != null
+                || response.get("remoteTargetCatalogVersion") != null;
+        if (remoteStatus) {
+            JanusRemoteTargetView target = resolveRemoteTarget(remoteKey, remoteVersion, remoteCatalogVersion)
+                    .orElse(null);
+            if (target == null) return ApiResult.fail(409, "JANUS_REMOTE_TARGET_UNAVAILABLE");
+            response.put("remoteUrlKey", target.remoteTargetKey());
+            response.put("remoteTargetVersion", target.remoteTargetVersion());
+            response.put("remoteTargetCatalogVersion", target.catalogVersion());
+            response.put("remoteTargetUrl", target.url());
+        } else if (hasAnyRemoteBinding) {
+            return ApiResult.fail(409, "JANUS_REMOTE_TARGET_UNEXPECTED");
+        }
         response.put("hasCommand", true);
         response.put("sid", sid);
         return ApiResult.ok(response);
@@ -1183,6 +1202,18 @@ public class OpsJanusService {
     private Long positiveLong(JsonNode value) {
         return value != null && value.isIntegralNumber() && value.longValue() > 0
                 ? value.longValue() : null;
+    }
+
+    private Integer positiveNumber(Object value) {
+        if (!(value instanceof Number number)) return null;
+        long parsed = number.longValue();
+        return parsed > 0 && parsed <= Integer.MAX_VALUE ? (int) parsed : null;
+    }
+
+    private Long positiveLongNumber(Object value) {
+        if (!(value instanceof Number number)) return null;
+        long parsed = number.longValue();
+        return parsed > 0 ? parsed : null;
     }
 
     private boolean validOptionalObject(JsonNode node, Set<String> allowedFields) {

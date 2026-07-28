@@ -50,7 +50,8 @@ class OpsConsoleArchitectureTest {
     private static final Pattern HAND_WRITTEN_JDBC_PATTERN =
             Pattern.compile("\\b(?:JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbcInsert)\\b|org\\.springframework\\.jdbc");
     private static final Pattern LEGACY_ADMIN_ROUTE_PATTERN =
-            Pattern.compile("/auth/admin\\b|/api/config(?!/(?:platform|staking/pools|exchange/caps|market/nex|repurchase)\\b)");
+            Pattern.compile("/auth/admin\\b|/api/config(?!/(?:platform|referral-rewards|task-pricing|phone-tiers"
+                    + "|staking/pools|v-ranks|commission/rates|exchange/caps|market/nex|repurchase)\\b)");
     private static final Pattern LEGACY_DISTRIBUTED_PERMISSION_PATTERN =
             Pattern.compile("(?m)^.*PERM_[A-Z0-9_]+.*'/(?:auth/admins|auth/access-control|bff|compute|commerce|genesis|wallet|earnings|team|notifications|missions|compliance|openapi)(?:/|\\*|').*$");
     private static final Pattern LOMBOK_VALUE_COPYABLE_PATTERN =

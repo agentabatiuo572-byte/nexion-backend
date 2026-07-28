@@ -238,6 +238,10 @@ public class VRankRewardDispatcher {
         BigDecimal amountUsdt = CURRENCY_USDT.equals(currency) ? amount : BigDecimal.ZERO;
         BigDecimal amountNex = CURRENCY_NEX.equals(currency) ? amount : BigDecimal.ZERO;
         String remark = buildCommissionRemark(rankCode, rewardType, operator, isCultivation, sponsorUserId);
+        boolean immediateCultivation = COMMISSION_TYPE_CULTIVATION.equals(commissionType);
+        String commissionStatus = immediateCultivation ? "UNLOCKED" : LEDGER_STATUS_PENDING;
+        int coolingDays = immediateCultivation ? 0 : resolveCoolingDays();
+        String ledgerStatus = immediateCultivation ? "SUCCESS" : LEDGER_STATUS_PENDING;
         Long commissionEventId = commissionRepository.insertCommissionEvent(
                 recipientUserId,
                 commissionType,
@@ -245,8 +249,8 @@ public class VRankRewardDispatcher {
                 currency,
                 amountUsdt,
                 amountNex,
-                LEDGER_STATUS_PENDING,
-                resolveCoolingDays(),
+                commissionStatus,
+                coolingDays,
                 remark);
         if (commissionEventId == null) {
             throw new IllegalStateException("COMMISSION_EVENT_INSERT_FAILED: user=" + userId
@@ -262,7 +266,7 @@ public class VRankRewardDispatcher {
                 currency,
                 LEDGER_DIRECTION_IN,
                 amount,
-                LEDGER_STATUS_PENDING,
+                ledgerStatus,
                 "F1 V-Rank reward payout | " + remark);
 
         // ⑤ INSERT nx_v_rank_reward_payout(status='GRANTED', commission_event_id, bill_id)

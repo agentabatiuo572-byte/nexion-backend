@@ -4,8 +4,11 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.ConstraintViolationException;
+import java.io.IOException;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -76,6 +79,24 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoResourceFoundException.class)
     public ApiResult<Void> handleNoResource(NoResourceFoundException ex) {
         return ApiResult.fail(404, "RESOURCE_NOT_FOUND");
+    }
+
+    @ExceptionHandler(IOException.class)
+    public ApiResult<Void> handleIOException(
+            IOException ex,
+            HttpServletRequest request,
+            HttpServletResponse response) {
+        if (response.isCommitted()
+                || request.getDispatcherType() == DispatcherType.ASYNC
+                || request.isAsyncStarted()) {
+            log.debug(
+                    "Client disconnected from async response: method={} path={}",
+                    request.getMethod(),
+                    request.getRequestURI());
+            return null;
+        }
+        log.error("Unhandled API I/O exception", ex);
+        return ApiResult.fail(OpsErrorCode.INTERNAL_ERROR.httpStatus(), "INTERNAL_SERVER_ERROR");
     }
 
     @ExceptionHandler(Exception.class)

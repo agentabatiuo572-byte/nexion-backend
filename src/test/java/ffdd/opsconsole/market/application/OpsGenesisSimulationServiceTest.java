@@ -65,7 +65,8 @@ class OpsGenesisSimulationServiceTest {
                 .thenReturn(Optional.of("2026-08-01T00:00:00Z"));
 
         assertThatThrownBy(() -> service.updateConfig("presale.startAt", "idem-window-1",
-                new NexMarketValueUpdateRequest("2026-08-02T00:00:00Z", "configure presale window", "superadmin")))
+                new NexMarketValueUpdateRequest(
+                        "2026-08-02T00:00:00Z", "configure presale window", "superadmin", "")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("GENESIS_PRESALE_WINDOW_INVALID");
         verify(mapper).lockConfigMutation();
@@ -89,5 +90,16 @@ class OpsGenesisSimulationServiceTest {
                 new NexMarketValueUpdateRequest("true", "mutex health verification", "superadmin")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("G4_CONFIG_MUTEX_UNAVAILABLE");
+    }
+
+    @Test
+    void staleConfigExpectedValueFailsClosedBeforeWrite() {
+        when(config.activeValueForUpdate("market.genesis.ops.eligibility.maxPerUser"))
+                .thenReturn(Optional.of("5"));
+
+        assertThatThrownBy(() -> service.updateConfig("eligibility.maxPerUser", "idem-stale-config",
+                new NexMarketValueUpdateRequest("6", "raise controlled user cap", "superadmin", "4")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("G4_CONFIG_STATE_CONFLICT");
     }
 }

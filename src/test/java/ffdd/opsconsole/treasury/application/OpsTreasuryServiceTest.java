@@ -704,6 +704,21 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    void d3InjectionRejectsFixtureMarkersWithoutSideEffects() {
+        BigDecimal before = ledgerRepository.reserveUsd;
+
+        assertThatThrownBy(() -> service.createInjection("idem-fixture", new TreasuryInjectionRequest(
+                new BigDecimal("1000000000"), "F1ENGINE-BOOTSTRAP",
+                "登记真实到账凭证并纳入储备", "finance-lead")))
+                .isInstanceOfSatisfying(BizException.class, ex -> assertThat(ex.getCode()).isEqualTo(400));
+
+        assertThat(ledgerRepository.reserveUsd).isEqualByComparingTo(before);
+        assertThat(ledgerRepository.reserveInjections).isEmpty();
+        verifyNoInteractions(auditLogService);
+        verifyNoInteractions(eventOutboxService);
+    }
+
+    @Test
     void b5BankRunThresholdUpdateBecomesTheJ1R1Authority() {
         BankRunThresholdRequest request = new BankRunThresholdRequest(
                 "25", "55", "调整挤兑分层阈值并同步自动止血线", "risk-lead");
@@ -1045,6 +1060,52 @@ class OpsTreasuryServiceTest {
         List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("rows");
         assertThat(rows.get(1)).containsEntry("breakDetected", true)
                 .containsEntry("expectedBalanceAfter", new BigDecimal("80"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void d4RunningBalanceKeepsUnsettledRowsExplicitWithoutTreatingThemAsBreaks() {
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                3L, 10001L, "U00010001", "测试用户", "COMMISSION-PENDING-1", "COMMISSION", "USDT", "IN",
+                new BigDecimal("25"), new BigDecimal("0"), "PENDING", "awaiting settlement",
+                LocalDateTime.parse("2026-06-17T10:00:00"), LocalDateTime.parse("2026-06-17T10:00:00")));
+
+        ApiResult<Map<String, Object>> result = service.runningBalance(10001L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("breakCount", 0)
+                .containsEntry("unsettledCount", 1)
+                .containsEntry("balanced", true);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("rows");
+        assertThat(rows.get(0))
+                .containsEntry("expectedBalanceAfter", null)
+                .containsEntry("difference", BigDecimal.ZERO)
+                .containsEntry("breakDetected", false)
+                .containsEntry("settlementBucket", "UNSETTLED");
+    }
+
+    @Test
+    void d4HistoricalCutoffChecksContinuityWithoutComparingToCurrentWallet() {
+        ledgerRepository.bills.add(new TreasuryLedgerBillView(
+                3L, 10001L, "U00010001", "测试用户", "HISTORICAL-1", "ADJUSTMENT", "USDT", "IN",
+                new BigDecimal("25"), new BigDecimal("25"), "SUCCESS", "historical",
+                LocalDateTime.parse("2026-06-15T10:00:00"), LocalDateTime.parse("2026-06-15T10:00:00")));
+        ledgerRepository.actualBalances.put("10001:USDT", new BigDecimal("999"));
+        ledgerRepository.actualBalances.put("10001:NEX", new BigDecimal("888"));
+
+        ApiResult<Map<String, Object>> result = service.runningBalance(
+                10001L, "2026-06-15", "2026-06-16");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("breakCount", 0)
+                .containsEntry("balanced", true)
+                .containsEntry("reconciliationScope", "HISTORICAL_RANGE")
+                .containsEntry("reconciliation", null);
+        assertThat(result.getData().get("reconciliationNote").toString())
+                .contains("历史截止区间")
+                .contains("不使用当前钱包");
     }
 
     @Test

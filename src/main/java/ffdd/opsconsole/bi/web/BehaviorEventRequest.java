@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonAnySetter;
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 public record BehaviorEventRequest(
+        String clientEventId,
         String eventName,
         String sessionId,
         String route,

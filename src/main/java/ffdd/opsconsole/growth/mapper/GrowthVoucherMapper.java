@@ -31,6 +31,8 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
                 stack_with_trial TINYINT(1) NOT NULL DEFAULT 0,
                 stack_with_others TINYINT(1) NOT NULL DEFAULT 0,
                 splittable TINYINT(1) NOT NULL DEFAULT 0,
+                issuance_limit BIGINT NOT NULL DEFAULT 0,
+                version BIGINT NOT NULL DEFAULT 1,
                 status VARCHAR(20) NOT NULL,
                 created_by VARCHAR(80) NULL,
                 updated_by VARCHAR(80) NULL,
@@ -61,6 +63,31 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
                    stack_with_trial AS stackWithTrial,
                    stack_with_others AS stackWithOthers,
                    splittable,
+                   issuance_limit AS issuanceLimit,
+                   version,
+                   (SELECT COUNT(1)
+                      FROM nx_growth_voucher_grant g
+                     WHERE g.voucher_id = nx_growth_voucher.voucher_id
+                       AND g.is_deleted = 0) AS issuedCount,
+                   (SELECT COUNT(1)
+                      FROM nx_growth_voucher_grant g
+                     WHERE g.voucher_id = nx_growth_voucher.voucher_id
+                       AND g.status = 'AVAILABLE'
+                       AND g.is_deleted = 0) AS availableCount,
+                   (SELECT COUNT(1)
+                      FROM nx_growth_voucher_grant g
+                     WHERE g.voucher_id = nx_growth_voucher.voucher_id
+                       AND g.status = 'USED'
+                       AND g.is_deleted = 0) AS redeemedCount,
+                   (SELECT COUNT(1)
+                      FROM nx_growth_voucher_grant g
+                     WHERE g.voucher_id = nx_growth_voucher.voucher_id
+                       AND g.status = 'REVOKED'
+                       AND g.is_deleted = 0) AS revokedCount,
+                   (SELECT COUNT(DISTINCT CONCAT(g.source_type, ':', g.source_id))
+                      FROM nx_growth_voucher_grant g
+                     WHERE g.voucher_id = nx_growth_voucher.voucher_id
+                       AND g.is_deleted = 0) AS batchCount,
                    status
               FROM nx_growth_voucher
              WHERE is_deleted = 0
@@ -76,12 +103,14 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
                 voucher_id, voucher_name, voucher_type, amount_usd, percent_value,
                 min_purchase_usd, max_discount_usd, applicable_skus, audience,
                 start_at, end_at, claim_surfaces, popup_enabled, stack_with_trial,
-                stack_with_others, splittable, status, created_by, updated_by, is_deleted
+                stack_with_others, splittable, issuance_limit, version,
+                status, created_by, updated_by, is_deleted
             ) VALUES (
                 #{voucherId}, #{name}, #{type}, #{amountUSD}, #{percent},
                 #{minPurchaseUSD}, #{maxDiscountUSD}, CAST(#{applicableSkusJson} AS JSON), #{audience},
                 #{startAt}, #{endAt}, CAST(#{claimSurfacesJson} AS JSON), #{popupEnabled}, #{stackWithTrial},
-                #{stackWithOthers}, #{splittable}, #{status}, #{operator}, #{operator}, 0
+                #{stackWithOthers}, #{splittable}, #{issuanceLimit}, 1,
+                #{status}, #{operator}, #{operator}, 0
             )
             """)
     int insertVoucher(
@@ -101,6 +130,7 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
             @Param("stackWithTrial") boolean stackWithTrial,
             @Param("stackWithOthers") boolean stackWithOthers,
             @Param("splittable") boolean splittable,
+            @Param("issuanceLimit") long issuanceLimit,
             @Param("status") String status,
             @Param("operator") String operator);
 
@@ -121,10 +151,13 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
                    stack_with_trial = #{stackWithTrial},
                    stack_with_others = #{stackWithOthers},
                    splittable = #{splittable},
+                   issuance_limit = #{issuanceLimit},
                    status = #{status},
-                   updated_by = #{operator}
+                   updated_by = #{operator},
+                   version = version + 1
              WHERE voucher_id = #{voucherId}
                AND is_deleted = 0
+               AND version = #{expectedVersion}
             """)
     int updateVoucher(
             @Param("voucherId") String voucherId,
@@ -143,24 +176,60 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
             @Param("stackWithTrial") boolean stackWithTrial,
             @Param("stackWithOthers") boolean stackWithOthers,
             @Param("splittable") boolean splittable,
+            @Param("issuanceLimit") long issuanceLimit,
             @Param("status") String status,
+            @Param("expectedVersion") long expectedVersion,
             @Param("operator") String operator);
 
     @Update("""
             UPDATE nx_growth_voucher
                SET status = #{status},
-                   updated_by = #{operator}
+                   updated_by = #{operator},
+                   version = version + 1
              WHERE voucher_id = #{voucherId}
                AND is_deleted = 0
+               AND version = #{expectedVersion}
             """)
-    int updateStatus(@Param("voucherId") String voucherId, @Param("status") String status, @Param("operator") String operator);
+    int updateStatus(
+            @Param("voucherId") String voucherId,
+            @Param("status") String status,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("operator") String operator);
 
     @Update("""
             UPDATE nx_growth_voucher
                SET is_deleted = 1,
+                   updated_by = #{operator},
+                   version = version + 1
+             WHERE voucher_id = #{voucherId}
+               AND is_deleted = 0
+               AND version = #{expectedVersion}
+            """)
+    int softDelete(
+            @Param("voucherId") String voucherId,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("operator") String operator);
+
+    @Update("""
+            UPDATE nx_growth_voucher_grant
+               SET status = 'REVOKED',
+                   updated_at = NOW()
+             WHERE voucher_id = #{voucherId}
+               AND status = 'AVAILABLE'
+               AND is_deleted = 0
+            """)
+    int revokeAvailableGrants(@Param("voucherId") String voucherId);
+
+    @Update("""
+            UPDATE nx_growth_voucher
+               SET version = version + 1,
                    updated_by = #{operator}
              WHERE voucher_id = #{voucherId}
                AND is_deleted = 0
+               AND version = #{expectedVersion}
             """)
-    int softDelete(@Param("voucherId") String voucherId, @Param("operator") String operator);
+    int touchVersion(
+            @Param("voucherId") String voucherId,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("operator") String operator);
 }

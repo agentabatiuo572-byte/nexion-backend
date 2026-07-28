@@ -791,7 +791,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    SUM(event_count) AS count,
                    COUNT(DISTINCT CASE
                      WHEN user_no IS NOT NULL AND user_no <> '' THEN user_no
-                     WHEN user_id IS NOT NULL THEN CONCAT('U', LPAD(user_id, 8, '0'))
+                     WHEN user_id IS NOT NULL THEN CONCAT('U', LPAD(user_id, GREATEST(8, LENGTH(CAST(user_id AS CHAR))), '0'))
                      ELSE NULL
                    END) AS accounts,
                    '' AS color
@@ -807,7 +807,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                                           @Param("endAt") LocalDateTime endAt);
 
     @Select("""
-            SELECT COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), 8, '0'))) AS userCode,
+            SELECT COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(e.user_id, 0) AS CHAR))), '0'))) AS userCode,
                    SUM(e.event_count) AS count,
                    CASE WHEN MAX(e.k4_accepted) = 1 THEN CONCAT('+', SUM(e.k4_delta)) ELSE '未喂送' END AS k4,
                    DATE_FORMAT(MAX(e.occurred_at), '%H:%i:%s') AS last,
@@ -845,11 +845,11 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                            ) ranked
                      WHERE ranked.row_num = 1
                    ) k
-                ON k.user_code = COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), 8, '0')))
+                ON k.user_code = COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(e.user_id, 0) AS CHAR))), '0')))
              WHERE e.is_deleted = 0
                AND e.occurred_at >= #{startAt}
                AND e.occurred_at < #{endAt}
-             GROUP BY COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), 8, '0')))
+             GROUP BY COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(e.user_id, 0) AS CHAR))), '0')))
             HAVING SUM(e.event_count) >= #{threshold}
              ORDER BY count DESC, MAX(e.occurred_at) DESC, userCode ASC
             """)
@@ -865,7 +865,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                      WHERE is_deleted = 0
                        AND occurred_at >= #{startAt}
                        AND occurred_at < #{endAt}
-                     GROUP BY COALESCE(NULLIF(user_no, ''), CONCAT('U', LPAD(COALESCE(user_id, 0), 8, '0')))
+                     GROUP BY COALESCE(NULLIF(user_no, ''), CONCAT('U', LPAD(COALESCE(user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(user_id, 0) AS CHAR))), '0')))
                     HAVING SUM(event_count) >= #{threshold}
                    ) matched_accounts
             """)
@@ -874,7 +874,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                              @Param("threshold") int threshold);
 
     @Select("""
-            SELECT COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), 8, '0'))) AS userCode,
+            SELECT COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(e.user_id, 0) AS CHAR))), '0'))) AS userCode,
                    SUM(e.event_count) AS count,
                    CASE WHEN MAX(e.k4_accepted) = 1 THEN CONCAT('+', SUM(e.k4_delta)) ELSE '未喂送' END AS k4,
                    DATE_FORMAT(MAX(e.occurred_at), '%H:%i:%s') AS last,
@@ -912,11 +912,11 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                            ) ranked
                      WHERE ranked.row_num = 1
                    ) k
-                ON k.user_code = COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), 8, '0')))
+                ON k.user_code = COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(e.user_id, 0) AS CHAR))), '0')))
              WHERE e.is_deleted = 0
                AND e.occurred_at >= #{startAt}
                AND e.occurred_at < #{endAt}
-             GROUP BY COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), 8, '0')))
+             GROUP BY COALESCE(NULLIF(e.user_no, ''), CONCAT('U', LPAD(COALESCE(e.user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(e.user_id, 0) AS CHAR))), '0')))
             HAVING SUM(e.event_count) >= #{threshold}
              ORDER BY count DESC, MAX(e.occurred_at) DESC, userCode ASC
              LIMIT #{limit} OFFSET #{offset}
@@ -935,7 +935,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                      WHERE is_deleted = 0
                        AND occurred_at >= #{startAt}
                        AND occurred_at < #{endAt}
-                     GROUP BY COALESCE(NULLIF(user_no, ''), CONCAT('U', LPAD(COALESCE(user_id, 0), 8, '0')))
+                     GROUP BY COALESCE(NULLIF(user_no, ''), CONCAT('U', LPAD(COALESCE(user_id, 0), GREATEST(8, LENGTH(CAST(COALESCE(user_id, 0) AS CHAR))), '0')))
                    ) account_frequency
              GROUP BY frequency
              ORDER BY frequency ASC
@@ -1303,7 +1303,17 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_emergency_sop_execution
                SET step_status_json = #{stepsJson},
-                   notification_json = #{notificationJson},
+                   notification_json =
+                     CASE
+                       WHEN JSON_EXTRACT(notification_json, '$.cancelRequested') = TRUE
+                       THEN JSON_SET(
+                              #{notificationJson},
+                              '$.cancelRequested', TRUE,
+                              '$.cancelReason', JSON_UNQUOTE(JSON_EXTRACT(notification_json, '$.cancelReason')),
+                              '$.cancelOperator', JSON_UNQUOTE(JSON_EXTRACT(notification_json, '$.cancelOperator')),
+                              '$.cancelRequestedAt', JSON_UNQUOTE(JSON_EXTRACT(notification_json, '$.cancelRequestedAt')))
+                       ELSE #{notificationJson}
+                     END,
                    domain_action_json = #{domainActionsJson},
                    updated_at = NOW()
              WHERE execution_id = #{executionId}
@@ -1326,6 +1336,27 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             """)
     int claimExecutionRecovery(@Param("executionId") String executionId,
                                @Param("staleBefore") LocalDateTime staleBefore);
+
+    @Update("""
+            UPDATE nx_emergency_sop_execution
+               SET notification_json = JSON_SET(
+                     COALESCE(notification_json, JSON_OBJECT()),
+                     '$.cancelRequested', TRUE,
+                     '$.cancelReason', #{reason},
+                     '$.cancelOperator', #{operator},
+                     '$.cancelRequestedAt', DATE_FORMAT(NOW(), '%Y-%m-%dT%H:%i:%s')),
+                   updated_at = NOW()
+             WHERE execution_id = #{executionId}
+               AND is_deleted = 0
+               AND (rollback_status IS NULL OR rollback_status = '')
+               AND (JSON_CONTAINS(step_status_json, JSON_QUOTE('pending'))
+                    OR JSON_CONTAINS(step_status_json, JSON_QUOTE('running')))
+               AND COALESCE(JSON_EXTRACT(notification_json, '$.cancelRequested'), FALSE) = FALSE
+            """)
+    int requestExecutionCancellation(
+            @Param("executionId") String executionId,
+            @Param("reason") String reason,
+            @Param("operator") String operator);
 
     @Update("""
             UPDATE nx_emergency_sop_execution

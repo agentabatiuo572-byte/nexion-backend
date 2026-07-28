@@ -77,6 +77,42 @@ class EventOutboxServiceTest {
     }
 
     @Test
+    void walletLedgerPostedMatchesTheRegisteredCanonicalSnakeCaseContract() throws Exception {
+        when(mapper.findActiveSchema("wallet.ledger_posted"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("money", 110, true));
+        when(mapper.listActiveProperties("wallet.ledger_posted")).thenReturn(List.of(
+                required("user_id", "id"),
+                required("biz_type", "enum"),
+                required("asset", "enum"),
+                required("direction", "enum"),
+                required("amount", "number"),
+                required("balance_after", "number"),
+                required("biz_no", "id"),
+                required("status", "enum")));
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+
+        String eventId = service.publish("WALLET_LEDGER", "BIZ-1", "wallet.ledger_posted", Map.of(
+                "userId", 52L,
+                "bizType", "ADJUSTMENT",
+                "asset", "USDT",
+                "direction", "IN",
+                "amount", new java.math.BigDecimal("10.000000"),
+                "balanceAfter", new java.math.BigDecimal("20.000000"),
+                "bizNo", "BIZ-1",
+                "status", "SUCCESS"));
+
+        verify(mapper).insertEvent(
+                eq(eventId), eq("WALLET_LEDGER"), eq("BIZ-1"), eq("wallet.ledger_posted"),
+                eq("wallet.ledger_posted"), eq("money"), eq("SYSTEM"), eq(0), anyString(),
+                eq(true), eq(110), eq(true), eq(true), payloadCaptor.capture());
+        JsonNode envelope = objectMapper.readTree(payloadCaptor.getValue());
+        assertThat(envelope.path("user_id").asLong()).isEqualTo(52L);
+        assertThat(envelope.path("biz_type").asText()).isEqualTo("ADJUSTMENT");
+        assertThat(envelope.path("balance_after").decimalValue()).isEqualByComparingTo("20.000000");
+        assertThat(envelope.path("biz_no").asText()).isEqualTo("BIZ-1");
+    }
+
+    @Test
     void legacyLearningCompletionDeliveryTypeUsesRegisteredLearnAnalyticsSchema() throws Exception {
         when(mapper.findActiveSchema("learn.course_completed"))
                 .thenReturn(new EventOutboxMapper.SchemaGateRow("learn", 116, true));

@@ -12,7 +12,7 @@ public record PlatformMenuNodeCreateRequest(
         @NotBlank @Size(max = 64) String menuName,
         @Size(max = 64) String menuNameZh,
         @Pattern(regexp = "[A-Z][A-Z0-9_]{0,63}") String parentCode,
-        @Size(max = 255) @Pattern(regexp = "^/.*") String routePath,
+        @Size(max = 255) @Pattern(regexp = "^/[A-Za-z0-9/_-]*$") String routePath,
         @Size(max = 64) String icon,
         @Min(0) @Max(100000) Integer sortOrder,
         @NotBlank @Size(min = 8, max = 200) String reason,

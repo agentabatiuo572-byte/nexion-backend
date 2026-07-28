@@ -54,6 +54,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/phase/**", "overview_b4_"),
             rule("/api/admin/commands/**", "platform_"),
             rule("/api/admin/media/**", null),
+            // F5 canonical command lives under /users but is owned by the network domain.
+            // Let the controller's exact network_f5_commission_reject guard decide access;
+            // the generic user_* prefix would otherwise reject valid F5 operators first.
+            rule("/api/admin/users/*/commission/suspend", null),
             rule("/api/admin/users/**", "user_"),
             rule("/api/admin/bills", "finance_d4_"),
             rule("/api/admin/bills/**", "finance_d4_"),
@@ -61,6 +65,18 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             // so the controller's exact @PreAuthorize rule is the single write gate here.
             rule("/api/admin/withdraw/**", null),
             rule("/api/admin/finance/**", "finance_"),
+            // B1/B2 and D3 share these canonical treasury facts/actions. Their controller methods
+            // declare the exact authority OR; the prefix filter must not require an unrelated
+            // finance_* grant before method security can evaluate that contract.
+            rule("/api/admin/treasury/coverage", null),
+            rule("/api/admin/treasury/reserve", null),
+            rule("/api/admin/treasury/liabilities", null),
+            rule("/api/admin/treasury/liabilities/export", null),
+            rule("/api/admin/treasury/maturity-forecast", null),
+            rule("/api/admin/treasury/net-exposure", null),
+            rule("/api/admin/treasury/forecast-config", null),
+            rule("/api/admin/treasury/dual-ledger/scope", null),
+            rule("/api/admin/treasury/dual-ledger/thresholds", null),
             rule("/api/admin/treasury/b-domain", "overview_"),
             rule("/api/admin/treasury/b-domain/**", "overview_"),
             rule("/api/admin/treasury/**", "finance_"),
@@ -68,6 +84,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/config/phone-tiers", "device_"),
             rule("/api/admin/devices/**", "device_"),
             rule("/api/admin/teams/**", "network_"),
+            // F5's detailed audit/read and disposition endpoints are canonical root
+            // commission routes (PRD §F5), rather than children of /teams.
+            rule("/api/admin/commissions", "network_"),
+            rule("/api/admin/commissions/**", "network_"),
             rule("/api/admin/market/**", "finprod_"),
             rule("/api/admin/repurchase/**", "finprod_"),
             rule("/api/admin/growth/**", "growth_"),

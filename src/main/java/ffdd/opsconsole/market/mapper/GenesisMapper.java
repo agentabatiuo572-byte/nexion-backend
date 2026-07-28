@@ -154,7 +154,7 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
                AND asset = 'USDT'
                AND direction = 'IN'
                AND status IN ('SUCCESS', 'PENDING')
-               AND biz_type = 'GENESIS_DIVIDEND'
+               AND biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
             """)
     BigDecimal genesisAccrualUsd();
 
@@ -162,8 +162,8 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
             SELECT biz_no
               FROM nx_wallet_ledger
              WHERE is_deleted = 0
-               AND biz_type = 'GENESIS_DIVIDEND'
-               AND biz_no LIKE 'G4-DIVIDEND-%-RERUN'
+               AND biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
+               AND (biz_no LIKE 'G4-DIVIDEND-%-RERUN' OR biz_no LIKE 'G4E-%')
              ORDER BY created_at DESC, id DESC
              LIMIT 1
             """)
@@ -172,8 +172,8 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
     @Select("""
             SELECT
               (SELECT COUNT(1) FROM nx_wallet_ledger
-                WHERE is_deleted=0 AND biz_type='GENESIS_DIVIDEND'
-                  AND biz_no=CONCAT('G4-DIVIDEND-',#{batchNo},'-RERUN'))
+                WHERE is_deleted=0 AND biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
+                  AND biz_no IN (CONCAT('G4-DIVIDEND-',#{batchNo},'-RERUN'),CONCAT('G4E-',#{batchNo})))
               +
               (SELECT COUNT(1) FROM nx_genesis_emission_batch
                 WHERE is_deleted=0 AND batch_no=#{batchNo} AND UPPER(status)='COMPLETED')
@@ -183,7 +183,7 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
     @Select("""
             SELECT h.id,
                    h.user_id AS userId,
-                   CONCAT('U', LPAD(h.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(h.user_id, GREATEST(8, LENGTH(CAST(h.user_id AS CHAR))), '0')) AS userNo,
                    CASE
                      WHEN u.referral_code IS NOT NULL AND u.referral_code <> '' THEN u.referral_code
                      ELSE CONCAT('usr_', RIGHT(UPPER(HEX(h.user_id)), 4))

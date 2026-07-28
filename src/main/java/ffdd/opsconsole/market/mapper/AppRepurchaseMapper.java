@@ -111,7 +111,7 @@ public interface AppRepurchaseMapper {
 
     @Select("""
             <script>
-            SELECT sp.id,sp.user_id AS userId,CONCAT('U',LPAD(u.id,8,'0')) AS userNo,u.nickname,
+            SELECT sp.id,sp.user_id AS userId,CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,u.nickname,
                    sp.position_no AS positionNo,sp.amount_usdt AS amountUsdt,
                    sp.apy_bps AS apyBps,sp.early_penalty_bps AS earlyPenaltyBps,
                    sp.term_days AS termDays,sp.locked_at AS lockedAt,sp.unlock_at AS unlockAt,

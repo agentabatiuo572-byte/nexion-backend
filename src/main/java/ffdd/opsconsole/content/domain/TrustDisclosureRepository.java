@@ -16,9 +16,13 @@ public interface TrustDisclosureRepository {
 
     Optional<TrustSectionView> findTrustSection(String sectionKey);
 
+    default void lockTrustSection(String sectionKey) {}
+
     List<TrustSectionVersionView> listTrustSectionVersions();
 
     Optional<TrustSectionVersionView> findTrustSectionVersion(String sectionKey, String version);
+
+    default void lockTrustSectionVersion(String sectionKey, String version) {}
 
     TrustSectionVersionView saveTrustSectionDraft(String sectionKey, TrustSectionDraftRequest request, LocalDateTime now);
 
@@ -63,6 +67,8 @@ public interface TrustDisclosureRepository {
     List<String> listDisclosureVersionsIncludingDeleted(String jurisdiction);
 
     List<DisclosureGateActionView> listGateActions();
+
+    default void lockGateActions() {}
 
     Optional<DisclosureDraftView> findLatestDraft();
 

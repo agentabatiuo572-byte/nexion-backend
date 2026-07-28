@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
@@ -18,25 +19,28 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class MybatisSupportAgentRepository implements SupportAgentRepository {
     private final SupportAgentMapper mapper;
+    private final SchemaInitializationGate schemaInitializationGate = new SchemaInitializationGate();
 
     @Override
     public void ensureSchema() {
-        mapper.createProfileTable();
-        if (mapper.countSeatTypeColumn() == 0) {
-            mapper.addSeatTypeColumn();
-        }
-        mapper.backfillSeatType();
-        mapper.createAssignmentTable();
-        if (mapper.countAssignmentTypeColumn() > 0) {
-            mapper.dropAssignmentTypeColumn();
-        }
-        mapper.deactivateDuplicateActiveAssignments();
-        if (mapper.countActiveUserColumn() == 0) {
-            mapper.addActiveUserColumn();
-        }
-        if (mapper.countActiveUserUniqueIndex() == 0) {
-            mapper.addActiveUserUniqueIndex();
-        }
+        schemaInitializationGate.runOnce(() -> {
+            mapper.createProfileTable();
+            if (mapper.countSeatTypeColumn() == 0) {
+                mapper.addSeatTypeColumn();
+            }
+            mapper.backfillSeatType();
+            mapper.createAssignmentTable();
+            if (mapper.countAssignmentTypeColumn() > 0) {
+                mapper.dropAssignmentTypeColumn();
+            }
+            mapper.deactivateDuplicateActiveAssignments();
+            if (mapper.countActiveUserColumn() == 0) {
+                mapper.addActiveUserColumn();
+            }
+            if (mapper.countActiveUserUniqueIndex() == 0) {
+                mapper.addActiveUserUniqueIndex();
+            }
+        });
     }
 
     @Override
@@ -165,5 +169,17 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
                 .filter(StringUtils::hasText)
                 .distinct()
                 .toList();
+    }
+
+    private static final class SchemaInitializationGate {
+        private final AtomicBoolean ready = new AtomicBoolean();
+
+        private synchronized void runOnce(Runnable initialization) {
+            if (ready.get()) {
+                return;
+            }
+            initialization.run();
+            ready.set(true);
+        }
     }
 }

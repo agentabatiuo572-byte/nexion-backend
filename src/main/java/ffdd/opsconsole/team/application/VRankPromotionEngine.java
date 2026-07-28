@@ -36,7 +36,8 @@ import org.springframework.util.StringUtils;
  *   <li>逐阶判定 reachable(while reachable&lt;12:meetsAllConditions(snapshot, ranks[i+1])?升一级:break),
  *       得到用户"应当处于"的最高阶。<b>逐阶不越级</b> — 必须先满足 V(n) 才能评估 V(n+1),
  *       与用户当前阶无关(防止"当前 V5 但 V1 条件都不满足"时仍保留 V5)。</li>
- *   <li>不降级:permanent AND reachable&lt;currentV → 维持 currentV;否则 → 移到 reachable(可能升/降/平)。</li>
+ *   <li>晋升时每个触发事件最多前进一级,保证 V0→V1→V2 的逐阶奖励和审计不会被跳过;
+ *       降级时 permanent=true 则保留当前阶,否则回落到实际 reachable。</li>
  *   <li>写入(@Transactional):UPDATE nx_team_member.v_rank + INSERT nx_user_level_log。</li>
  * </ol>
  *
@@ -123,9 +124,12 @@ public class VRankPromotionEngine {
             }
         }
 
-        // 6. 不降级:permanent AND reachable<current → 维持 current;否则 → 移到 reachable
+        // 6. 晋升每个事件只前进一步,避免一次事件 V0→Vn 跳过中间等级奖励/审计。
+        //    降级仍按真实 reachable 回落;permanent=true 时保留当前阶。
         int newIndex;
-        if (permanent && reachableIndex < currentIndex) {
+        if (reachableIndex > currentIndex) {
+            newIndex = currentIndex + 1;
+        } else if (permanent && reachableIndex < currentIndex) {
             log.info("Permanent protection: user {} retains {} (would have downgraded to {})",
                     userId, currentRank, VRANK_CODES.get(reachableIndex));
             newIndex = currentIndex;

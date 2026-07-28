@@ -73,9 +73,26 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
+    public boolean updateChannelIfCurrent(
+            NovaChannelView current, String name, String trigger, String tick, String cooldown,
+            BigDecimal ctr, boolean enabled, String operator, String reason) {
+        ensureTables();
+        return mapper.updateChannelIfCurrent(
+                current.key(), current.name(), current.trigger(), current.tick(), current.cooldown(),
+                current.ctr(), current.enabled(), name, trigger, tick, cooldown, ctr, enabled, operator, reason) == 1;
+    }
+
+    @Override
     public void updateChannelStatus(String key, boolean enabled, String operator, String reason) {
         ensureTables();
         mapper.updateChannelStatus(key, enabled, operator, reason);
+    }
+
+    @Override
+    public boolean updateChannelStatusIfCurrent(
+            String key, boolean expectedEnabled, boolean enabled, String operator, String reason) {
+        ensureTables();
+        return mapper.updateChannelStatusIfCurrent(key, expectedEnabled, enabled, operator, reason) == 1;
     }
 
     @Override
@@ -113,9 +130,29 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
+    public boolean updateTemplateIfCurrent(
+            NovaTemplateView current, String name, String cta, String version,
+            String titleZh, String bodyZh, String titleVi, String bodyVi,
+            String titleEn, String bodyEn, String operator, String reason) {
+        ensureTables();
+        return mapper.updateTemplateIfCurrent(
+                current.channel(), current.version(), current.titleZh(), current.bodyZh(),
+                current.titleVi(), current.bodyVi(), text(current.titleEn()), text(current.bodyEn()),
+                name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn,
+                operator, reason) == 1;
+    }
+
+    @Override
     public void updateTemplateStatus(String channel, String status, String operator, String reason) {
         ensureTables();
         mapper.updateTemplateStatus(channel, status, operator, reason);
+    }
+
+    @Override
+    public boolean updateTemplateStatusIfCurrent(
+            String channel, String expectedStatus, String status, String operator, String reason) {
+        ensureTables();
+        return mapper.updateTemplateStatusIfCurrent(channel, expectedStatus, status, operator, reason) == 1;
     }
 
     @Override
@@ -127,6 +164,12 @@ public class MybatisNovaRepository implements NovaRepository {
     @Override
     public List<NovaSocialDistributionItem> socialDistribution() {
         return mapper.socialDistribution();
+    }
+
+    @Override
+    public List<NovaSocialDistributionItem> lockSocialDistribution() {
+        ensureTables();
+        return mapper.lockSocialDistribution();
     }
 
     @Override
@@ -206,8 +249,22 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
+    public boolean updateSocialEventStatusIfCurrent(
+            NovaSocialEventView current, String status, String operator, String reason) {
+        return mapper.updateSocialEventStatusIfCurrent(
+                current.id(), current.status(), current.updatedAt(), status, operator, reason) == 1;
+    }
+
+    @Override
     public void deleteSocialEvent(long id, String operator, String reason) {
         mapper.deleteSocialEvent(id, operator, reason);
+    }
+
+    @Override
+    public boolean deleteSocialEventIfCurrent(
+            NovaSocialEventView current, String operator, String reason) {
+        return mapper.deleteSocialEventIfCurrent(
+                current.id(), current.status(), current.updatedAt(), operator, reason) == 1;
     }
 
     @Override
@@ -240,5 +297,9 @@ public class MybatisNovaRepository implements NovaRepository {
     @Override
     public void markSocialEventDispatched(long id, LocalDateTime dispatchedAt) {
         mapper.markSocialEventDispatched(id, dispatchedAt);
+    }
+
+    private String text(String value) {
+        return value == null ? "" : value;
     }
 }

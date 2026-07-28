@@ -68,30 +68,37 @@ public class L3FinanceReportService {
         long previousSubmitted = whole(previous, "submitted");
         long previousConfirmed = whole(previous, "confirmed");
         BigDecimal averageLatency = decimalOrNull(current, "avgLatencyHours");
+        long rejected = whole(current, "rejected");
+        long delayed = whole(current, "delayedCount");
+        long frozen = whole(current, "frozen");
         Map<String, Object> response = linked(
                 "module", "L3",
                 "period", window.view(),
                 "cohort", normalizedCohort == null ? "全部" : normalizedCohort,
                 "submitted", submitted,
                 "confirmed", confirmed,
-                "rejected", whole(current, "rejected"),
-                "delayed", whole(current, "delayedCount"),
-                "frozen", whole(current, "frozen"),
+                "rejected", rejected,
+                "delayed", delayed,
+                "frozen", frozen,
                 "averageLatencyHours", averageLatency == null ? null : averageLatency.setScale(2, RoundingMode.HALF_UP),
                 "redemptionRate", rate(confirmed, submitted),
                 "previousRate", rate(previousConfirmed, previousSubmitted),
                 "previousLabel", window.previousLabel(),
                 "serverAuthoritative", true,
-                "source", "提现订单状态机");
+                "source", "A4 服务端权威提现生命周期事件");
         return ApiResult.ok(response);
     }
 
     private List<RevenueFact> revenueFacts(LocalDateTime from, LocalDateTime to) {
         return List.of(
-                new RevenueFact("device_sales", "设备销售 GMV", "设备订单", safe(mapper.sumDeviceSalesGmv(from, to))),
-                new RevenueFact("team_commission", "团队分润佣金", "团队佣金账本", safe(mapper.sumTeamCommission(from, to))),
-                new RevenueFact("token_economy", "代币经济", "代币兑换订单", safe(mapper.sumTokenEconomyVolume(from, to))),
-                new RevenueFact("compute_matching", "算力撮合服务费", "算力服务费账本", safe(mapper.sumComputeMatchingFees(from, to))));
+                new RevenueFact("device_sales", "设备销售 GMV", "设备订单",
+                        requireRevenue(mapper.sumDeviceSalesGmv(from, to))),
+                new RevenueFact("team_commission", "团队分润佣金", "团队佣金账本",
+                        requireRevenue(mapper.sumTeamCommission(from, to))),
+                new RevenueFact("token_economy", "代币经济", "代币兑换订单",
+                        requireRevenue(mapper.sumTokenEconomyVolume(from, to))),
+                new RevenueFact("compute_matching", "算力撮合服务费", "算力服务费账本",
+                        requireRevenue(mapper.sumComputeMatchingFees(from, to))));
     }
 
     private PeriodWindow periodWindow(String rawPeriod, String rawFrom, String rawTo) {
@@ -128,13 +135,20 @@ public class L3FinanceReportService {
             }
         }
         long days = java.time.temporal.ChronoUnit.DAYS.between(start, endExclusive);
-        LocalDate previousStart = start.minusDays(days);
+        LocalDate previousStart = switch (period) {
+            case "day" -> start.minusDays(1);
+            case "week" -> start.minusWeeks(1);
+            case "month" -> start.minusMonths(1);
+            case "quarter" -> start.minusMonths(3);
+            default -> start.minusDays(days);
+        };
         LocalDate previousEnd = start;
         String label = periodLabel(period, start, endExclusive.minusDays(1));
         String previousLabel = periodLabel(period, previousStart, previousEnd.minusDays(1));
         return new PeriodWindow(
                 period, start.atStartOfDay(), endExclusive.atStartOfDay(),
-                previousStart.atStartOfDay(), previousEnd.atStartOfDay(), label, previousLabel);
+                previousStart.atStartOfDay(), previousEnd.atStartOfDay(), label, previousLabel,
+                clock.getZone().getId());
     }
 
     private String periodLabel(String period, LocalDate from, LocalDate to) {
@@ -171,16 +185,32 @@ public class L3FinanceReportService {
 
     private long whole(Map<String, Object> values, String key) {
         Object value = value(values, key);
-        return value instanceof Number number ? number.longValue() : 0L;
+        if (!(value instanceof Number number)) {
+            throw new BizException(503, "L3_REDEMPTION_SOURCE_INVALID");
+        }
+        try {
+            BigDecimal parsed = new BigDecimal(String.valueOf(number));
+            return parsed.longValueExact() < 0
+                    ? invalidWhole()
+                    : parsed.longValueExact();
+        } catch (ArithmeticException | NumberFormatException invalid) {
+            throw new BizException(503, "L3_REDEMPTION_SOURCE_INVALID");
+        }
+    }
+
+    private long invalidWhole() {
+        throw new BizException(503, "L3_REDEMPTION_SOURCE_INVALID");
     }
 
     private BigDecimal decimalOrNull(Map<String, Object> values, String key) {
         Object value = value(values, key);
         if (value == null) return null;
         try {
-            return new BigDecimal(String.valueOf(value));
+            BigDecimal parsed = new BigDecimal(String.valueOf(value));
+            if (parsed.signum() < 0) throw new NumberFormatException("negative");
+            return parsed;
         } catch (RuntimeException ignored) {
-            return null;
+            throw new BizException(503, "L3_REDEMPTION_SOURCE_INVALID");
         }
     }
 
@@ -193,12 +223,15 @@ public class L3FinanceReportService {
                 .findFirst().orElse(null);
     }
 
-    private BigDecimal safe(BigDecimal value) {
-        return value == null || value.signum() < 0 ? BigDecimal.ZERO : value;
+    private BigDecimal requireRevenue(BigDecimal value) {
+        if (value == null || value.signum() < 0) {
+            throw new BizException(503, "L3_REVENUE_SOURCE_INVALID");
+        }
+        return value;
     }
 
     private BigDecimal money(BigDecimal value) {
-        return safe(value).setScale(2, RoundingMode.HALF_UP);
+        return value.setScale(2, RoundingMode.HALF_UP);
     }
 
     private BigDecimal pct(BigDecimal numerator, BigDecimal denominator) {
@@ -222,13 +255,15 @@ public class L3FinanceReportService {
             LocalDateTime previousFrom,
             LocalDateTime previousTo,
             String label,
-            String previousLabel) {
+            String previousLabel,
+            String timeZone) {
         Map<String, Object> view() {
             return Map.of(
                     "granularity", granularity,
                     "from", from.toLocalDate(),
                     "to", to.toLocalDate().minusDays(1),
-                    "label", label);
+                    "label", label,
+                    "timeZone", timeZone);
         }
     }
 }

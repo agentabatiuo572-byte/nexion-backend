@@ -22,6 +22,14 @@ public interface AppTrialLifecycleMapper {
     Long activeUser(@Param("userId") Long userId);
 
     @Select("""
+            SELECT setting_value
+              FROM nx_emergency_control_setting
+             WHERE setting_key=#{settingKey} AND is_deleted=0
+             LIMIT 1
+            """)
+    String emergencyValue(@Param("settingKey") String settingKey);
+
+    @Select("""
             SELECT id,user_id userId,claim_no claimNo,status,user_device_id userDeviceId,
                    payment_method_id paymentMethodId,device_name deviceName,duration_days durationDays,
                    daily_usdt dailyUsdt,daily_nex dailyNex,offset_cap_usdt offsetCapUsdt,
@@ -54,6 +62,31 @@ public interface AppTrialLifecycleMapper {
               FROM nx_growth_trial_policy WHERE is_deleted=0
             """)
     List<PolicyRow> policies();
+
+    @Select("""
+            SELECT user_id userId,
+                   claim_no claimNo,
+                   CASE
+                     WHEN UPPER(status)='EXTENDED' THEN expires_at
+                     ELSE TIMESTAMPADD(
+                       DAY,
+                       COALESCE((
+                         SELECT CAST(current_value AS UNSIGNED)
+                           FROM nx_growth_trial_policy
+                          WHERE policy_key='graceDays' AND is_deleted=0
+                          LIMIT 1
+                       ), 7),
+                       expires_at
+                     )
+                   END dueAt
+              FROM nx_trial_claim
+             WHERE is_deleted=0
+               AND UPPER(status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED')
+            HAVING dueAt <= NOW()
+             ORDER BY expires_at, id
+             LIMIT #{limit}
+            """)
+    List<DueTrialRow> dueTrials(@Param("limit") int limit);
 
     @Select("""
             SELECT COUNT(*) FROM nx_risk_signal
@@ -151,15 +184,32 @@ public interface AppTrialLifecycleMapper {
 
     @Update("""
             UPDATE nx_trial_claim
-               SET status='EXTENDED',expires_at=DATE_ADD(expires_at,INTERVAL #{extensionDays} DAY),
+               SET status='EXTENDED',expires_at=#{extendedExpiresAt},
                    extended_at=#{now},version=version+1,updated_at=NOW()
              WHERE id=#{id} AND version=#{version} AND UPPER(status)='GRACE'
             """)
     int extendTrial(
             @Param("id") Long id,
             @Param("version") long version,
-            @Param("extensionDays") int extensionDays,
+            @Param("extendedExpiresAt") LocalDateTime extendedExpiresAt,
             @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_trial_claim
+               SET status='FAILED',shadow_accrued_usdt=#{shadowUsdt},shadow_accrued_nex=#{shadowNex},
+                   cancel_reason=#{reason},closed_at=#{now},cooldown_until=#{cooldownUntil},
+                   version=version+1,updated_at=NOW()
+             WHERE id=#{id} AND version=#{version}
+               AND UPPER(status) IN ('ACTIVE','GRACE','EXTENDED')
+            """)
+    int failTrial(
+            @Param("id") Long id,
+            @Param("version") long version,
+            @Param("shadowUsdt") BigDecimal shadowUsdt,
+            @Param("shadowNex") BigDecimal shadowNex,
+            @Param("now") LocalDateTime now,
+            @Param("cooldownUntil") LocalDateTime cooldownUntil,
+            @Param("reason") String reason);
 
     @Select("SELECT usdt_available usdt,nex_available nex FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE")
     WalletRow lockWallet(@Param("userId") Long userId);
@@ -247,6 +297,9 @@ public interface AppTrialLifecycleMapper {
     Attribution attribution(@Param("userId") Long userId);
 
     record PolicyRow(String policyKey, String currentValue) {
+    }
+
+    record DueTrialRow(Long userId, String claimNo, LocalDateTime dueAt) {
     }
 
     record TrialRow(

@@ -46,7 +46,7 @@ class OpsSupportTicketControllerTest {
     @Test
     void updateLoadConfigDelegatesWithIdempotencyHeader() {
         SupportLoadConfigUpdateRequest request =
-                new SupportLoadConfigUpdateRequest(true, 7, 11, 75, true, "备勤队列", Map.of(), "superadmin", "rebalance load");
+                new SupportLoadConfigUpdateRequest(1L, true, 7, 11, 75, true, "备勤队列", Map.of(), "superadmin", "rebalance load");
         when(ticketService.updateLoadConfig("idem-m1-load", request)).thenReturn(ApiResult.ok(Map.of("ok", true)));
         when(supportAgentService.canManageSupportSeats()).thenReturn(true);
 
@@ -58,7 +58,7 @@ class OpsSupportTicketControllerTest {
     @Test
     void rebalanceLoadDelegatesWithIdempotencyHeader() {
         SupportLoadRebalanceRequest request =
-                new SupportLoadRebalanceRequest(java.util.List.of(Map.of("id", "agent-1", "cap", 4)), "superadmin", "rebalance load");
+                new SupportLoadRebalanceRequest(1L, java.util.List.of(Map.of("id", "agent-1", "cap", 4)), "superadmin", "rebalance load");
         when(ticketService.rebalanceLoad("idem-m1-rebalance", request)).thenReturn(ApiResult.ok(Map.of("ok", true)));
         when(supportAgentService.canManageSupportSeats()).thenReturn(true);
 
@@ -70,7 +70,7 @@ class OpsSupportTicketControllerTest {
     @Test
     void loadConfigMutationRejectsNonSupervisorEvenWithWriteAuthority() {
         SupportLoadConfigUpdateRequest request =
-                new SupportLoadConfigUpdateRequest(true, 7, 11, 75, true, "备勤队列", Map.of(), "risk", "unauthorized load change");
+                new SupportLoadConfigUpdateRequest(1L, true, 7, 11, 75, true, "备勤队列", Map.of(), "risk", "unauthorized load change");
         when(supportAgentService.canManageSupportSeats()).thenReturn(false);
 
         assertThat(controller.updateLoadConfig("idem-m1-denied", request).getCode()).isEqualTo(403);

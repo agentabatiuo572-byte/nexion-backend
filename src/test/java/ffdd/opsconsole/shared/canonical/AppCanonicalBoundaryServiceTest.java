@@ -50,7 +50,8 @@ class AppCanonicalBoundaryServiceTest {
     void rejectsClientTamperAtAllTenPreviouslyMissingBusinessBoundaries() {
         when(mapper.lockUser(42L)).thenReturn(42L);
         when(mapper.findTrialState(42L)).thenReturn("CLAIMED");
-        when(mapper.walletPaired(42L)).thenReturn(true);
+        when(mapper.kycWallet(42L)).thenReturn(
+                new CanonicalStateMapper.KycWallet("APPROVED", "TR7NHqExampleAddress", "TRC20"));
         when(mapper.twoFactorEnabled(42L)).thenReturn(true);
         when(mapper.activeDeviceCount(42L)).thenReturn(3);
         when(mapper.deviceSlotCap()).thenReturn(3);
@@ -84,7 +85,7 @@ class AppCanonicalBoundaryServiceTest {
     void canonicalRequestsUseServerStateAndNeverTrustClientOwnedValues() {
         when(mapper.lockUser(42L)).thenReturn(42L);
         when(mapper.findTrialState(42L)).thenReturn(null);
-        when(mapper.walletPaired(42L)).thenReturn(false);
+        when(mapper.kycWallet(42L)).thenReturn(null);
         when(mapper.twoFactorEnabled(42L)).thenReturn(false);
         when(mapper.activeDeviceCount(42L)).thenReturn(1);
         when(mapper.deviceSlotCap()).thenReturn(3);
@@ -95,7 +96,8 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
                 9L, "DEV-9", "NexionBox S1", "BOX", "STELLARBOX-S1", "INACTIVE",
                 null, LocalDateTime.of(2026, 7, 1, 0, 0), BigDecimal.ZERO, BigDecimal.ZERO,
-                "RTX 4090", 96, new BigDecimal("1200"), "Singapore")));
+                "RTX 4090", 96, new BigDecimal("1200"), "Singapore",
+                new BigDecimal("649"), new BigDecimal("12.5"))));
         when(mapper.consumeValidOtp(42L, "challenge-1", "123456")).thenReturn(1);
         when(mapper.lockProduct(8L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
@@ -175,6 +177,26 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void preservesEveryE4TerminalStateInsteadOfCollapsingFailuresAndRefundsIntoCancelled() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(
+                userOrder("PAYMENT_FAILED", "FAILED", "WAITING_PAYMENT"),
+                userOrder("EXPIRED", "EXPIRED", "WAITING_PAYMENT"),
+                userOrder("PROVISIONING_FAILED", "PAID", "PROVISIONING_FAILED"),
+                userOrder("REFUNDED", "REFUNDED", "REFUNDED"),
+                userOrder("CHARGEBACK", "CHARGEBACK", "DEACTIVATED"),
+                userOrder("CANCELLED", "CANCELLED", "WAITING_PAYMENT")));
+
+        var result = service.orders(42L);
+
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        assertThat(orders).extracting(row -> row.get("canonicalStatus"))
+                .containsExactly(
+                        "payment_failed", "expired", "provisioning_failed",
+                        "refunded", "chargeback", "cancelled");
+    }
+
+    @Test
     void appliesThePersistedE3CapacityScheduleToTheUserDeviceProjection() {
         when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
         when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
@@ -182,7 +204,8 @@ class AppCanonicalBoundaryServiceTest {
                 LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5).minusMinutes(1),
                 LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5).minusMinutes(1),
                 new BigDecimal("100"), new BigDecimal("50"), "RTX 4090", 96,
-                new BigDecimal("1200"), "Singapore")));
+                new BigDecimal("1200"), "Singapore",
+                new BigDecimal("649"), new BigDecimal("200"))));
 
         var result = service.deviceEarnings(42L, false, false, null);
 
@@ -199,6 +222,8 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("capacityPct", new BigDecimal("80.643786"))
                 .containsEntry("capacityAgeMonths", 5)
                 .containsEntry("dailyUsdt", new BigDecimal("80.643786"))
+                .containsEntry("actualPaidUsdt", new BigDecimal("649.000000"))
+                .containsEntry("cumulativeOutputUsdt", new BigDecimal("200.000000"))
                 .containsEntry("capacitySubsidized", false)
                 .containsEntry("capacitySubsidyDays", 30);
         assertThat(result.getData()).containsKey("capacitySchedule");
@@ -273,6 +298,16 @@ class AppCanonicalBoundaryServiceTest {
     private void assertRejected(ffdd.opsconsole.shared.api.ApiResult<?> result, String code) {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo(code);
+    }
+
+    private CanonicalStateMapper.UserOrder userOrder(
+            String orderStatus, String paymentStatus, String activationStatus) {
+        return new CanonicalStateMapper.UserOrder(
+                "ORD-" + orderStatus, 5L, "stellarbox-pro-v2", "StellarBox Pro v2", 1,
+                new BigDecimal("2589"), BigDecimal.ZERO, new BigDecimal("2589"),
+                "USDT_WALLET", paymentStatus, orderStatus, activationStatus, "SINGLE",
+                LocalDateTime.of(2026, 7, 21, 5, 29), null, null,
+                null, null, null, null, null);
     }
 
     private List<CanonicalStateMapper.E3CapacityConfig> capacityConfig() {

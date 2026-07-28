@@ -8,11 +8,12 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -33,12 +35,15 @@ import org.springframework.util.StringUtils;
 public class BehaviorAnalyticsService {
     private static final Pattern ROUTE = Pattern.compile("^/pages/[a-z0-9-]+/[a-z0-9-]+$");
     private static final Pattern SESSION = Pattern.compile("^[a-f0-9]{32}$");
+    private static final Pattern CLIENT_EVENT_ID = Pattern.compile("^[a-f0-9]{32}$");
     private static final Pattern ELEMENT = Pattern.compile("^[a-z][a-z0-9_-]{0,63}$");
     private static final Pattern LOCALE = Pattern.compile("^[a-z]{2}(?:-[A-Z]{2})?$");
     private static final Set<String> EVENTS = Set.of("app.page_viewed", "app.element_clicked");
     private static final Set<String> DEVICES = Set.of("APP", "H5", "MP");
-    private static final Set<String> ZONES = Set.of("TOP", "CONTENT", "BOTTOM");
+    private static final Set<String> ZONES = Set.of("TOP", "MAIN_CTA", "CONTENT", "BOTTOM");
     private static final long MAX_DWELL_MS = 86_400_000L;
+    private static final ZoneOffset BUSINESS_ZONE = ZoneOffset.ofHours(8);
+    private static final String BUSINESS_TIME_ZONE = "UTC+08:00";
 
     private final BehaviorAnalyticsMapper mapper;
     private final EventOutboxService outbox;
@@ -50,6 +55,7 @@ public class BehaviorAnalyticsService {
     public ApiResult<Map<String, Object>> ingest(Long userId, BehaviorEventRequest request) {
         require(userId != null && userId > 0, "USER_AUTH_REQUIRED");
         require(request != null && EVENTS.contains(request.eventName()), "L6_EVENT_NOT_ALLOWED");
+        require(CLIENT_EVENT_ID.matcher(text(request.clientEventId())).matches(), "L6_CLIENT_EVENT_ID_INVALID");
         String route = normalizeRoute(request.route());
         BehaviorAnalyticsMapper.CatalogRow page = mapper.findTrackedPage(route);
         require(page != null, "L6_ROUTE_NOT_TRACKED");
@@ -85,8 +91,11 @@ public class BehaviorAnalyticsService {
             xNorm = round4(request.xNorm());
             yNorm = round4(request.yNorm());
             String requestedZone = text(request.zone()).toUpperCase(Locale.ROOT);
-            zone = yNorm < 0.25d ? "TOP" : yNorm > 0.75d ? "BOTTOM" : "CONTENT";
-            require(ZONES.contains(requestedZone) && zone.equals(requestedZone), "L6_ZONE_INVALID");
+            String derivedZone = yNorm < 0.25d ? "TOP" : yNorm > 0.75d ? "BOTTOM" : "CONTENT";
+            require(ZONES.contains(requestedZone), "L6_ZONE_INVALID");
+            require(requestedZone.equals(derivedZone)
+                    || ("MAIN_CTA".equals(requestedZone) && "CONTENT".equals(derivedZone)), "L6_ZONE_INVALID");
+            zone = requestedZone;
             if (StringUtils.hasText(request.elementId())) {
                 elementId = text(request.elementId()).toLowerCase(Locale.ROOT);
                 require(ELEMENT.matcher(elementId).matches(), "L6_ELEMENT_ID_INVALID");
@@ -97,26 +106,37 @@ public class BehaviorAnalyticsService {
             if (elementId != null) payload.put("element_id", elementId);
         }
 
-        String dedupeKey = pseudonym("event", request.eventName() + "|" + sessionHash + "|" + route + "|"
-                + request.clientTs() + "|" + xNorm + "|" + yNorm + "|" + dwellMs);
-        if (mapper.countByDedupeKey(dedupeKey) > 0) {
-            return ApiResult.ok(linked("accepted", false, "duplicate", true));
+        BehaviorAnalyticsMapper.ExistingEventRow existing = mapper.findByClientEventId(request.clientEventId());
+        if (existing != null) {
+            require(existing.eventName().equals(request.eventName())
+                    && existing.sessionHash().equals(sessionHash)
+                    && existing.route().equals(route), "L6_CLIENT_EVENT_ID_CONFLICT");
+            boolean backfilled = "app.page_viewed".equals(request.eventName())
+                    && dwellMs != null && dwellMs > (existing.dwellMs() == null ? -1L : existing.dwellMs())
+                    && mapper.backfillPageDwell(request.clientEventId(), sessionHash, route, dwellMs) == 1;
+            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", backfilled));
         }
+        String dedupeKey = pseudonym("event", request.clientEventId());
+        if (mapper.countByDedupeKey(dedupeKey) > 0) {
+            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false));
+        }
+        LocalDateTime latestSession = mapper.latestSessionEventAt(sessionHash);
+        require(latestSession == null || !occurredAt.isBefore(latestSession), "L6_EVENT_OUT_OF_ORDER");
         long perMinuteLimit = "app.element_clicked".equals(request.eventName()) ? 180L : 120L;
-        if (mapper.countRecent(sessionHash, request.eventName(), LocalDateTime.now().minusMinutes(1)) >= perMinuteLimit) {
+        if (mapper.countRecent(sessionHash, request.eventName(), LocalDateTime.now(BUSINESS_ZONE).minusMinutes(1)) >= perMinuteLimit) {
             throw new BizException(429, "L6_EVENT_RATE_LIMITED");
         }
         if ("app.element_clicked".equals(request.eventName())) {
             LocalDateTime latest = mapper.latestEventAt(sessionHash, request.eventName());
-            if (latest != null && latest.plusNanos(300_000_000L).isAfter(LocalDateTime.now())) {
+            if (latest != null && occurredAt.isBefore(latest.plusNanos(300_000_000L))) {
                 throw new BizException(429, "L6_CLICK_THROTTLED");
             }
         }
         String eventId = outbox.publishClientAnalyticsEvent(sessionHash, request.eventName(), payload);
         mapper.insertFact(new BehaviorAnalyticsMapper.BehaviorFactRow(
-                eventId, dedupeKey, request.eventName(), sessionHash, actorHash, route, page.pageLevel(), page.parentL1(), page.parentL2(),
+                eventId, request.clientEventId(), dedupeKey, request.eventName(), sessionHash, actorHash, route, page.pageLevel(), page.parentL1(), page.parentL2(),
                 dwellMs, xNorm, yNorm, zone, elementId, device, locale, occurredAt));
-        return ApiResult.ok(linked("accepted", true, "eventId", eventId));
+        return ApiResult.ok(linked("accepted", true, "duplicate", false, "eventId", eventId));
     }
 
     public ApiResult<Map<String, Object>> behavior(String window, String device, String locale, String depth, String sort) {
@@ -132,10 +152,14 @@ public class BehaviorAnalyticsService {
                 "device", query.device() == null ? "ALL" : query.device(),
                 "locale", query.locale() == null ? "ALL" : query.locale(),
                 "depth", normalizedDepth,
+                "businessTimeZone", BUSINESS_TIME_ZONE,
+                "lateArrivalPolicy", "included_on_next_query",
                 "activity", rows,
                 "dailyTrend", mapper.dailyTrend(query.startAt(), query.endAt(), query.device(), query.locale()),
                 "weeklyTrend", mapper.weeklyTrend(query.startAt(), query.endAt(), query.device(), query.locale()),
                 "privacy", linked("aggregatedOnly", true, "rawTextStored", false, "directUserIdStored", false),
+                "quality", linked("clientEventIdDeduplicated", true, "outOfOrderRejected", true,
+                        "ctrDenominator", "page_viewed_pv"),
                 "sources", List.of("nx_behavior_event_fact", "nx_behavior_page_catalog", "nx_event_outbox")));
     }
 
@@ -178,6 +202,7 @@ public class BehaviorAnalyticsService {
         List<BehaviorAnalyticsMapper.ActivityRow> rows = new ArrayList<>(
                 mapper.activity(query.startAt(), query.endAt(), query.device(), query.locale(), normalizedDepth));
         sortActivity(rows, sort);
+        require(!rows.isEmpty(), "L6_EXPORT_EMPTY");
         Map<String, BehaviorAnalyticsMapper.CatalogRow> catalog = new LinkedHashMap<>();
         mapper.listCatalog().forEach(row -> catalog.put(row.route(), row));
         StringBuilder csv = new StringBuilder("route,title_zh,page_level,pv,uv,clicks,avg_dwell_ms,bounce_rate\n");
@@ -187,25 +212,35 @@ public class BehaviorAnalyticsService {
                     .append(page == null ? 3 : page.pageLevel()).append(',').append(row.pv()).append(',').append(row.uv()).append(',')
                     .append(row.clicks()).append(',').append(row.dwellMs()).append(',').append(row.bounceRate()).append('\n');
         }
+        String exportId = "L6-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("admin.report_exported")
                 .resourceType("BI_BEHAVIOR_AGGREGATE")
-                .resourceId("L6-" + query.window())
+                .resourceId(exportId)
                 .actorType("ADMIN")
                 .result("SUCCESS")
                 .riskLevel("LOW")
                 .detail(linked("window", query.window(), "depth", normalizedDepth, "device", valueOrAll(query.device()),
                         "locale", valueOrAll(query.locale()), "rows", rows.size(), "containsPii", false))
                 .build());
+        outbox.publish("BI_REPORT", exportId, "admin.report_exported", linked(
+                "reportId", exportId,
+                "exportType", "BEHAVIOR_AGGREGATE",
+                "scope", query.window() + "|" + normalizedDepth + "|" + valueOrAll(query.device()) + "|" + valueOrAll(query.locale()),
+                "rowCount", rows.size(),
+                "containsPii", false,
+                "maskingPolicy", "AGGREGATED",
+                "operator", AdminActorResolver.resolve("unknown"),
+                "reason", "L6 behavior aggregate export",
+                "format", "CSV"));
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     private Query query(String window, String device, String locale) {
-        String normalizedWindow = switch (text(window).toLowerCase(Locale.ROOT)) {
-            case "24h", "30d" -> text(window).toLowerCase(Locale.ROOT);
-            default -> "7d";
-        };
-        LocalDateTime end = LocalDateTime.now();
+        String rawWindow = text(window).toLowerCase(Locale.ROOT);
+        String normalizedWindow = rawWindow.isEmpty() ? "7d" : rawWindow;
+        require(Set.of("24h", "7d", "30d").contains(normalizedWindow), "L6_WINDOW_INVALID");
+        LocalDateTime end = LocalDateTime.now(BUSINESS_ZONE);
         LocalDateTime start = "24h".equals(normalizedWindow) ? end.minusHours(24)
                 : "30d".equals(normalizedWindow) ? end.minusDays(30) : end.minusDays(7);
         String normalizedDevice = "ALL".equalsIgnoreCase(text(device)) || text(device).isEmpty() ? null : normalizeDevice(device);
@@ -214,18 +249,23 @@ public class BehaviorAnalyticsService {
     }
 
     private String normalizeDepth(String depth) {
-        return switch (text(depth).toUpperCase(Locale.ROOT)) {
-            case "L1", "L2", "L3" -> text(depth).toUpperCase(Locale.ROOT);
-            default -> "ALL";
-        };
+        String normalized = text(depth).toUpperCase(Locale.ROOT);
+        if (normalized.isEmpty()) return "ALL";
+        require(Set.of("ALL", "L1", "L2", "L3").contains(normalized), "L6_DEPTH_INVALID");
+        return normalized;
     }
 
     private void sortActivity(List<BehaviorAnalyticsMapper.ActivityRow> rows, String sort) {
-        Comparator<BehaviorAnalyticsMapper.ActivityRow> comparator = switch (text(sort).toLowerCase(Locale.ROOT)) {
+        String normalized = text(sort).toLowerCase(Locale.ROOT);
+        if (normalized.isEmpty()) normalized = "pv";
+        require(Set.of("pv", "clicks", "dwellms", "dwell", "bouncerate", "bounce").contains(normalized),
+                "L6_SORT_INVALID");
+        Comparator<BehaviorAnalyticsMapper.ActivityRow> comparator = switch (normalized) {
             case "clicks" -> Comparator.comparingLong(BehaviorAnalyticsMapper.ActivityRow::clicks);
             case "dwellms", "dwell" -> Comparator.comparingLong(BehaviorAnalyticsMapper.ActivityRow::dwellMs);
             case "bouncerate", "bounce" -> Comparator.comparingDouble(BehaviorAnalyticsMapper.ActivityRow::bounceRate);
-            default -> Comparator.comparingLong(BehaviorAnalyticsMapper.ActivityRow::pv);
+            case "pv" -> Comparator.comparingLong(BehaviorAnalyticsMapper.ActivityRow::pv);
+            default -> throw new IllegalStateException("L6_SORT_UNREACHABLE");
         };
         rows.sort(comparator.reversed().thenComparing(BehaviorAnalyticsMapper.ActivityRow::route));
     }
@@ -249,8 +289,8 @@ public class BehaviorAnalyticsService {
 
     private LocalDateTime normalizeClientTime(Long clientTs) {
         long now = System.currentTimeMillis();
-        long value = clientTs == null || Math.abs(now - clientTs) > MAX_DWELL_MS ? now : clientTs;
-        return LocalDateTime.ofInstant(Instant.ofEpochMilli(value), ZoneId.systemDefault());
+        require(clientTs != null && Math.abs(now - clientTs) <= MAX_DWELL_MS, "L6_CLIENT_TIME_INVALID");
+        return LocalDateTime.ofInstant(Instant.ofEpochMilli(clientTs), BUSINESS_ZONE);
     }
 
     private String pseudonym(String namespace, String value) {

@@ -19,6 +19,10 @@ public class BinarySettlementPolicyProvider {
     static final String THRESHOLD_KEY = "team.ui.F.binary.threshold";
     static final String MATCH_RATE_KEY = "team.ui.F.binary.matchRate";
     static final String PAUSED_KEY = "team.ui.F.binary.paused";
+    static final String SPILLOVER_KEY = "team.ui.F.binary.spillover";
+    static final String SETTLE_PERIOD_KEY = "team.ui.F.binary.settlePeriod";
+    static final String RESIDUAL_POLICY_KEY = "team.ui.F.binary.residualPolicy";
+    static final String GV_RESET_KEY = "team.ui.F.binary.gvResetCron";
     static final String H1_TOTAL_MONTHS_KEY = "H1.rhythm.totalMonths";
     static final String H1_CURRENT_MONTH_KEY = "H1.rhythm.currentMonth";
     static final String H1_PHASE_KEY = "growth.phase.current";
@@ -32,6 +36,14 @@ public class BinarySettlementPolicyProvider {
                 "F3_THRESHOLD_INVALID");
         BigDecimal matchRate = rate(require(MATCH_RATE_KEY, "F3_MATCH_RATE_MISSING"));
         boolean paused = strictBoolean(require(PAUSED_KEY, "F3_PAUSED_CONFIG_MISSING"));
+        boolean spilloverEnabled = strictEnabled(require(SPILLOVER_KEY, "F3_SPILLOVER_CONFIG_MISSING"));
+        String settlePeriod = oneOf(
+                require(SETTLE_PERIOD_KEY, "F3_SETTLE_PERIOD_MISSING"),
+                "F3_SETTLE_PERIOD_INVALID", "每日", "每周", "每月");
+        String residualPolicy = oneOf(
+                require(RESIDUAL_POLICY_KEY, "F3_RESIDUAL_POLICY_MISSING"),
+                "F3_RESIDUAL_POLICY_INVALID", "每月清零", "每次对碰清零", "转结");
+        String gvResetCron = require(GV_RESET_KEY, "F3_GV_RESET_MISSING");
 
         int totalMonths = positiveInteger(require(H1_TOTAL_MONTHS_KEY, "H1_TOTAL_MONTHS_MISSING"),
                 "H1_TOTAL_MONTHS_INVALID");
@@ -61,6 +73,7 @@ public class BinarySettlementPolicyProvider {
         }
         return new BinarySettlementPolicy(
                 threshold, matchRate, rhythm.binaryDailyCap(), paused,
+                spilloverEnabled, settlePeriod, residualPolicy, gvResetCron,
                 coverage.coverageRatio(), coverage.redlinePct());
     }
 
@@ -123,11 +136,31 @@ public class BinarySettlementPolicyProvider {
         };
     }
 
+    private boolean strictEnabled(String raw) {
+        return switch (raw.trim().toLowerCase(Locale.ROOT)) {
+            case "true", "1", "on", "已启用" -> true;
+            case "false", "0", "off", "已关闭" -> false;
+            default -> throw new PolicyBlocked("F3_SPILLOVER_CONFIG_INVALID");
+        };
+    }
+
+    private String oneOf(String raw, String code, String... allowed) {
+        String value = raw.trim();
+        for (String candidate : allowed) {
+            if (candidate.equals(value)) return value;
+        }
+        throw new PolicyBlocked(code);
+    }
+
     public record BinarySettlementPolicy(
             BigDecimal threshold,
             BigDecimal matchRate,
             BigDecimal dailyCap,
             boolean paused,
+            boolean spilloverEnabled,
+            String settlePeriod,
+            String residualPolicy,
+            String gvResetCron,
             BigDecimal coverageRatio,
             BigDecimal coverageRedline) { }
 

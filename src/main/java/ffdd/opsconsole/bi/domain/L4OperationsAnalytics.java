@@ -6,6 +6,7 @@ import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -23,6 +24,7 @@ import java.util.TreeMap;
  * incomplete denominators as null instead of manufacturing operational rates.
  */
 public final class L4OperationsAnalytics {
+    private static final ZoneOffset BUSINESS_OFFSET = ZoneOffset.ofHours(8);
     private static final List<String> PHASES = List.of("P1", "P2", "P3", "P4", "P5", "P6");
     private static final Set<String> L4_EVENTS = Set.of(
             "device.purchase_completed", "device.first_yield_received", "device.locked", "device.retired",
@@ -39,7 +41,7 @@ public final class L4OperationsAnalytics {
 
     public static Map<String, Object> calculate(
             List<Map<String, Object>> source, String period, String phase, String from, String to) {
-        return calculate(source, period, phase, from, to, LocalDateTime.now());
+        return calculate(source, period, phase, from, to, LocalDateTime.now(BUSINESS_OFFSET));
     }
 
     static Map<String, Object> calculate(
@@ -48,11 +50,23 @@ public final class L4OperationsAnalytics {
         String normalizedPeriod = normalizePeriod(period);
         String normalizedPhase = normalizePhase(phase);
         Range range = range(normalizedPeriod, from, to, now);
-        List<Fact> all = source == null ? List.of() : source.stream()
-                .map(L4OperationsAnalytics::fact)
-                .filter(item -> item != null && L4_EVENTS.contains(item.event()))
-                .sorted(Comparator.comparing(Fact::ts))
-                .toList();
+        List<Fact> all = new ArrayList<>();
+        Set<String> eventIds = new LinkedHashSet<>();
+        int duplicateEventsIgnored = 0;
+        if (source != null) {
+            for (Map<String, Object> row : source) {
+                Fact item = fact(row);
+                if (item == null || !L4_EVENTS.contains(item.event())) {
+                    throw new IllegalArgumentException("L4_EVENT_FACT_INVALID");
+                }
+                if (!eventIds.add(item.eventId())) {
+                    duplicateEventsIgnored++;
+                    continue;
+                }
+                all.add(item);
+            }
+        }
+        all.sort(Comparator.comparing(Fact::ts));
         List<Fact> selected = all.stream()
                 .filter(item -> !item.ts().isBefore(range.from()) && !item.ts().isAfter(range.to()))
                 .filter(item -> "ALL".equals(normalizedPhase) || normalizedPhase.equals(item.phase()))
@@ -77,14 +91,17 @@ public final class L4OperationsAnalytics {
                 "device", device(selected),
                 "tasks", tasks(selected, actorComplete),
                 "network", network(selected, actorComplete),
-                "phaseEffect", phaseEffect(selected, actorComplete),
+                "phaseEffect", phaseEffect(selected, actorComplete, normalizedPhase),
                 "history", history(selected, normalizedPeriod),
                 "quality", linked(
                         "serverCanonical", true,
                         "sameActorRates", actorComplete,
                         "actorCoveragePct", actorCoverage,
                         "incompleteRatesAreNull", true,
-                        "eventCount", selected.size()),
+                        "eventCount", selected.size(),
+                        "duplicateEventsIgnored", duplicateEventsIgnored,
+                        "businessTimeZone", "UTC+08:00",
+                        "lateArrivalRule", "included_on_next_query"),
                 "capabilities", linked(
                         "currentSnapshot", true,
                         "periodSlicing", true,
@@ -162,8 +179,13 @@ public final class L4OperationsAnalytics {
         List<Fact> invites = events(rows, "referral.invite_sent");
         List<Fact> referrals = events(rows, "referral.bound");
         List<Fact> commissions = events(rows, "commission.paid");
+        List<Fact> networkCommissions = commissions.stream()
+                .filter(item -> "network".equalsIgnoreCase(item.tier()))
+                .toList();
+        boolean networkAttributionComplete = networkCommissions.stream()
+                .allMatch(item -> hasText(item.sourceActor()));
         Set<String> referredActors = actorSet(referrals);
-        long triggered = orderedActors(referrals, commissions).size();
+        long triggered = orderedSourceActors(referrals, networkCommissions).size();
         long holderActors = distinctActors(holders);
         long inviteActors = orderedActors(holders, invites).size();
         Set<String> referredBeforeCheckout = orderedActors(referrals, events(rows, "checkout.completed"));
@@ -178,16 +200,19 @@ public final class L4OperationsAnalytics {
                         "commissionPaidUsdt", decimal(sum(commissions, Fact::amountUsdt)),
                         "teamGmvUsdt", decimal(gmv),
                         "promotionRate", actorComplete && holderActors > 0 ? pct(inviteActors, holderActors) : null,
-                        "commissionTriggerRate", actorComplete && !referredActors.isEmpty() ? pct(triggered, referredActors.size()) : null),
+                        "commissionTriggerRate", actorComplete && networkAttributionComplete && !referredActors.isEmpty()
+                                ? pct(triggered, referredActors.size()) : null),
                 "teamSizeDist", numericDistribution(referrals, Fact::teamSize),
                 "vRankDist", distribution(merge(referrals, commissions), Fact::vRank),
                 "commissionStructure", distribution(commissions, Fact::tier));
     }
 
-    private static List<Map<String, Object>> phaseEffect(List<Fact> rows, boolean actorComplete) {
+    private static List<Map<String, Object>> phaseEffect(
+            List<Fact> rows, boolean actorComplete, String phaseFilter) {
         List<Map<String, Object>> result = new ArrayList<>();
         Double previousConversion = null;
-        for (String phase : PHASES) {
+        List<String> phases = "ALL".equals(phaseFilter) ? PHASES : List.of(phaseFilter);
+        for (String phase : phases) {
             List<Fact> phaseRows = rows.stream().filter(item -> phase.equals(item.phase())).toList();
             List<Fact> registrations = events(phaseRows, "auth.register_completed");
             List<Fact> activeFacts = events(phaseRows, "app.dau");
@@ -201,7 +226,6 @@ public final class L4OperationsAnalytics {
             Double retention = actorComplete && registered > 0 ? pct(retained, registered) : null;
             Double conversion = actorComplete && store > 0 ? pct(converted, store) : null;
             Double step = conversion == null || previousConversion == null ? null : round(conversion - previousConversion);
-            if (conversion != null) previousConversion = conversion;
             result.add(linked(
                     "phase", phase,
                     "activeUsers", active,
@@ -211,6 +235,7 @@ public final class L4OperationsAnalytics {
                     "transitionCount", events(phaseRows, "phase.transitioned").size(),
                     "dialChangeCount", events(phaseRows, "phase.dial_changed").size(),
                     "conversionStepPct", step));
+            previousConversion = conversion;
         }
         return result;
     }
@@ -224,11 +249,11 @@ public final class L4OperationsAnalytics {
         List<Map<String, Object>> result = new ArrayList<>();
         buckets.forEach((key, facts) -> result.add(linked(
                 "bucket", key,
-                "devicePurchases", events(facts, "device.purchase_completed").size(),
-                "deviceRetirements", events(facts, "device.retired").size(),
+                "devicePurchases", distinctKey(events(facts, "device.purchase_completed"), Fact::deviceId),
+                "deviceRetirements", distinctKey(events(facts, "device.retired"), Fact::deviceId),
                 "yieldUsdt", decimal(sum(events(facts, "earnings.credited"), Fact::amountUsdt)),
-                "tasksCompleted", events(facts, "quest.completed").size(),
-                "directRefs", events(facts, "referral.bound").size(),
+                "tasksCompleted", distinctKey(events(facts, "quest.completed"), L4OperationsAnalytics::taskKey),
+                "directRefs", distinctKey(events(facts, "referral.bound"), Fact::actor),
                 "commissionPaidUsdt", decimal(sum(events(facts, "commission.paid"), Fact::amountUsdt)))));
         return result;
     }
@@ -329,6 +354,16 @@ public final class L4OperationsAnalytics {
         return result;
     }
 
+    private static Set<String> orderedSourceActors(List<Fact> prerequisite, List<Fact> consequence) {
+        Map<String, LocalDateTime> starts = firstTimes(prerequisite, Fact::actor);
+        Set<String> result = new LinkedHashSet<>();
+        for (Fact item : consequence) {
+            LocalDateTime start = starts.get(item.sourceActor());
+            if (start != null && item.ts().isAfter(start)) result.add(item.sourceActor());
+        }
+        return result;
+    }
+
     private static BigDecimal sum(List<Fact> rows, DecimalValue value) {
         return rows.stream().map(value::apply).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
@@ -336,16 +371,30 @@ public final class L4OperationsAnalytics {
     private static Fact fact(Map<String, Object> row) {
         if (row == null) return null;
         LocalDateTime ts = timestamp(row.get("eventTs"));
-        if (ts == null) return null;
+        String event = text(row.get("eventName"));
+        String eventId = text(row.get("eventId"));
+        String actor = text(row.get("actorId"));
+        BigDecimal amountUsdt = money(row.get("amountUsdt"));
+        BigDecimal amountNex = money(row.get("amountNex"));
+        BigDecimal baselineUsdt = money(row.get("baselineUsdt"));
+        Double degradationRate = number(row.get("degradationRate"));
+        Double queueSaturation = number(row.get("queueSaturation"));
+        if (ts == null || !hasText(event) || !hasText(eventId)
+                || (ACTOR_EVENTS.contains(event) && !hasText(actor))
+                || amountUsdt == null || amountNex == null || baselineUsdt == null
+                || amountUsdt.signum() < 0 || amountNex.signum() < 0 || baselineUsdt.signum() < 0
+                || (degradationRate != null && (degradationRate < 0 || degradationRate > 100))
+                || (queueSaturation != null && (queueSaturation < 0 || queueSaturation > 100))) {
+            return null;
+        }
         return new Fact(
-                text(row.get("eventName")), ts, text(row.get("eventId")), text(row.get("actorId")),
+                event, ts, eventId, actor, text(row.get("sourceActorId")),
                 upper(row.get("phase"), "UNASSIGNED"), text(row.get("cohort")), text(row.get("locale")),
                 text(row.get("refCode")), text(row.get("deviceId")), text(row.get("model")),
                 text(row.get("generation")), text(row.get("status")), text(row.get("tier")),
                 text(row.get("questKey")), text(row.get("relationshipKey")),
-                text(row.get("vRank")), number(row.get("teamSize")), money(row.get("amountUsdt")),
-                money(row.get("amountNex")), money(row.get("baselineUsdt")),
-                number(row.get("degradationRate")), number(row.get("queueSaturation")));
+                text(row.get("vRank")), number(row.get("teamSize")), amountUsdt,
+                amountNex, baselineUsdt, degradationRate, queueSaturation);
     }
 
     private static LocalDateTime timestamp(Object value) {
@@ -361,36 +410,41 @@ public final class L4OperationsAnalytics {
 
     private static Range range(String period, String from, String to, LocalDateTime now) {
         if ("custom".equals(period)) {
-            LocalDate start = parseDate(from, now.toLocalDate().minusDays(29));
-            LocalDate end = parseDate(to, now.toLocalDate());
-            if (start.isAfter(end)) {
-                LocalDate swap = start;
-                start = end;
-                end = swap;
+            LocalDate start = parseDate(from);
+            LocalDate end = parseDate(to);
+            if (start == null || end == null || start.isAfter(end)
+                    || end.isAfter(now.toLocalDate())
+                    || ChronoUnit.DAYS.between(start, end) > 399) {
+                throw new IllegalArgumentException("L4_CUSTOM_RANGE_INVALID");
             }
-            if (ChronoUnit.DAYS.between(start, end) > 399) start = end.minusDays(399);
             return new Range(start.atStartOfDay(), end.atTime(LocalTime.MAX));
         }
         long days = "day".equals(period) ? 1 : "month".equals(period) ? 30 : 7;
         return new Range(now.minusDays(days), now);
     }
 
-    private static LocalDate parseDate(String value, LocalDate fallback) {
+    private static LocalDate parseDate(String value) {
         try {
-            return hasText(value) ? LocalDate.parse(value.trim()) : fallback;
+            return hasText(value) ? LocalDate.parse(value.trim()) : null;
         } catch (DateTimeParseException ignored) {
-            return fallback;
+            return null;
         }
     }
 
     private static String normalizePeriod(String value) {
         String normalized = text(value).toLowerCase(Locale.ROOT);
-        return Set.of("day", "week", "month", "custom").contains(normalized) ? normalized : "week";
+        if (!Set.of("day", "week", "month", "custom").contains(normalized)) {
+            throw new IllegalArgumentException("L4_PERIOD_INVALID");
+        }
+        return normalized;
     }
 
     private static String normalizePhase(String value) {
         String normalized = upper(value, "ALL");
-        return PHASES.contains(normalized) ? normalized : "ALL";
+        if (!"ALL".equals(normalized) && !PHASES.contains(normalized)) {
+            throw new IllegalArgumentException("L4_PHASE_INVALID");
+        }
+        return normalized;
     }
 
     private static String periodLabel(String period) {
@@ -415,7 +469,7 @@ public final class L4OperationsAnalytics {
         try {
             return value == null || String.valueOf(value).isBlank() ? BigDecimal.ZERO : new BigDecimal(String.valueOf(value));
         } catch (NumberFormatException ignored) {
-            return BigDecimal.ZERO;
+            return null;
         }
     }
 
@@ -459,7 +513,7 @@ public final class L4OperationsAnalytics {
     }
 
     private record Fact(
-            String event, LocalDateTime ts, String eventId, String actor, String phase, String cohort,
+            String event, LocalDateTime ts, String eventId, String actor, String sourceActor, String phase, String cohort,
             String locale, String refCode, String deviceId, String model, String generation, String status,
             String tier, String questKey, String relationshipKey, String vRank, Double teamSize, BigDecimal amountUsdt, BigDecimal amountNex,
             BigDecimal baselineUsdt, Double degradationRate, Double queueSaturation) {

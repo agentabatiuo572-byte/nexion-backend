@@ -51,6 +51,37 @@ class AppCanonicalBoundaryControllerTest {
         verify(service).orders(42L);
     }
 
+    @Test
+    void trialStateMismatchPublishesTheJ3CanonicalRejection() {
+        UsernamePasswordAuthenticationToken user = auth("42", "USER");
+        when(trialLifecycleService.state(42L))
+                .thenReturn(ApiResult.ok(Map.of("state", "CLAIMED")));
+        when(service.rejectTrialStateTamper(42L))
+                .thenReturn(ApiResult.fail(409, "TRIAL_STATE_CONFLICT"));
+
+        ApiResult<Map<String, Object>> result = controller.trialEligibility("ELIGIBLE", user);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_STATE_CONFLICT");
+        verify(service).rejectTrialStateTamper(42L);
+    }
+
+    @Test
+    void clientOwnedTrialChargeOutcomePublishesTheJ3CanonicalRejection() {
+        UsernamePasswordAuthenticationToken user = auth("42", "USER");
+        when(service.chargeTrial(42L, true, java.math.BigDecimal.ONE, "j3-charge-probe"))
+                .thenReturn(ApiResult.fail(409, "CLIENT_CHARGE_OUTCOME_REJECTED"));
+
+        ApiResult<Map<String, Object>> result = controller.chargeTrial(
+                new AppCanonicalBoundaryController.TrialChargeRequest(true, java.math.BigDecimal.ONE),
+                "j3-charge-probe", user);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("CLIENT_CHARGE_OUTCOME_REJECTED");
+        verify(service).chargeTrial(42L, true, java.math.BigDecimal.ONE, "j3-charge-probe");
+        verify(trialLifecycleService, never()).charge(42L, "j3-charge-probe");
+    }
+
     private UsernamePasswordAuthenticationToken auth(String id, String subjectType) {
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(id, null, java.util.List.of());

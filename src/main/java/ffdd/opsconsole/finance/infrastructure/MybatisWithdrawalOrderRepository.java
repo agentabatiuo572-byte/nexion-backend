@@ -75,6 +75,20 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public boolean confirmSent(
+            String withdrawalNo,
+            String expectedStatus,
+            String chainTxHash,
+            LocalDateTime completedAt) {
+        return mapper.confirmSent(withdrawalNo, expectedStatus, chainTxHash, completedAt) == 1;
+    }
+
+    @Override
+    public boolean chainTxHashUsedByOtherWithdrawal(String withdrawalNo, String chainTxHash) {
+        return mapper.countOtherByChainTxHash(withdrawalNo, chainTxHash) > 0;
+    }
+
+    @Override
     public boolean transitionStatusWithLifecycle(
             String withdrawalNo,
             String expectedStatus,

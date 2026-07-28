@@ -24,6 +24,7 @@ public class G2ExchangeQueueBatchService {
     private final AppExchangeMapper mapper;
     private final PlatformConfigFacade config;
     private final EventOutboxService outbox;
+    private final G2ExchangeFeeAllocationService feeAllocationService;
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String,Object> process(int requestedLimit) {
@@ -65,6 +66,7 @@ public class G2ExchangeQueueBatchService {
             if (mapper.insertLedger(new AppExchangeMapper.LedgerWrite(row.userId(),row.exchangeNo()+"-OUT",row.fromAsset(),"OUT",row.fromAmount(),money(fromAfter),"G2 queued swap debit")) != 1
                     || mapper.insertLedger(new AppExchangeMapper.LedgerWrite(row.userId(),row.exchangeNo()+"-IN",toAsset,"IN",toAmount,money(toAfter),"G2 queued swap credit")) != 1)
                 throw new BizException(409,"EXCHANGE_LEDGER_CONFLICT");
+            feeAllocationService.allocate(row.exchangeNo(),fee,price);
             AppExchangeMapper.UserAttribution a = mapper.userAttribution(row.userId());
             if (a == null) throw new BizException(409,"USER_EVENT_ATTRIBUTION_UNAVAILABLE");
             outbox.publishUserEvent("EXCHANGE_ORDER",row.exchangeNo(),"exchange.swapped",row.userId(),phase(a.phase()),

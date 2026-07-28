@@ -68,6 +68,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 public class OpsTrustDisclosureService implements AuditReplayable {
     private static final List<String> ROLE_GATES = List.of("内容", "合规 / 超管", "风控 / 超管");
     private static final List<String> LANGUAGE_SCOPES = List.of("zh+vi", "zh+vi+en");
+    private static final Set<String> DISCLOSURE_CHAPTER_NUMBERS =
+            Set.of("01", "02", "03", "04", "05", "06", "07");
     private static final List<DisclosureCountryOption> COUNTRY_OPTIONS = List.of(
             new DisclosureCountryOption("VN", "越南"),
             new DisclosureCountryOption("HK", "中国香港"),
@@ -167,18 +169,33 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
+        TrustSectionMutationResult result = idempotencyService.execute(
+                "I4_TRUST_SECTION_PUBLISH", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(sectionKey, String.valueOf(request)),
+                TrustSectionMutationResult.class,
+                () -> TrustSectionMutationResult.from(doPublishSection(sectionKey, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustSectionView> doPublishSection(
+            String sectionKey, String idempotencyKey, TrustSectionPublishRequest request) {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("I", "trust_section", sectionKey) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
+        trustDisclosureRepository.lockTrustSection(sectionKey);
         TrustSectionView current = findSection(sectionKey);
         if (current == null) {
             return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
         }
+        ApiResult<Void> snapshotGuard = requireTrustSectionSnapshot(
+                current, request.expectedVersion(), request.expectedStatus());
+        if (snapshotGuard != null) return fail(snapshotGuard);
         String publishAuthority = requiredSectionPublishAuthority(current);
         if (!hasAuthority(publishAuthority)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "TRUST_SECTION_PUBLISH_FORBIDDEN");
         }
+        trustDisclosureRepository.lockTrustSectionVersion(current.key(), request.version());
         TrustSectionVersionView version = findSectionVersion(current.key(), request.version());
         if (version == null || !"draft".equalsIgnoreCase(version.status())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_DRAFT_VERSION_NOT_FOUND");
@@ -192,14 +209,15 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (!hasCompleteChineseVietnameseFields(version.fields())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_BILINGUAL_FIELDS_REQUIRED");
         }
-        TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), version.version(), operator(request.operator()), now());
-        requiredAudit("I4_TRUST_SECTION_PUBLISHED", "TRUST_SECTION", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        String actor = authenticatedOperator();
+        TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), version.version(), actor, now());
+        requiredAudit("I4_TRUST_SECTION_PUBLISHED", "TRUST_SECTION", current.key(), actor, idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
                 "to", request.version().trim(),
                 "roleGate", current.roleGate(),
                 "dataSourceStatement", trimToEmpty(request.dataSourceStatement()),
                 "bilingualConfirmed", true));
-        publishTrustGovernanceEvent("admin.trust_content_published", current, updated.version(), request.operator(), request.reason(),
+        publishTrustGovernanceEvent("admin.trust_content_published", current, updated.version(), actor, request.reason(),
                 trimToEmpty(request.dataSourceStatement()));
         return ApiResult.ok(updated);
     }
@@ -210,29 +228,47 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
+        TrustSectionMutationResult result = idempotencyService.execute(
+                "I4_TRUST_SECTION_ROLLBACK", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(sectionKey, String.valueOf(request)),
+                TrustSectionMutationResult.class,
+                () -> TrustSectionMutationResult.from(doRollbackSection(sectionKey, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustSectionView> doRollbackSection(
+            String sectionKey, String idempotencyKey, TrustSectionRollbackRequest request) {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("I", "trust_section", sectionKey) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
+        trustDisclosureRepository.lockTrustSection(sectionKey);
         TrustSectionView current = findSection(sectionKey);
         if (current == null) {
             return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
         }
+        ApiResult<Void> snapshotGuard = requireTrustSectionSnapshot(
+                current, request.expectedVersion(), request.expectedStatus());
+        if (snapshotGuard != null) return fail(snapshotGuard);
         if (!hasAuthority(requiredSectionPublishAuthority(current))) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "TRUST_SECTION_PUBLISH_FORBIDDEN");
         }
-        if (request.targetVersion().trim().equals(current.version())) {
+        boolean restoresArchivedVersion = "archived".equalsIgnoreCase(current.status())
+                && request.targetVersion().trim().equals(current.version());
+        if (request.targetVersion().trim().equals(current.version()) && !restoresArchivedVersion) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        trustDisclosureRepository.lockTrustSectionVersion(current.key(), request.targetVersion());
         TrustSectionVersionView target = findSectionVersion(current.key(), request.targetVersion());
         if (target == null || (!"published".equalsIgnoreCase(target.status()) && !"superseded".equalsIgnoreCase(target.status()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_VERSION_NOT_FOUND");
         }
-        TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), target.version(), operator(request.operator()), now());
-        requiredAudit("I4_TRUST_SECTION_ROLLED_BACK", "TRUST_SECTION", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        String actor = authenticatedOperator();
+        TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), target.version(), actor, now());
+        requiredAudit("I4_TRUST_SECTION_ROLLED_BACK", "TRUST_SECTION", current.key(), actor, idempotencyKey, request.reason(), Map.of(
                 "from", current.version(),
                 "to", request.targetVersion().trim()));
-        publishTrustGovernanceEvent("admin.trust_content_rolledback", current, updated.version(), request.operator(), request.reason(), "");
+        publishTrustGovernanceEvent("admin.trust_content_rolledback", current, updated.version(), actor, request.reason(), "");
         return ApiResult.ok(updated);
     }
 
@@ -241,7 +277,18 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (!hasAuthority("content_i4_write")) return forbiddenDraft();
         ApiResult<Void> guard = requireSectionDraft(sectionKey, idempotencyKey, request);
         if (guard != null) return fail(guard);
+        TrustSectionVersionMutationResult result = idempotencyService.execute(
+                "I4_TRUST_SECTION_DRAFT_CREATE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(sectionKey, String.valueOf(request)),
+                TrustSectionVersionMutationResult.class,
+                () -> TrustSectionVersionMutationResult.from(doCreateSectionDraft(sectionKey, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustSectionVersionView> doCreateSectionDraft(
+            String sectionKey, String idempotencyKey, TrustSectionDraftRequest request) {
         if (isTrustSectionLocked(sectionKey)) return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        trustDisclosureRepository.lockTrustSection(sectionKey);
         TrustSectionView section = findSection(sectionKey);
         if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
         ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
@@ -250,8 +297,13 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (findSectionVersion(sectionKey, request.version()) != null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "TRUST_SECTION_VERSION_ALREADY_EXISTS");
         }
-        TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(sectionKey.trim(), request, now());
-        audit("I4_TRUST_SECTION_DRAFT_CREATED", "TRUST_SECTION_VERSION", sectionKey + ":" + saved.version(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        ApiResult<Void> snapshotGuard = requireTrustSectionSnapshot(
+                section, request.expectedSectionVersion(), request.expectedSectionStatus());
+        if (snapshotGuard != null) return fail(snapshotGuard);
+        String actor = authenticatedOperator();
+        TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(
+                sectionKey.trim(), withTrustSectionOperator(request, actor), now());
+        audit("I4_TRUST_SECTION_DRAFT_CREATED", "TRUST_SECTION_VERSION", sectionKey + ":" + saved.version(), actor, idempotencyKey, request.reason(), Map.of(
                 "fieldCount", saved.fields().size(), "revision", saved.revision()));
         return ApiResult.ok(saved);
     }
@@ -261,10 +313,23 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (!hasAuthority("content_i4_write")) return forbiddenDraft();
         ApiResult<Void> guard = requireSectionDraft(sectionKey, idempotencyKey, request);
         if (guard != null) return fail(guard);
+        TrustSectionVersionMutationResult result = idempotencyService.execute(
+                "I4_TRUST_SECTION_DRAFT_UPDATE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(sectionKey, version, String.valueOf(request)),
+                TrustSectionVersionMutationResult.class,
+                () -> TrustSectionVersionMutationResult.from(
+                        doUpdateSectionDraft(sectionKey, version, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustSectionVersionView> doUpdateSectionDraft(
+            String sectionKey, String version, String idempotencyKey, TrustSectionDraftRequest request) {
         if (isTrustSectionLocked(sectionKey)) return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         if (!request.version().trim().equals(version == null ? "" : version.trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_VERSION_IMMUTABLE");
         }
+        trustDisclosureRepository.lockTrustSection(sectionKey);
+        trustDisclosureRepository.lockTrustSectionVersion(sectionKey, version);
         TrustSectionVersionView current = findSectionVersion(sectionKey, version);
         if (current == null) return ApiResult.fail(404, "TRUST_SECTION_VERSION_NOT_FOUND");
         if (!"draft".equalsIgnoreCase(current.status())) {
@@ -275,11 +340,16 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         TrustSectionView section = findSection(sectionKey);
         if (section == null) return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        ApiResult<Void> snapshotGuard = requireTrustSectionSnapshot(
+                section, request.expectedSectionVersion(), request.expectedSectionStatus());
+        if (snapshotGuard != null) return fail(snapshotGuard);
         ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(section,
                 request.fields().stream().map(TrustSectionFieldInput::key).toList());
         if (schemaGuard != null) return fail(schemaGuard);
-        TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(sectionKey.trim(), request, now());
-        audit("I4_TRUST_SECTION_DRAFT_UPDATED", "TRUST_SECTION_VERSION", sectionKey + ":" + version, request.operator(), idempotencyKey, request.reason(), Map.of(
+        String actor = authenticatedOperator();
+        TrustSectionVersionView saved = trustDisclosureRepository.saveTrustSectionDraft(
+                sectionKey.trim(), withTrustSectionOperator(request, actor), now());
+        audit("I4_TRUST_SECTION_DRAFT_UPDATED", "TRUST_SECTION_VERSION", sectionKey + ":" + version, actor, idempotencyKey, request.reason(), Map.of(
                 "fromRevision", current.revision(), "toRevision", saved.revision()));
         return ApiResult.ok(saved);
     }
@@ -291,14 +361,32 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
         ApiResult<Void> guard = requireAction(idempotencyKey, request);
         if (guard != null) return guard;
+        VoidMutationResult result = idempotencyService.execute(
+                "I4_TRUST_SECTION_DRAFT_DELETE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(sectionKey, version, String.valueOf(request)),
+                VoidMutationResult.class,
+                () -> VoidMutationResult.from(doDeleteSectionDraft(sectionKey, version, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<Void> doDeleteSectionDraft(
+            String sectionKey, String version, String idempotencyKey, TrustDisclosureActionRequest request) {
         if (isTrustSectionLocked(sectionKey)) return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        trustDisclosureRepository.lockTrustSectionVersion(sectionKey, version);
         TrustSectionVersionView current = findSectionVersion(sectionKey, version);
         if (current == null) return ApiResult.fail(404, "TRUST_SECTION_VERSION_NOT_FOUND");
         if (!"draft".equalsIgnoreCase(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        if (request.expectedRevision() == null) {
+            return ApiResult.fail(409, "TRUST_SECTION_REVISION_REQUIRED");
+        }
+        if (request.expectedRevision() != current.revision()) {
+            return ApiResult.fail(409, "TRUST_SECTION_REVISION_CONFLICT");
+        }
         trustDisclosureRepository.deleteTrustSectionDraft(sectionKey.trim(), version.trim(), now());
-        audit("I4_TRUST_SECTION_DRAFT_DELETED", "TRUST_SECTION_VERSION", sectionKey + ":" + version, request.operator(), idempotencyKey, request.reason(), Map.of(
+        audit("I4_TRUST_SECTION_DRAFT_DELETED", "TRUST_SECTION_VERSION", sectionKey + ":" + version,
+                authenticatedOperator(), idempotencyKey, request.reason(), Map.of(
                 "revision", current.revision()));
         return ApiResult.ok(null);
     }
@@ -309,28 +397,43 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
+        TrustSectionMutationResult result = idempotencyService.execute(
+                "I4_TRUST_SECTION_ARCHIVE", idempotencyKey.trim(),
+                DisclosureContentHash.ofParts(sectionKey, String.valueOf(request)),
+                TrustSectionMutationResult.class,
+                () -> TrustSectionMutationResult.from(doArchiveSection(sectionKey, idempotencyKey, request)));
+        return result.toApiResult();
+    }
+
+    private ApiResult<TrustSectionView> doArchiveSection(
+            String sectionKey, String idempotencyKey, TrustDisclosureActionRequest request) {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("I", "trust_section", sectionKey) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
+        trustDisclosureRepository.lockTrustSection(sectionKey);
         TrustSectionView current = findSection(sectionKey);
         if (current == null) {
             return ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
         }
+        ApiResult<Void> snapshotGuard = requireTrustSectionSnapshot(
+                current, request.expectedVersion(), request.expectedStatus());
+        if (snapshotGuard != null) return fail(snapshotGuard);
         if (!hasAuthority(requiredSectionPublishAuthority(current))) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "TRUST_SECTION_PUBLISH_FORBIDDEN");
         }
         if ("archived".equals(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        trustDisclosureRepository.updateTrustSection(current.key(), current.version(), "ARCHIVED", operator(request.operator()), now());
+        String actor = authenticatedOperator();
+        trustDisclosureRepository.updateTrustSection(current.key(), current.version(), "ARCHIVED", actor, now());
         TrustSectionView updated = findSection(current.key());
-        requiredAudit("I4_TRUST_SECTION_ARCHIVED", "TRUST_SECTION", current.key(), request.operator(), idempotencyKey, request.reason(), Map.of(
+        requiredAudit("I4_TRUST_SECTION_ARCHIVED", "TRUST_SECTION", current.key(), actor, idempotencyKey, request.reason(), Map.of(
                 "version", current.version()));
         eventOutboxService.publish("TRUST_SECTION", current.key(), "admin.trust_content_archived", Map.of(
                 "sectionKey", current.key(),
                 "version", current.version(),
-                "operator", operator(request.operator()),
+                "operator", actor,
                 "operatorRole", currentOperatorRole(current),
                 "reason", request.reason().trim()));
         return ApiResult.ok(updated);
@@ -693,6 +796,29 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             return ApiResult.fail(409, "DISCLOSURE_JURISDICTION_NOT_ACTIVE");
         }
         DisclosureJurisdictionView current = findJurisdiction(jurisdiction);
+        if (!StringUtils.hasText(request.expectedStatus())) {
+            return ApiResult.fail(409, "DISCLOSURE_MATRIX_SNAPSHOT_REQUIRED");
+        }
+        String expectedStatus = request.expectedStatus().trim();
+        if ("ABSENT".equalsIgnoreCase(expectedStatus)) {
+            if (current != null) {
+                return ApiResult.fail(409, "DISCLOSURE_MATRIX_SNAPSHOT_CONFLICT");
+            }
+        } else {
+            List<String> expectedCountries = request.expectedCountryCodes() == null ? List.of()
+                    : request.expectedCountryCodes().stream()
+                    .map(CountryCodeNormalizer::normalize).filter(StringUtils::hasText)
+                    .distinct().sorted().toList();
+            List<String> currentCountries = current == null ? List.of() : current.countryCodes().stream()
+                    .map(CountryCodeNormalizer::normalize).filter(StringUtils::hasText)
+                    .distinct().sorted().toList();
+            if (current == null || !StringUtils.hasText(request.expectedVersion())
+                    || !current.version().equalsIgnoreCase(request.expectedVersion().trim())
+                    || !current.status().equalsIgnoreCase(expectedStatus)
+                    || !currentCountries.equals(expectedCountries)) {
+                return ApiResult.fail(409, "DISCLOSURE_MATRIX_SNAPSHOT_CONFLICT");
+            }
+        }
         List<String> normalizedCountries = request.countryCodes().stream()
                 .map(CountryCodeNormalizer::normalize).distinct().sorted().toList();
         boolean countryConflict = trustDisclosureRepository.listJurisdictions().stream()
@@ -713,6 +839,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         DisclosureMatrixRequest normalized = new DisclosureMatrixRequest(jurisdiction.trim().toUpperCase(Locale.ROOT),
                 catalog.name(), normalizedCountries,
                 request.version().trim(), "PUBLISHED",
+                request.expectedVersion(), request.expectedStatus(), request.expectedCountryCodes(),
                 operator(request.operator()), request.reason().trim());
         LocalDateTime adjustedAt = now();
         trustDisclosureRepository.upsertDisclosureMatrix(normalized, adjustedAt);
@@ -760,6 +887,13 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         trustDisclosureRepository.lockDisclosureJurisdiction(jurisdiction);
         DisclosureJurisdictionView current = findJurisdiction(jurisdiction);
         if (current == null) return ApiResult.fail(404, "DISCLOSURE_JURISDICTION_NOT_FOUND");
+        if (!StringUtils.hasText(request.expectedVersion()) || !StringUtils.hasText(request.expectedStatus())) {
+            return ApiResult.fail(409, "DISCLOSURE_MATRIX_SNAPSHOT_REQUIRED");
+        }
+        if (!current.version().equalsIgnoreCase(request.expectedVersion().trim())
+                || !current.status().equalsIgnoreCase(request.expectedStatus().trim())) {
+            return ApiResult.fail(409, "DISCLOSURE_MATRIX_SNAPSHOT_CONFLICT");
+        }
         trustDisclosureRepository.archiveDisclosureMatrix(current.code(), authenticatedOperator(), now());
         requiredAudit("I5_DISCLOSURE_MATRIX_ARCHIVED", "DISCLOSURE_MATRIX", current.code(), authenticatedOperator(), idempotencyKey, request.reason(), Map.of("version", current.version()));
         return ApiResult.ok(authorizedOverview(currentOverview()));
@@ -783,6 +917,19 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             String idempotencyKey, DisclosureGateUpdateRequest request) {
         if (!A2ReplayContext.isReplaying()) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        trustDisclosureRepository.lockGateActions();
+        if (!StringUtils.hasText(request.expectedScope())) {
+            return ApiResult.fail(409, "DISCLOSURE_GATE_SCOPE_SNAPSHOT_REQUIRED");
+        }
+        Set<String> currentKeys = trustDisclosureRepository.listGateActions().stream()
+                .filter(DisclosureGateActionView::active)
+                .map(DisclosureGateActionView::key)
+                .map(key -> key.toLowerCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+        Set<String> expectedKeys = new TreeSet<>(resolveGateKeys(request.expectedScope()));
+        if (!currentKeys.equals(expectedKeys)) {
+            return ApiResult.fail(409, "DISCLOSURE_GATE_SCOPE_SNAPSHOT_CONFLICT");
         }
         Set<String> activeKeys = resolveGateKeys(request.scope());
         if (activeKeys.isEmpty()) {
@@ -1021,6 +1168,18 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         return requireIdempotencyAndReason(idempotencyKey, request == null ? null : request.reason());
     }
 
+    private ApiResult<Void> requireTrustSectionSnapshot(
+            TrustSectionView current, String expectedVersion, String expectedStatus) {
+        if (!StringUtils.hasText(expectedVersion) || !StringUtils.hasText(expectedStatus)) {
+            return ApiResult.fail(409, "TRUST_SECTION_SNAPSHOT_REQUIRED");
+        }
+        if (!current.version().equals(expectedVersion.trim())
+                || !current.status().equalsIgnoreCase(expectedStatus.trim())) {
+            return ApiResult.fail(409, "TRUST_SECTION_SNAPSHOT_CONFLICT");
+        }
+        return null;
+    }
+
     private ApiResult<Void> requireJurisdictionCatalogRequest(
             String pathCode, String idempotencyKey, DisclosureJurisdictionCatalogRequest request, boolean updating) {
         ApiResult<Void> action = requireIdempotencyAndReason(idempotencyKey, request == null ? null : request.reason());
@@ -1091,6 +1250,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     || (request.languageScope().contains("en") && !chapterExpected.equals(placeholders(chapter.enTitle() + chapter.enBody())))) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_CHAPTER_PLACEHOLDERS_MISMATCH");
             }
+        }
+        if (!chapterNumbers.equals(DISCLOSURE_CHAPTER_NUMBERS)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DISCLOSURE_CHAPTER_NUMBERS_INVALID");
         }
         return null;
     }
@@ -1535,6 +1697,14 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 .detail(detail).build());
     }
 
+    private TrustSectionDraftRequest withTrustSectionOperator(
+            TrustSectionDraftRequest request, String authenticatedOperator) {
+        return new TrustSectionDraftRequest(
+                request.version(), request.description(), request.structure(), request.fields(),
+                request.expectedRevision(), request.expectedSectionVersion(), request.expectedSectionStatus(),
+                authenticatedOperator, request.reason());
+    }
+
     private void publishTrustGovernanceEvent(
             String eventName,
             TrustSectionView before,
@@ -1578,7 +1748,11 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         switch (cmd.op()) {
             case "i3_cap_adjust" -> {
                 // 委托 OpsNotificationCampaignService(另 2 service 不 implements AuditReplayable,避免 Dispatcher 同 domain="I" 冲突)
-                NotificationCapUpdateRequest req = new NotificationCapUpdateRequest(str(p, "cap"), operator, reason);
+                NotificationCapUpdateRequest req = new NotificationCapUpdateRequest(
+                        str(p, "cap"),
+                        str(p, "expectedCap"),
+                        operator,
+                        reason);
                 return notificationCampaignService.updateCapRule(str(p, "tier"), idem, req);
             }
             case "i4_trust_section_manage" -> {
@@ -1588,16 +1762,20 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 switch (action == null ? "" : action.toLowerCase(Locale.ROOT)) {
                     case "publish" -> {
                         TrustSectionPublishRequest req = new TrustSectionPublishRequest(
-                                str(p, "version"), longVal(p, "expectedRevision"), str(p, "dataSourceStatement"),
+                                str(p, "version"), longVal(p, "expectedRevision"),
+                                str(p, "expectedVersion"), str(p, "expectedStatus"), str(p, "dataSourceStatement"),
                                 boolVal(p, "bilingualConfirmed"), operator, reason);
                         return publishSection(sectionKey, idem, req);
                     }
                     case "rollback" -> {
-                        TrustSectionRollbackRequest req = new TrustSectionRollbackRequest(str(p, "targetVersion"), operator, reason);
+                        TrustSectionRollbackRequest req = new TrustSectionRollbackRequest(
+                                str(p, "targetVersion"), str(p, "expectedVersion"), str(p, "expectedStatus"),
+                                operator, reason);
                         return rollbackSection(sectionKey, idem, req);
                     }
                     case "archive" -> {
-                        TrustDisclosureActionRequest req = new TrustDisclosureActionRequest(operator, reason);
+                        TrustDisclosureActionRequest req = new TrustDisclosureActionRequest(
+                                null, null, str(p, "expectedVersion"), str(p, "expectedStatus"), operator, reason);
                         return archiveSection(sectionKey, idem, req);
                     }
                     default -> {
@@ -1635,19 +1813,25 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             }
             case "i4_gate_adjust", "i5_gate_adjust" -> {
                 // amplifies=true: 写 platform config 放松资金类合规拦截,configFacade.upsertAdminValue 天然幂等
-                DisclosureGateUpdateRequest req = new DisclosureGateUpdateRequest(str(p, "scope"), operator, reason);
+                DisclosureGateUpdateRequest req = new DisclosureGateUpdateRequest(
+                        str(p, "scope"), str(p, "expectedScope"), operator, reason);
                 return updateGateScope(idem, req);
             }
             case "i5_matrix_configure" -> {
-                String jurisdiction = str(p, "jurisdiction");
+                String jurisdiction = str(p, "jurisdictionCode");
+                if (!StringUtils.hasText(jurisdiction)) jurisdiction = str(p, "jurisdiction");
                 DisclosureMatrixRequest req = new DisclosureMatrixRequest(
                         jurisdiction, str(p, "jurisdictionName"), stringList(p, "countryCodes"),
-                        str(p, "version"), "DRAFT", operator, reason);
+                        str(p, "version"), "DRAFT",
+                        str(p, "expectedVersion"), str(p, "expectedStatus"),
+                        stringList(p, "expectedCountryCodes"), operator, reason);
                 return configureMatrix(jurisdiction, idem, req);
             }
             case "i5_matrix_archive" -> {
                 String jurisdiction = str(p, "jurisdiction");
-                return archiveMatrix(jurisdiction, idem, new TrustDisclosureActionRequest(operator, reason));
+                return archiveMatrix(jurisdiction, idem, new TrustDisclosureActionRequest(
+                        null, null, str(p, "expectedVersion"), str(p, "expectedStatus"),
+                        operator, reason));
             }
             case "i5_jurisdiction_status" -> {
                 String jurisdiction = str(p, "jurisdiction");
@@ -1724,6 +1908,26 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         }
 
         private ApiResult<DisclosureDraftView> toApiResult() {
+            return code == 0 ? ApiResult.ok(data) : ApiResult.fail(code, message);
+        }
+    }
+
+    private record TrustSectionMutationResult(int code, String message, TrustSectionView data) {
+        private static TrustSectionMutationResult from(ApiResult<TrustSectionView> result) {
+            return new TrustSectionMutationResult(result.getCode(), result.getMessage(), result.getData());
+        }
+
+        private ApiResult<TrustSectionView> toApiResult() {
+            return code == 0 ? ApiResult.ok(data) : ApiResult.fail(code, message);
+        }
+    }
+
+    private record TrustSectionVersionMutationResult(int code, String message, TrustSectionVersionView data) {
+        private static TrustSectionVersionMutationResult from(ApiResult<TrustSectionVersionView> result) {
+            return new TrustSectionVersionMutationResult(result.getCode(), result.getMessage(), result.getData());
+        }
+
+        private ApiResult<TrustSectionVersionView> toApiResult() {
             return code == 0 ? ApiResult.ok(data) : ApiResult.fail(code, message);
         }
     }

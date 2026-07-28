@@ -57,10 +57,6 @@ class GrowthVoucherGrantFacadeAdapterTest {
 
     @Test
     void exactGrantKeyReplayReturnsExistingGrantWithoutDuplicateSideEffects() {
-        when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong()))
-                .thenReturn(Map.of("voucherId", "VC-100", "status", "active"));
-        when(mapper.insertGrant(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(0);
         when(mapper.findByGrantKey("vrank:42:v5:VC-100")).thenReturn(Map.of(
                 "grantId", "VGR-existing", "grantKey", "vrank:42:v5:VC-100", "voucherId", "VC-100",
                 "userId", 42L, "sourceType", "VRANK_REWARD", "sourceId", "42:V5:voucher", "status", "AVAILABLE"));
@@ -81,6 +77,21 @@ class GrowthVoucherGrantFacadeAdapterTest {
         assertThatThrownBy(() -> service.grant(command()))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H7_VOUCHER_NOT_GRANTABLE");
+
+        verify(mapper, never()).insertGrant(any(), any(), any(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void inventoryLimitIsSerializedByVoucherLockAndFailsClosedBeforeInsert() {
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong()))
+                .thenReturn(Map.of("voucherId", "VC-100", "status", "active"));
+        when(mapper.issuanceLimit("VC-100")).thenReturn(100L);
+        when(mapper.issuedCount("VC-100")).thenReturn(100L);
+
+        assertThatThrownBy(() -> service.grant(command()))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H7_VOUCHER_INVENTORY_EXHAUSTED");
 
         verify(mapper, never()).insertGrant(any(), any(), any(), anyLong(), any(), any(), any(), any());
     }

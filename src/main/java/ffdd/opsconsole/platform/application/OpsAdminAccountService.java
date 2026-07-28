@@ -173,14 +173,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (governanceRecoveryRequired() && !"super".equals(role)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
-        if (!StringUtils.hasText(request.initialPassword())) {
-            return ApiResult.fail(422, "INITIAL_PASSWORD_REQUIRED");
-        }
-        if (!strongInitialPassword(request.initialPassword())) {
-            return ApiResult.fail(422, "INITIAL_PASSWORD_WEAK");
-        }
-
-        String initialPassword = request.initialPassword().trim();
+        String initialPassword = generateTemporaryPassword();
         AdminEntity admin = new AdminEntity();
         admin.setUsername(username);
         admin.setPasswordHash(passwordEncoder.encode(initialPassword));
@@ -206,7 +199,22 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         audit("A1_OPERATOR_CREATED", "A1_ADMIN_ACCOUNT", accountId, request.operator(), request.reason(), idempotencyKey,
                 Map.of("username", username, "role", role, "credentialDeliveryStatus", credentialStatus));
         AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
-        return ApiResult.ok(created);
+        return ApiResult.ok(new AdminAccountOverview.OperatorRecord(
+                created.id(),
+                created.name(),
+                created.username(),
+                created.email(),
+                created.role(),
+                created.tfa(),
+                created.status(),
+                created.lastLogin(),
+                created.sessions(),
+                created.tfaResetAt(),
+                created.credentialDeliveryStatus(),
+                created.sessionDetails(),
+                created.roleHistory(),
+                created.version(),
+                initialPassword));
     }
 
     @Transactional
@@ -226,9 +234,14 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (governanceRecoveryRequired()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
+        lockAccount(accountId);
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        ApiResult<Void> profileVersionCheck = requireAccountVersion(request.expectedVersion(), current.version());
+        if (profileVersionCheck != null) {
+            return failLike(profileVersionCheck);
         }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
@@ -310,9 +323,14 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (governanceRecoveryRequired() && !"super".equals(nextRole)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
+        lockAccount(accountId);
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        ApiResult<Void> roleVersionCheck = requireAccountVersion(request.expectedVersion(), current.version());
+        if (roleVersionCheck != null) {
+            return failLike(roleVersionCheck);
         }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
@@ -354,12 +372,17 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return failLike(authorization);
         }
         String normalizedAccountId = StringUtils.hasText(accountId) ? accountId.trim() : accountId;
+        lockAccount(normalizedAccountId);
         AdminAccountOverview.OperatorRecord current = operators().stream()
                 .filter(operator -> operator.id().equals(normalizedAccountId))
                 .findFirst()
                 .orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        ApiResult<Void> statusVersionCheck = requireAccountVersion(request.expectedVersion(), current.version());
+        if (statusVersionCheck != null) {
+            return failLike(statusVersionCheck);
         }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
@@ -420,9 +443,14 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (governanceRecoveryRequired()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
+        lockAccount(accountId);
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        ApiResult<Void> mfaVersionCheck = requireAccountVersion(request.expectedVersion(), current.version());
+        if (mfaVersionCheck != null) {
+            return failLike(mfaVersionCheck);
         }
         if (!current.tfa()) {
             return ApiResult.fail(409, "ADMIN_MFA_NOT_BOUND");
@@ -440,6 +468,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         accountStateMapper.upsertTfaResetAt(adminId, LocalDateTime.now());
         adminSessionRegistry.revokeSessions(adminId);
         accountStateMapper.upsertSessionsRevokedAt(adminId, LocalDateTime.now());
+        adminMapper.touchVersion(adminId);
         audit("A1_OPERATOR_2FA_RESET", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("tfaRequired", true, "sessionsRevoked", true));
         return ApiResult.ok(requireOperator(current.id()));
@@ -462,9 +491,14 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (governanceRecoveryRequired()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
         }
+        lockAccount(accountId);
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        ApiResult<Void> passwordVersionCheck = requireAccountVersion(request.expectedVersion(), current.version());
+        if (passwordVersionCheck != null) {
+            return failLike(passwordVersionCheck);
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
@@ -494,14 +528,19 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (mutation != null) {
             return failLike(mutation);
         }
-        List<AdminAccountOverview.OperatorRecord> operators = operators();
         String normalizedAccountId = StringUtils.hasText(accountId) ? accountId.trim() : accountId;
+        lockAccount(normalizedAccountId);
+        List<AdminAccountOverview.OperatorRecord> operators = operators();
         AdminAccountOverview.OperatorRecord current = operators.stream()
                 .filter(operator -> operator.id().equals(normalizedAccountId))
                 .findFirst()
                 .orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        ApiResult<Void> sessionsVersionCheck = requireAccountVersion(request.expectedVersion(), current.version());
+        if (sessionsVersionCheck != null) {
+            return failLike(sessionsVersionCheck);
         }
         AdminAccountOverview.OperatorRecord actor = authenticatedOperator(operators).orElse(null);
         ApiResult<Void> authorization = requireSessionRevokeAuthorization(actor, current);
@@ -517,6 +556,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         Long adminId = parseAccountId(current.id()).orElseThrow();
         int revoked = adminSessionRegistry.revokeSessions(adminId);
         accountStateMapper.upsertSessionsRevokedAt(adminId, revokedAt);
+        adminMapper.touchVersion(adminId);
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("killedAt", now, "revokedSessions", revoked));
         return ApiResult.ok(requireOperator(current.id()));
@@ -538,6 +578,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!StringUtils.hasText(sessionId)) {
             return ApiResult.fail(422, "ADMIN_SESSION_ID_REQUIRED");
         }
+        lockAccount(accountId);
         List<AdminAccountOverview.OperatorRecord> operators = operators();
         AdminAccountOverview.OperatorRecord target = operators.stream()
                 .filter(operator -> operator.id().equals(accountId))
@@ -545,6 +586,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 .orElse(null);
         if (target == null) {
             return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+        }
+        ApiResult<Void> sessionVersionCheck = requireAccountVersion(request.expectedVersion(), target.version());
+        if (sessionVersionCheck != null) {
+            return failLike(sessionVersionCheck);
         }
         ApiResult<Void> authorization = requireSessionRevokeAuthorization(
                 authenticatedOperator(operators).orElse(null), target);
@@ -558,6 +603,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         }
         LocalDateTime revokedAt = LocalDateTime.now();
         accountStateMapper.upsertSessionsRevokedAt(adminId, revokedAt);
+        adminMapper.touchVersion(adminId);
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", target.id(), request.operator(), request.reason(),
                 idempotencyKey, Map.of("sessionId", sessionId.trim(), "revokedSessions", 1));
         return ApiResult.ok(requireOperator(target.id()));
@@ -590,6 +636,12 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         AdminAccountOverview.SecurityBaseline baseline = securityBaseline(key).orElse(null);
         if (baseline == null) {
             return ApiResult.fail(404, "SECURITY_BASELINE_NOT_FOUND");
+        }
+        if (!StringUtils.hasText(request.expectedValue())) {
+            return ApiResult.fail(422, "SECURITY_BASELINE_EXPECTED_VALUE_REQUIRED");
+        }
+        if (!baseline.value().equals(request.expectedValue().trim())) {
+            return ApiResult.fail(409, "SECURITY_BASELINE_STALE");
         }
         if (baseline.locked()) {
             return ApiResult.fail(OpsErrorCode.PHASE_PARAM_READONLY.httpStatus(), "SECURITY_BASELINE_LOCKED");
@@ -877,7 +929,27 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 activeSessionRows.stream().map(session -> new AdminAccountOverview.SessionRecord(
                         session.sessionId(), session.ipAddress(), session.device(), session.issuedAt(), session.lastSeenAt()))
                         .toList(),
-                roleHistory(id, role));
+                roleHistory(id, role),
+                accountVersion(admin, state),
+                null);
+    }
+
+    private String accountVersion(AdminEntity admin, AdminAccountStateEntity state) {
+        return admin.getUpdatedAt() == null ? "0" : admin.getUpdatedAt().format(ISO);
+    }
+
+    private void lockAccount(String accountId) {
+        parseAccountId(accountId).ifPresent(adminMapper::selectActiveForUpdate);
+    }
+
+    private ApiResult<Void> requireAccountVersion(String expectedVersion, String currentVersion) {
+        if (!StringUtils.hasText(expectedVersion)) {
+            return ApiResult.fail(422, "ACCOUNT_EXPECTED_VERSION_REQUIRED");
+        }
+        if (!expectedVersion.trim().equals(currentVersion)) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
+        return null;
     }
 
     private List<AdminAccountOverview.RoleHistoryRecord> roleHistory(String accountId, String currentRole) {
@@ -1338,15 +1410,6 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         return List.of("enabled", "disabled").contains(normalized) ? normalized : null;
     }
 
-    private boolean strongInitialPassword(String initialPassword) {
-        String normalized = StringUtils.hasText(initialPassword) ? initialPassword.trim() : "";
-        return normalized.length() >= 16
-                && Pattern.compile("[a-z]").matcher(normalized).find()
-                && Pattern.compile("[A-Z]").matcher(normalized).find()
-                && Pattern.compile("\\d").matcher(normalized).find()
-                && Pattern.compile("[^A-Za-z0-9]").matcher(normalized).find();
-    }
-
     private String generateTemporaryPassword() {
         StringBuilder password = new StringBuilder("Aa1!");
         for (int i = 0; i < 16; i++) {
@@ -1442,30 +1505,32 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                         str(p, "username"),
                         str(p, "displayName"),
                         str(p, "email"),
-                        reason, operator);
+                        reason, operator, str(p, "expectedVersion"));
                 return updateProfile(idem, str(p, "accountId"), req);
             }
             case "a1_account_change_role" -> {
                 AdminAccountRoleUpdateRequest req = new AdminAccountRoleUpdateRequest(
-                        str(p, "role"), reason, operator);
+                        str(p, "role"), reason, operator, str(p, "expectedVersion"));
                 return changeRole(idem, str(p, "accountId"), req);
             }
             case "a1_account_status_update" -> {
                 AdminAccountStatusUpdateRequest req = new AdminAccountStatusUpdateRequest(
-                        str(p, "status"), reason, operator);
+                        str(p, "status"), reason, operator, str(p, "expectedVersion"));
                 return updateStatus(idem, str(p, "accountId"), req);
             }
             case "a1_account_reset_2fa" -> {
-                AdminAccountActionRequest req = new AdminAccountActionRequest(reason, operator);
+                AdminAccountActionRequest req = new AdminAccountActionRequest(
+                        reason, operator, str(p, "expectedVersion"));
                 return reset2fa(idem, str(p, "accountId"), req);
             }
             case "a1_account_force_logout" -> {
-                AdminAccountActionRequest req = new AdminAccountActionRequest(reason, operator);
+                AdminAccountActionRequest req = new AdminAccountActionRequest(
+                        reason, operator, str(p, "expectedVersion"));
                 return revokeSessions(idem, str(p, "accountId"), req);
             }
             case "a1_security_baseline_update" -> {
                 AdminAccountSecurityBaselineUpdateRequest req = new AdminAccountSecurityBaselineUpdateRequest(
-                        str(p, "value"), reason, operator);
+                        str(p, "value"), reason, operator, str(p, "expectedValue"));
                 return updateSecurityBaseline(idem, str(p, "baselineKey"), req);
             }
             case "a6_role_grants_update" -> {

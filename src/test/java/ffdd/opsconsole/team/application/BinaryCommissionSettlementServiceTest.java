@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper.BinaryLegAssignmentRow;
@@ -33,6 +34,7 @@ class BinaryCommissionSettlementServiceTest {
     private BinarySettlementPolicyProvider policyProvider;
     private TreasuryLedgerPostingFacade ledgerFacade;
     private AuditLogService auditLogService;
+    private EventOutboxService eventOutboxService;
     private BinaryCommissionSettlementService service;
 
     @BeforeEach
@@ -41,8 +43,10 @@ class BinaryCommissionSettlementServiceTest {
         policyProvider = mock(BinarySettlementPolicyProvider.class);
         ledgerFacade = mock(TreasuryLedgerPostingFacade.class);
         auditLogService = mock(AuditLogService.class);
+        eventOutboxService = mock(EventOutboxService.class);
         service = new BinaryCommissionSettlementService(
-                mapper, policyProvider, ledgerFacade, auditLogService, mock(PlatformConfigFacade.class));
+                mapper, policyProvider, ledgerFacade, auditLogService,
+                mock(PlatformConfigFacade.class), eventOutboxService);
 
         when(mapper.lockActiveOwner(OWNER)).thenReturn(OWNER);
         when(mapper.ensureSettlementMutex(OWNER, DAY)).thenReturn(1);
@@ -172,6 +176,108 @@ class BinaryCommissionSettlementServiceTest {
         verify(ledgerFacade).postLedgerEntry(
                 "F3-BINARY-990685-20260722", OWNER, "TEAM_COMMISSION", "USDT", "IN",
                 new BigDecimal("8.000000"), "PENDING", "F3 binary commission cooling payout");
+        verify(eventOutboxService).publish(eq("BINARY_COMMISSION"),
+                eq("BINARY-990685-20260722"), eq("commission.paid"), any());
+    }
+
+    @Test
+    void enabledSpilloverAutoPlacesMissingDirectMembersBeforeSettlement() {
+        when(mapper.listAssignmentsForUpdate(OWNER)).thenReturn(
+                List.of(new BinaryLegAssignmentRow(OWNER, 990686L, "A")),
+                List.of(
+                        new BinaryLegAssignmentRow(OWNER, 990686L, "A"),
+                        new BinaryLegAssignmentRow(OWNER, 990687L, "B"),
+                        new BinaryLegAssignmentRow(OWNER, 990688L, "A")));
+        when(mapper.listUnassignedDirectMembersForUpdate(OWNER)).thenReturn(List.of(990687L, 990688L));
+        when(mapper.insertAssignment(OWNER, 990687L, "B", 0L, "SYSTEM_AUTO_PLACEMENT")).thenReturn(1);
+        when(mapper.insertAssignment(OWNER, 990688L, "A", 0L, "SYSTEM_AUTO_PLACEMENT")).thenReturn(1);
+
+        BinaryCommissionSettlementService.SettlementResult result = service.settle(OWNER, DAY);
+
+        assertThat(result.status()).isEqualTo("PENDING");
+        verify(mapper).insertAssignment(OWNER, 990687L, "B", 0L, "SYSTEM_AUTO_PLACEMENT");
+        verify(mapper).insertAssignment(OWNER, 990688L, "A", 0L, "SYSTEM_AUTO_PLACEMENT");
+    }
+
+    @Test
+    void monthlySettlementFailsClosedBeforeMonthEnd() {
+        when(policyProvider.lockPolicy()).thenReturn(new BinarySettlementPolicyProvider.BinarySettlementPolicy(
+                new BigDecimal("10"), new BigDecimal("0.10"), new BigDecimal("5000"), false,
+                true, "每月", "每月清零", "每月 1 日 00:00 UTC",
+                new BigDecimal("150"), new BigDecimal("120")));
+
+        BinaryCommissionSettlementService.SettlementResult result = service.settle(OWNER, DAY);
+
+        assertThat(result.status()).isEqualTo("BLOCKED");
+        assertThat(result.reason()).isEqualTo("F3_SETTLEMENT_NOT_DUE");
+        verify(mapper, never()).insertSettlement(any());
+        verify(eventOutboxService, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void pairResetConsumesOneImmutablePaidVolumeWindowAndPublishesMoneyOnce() {
+        when(policyProvider.lockPolicy()).thenReturn(new BinarySettlementPolicyProvider.BinarySettlementPolicy(
+                new BigDecimal("10"), new BigDecimal("0.10"), new BigDecimal("5000"), false,
+                true, "每日", "每次对碰清零", "每月 1 日 00:00 UTC",
+                new BigDecimal("150"), new BigDecimal("120")));
+        when(mapper.latestPairResetThroughVolumeId(OWNER)).thenReturn(40L);
+        when(mapper.latestActiveVolumeIdInWindow(eq(OWNER), any(), any())).thenReturn(52L);
+        when(mapper.pairResetLegVolumes(eq(OWNER), eq(40L), eq(52L), any(), any()))
+                .thenReturn(new LegVolumeSnapshot(new BigDecimal("70"), new BigDecimal("50")));
+        when(mapper.insertPairResetCursorCas(
+                OWNER, DAY, 40L, 52L,
+                new BigDecimal("70.000000"), new BigDecimal("50.000000"),
+                new BigDecimal("50.000000"))).thenReturn(1);
+
+        BinaryCommissionSettlementService.SettlementResult result = service.settle(OWNER, DAY);
+
+        assertThat(result.status()).isEqualTo("PENDING");
+        assertThat(result.matchedVolume()).isEqualByComparingTo("50");
+        verify(mapper).insertPairResetCursorCas(
+                OWNER, DAY, 40L, 52L,
+                new BigDecimal("70.000000"), new BigDecimal("50.000000"),
+                new BigDecimal("50.000000"));
+        verify(eventOutboxService).publish(eq("BINARY_COMMISSION"),
+                eq("BINARY-990685-20260722"), eq("commission.paid"), any());
+    }
+
+    @Test
+    void pairResetCursorCasConflictRollsBackInsteadOfDoubleConsuming() {
+        when(policyProvider.lockPolicy()).thenReturn(new BinarySettlementPolicyProvider.BinarySettlementPolicy(
+                new BigDecimal("10"), new BigDecimal("0.10"), new BigDecimal("5000"), false,
+                true, "每日", "每次对碰清零", "每月 1 日 00:00 UTC",
+                new BigDecimal("150"), new BigDecimal("120")));
+        when(mapper.latestPairResetThroughVolumeId(OWNER)).thenReturn(40L);
+        when(mapper.latestActiveVolumeIdInWindow(eq(OWNER), any(), any())).thenReturn(52L);
+        when(mapper.pairResetLegVolumes(eq(OWNER), eq(40L), eq(52L), any(), any()))
+                .thenReturn(new LegVolumeSnapshot(new BigDecimal("70"), new BigDecimal("50")));
+        when(mapper.insertPairResetCursorCas(any(), any(), any(), any(), any(), any(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.settle(OWNER, DAY))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(409);
+                    assertThat(ex.getMessage()).isEqualTo("F3_PAIR_RESET_CURSOR_CAS_CONFLICT");
+                });
+        verify(mapper, never()).insertBinaryCommissionEvent(any());
+        verify(ledgerFacade, never()).postLedgerEntry(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(eventOutboxService, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void carryForwardSubtractsAllPriorMatchedVolumeFromBothTracks() {
+        when(policyProvider.lockPolicy()).thenReturn(new BinarySettlementPolicyProvider.BinarySettlementPolicy(
+                new BigDecimal("10"), new BigDecimal("0.10"), new BigDecimal("5000"), false,
+                true, "每日", "转结", "每月 1 日 00:00 UTC",
+                new BigDecimal("150"), new BigDecimal("120")));
+        when(mapper.consumedMatchedBefore(OWNER, DAY.plusDays(1))).thenReturn(new BigDecimal("80"));
+        when(mapper.carriedLegVolumes(eq(OWNER), any()))
+                .thenReturn(new LegVolumeSnapshot(new BigDecimal("200"), new BigDecimal("140")));
+
+        BinaryCommissionSettlementService.SettlementResult result = service.settle(OWNER, DAY);
+
+        assertThat(result.leftVolume()).isEqualByComparingTo("120");
+        assertThat(result.rightVolume()).isEqualByComparingTo("60");
+        assertThat(result.matchedVolume()).isEqualByComparingTo("60");
     }
 
     @Test
@@ -320,6 +426,7 @@ class BinaryCommissionSettlementServiceTest {
         assertThat(result.replayed()).isTrue();
         assertThat(result.commissionEventId()).isEqualTo(77L);
         verify(ledgerFacade, never()).postLedgerEntry(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(eventOutboxService, never()).publish(any(), any(), any(), any());
     }
 
     @Test
@@ -328,7 +435,7 @@ class BinaryCommissionSettlementServiceTest {
                 .getMethod("settle", Long.class, LocalDate.class)
                 .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
         var admin = BinaryCommissionSettlementService.class
-                .getMethod("settleAsAdmin", Long.class, LocalDate.class, Long.class, String.class)
+                .getMethod("settleAsAdmin", Long.class, LocalDate.class, String.class, Long.class, String.class)
                 .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
 
         assertThat(system).isNotNull();
@@ -343,6 +450,7 @@ class BinaryCommissionSettlementServiceTest {
             String threshold, String rate, String cap, boolean paused) {
         return new BinarySettlementPolicyProvider.BinarySettlementPolicy(
                 new BigDecimal(threshold), new BigDecimal(rate), new BigDecimal(cap), paused,
+                true, "每日", "每月清零", "每月 1 日 00:00 UTC",
                 new BigDecimal("150"), new BigDecimal("120"));
     }
 }

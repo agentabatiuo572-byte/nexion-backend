@@ -12,6 +12,8 @@ class OpsVietnamPaymentControllerSecurityTest {
         assertPermission("vietQrOverview", "finance_d1_read", String.class, Integer.class, Integer.class);
         assertPermission("reconcile", "finance_d1_bank_reconcile", Long.class, String.class, String.class,
                 ffdd.opsconsole.finance.dto.VietQrReconciliationCommandRequest.class);
+        assertPermission("registerVietQrReceipt", "finance_d1_bank_reconcile", String.class,
+                ffdd.opsconsole.finance.dto.VietQrReceiptRegistrationRequest.class);
         assertPermission("createBankAccount", "finance_d1_bank_account_manage", String.class,
                 ffdd.opsconsole.finance.dto.VietQrBankAccountCreateRequest.class);
         assertPermission("updateBankAccount", "finance_d1_bank_account_manage", Long.class, String.class,

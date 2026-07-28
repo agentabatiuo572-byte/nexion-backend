@@ -28,6 +28,8 @@ import ffdd.opsconsole.finance.dto.WithdrawalLimitsUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalBatchReviewRequest;
+import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
+import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
@@ -103,6 +105,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private static final String WITHDRAW_GEO_ENDPOINT_KEY = "withdraw";
     private static final Pattern FIRST_DECIMAL = Pattern.compile("(\\d+(?:\\.\\d+)?)");
     private final PlatformConfigFacade configFacade;
+    private final GrowthRhythmFacade growthRhythmFacade;
     private final EmergencyControlRepository emergencyRepository;
     private final TreasuryCoverageFacade coverageFacade;
     private final WithdrawalOrderRepository withdrawalRepository;
@@ -431,7 +434,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
 
     public ApiResult<Map<String, Object>> withdrawalParams() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
+        GrowthRhythmSnapshot rhythm = requiredGrowthRhythm();
         BigDecimal dailyLimitCount = configDecimal("withdrawal.daily_count_limit", BigDecimal.ZERO);
         BigDecimal maxBalanceRatio = configDecimal("withdrawal.max_balance_pct", BigDecimal.ZERO);
         BigDecimal feeRate = configDecimal("withdrawal.fee_rate", BigDecimal.ZERO);
@@ -713,6 +716,100 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         ensureD2FallbackSeedData();
         return executeD2Review(withdrawalNo.trim(), idempotencyKey.trim(), request);
+    }
+
+    /**
+     * Closes the only server-controlled SENT -> CONFIRMED transition.
+     *
+     * <p>A chain transaction hash is mandatory, immutable and single-use. The
+     * status CAS, A2 audit and A4 event share one transaction; any outbox
+     * failure rolls the confirmation back instead of leaving L3 with a
+     * counterfeit terminal fact.</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public ApiResult<WithdrawalOrderView> confirmWithdrawal(
+            String withdrawalNo,
+            String idempotencyKey,
+            WithdrawalConfirmationRequest request) {
+        if (!StringUtils.hasText(withdrawalNo)) {
+            return ApiResult.fail(400, "WITHDRAWAL_NO_REQUIRED");
+        }
+        if (!StringUtils.hasText(idempotencyKey) || idempotencyKey.trim().length() > 128) {
+            return ApiResult.fail(400, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null || !validReason(request.reason())) {
+            return ApiResult.fail(400, OpsErrorCode.REASON_REQUIRED.name());
+        }
+        String txHash = trimToEmpty(request.chainTxHash());
+        if (!txHash.matches("^[A-Za-z0-9:_-]{16,128}$")) {
+            return ApiResult.fail(400, "WITHDRAWAL_CHAIN_TX_HASH_INVALID");
+        }
+        String normalizedNo = withdrawalNo.trim();
+        String operator = AdminActorResolver.resolve(request.operator());
+        String requestHash = sha256(String.join("|",
+                "D2_CONFIRM", normalizedNo, txHash, request.reason().trim(), operator));
+        return (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.execute(
+                "D2_CONFIRM_" + normalizedNo,
+                idempotencyKey.trim(),
+                requestHash,
+                ApiResult.class,
+                () -> confirmWithdrawalOnce(normalizedNo, txHash, request.reason().trim(), operator));
+    }
+
+    private ApiResult<WithdrawalOrderView> confirmWithdrawalOnce(
+            String withdrawalNo,
+            String chainTxHash,
+            String reason,
+            String operator) {
+        WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
+        if (order == null) return ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND");
+        if (!D2WithdrawalStateMachine.SENT.equals(D2WithdrawalStateMachine.canonical(order.status()))) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "WITHDRAWAL_CONFIRM_REQUIRES_SENT");
+        }
+        if (StringUtils.hasText(order.chainTxHash())
+                && !order.chainTxHash().trim().equals(chainTxHash)) {
+            return ApiResult.fail(409, "WITHDRAWAL_CHAIN_TX_HASH_CONFLICT");
+        }
+        if (withdrawalRepository.chainTxHashUsedByOtherWithdrawal(withdrawalNo, chainTxHash)) {
+            return ApiResult.fail(409, "WITHDRAWAL_CHAIN_TX_HASH_ALREADY_USED");
+        }
+        LocalDateTime confirmedAt = LocalDateTime.now();
+        if (!withdrawalRepository.confirmSent(
+                withdrawalNo, order.status(), chainTxHash, confirmedAt)) {
+            return ApiResult.fail(409, "WITHDRAWAL_STATE_CONFLICT");
+        }
+        Map<String, Object> detail = linked(
+                "from", D2WithdrawalStateMachine.canonical(order.status()),
+                "to", D2WithdrawalStateMachine.CONFIRMED,
+                "chainTxHash", chainTxHash,
+                "confirmedAt", confirmedAt,
+                "reason", reason);
+        auditRequired(
+                "D2_WITHDRAWAL_CHAIN_CONFIRMED",
+                "WITHDRAWAL",
+                withdrawalNo,
+                operator,
+                detail);
+        eventOutboxService.publish(
+                "WITHDRAWAL",
+                withdrawalNo,
+                "withdraw.confirmed",
+                linked(
+                        "withdrawal_id", withdrawalNo,
+                        "amount", order.amount(),
+                        "currency", order.asset(),
+                        "state", D2WithdrawalStateMachine.CONFIRMED,
+                        "chain_tx_hash", chainTxHash,
+                        "confirmed_at", confirmedAt,
+                        "operator", operator,
+                        "reason", reason));
+        WithdrawalOrderView updated = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
+        return updated == null
+                ? ApiResult.fail(409, "WITHDRAWAL_RELOAD_FAILED")
+                : ApiResult.ok(updated);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -1893,10 +1990,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private Map<String, Object> withdrawalLimitsData() {
         Map<String, BigDecimal> owned = currentD5OwnedValues();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
-        if (!StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1) {
-            throw new IllegalStateException("H1_PHASE_UNAVAILABLE");
-        }
+        GrowthRhythmSnapshot rhythm = requiredGrowthRhythm();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("version", requiredConfigDecimal("withdrawal.d5.version").longValueExact());
         response.put("dailyLimitCount", owned.get("dailyLimitCount").intValueExact());
@@ -1905,9 +1999,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("networkFeeMin", owned.get("networkFeeMin"));
         response.put("networkFeeMax", owned.get("networkFeeMax"));
         response.put("nexFeeOffsetRate", owned.get("nexFeeOffsetRate"));
-        response.put("cooldownDays", requiredConfigDecimal("growth.phase.withdraw_cooldown_days").intValueExact());
-        response.put("penaltyFeeRate", requiredConfigDecimal("growth.phase.withdraw_penalty_fee_rate"));
-        response.put("complianceHoldEnabled", requiredConfigBoolean("growth.phase.compliance_hold_enabled"));
+        response.put("cooldownDays", rhythm.withdrawCooldownDays());
+        response.put("penaltyFeeRate", rhythm.withdrawPenaltyFeeRate().movePointLeft(2));
+        response.put("complianceHoldEnabled", rhythm.complianceHoldEnabled());
         response.put("currentPhase", rhythm.currentPhase());
         response.put("currentMonth", rhythm.currentMonth());
         response.put("coverageRatio", coverage.coverageRatio());
@@ -1924,6 +2018,18 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 Map.entry("penaltyFeeRate", "phase-h1"),
                 Map.entry("complianceHoldEnabled", "phase-h1")));
         return response;
+    }
+
+    private GrowthRhythmSnapshot requiredGrowthRhythm() {
+        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
+        if (rhythm == null || !rhythm.reliable() || !StringUtils.hasText(rhythm.currentPhase())
+                || rhythm.currentMonth() < 1 || rhythm.withdrawCooldownDays() <= 0
+                || rhythm.withdrawPenaltyFeeRate() == null
+                || rhythm.withdrawPenaltyFeeRate().signum() < 0
+                || rhythm.withdrawPenaltyFeeRate().compareTo(new BigDecimal("100")) > 0) {
+            throw new IllegalStateException("H1_PHASE_UNAVAILABLE");
+        }
+        return rhythm;
     }
 
     private Map<String, BigDecimal> currentD5OwnedValues() {
@@ -2217,6 +2323,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
+    }
+
+    private Map<String, Object> linked(Object... values) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int index = 0; index < values.length; index += 2) {
+            result.put(String.valueOf(values[index]), values[index + 1]);
+        }
+        return result;
     }
 
     @Override

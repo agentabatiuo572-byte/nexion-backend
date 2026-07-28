@@ -57,7 +57,7 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 UPDATE nx_withdrawal_order w
 LEFT JOIN nx_admin_risk_score_user k4
-  ON k4.user_no=CONCAT('U',LPAD(w.user_id,8,'0')) AND k4.is_deleted=0
+  ON k4.user_no=CONCAT('U',LPAD(w.user_id,GREATEST(8,CHAR_LENGTH(CAST(w.user_id AS CHAR))),'0')) AND k4.is_deleted=0
 LEFT JOIN nx_admin_risk_score_model k4m
   ON k4m.state='active' AND k4m.is_deleted=0
  AND k4.model_version=CONCAT('k4-v',k4m.model_version)

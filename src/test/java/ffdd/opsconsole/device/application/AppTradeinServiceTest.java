@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -62,6 +63,18 @@ class AppTradeinServiceTest {
     }
 
     @Test
+    void exactCutBoundaryUsesTheNextLeftClosedBand() {
+        when(mapper.cumulativeDeviceOutputUsdt(11L)).thenReturn(new BigDecimal("250.00"));
+
+        var result = service.quote(7L, new AppTradeinQuoteRequest(11L, 22L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().outputRatioPct()).isEqualByComparingTo("25.000000");
+        assertThat(result.getData().creditRatePct()).isEqualByComparingTo("60");
+        assertThat(result.getData().discountUsdt()).isEqualByComparingTo("600.000000");
+    }
+
+    @Test
     void quoteRejectsTargetThatIsNotMoreExpensiveWhenTheCanonicalGateIsEnabled() {
         when(mapper.findTargetProduct(22L, null)).thenReturn(new AppTradeinMapper.TargetProduct(
                 22L, "SKU-SAME", "Same", "PRO", "ACTIVE", new BigDecimal("1000"), 3,
@@ -106,7 +119,8 @@ class AppTradeinServiceTest {
         verify(mapper).insertTradeinApplication(any());
         verify(mapper).insertPaidOrder(any());
         verify(mapper).insertPaidOrderItem(any());
-        verify(outbox).publishUserEvent(anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
+        verify(outbox, times(3)).publishUserEvent(
+                anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
         verify(audit).recordRequiredForTrustedActor(any());
     }
 

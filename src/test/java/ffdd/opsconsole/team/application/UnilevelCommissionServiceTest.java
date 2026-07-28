@@ -7,11 +7,13 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -37,6 +39,7 @@ class UnilevelCommissionServiceTest {
     @Mock private TeamCommissionRepository commissionRepository;
     @Mock private TreasuryLedgerPostingFacade ledgerPostingFacade;
     @Mock private PlatformConfigFacade configFacade;
+    @Mock private EventOutboxService eventOutboxService;
 
     @InjectMocks private UnilevelCommissionService service;
 
@@ -94,6 +97,8 @@ class UnilevelCommissionServiceTest {
                 eq("COOLING"), anyInt(), anyString());
         verify(ledgerPostingFacade, times(2)).postLedgerEntry(anyString(), anyLong(), anyString(),
                 anyString(), anyString(), any(BigDecimal.class), anyString(), anyString());
+        verify(eventOutboxService, times(2)).publish(
+                eq("NETWORK_COMMISSION"), anyString(), eq("commission.paid"), any());
     }
 
     @Test
@@ -295,6 +300,59 @@ class UnilevelCommissionServiceTest {
         verify(commissionRepository).insertNetworkCommissionEvent(eq(990684L), eq("network"), eq(990686L),
                 eq(2), eq("ORD-Z"), eq(new BigDecimal("1000")), eq("USDT"),
                 eq(new BigDecimal("50.000000")), eq(new BigDecimal("0.000000")),
+                eq("COOLING"), anyInt(), anyString());
+    }
+
+    @Test
+    void settle_operatorPauseUsesCanonicalUiKeyAndStopsOnlySelectedLayer() {
+        when(teamCommissionMapper.listUplineChain(990686L, 7))
+                .thenReturn(List.of(upline(990685L, 1), upline(990684L, 2)));
+        when(teamCommissionMapper.unilevelRates())
+                .thenReturn(List.of(rate("L1", 10), rate("L2", 5)));
+        lenient().when(configFacade.activeValue("team.ui.F.unilevel.L1.paused"))
+                .thenReturn(java.util.Optional.of("on"));
+        when(teamCommissionMapper.monthlyNetworkVolume(990684L)).thenReturn(new BigDecimal("100"));
+        when(commissionRepository.countNetworkCommissionByOrder(990684L, "ORD-PAUSE")).thenReturn(0);
+        when(commissionRepository.insertNetworkCommissionEvent(anyLong(), anyString(), anyLong(),
+                any(), anyString(), any(BigDecimal.class), anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), anyString(), anyInt(), anyString()))
+                .thenReturn(901L);
+
+        assertThat(service.settle(990686L, new BigDecimal("1000"), "ORD-PAUSE")).isEqualTo(1);
+
+        verify(commissionRepository, never()).insertNetworkCommissionEvent(eq(990685L), anyString(),
+                anyLong(), any(), anyString(), any(BigDecimal.class), anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), anyString(), anyInt(), anyString());
+        verify(commissionRepository).insertNetworkCommissionEvent(eq(990684L), eq("network"), eq(990686L),
+                eq(2), eq("ORD-PAUSE"), eq(new BigDecimal("1000")), eq("USDT"),
+                eq(new BigDecimal("50.000000")), any(BigDecimal.class),
+                eq("COOLING"), anyInt(), anyString());
+    }
+
+    @Test
+    void settle_operatorInfluenceClampAndPromoMultiplierReachSettlement() {
+        when(teamCommissionMapper.listUplineChain(990686L, 7))
+                .thenReturn(List.of(upline(990684L, 2, "V2")));
+        when(teamCommissionMapper.unilevelRates()).thenReturn(List.of(rate("L2", 5)));
+        when(teamCommissionMapper.monthlyNetworkVolume(990684L)).thenReturn(new BigDecimal("10000"));
+        lenient().when(configFacade.activeValue("team.ui.F.influence.clampMin"))
+                .thenReturn(java.util.Optional.of("1"));
+        lenient().when(configFacade.activeValue("team.ui.F.influence.clampMax"))
+                .thenReturn(java.util.Optional.of("2"));
+        lenient().when(configFacade.activeValue("team.ui.F.promo.weekMultiplier"))
+                .thenReturn(java.util.Optional.of("1.5"));
+        when(commissionRepository.countNetworkCommissionByOrder(990684L, "ORD-PROMO")).thenReturn(0);
+        when(commissionRepository.insertNetworkCommissionEvent(anyLong(), anyString(), anyLong(),
+                any(), anyString(), any(BigDecimal.class), anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), anyString(), anyInt(), anyString()))
+                .thenReturn(902L);
+
+        assertThat(service.settle(990686L, new BigDecimal("1000"), "ORD-PROMO")).isEqualTo(1);
+
+        // Base 50 × Influence clamp 2 × promo 1.5 = 150.
+        verify(commissionRepository).insertNetworkCommissionEvent(eq(990684L), eq("network"), eq(990686L),
+                eq(2), eq("ORD-PROMO"), eq(new BigDecimal("1000")), eq("USDT"),
+                eq(new BigDecimal("150.000000")), any(BigDecimal.class),
                 eq("COOLING"), anyInt(), anyString());
     }
 }

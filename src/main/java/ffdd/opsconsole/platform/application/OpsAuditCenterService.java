@@ -693,7 +693,7 @@ public class OpsAuditCenterService {
                 row.getOperationType(),
                 isTrue(row.getAmplifies()),
                 isTrue(row.getSos()),
-                row.getTimeLabel(),
+                row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
                 isTrue(row.getMine()),
                 normalizeRoleGate(row.getRoleGate()),
                 row.getReason(),

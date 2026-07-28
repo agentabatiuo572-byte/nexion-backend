@@ -1,10 +1,6 @@
 package ffdd.opsconsole.team.application;
 
-import ffdd.opsconsole.shared.outbox.EventOutboxService;
-import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
-import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -33,12 +29,8 @@ import org.springframework.stereotype.Component;
 public class CommissionEventUnlockScheduler {
 
     private static final int BATCH_SIZE = 500;
-    private static final String STATUS_UNLOCKED = "UNLOCKED";
-
     private final TeamCommissionMapper teamCommissionMapper;
-    private final TeamCommissionRepository commissionRepository;
-    private final EventOutboxService eventOutboxService;
-    private final TreasuryLedgerPostingFacade ledgerPostingFacade;
+    private final CommissionEventUnlockProcessor processor;
 
     /** 自动解锁(fixedDelay 10min,可配 nexion.f5.unlock-delay-ms)。 */
     @Scheduled(fixedDelayString = "${nexion.f5.unlock-delay-ms:600000}",
@@ -53,28 +45,8 @@ public class CommissionEventUnlockScheduler {
         int errors = 0;
         for (Map<String, Object> row : due) {
             Long eventId = asLong(row.get("id"));
-            Long userId = asLong(row.get("userId"));
-            BigDecimal amount = asBigDecimal(row.get("amountUsdt"));
-            String currency = String.valueOf(row.getOrDefault("currency", "USDT"));
-            if (eventId == null || userId == null) {
-                continue;
-            }
             try {
-                if (!commissionRepository.updateCommissionStatus("CM-" + eventId, STATUS_UNLOCKED)) {
-                    // 已非 COOLING(并发手动处置)或 0 行 → 跳过
-                    continue;
-                }
-                // COMMISSION_UNLOCKED 事件(H3 canonical quest trigger + 审计链)
-                eventOutboxService.publish(
-                        "COMMISSION", String.valueOf(eventId), "COMMISSION_UNLOCKED",
-                        Map.of("user_id", userId, "commission_event_id", eventId));
-                // D4 台账 IN/PENDING(UNLOCKED=用户可提应付入账)
-                if (amount != null && amount.signum() > 0) {
-                    ledgerPostingFacade.postLedgerEntry(
-                            "F5-AUTO-UNLOCK-" + eventId, userId, "TEAM_COMMISSION", currency,
-                            "IN", amount, "PENDING", "F5 auto unlock commission | eventId=" + eventId);
-                }
-                unlocked++;
+                if (processor.unlock(row)) unlocked++;
             } catch (RuntimeException ex) {
                 errors++;
                 log.warn("F5 auto unlock failed: eventId={} err={}", eventId, ex.getMessage());
@@ -89,10 +61,4 @@ public class CommissionEventUnlockScheduler {
         try { return Long.valueOf(v.toString()); } catch (NumberFormatException e) { return null; }
     }
 
-    private static BigDecimal asBigDecimal(Object v) {
-        if (v == null) return null;
-        if (v instanceof BigDecimal b) return b;
-        if (v instanceof Number n) return BigDecimal.valueOf(n.doubleValue());
-        try { return new BigDecimal(v.toString()); } catch (NumberFormatException e) { return null; }
-    }
 }

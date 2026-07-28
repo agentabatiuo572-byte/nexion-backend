@@ -39,7 +39,7 @@ class MybatisConversationRepositoryTest {
     @Test
     void competingTransferWritesNeitherTransferNorMessageWhenHeaderClaimLoses() {
         ContentConversationView conversation = openConversation();
-        when(mapper.markTransferred("CV-RACE", "agent-2", "Agent Two", now)).thenReturn(0);
+        when(mapper.markTransferred("CV-RACE", "agent-2", "Agent Two", 0L, now)).thenReturn(0);
 
         assertThat(repository.transferToPending(
                 conversation, "agent", "agent-2", "Agent Two", "needs specialist", "agent-1", now)).isFalse();
@@ -54,7 +54,7 @@ class MybatisConversationRepositoryTest {
         when(mapper.markTransferReturned("CV-RACE", "return to owner", "agent-2", now)).thenReturn(0);
 
         assertThat(repository.acceptTransfer(conversation, "agent-2", "Agent Two", "agent-2", now)).isFalse();
-        assertThat(repository.returnTransfer(conversation, "return to owner", "agent-2", now)).isFalse();
+        assertThat(repository.returnTransfer(conversation, "from", "return to owner", "agent-2", now)).isFalse();
 
         verifyNoInteractions(messageMapper);
     }
@@ -63,10 +63,10 @@ class MybatisConversationRepositoryTest {
     void waitReplyStatusAndArchiveWriteNoMessageWhenHeaderCasLoses() {
         ContentConversationView transferred = transferredConversation();
         ContentConversationView open = openConversation();
-        when(mapper.markTransferWait("CV-RACE", "转入会话继续等待: continue waiting", now)).thenReturn(0);
-        when(mapper.replyConversation("CV-RACE", "reply", "OPEN", now)).thenReturn(0);
-        when(mapper.updateConversationStatus("CV-RACE", "RESOLVED", "OPEN", now)).thenReturn(0);
-        when(mapper.updateConversationStatus("CV-RACE", "CLOSED", "OPEN", now)).thenReturn(0);
+        when(mapper.markTransferWait("CV-RACE", "转入会话继续等待: continue waiting", 0L, now)).thenReturn(0);
+        when(mapper.replyConversation("CV-RACE", "reply", "OPEN", 0L, now)).thenReturn(0);
+        when(mapper.updateConversationStatus("CV-RACE", "RESOLVED", "OPEN", 0L, now)).thenReturn(0);
+        when(mapper.updateConversationStatus("CV-RACE", "CLOSED", "OPEN", 0L, now)).thenReturn(0);
 
         assertThat(repository.waitTransfer(transferred, "continue waiting", "agent-2", now)).isFalse();
         assertThat(repository.reply(open, "reply", "agent-1", now)).isFalse();
@@ -80,7 +80,7 @@ class MybatisConversationRepositoryTest {
     void invariantFailureAfterTransferRowClaimEscapesBeforeSystemMessage() {
         ContentConversationView conversation = transferredConversation();
         when(mapper.markTransferAccepted("CV-RACE", "agent-2", now)).thenReturn(1);
-        when(mapper.acceptConversation("CV-RACE", "agent-2", "Agent Two", now)).thenReturn(0);
+        when(mapper.acceptConversation("CV-RACE", "agent-2", "Agent Two", 0L, now)).thenReturn(0);
 
         assertThatThrownBy(() -> repository.acceptTransfer(conversation, "agent-2", "Agent Two", "agent-2", now))
                 .isInstanceOf(IllegalStateException.class)
@@ -102,7 +102,7 @@ class MybatisConversationRepositoryTest {
     @Test
     void uniquePendingTransferViolationEscapesBeforeSystemMessage() {
         ContentConversationView conversation = openConversation();
-        when(mapper.markTransferred("CV-RACE", "agent-2", "Agent Two", now)).thenReturn(1);
+        when(mapper.markTransferred("CV-RACE", "agent-2", "Agent Two", 0L, now)).thenReturn(1);
         when(mapper.insertTransfer(
                 "CV-RACE", "agent-1", "Agent One", "agent", "agent-2", "Agent Two",
                 "needs specialist", "agent-1", now)).thenThrow(new DuplicateKeyException("duplicate active transfer"));

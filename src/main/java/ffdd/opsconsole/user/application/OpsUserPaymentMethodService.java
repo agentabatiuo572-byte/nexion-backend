@@ -65,11 +65,17 @@ public class OpsUserPaymentMethodService {
     @Transactional
     public Map<String, Object> resetNickname(Long userId, String key, UserPaymentMethodCommandRequest request) {
         validateCommand(key, request, false);
+        if (!StringUtils.hasText(request.expectedValue())) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EXPECTED_NICKNAME_REQUIRED");
+        }
         return idempotency.execute("USER_NICKNAME_RESET", key, hash(userId + ":" + request.reason()), Map.class, () -> {
             requireUser(userId);
             String before = mapper.currentNickname(userId);
+            if (!request.expectedValue().trim().equals(before)) {
+                throw new BizException(409, "NICKNAME_VERSION_CONFLICT");
+            }
             String nickname = "Nexion-" + hash(userId + ":" + key).substring(0, 8).toUpperCase();
-            if (mapper.resetNickname(userId, nickname) != 1) {
+            if (mapper.resetNickname(userId, nickname, request.expectedValue().trim()) != 1) {
                 throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NICKNAME_RESET_CONFLICT");
             }
             audit("USER_NICKNAME_RESET", "USER", String.valueOf(userId), userId, request, key,

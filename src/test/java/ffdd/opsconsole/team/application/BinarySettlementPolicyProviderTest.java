@@ -27,6 +27,10 @@ class BinarySettlementPolicyProviderTest {
         seed("team.ui.F.binary.threshold", "1000");
         seed("team.ui.F.binary.matchRate", "13%");
         seed("team.ui.F.binary.paused", "false");
+        seed("team.ui.F.binary.spillover", "已启用");
+        seed("team.ui.F.binary.settlePeriod", "每月");
+        seed("team.ui.F.binary.residualPolicy", "每月清零");
+        seed("team.ui.F.binary.gvResetCron", "每月 1 日 00:00 UTC");
         seed("H1.rhythm.totalMonths", "12");
         seed("H1.rhythm.currentMonth", "1");
         seed("growth.phase.current", "P1");
@@ -43,6 +47,9 @@ class BinarySettlementPolicyProviderTest {
         assertThat(policy.matchRate()).isEqualByComparingTo("0.13");
         assertThat(policy.dailyCap()).isEqualByComparingTo("5000");
         assertThat(policy.paused()).isFalse();
+        assertThat(policy.spilloverEnabled()).isTrue();
+        assertThat(policy.settlePeriod()).isEqualTo("每月");
+        assertThat(policy.residualPolicy()).isEqualTo("每月清零");
     }
 
     @Test
@@ -74,6 +81,15 @@ class BinarySettlementPolicyProviderTest {
         when(config.activeValueForUpdate("growth.phase.month.1.binaryDailyCap"))
                 .thenReturn(Optional.empty());
         assertThatThrownBy(provider::lockPolicy).hasMessage("H1_BINARY_DAILY_CAP_MISSING");
+    }
+
+    @Test
+    void missingOrInvalidSettlementControlsFailClosed() {
+        when(config.activeValueForUpdate("team.ui.F.binary.settlePeriod")).thenReturn(Optional.empty());
+        assertThatThrownBy(provider::lockPolicy).hasMessage("F3_SETTLE_PERIOD_MISSING");
+
+        seed("team.ui.F.binary.settlePeriod", "季度");
+        assertThatThrownBy(provider::lockPolicy).hasMessage("F3_SETTLE_PERIOD_INVALID");
     }
 
     private void seed(String key, String value) {

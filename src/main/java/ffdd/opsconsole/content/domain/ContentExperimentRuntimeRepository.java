@@ -26,6 +26,11 @@ public interface ContentExperimentRuntimeRepository {
 
     Optional<CopyBody> findPublishedCopy(String copyKey);
 
+    /** A UI slot must resolve to exactly one published copy; callers reject zero/ambiguous results. */
+    default List<CopyBody> findPublishedCopiesByPosition(String positionKey) {
+        return List.of();
+    }
+
     Optional<CopyBody> findCopyVersion(String copyKey, String version);
 
     boolean insertConversionIfAbsent(

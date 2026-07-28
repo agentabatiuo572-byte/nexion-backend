@@ -96,11 +96,50 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND COALESCE(status, 'ACTIVE') = 'ACTIVE'")
     long countActiveUsers();
 
-    @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND COALESCE(kyc_status, 'PENDING') = 'PENDING'")
+    @Select("SELECT COUNT(*) FROM nx_kyc_profile WHERE is_deleted = 0 AND UPPER(status) = 'PENDING'")
     long countKycPending();
 
     @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND COALESCE(status, 'ACTIVE') = 'FROZEN'")
     long countFrozenUsers();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_risk_score_model
+             WHERE state='active' AND is_deleted=0
+            """)
+    long countActiveRiskModels();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_risk_score_user
+             WHERE is_deleted=0 AND as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+            """)
+    long countFreshRiskScores();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_risk_score_user rs
+              JOIN (
+                    SELECT model_version,band_high_min
+                      FROM nx_admin_risk_score_model
+                     WHERE state='active' AND is_deleted=0
+                     ORDER BY model_version DESC LIMIT 1
+              ) model ON rs.model_version=CONCAT('k4-v',model.model_version)
+              LEFT JOIN nx_admin_risk_score_override rso
+                ON rso.user_no=rs.user_no AND rso.active=1 AND rso.is_deleted=0
+             WHERE rs.is_deleted=0
+               AND rs.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+               AND COALESCE(rso.override_score,rs.model_score) >= model.band_high_min
+            """)
+    long countHighRiskUsers();
+
+    @Select("""
+            SELECT band_high_min
+              FROM nx_admin_risk_score_model
+             WHERE state='active' AND is_deleted=0
+             ORDER BY model_version DESC LIMIT 1
+            """)
+    Integer activeHighRiskThreshold();
 
     @Select("SELECT COUNT(*) FROM nx_account_list WHERE is_deleted=0 AND status='ACTIVE' AND kind=#{kind} AND (expires_at IS NULL OR expires_at > NOW())")
     long countActiveAccountListByKind(@Param("kind") String kind);
@@ -196,6 +235,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
+              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
               LEFT JOIN (
                     SELECT model_version, band_low_max, band_high_min, auto_escalate_score
                       FROM nx_admin_risk_score_model
@@ -204,7 +244,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                      LIMIT 1
               ) rsm ON 1 = 1
               LEFT JOIN nx_admin_risk_score_user rs
-                ON rs.user_no = CONCAT('U', LPAD(u.id, 8, '0'))
+                ON rs.user_no = CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
                AND rs.is_deleted = 0
                AND rs.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
                AND rs.model_version = CONCAT('k4-v', rsm.model_version)
@@ -213,7 +253,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              <if test='query.keyword != null and query.keyword != ""'>
                AND (u.nickname LIKE CONCAT('%', #{query.keyword}, '%')
                     OR u.referral_code LIKE CONCAT('%', #{query.keyword}, '%')
-                    OR CONCAT('U', LPAD(u.id, 8, '0')) LIKE CONCAT('%', #{query.keyword}, '%')
+                    OR CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) LIKE CONCAT('%', #{query.keyword}, '%')
                     OR CAST(u.id AS CHAR) = #{query.keyword})
              </if>
              <if test='query.userId != null'>AND u.id = #{query.userId}</if>
@@ -221,6 +261,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND SHA2(REGEXP_REPLACE(u.phone, '[^0-9]', ''), 256) = LOWER(#{query.phoneHash})
              </if>
              <if test='query.phoneMasked != null and query.phoneMasked != ""'>
+               AND u.phone REGEXP '^[0-9]{7,15}$'
                AND CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3)) = #{query.phoneMasked}
              </if>
              <if test='query.tier != null and query.tier != ""'>AND u.user_level = #{query.tier}</if>
@@ -230,7 +271,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND UPPER(COALESCE(u.status, 'ACTIVE')) IN
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>#{status}</foreach>
              </if>
-             <if test='query.kycStatus != null and query.kycStatus != ""'>AND UPPER(COALESCE(u.kyc_status, 'PENDING')) = UPPER(#{query.kycStatus})</if>
+             <if test='query.kycStatus != null and query.kycStatus != ""'>AND UPPER(COALESCE(k.status, 'NONE')) = UPPER(#{query.kycStatus})</if>
              <if test='query.riskMin != null'>AND COALESCE(rso.override_score, rs.model_score) &gt;= #{query.riskMin}</if>
              <if test='query.riskBand != null and query.riskBand == "HIGH"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_high_min</if>
              <if test='query.riskBand != null and query.riskBand == "MEDIUM"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_low_max AND COALESCE(rso.override_score, rs.model_score) &lt; rsm.band_high_min</if>
@@ -254,15 +295,16 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             <script>
             SELECT u.id,
-                   CONCAT('U', LPAD(u.id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,
                    u.nickname,
                    CASE
-                     WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
-                     ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
+                     WHEN u.phone REGEXP '^[0-9]{7,15}$'
+                     THEN CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
+                     ELSE NULL
                    END AS phoneMasked,
                    u.country_code AS countryCode,
                    COALESCE(u.status, 'ACTIVE') AS status,
-                   COALESCE(u.kyc_status, 'PENDING') AS kycStatus,
+                   COALESCE(k.status, 'NONE') AS kycStatus,
                    u.user_level AS userLevel,
                    u.v_rank AS vRank,
                    COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
@@ -282,6 +324,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
+              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
               LEFT JOIN (
                     SELECT model_version, band_low_max, band_high_min, auto_escalate_score
                       FROM nx_admin_risk_score_model
@@ -290,7 +333,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                      LIMIT 1
               ) rsm ON 1 = 1
               LEFT JOIN nx_admin_risk_score_user rs
-                ON rs.user_no = CONCAT('U', LPAD(u.id, 8, '0'))
+                ON rs.user_no = CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
                AND rs.is_deleted = 0
                AND rs.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
                AND rs.model_version = CONCAT('k4-v', rsm.model_version)
@@ -299,7 +342,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              <if test='query.keyword != null and query.keyword != ""'>
                AND (u.nickname LIKE CONCAT('%', #{query.keyword}, '%')
                     OR u.referral_code LIKE CONCAT('%', #{query.keyword}, '%')
-                    OR CONCAT('U', LPAD(u.id, 8, '0')) LIKE CONCAT('%', #{query.keyword}, '%')
+                    OR CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) LIKE CONCAT('%', #{query.keyword}, '%')
                     OR CAST(u.id AS CHAR) = #{query.keyword})
              </if>
              <if test='query.userId != null'>AND u.id = #{query.userId}</if>
@@ -307,6 +350,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND SHA2(REGEXP_REPLACE(u.phone, '[^0-9]', ''), 256) = LOWER(#{query.phoneHash})
              </if>
              <if test='query.phoneMasked != null and query.phoneMasked != ""'>
+               AND u.phone REGEXP '^[0-9]{7,15}$'
                AND CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3)) = #{query.phoneMasked}
              </if>
              <if test='query.tier != null and query.tier != ""'>AND u.user_level = #{query.tier}</if>
@@ -316,7 +360,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND UPPER(COALESCE(u.status, 'ACTIVE')) IN
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>#{status}</foreach>
              </if>
-             <if test='query.kycStatus != null and query.kycStatus != ""'>AND UPPER(COALESCE(u.kyc_status, 'PENDING')) = UPPER(#{query.kycStatus})</if>
+             <if test='query.kycStatus != null and query.kycStatus != ""'>AND UPPER(COALESCE(k.status, 'NONE')) = UPPER(#{query.kycStatus})</if>
              <if test='query.riskMin != null'>AND COALESCE(rso.override_score, rs.model_score) &gt;= #{query.riskMin}</if>
              <if test='query.riskBand != null and query.riskBand == "HIGH"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_high_min</if>
              <if test='query.riskBand != null and query.riskBand == "MEDIUM"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_low_max AND COALESCE(rso.override_score, rs.model_score) &lt; rsm.band_high_min</if>
@@ -341,9 +385,9 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("""
             SELECT COUNT(*)
-              FROM nx_user
+              FROM nx_kyc_profile
              WHERE is_deleted = 0
-               AND UPPER(COALESCE(kyc_status, 'PENDING')) = UPPER(#{kycStatus})
+               AND UPPER(status) = UPPER(#{kycStatus})
             """)
     long countByKycStatus(@Param("kycStatus") String kycStatus);
 
@@ -363,10 +407,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             <script>
             SELECT k.user_id AS userId,
-                   CONCAT('U', LPAD(k.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(k.user_id, GREATEST(8, LENGTH(CAST(k.user_id AS CHAR))), '0')) AS userNo,
                    u.nickname,
-                   CASE WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
-                        ELSE CONCAT(SUBSTRING(u.phone,1,3),'****',SUBSTRING(u.phone,LENGTH(u.phone)-3)) END AS phoneMasked,
+                   CASE WHEN u.phone REGEXP '^[0-9]{7,15}$'
+                        THEN CONCAT(SUBSTRING(u.phone,1,3),'****',SUBSTRING(u.phone,LENGTH(u.phone)-3))
+                        ELSE NULL END AS phoneMasked,
                    COALESCE(k.country,u.country_code) AS countryCode,
                    COALESCE(u.status,'ACTIVE') AS accountStatus,
                    u.user_level AS userLevel,
@@ -393,10 +438,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("""
             SELECT k.user_id AS userId,
-                   CONCAT('U', LPAD(k.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(k.user_id, GREATEST(8, LENGTH(CAST(k.user_id AS CHAR))), '0')) AS userNo,
                    u.nickname,
-                   CASE WHEN u.phone IS NULL OR LENGTH(u.phone) < 7 THEN u.phone
-                        ELSE CONCAT(SUBSTRING(u.phone,1,3),'****',SUBSTRING(u.phone,LENGTH(u.phone)-3)) END AS phoneMasked,
+                   CASE WHEN u.phone REGEXP '^[0-9]{7,15}$'
+                        THEN CONCAT(SUBSTRING(u.phone,1,3),'****',SUBSTRING(u.phone,LENGTH(u.phone)-3))
+                        ELSE NULL END AS phoneMasked,
                    COALESCE(k.country,u.country_code) AS countryCode,
                    COALESCE(u.status,'ACTIVE') AS accountStatus,
                    u.user_level AS userLevel,
@@ -426,15 +472,16 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             <script>
             SELECT u.id,
-                   CONCAT('U', LPAD(u.id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,
                    u.nickname,
                    CASE
-                    WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
-                     ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
+                     WHEN u.phone REGEXP '^[0-9]{7,15}$'
+                     THEN CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
+                     ELSE NULL
                    END AS phoneMasked,
                    u.country_code AS countryCode,
                    COALESCE(u.status, 'ACTIVE') AS status,
-                   COALESCE(u.kyc_status, 'PENDING') AS kycStatus,
+                   COALESCE(k.status, 'NONE') AS kycStatus,
                    u.user_level AS userLevel,
                    u.v_rank AS vRank,
                    COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
@@ -454,6 +501,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
+              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
               LEFT JOIN (
                     SELECT model_version, band_low_max, band_high_min, auto_escalate_score
                       FROM nx_admin_risk_score_model
@@ -462,7 +510,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                      LIMIT 1
               ) rsm ON 1 = 1
               LEFT JOIN nx_admin_risk_score_user rs
-                ON rs.user_no = CONCAT('U', LPAD(u.id, 8, '0'))
+                ON rs.user_no = CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
                AND rs.is_deleted = 0
                AND rs.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
                AND rs.model_version = CONCAT('k4-v', rsm.model_version)
@@ -500,7 +548,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                     CAST(u.id AS CHAR) = #{lookupKey}
                     OR UPPER(u.referral_code) = UPPER(#{lookupKey})
                     OR UPPER(REPLACE(u.referral_code, '-', '')) = UPPER(REPLACE(#{lookupKey}, '-', ''))
-                    OR UPPER(CONCAT('U', LPAD(u.id, 8, '0'))) = UPPER(REPLACE(#{lookupKey}, '-', ''))
+                    OR UPPER(CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))) = UPPER(REPLACE(#{lookupKey}, '-', ''))
                     OR UPPER(p.email) = UPPER(#{lookupKey})
                )
              LIMIT 1
@@ -553,7 +601,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    DATE_ADD(t.reviewed_at, INTERVAL #{rememberDays} DAY) AS expiresAt
               FROM nx_admin_risk_kyc_review_ticket t
               JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0
-               AND CONCAT('U', LPAD(u.id, 8, '0'))=t.user_no
+               AND CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))=t.user_no
               JOIN nx_admin_risk_kyc_review_source src
                 ON src.ticket_id=t.ticket_id AND src.source_domain='C5' AND src.is_deleted=0
               LEFT JOIN nx_c5_kyc_reverification_consumption c
@@ -571,10 +619,15 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(*)
               FROM nx_admin_risk_kyc_review_ticket t
               JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0
-               AND CONCAT('U', LPAD(u.id, 8, '0'))=t.user_no
+               AND CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))=t.user_no
               JOIN nx_admin_risk_kyc_review_source src
                 ON src.ticket_id=t.ticket_id AND src.source_domain='C5'
-               AND src.source_no=CONCAT('U', LPAD(u.id, 8, '0'), ':', #{action}) AND src.is_deleted=0
+               AND src.source_no=CONCAT(
+                   'U',
+                   LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'),
+                   ':',
+                   #{action}
+               ) AND src.is_deleted=0
               LEFT JOIN nx_c5_kyc_reverification_consumption c
                 ON c.ticket_id=t.ticket_id AND c.is_deleted=0
              WHERE t.ticket_id=#{ticketId} AND t.status='passed' AND t.reviewed_at IS NOT NULL
@@ -666,7 +719,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("""
             SELECT s.user_id AS userId,
-                   CONCAT('U', LPAD(s.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(s.user_id, GREATEST(8, LENGTH(CAST(s.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
                    GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) AS loginFailCount,
@@ -714,7 +767,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              <if test='userId != null'>AND user_id = #{userId}</if>
             </script>
             """)
-    long countSessions(@Param("userId") Long userId);
+    long countSessionsByUser(@Param("userId") Long userId);
 
     @Select("""
             <script>
@@ -883,7 +936,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             <script>
             SELECT l.user_id AS userId,
-                   CONCAT('U', LPAD(l.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    UPPER(l.kind) AS kind,
                    l.reason,
@@ -907,7 +960,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("""
             SELECT l.user_id AS userId,
-                   CONCAT('U', LPAD(l.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(l.user_id, GREATEST(8, LENGTH(CAST(l.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    UPPER(l.kind) AS kind,
                    l.reason,
@@ -964,7 +1017,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             <script>
             SELECT s.session_no AS sessionNo,
                    s.user_id AS userId,
-                   CONCAT('U', LPAD(s.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(s.user_id, GREATEST(8, LENGTH(CAST(s.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    CASE
                     WHEN s.status = 'ACTIVE' AND s.expires_at &lt;= NOW() THEN 'EXPIRED'
@@ -999,7 +1052,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             SELECT s.session_no AS sessionNo,
                    s.user_id AS userId,
-                   CONCAT('U', LPAD(s.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(s.user_id, GREATEST(8, LENGTH(CAST(s.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    CASE
                      WHEN s.status = 'ACTIVE' AND s.expires_at <= NOW() THEN 'EXPIRED'
@@ -1029,7 +1082,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             <script>
             SELECT s.session_no AS sessionNo,
                    s.user_id AS userId,
-                   CONCAT('U', LPAD(s.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(s.user_id, GREATEST(8, LENGTH(CAST(s.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    CASE
                     WHEN s.status = 'ACTIVE' AND s.expires_at &lt;= NOW() THEN 'EXPIRED'
@@ -1070,7 +1123,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             <script>
             SELECT s.session_no AS sessionNo,
                    s.user_id AS userId,
-                   CONCAT('U', LPAD(s.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(s.user_id, GREATEST(8, LENGTH(CAST(s.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, CONCAT('User ', s.user_id)) AS nickname,
                    s.status,
                    s.ttl_minutes AS ttlMinutes,
@@ -1276,6 +1329,17 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     int revokeUserSessions(@Param("userId") Long userId);
 
     @Update("""
+            UPDATE nx_user_session
+               SET revoked_at = NOW(), updated_at = NOW()
+             WHERE user_id = #{userId}
+               AND revoked_at IS NULL
+               AND expires_at > NOW()
+               AND COALESCE(last_active_at,updated_at,created_at) > DATE_SUB(NOW(), INTERVAL #{idleDays} DAY)
+               AND is_deleted = 0
+            """)
+    int revokeActiveUserSessions(@Param("userId") Long userId, @Param("idleDays") int idleDays);
+
+    @Update("""
             UPDATE nx_user_security
                SET two_factor_enabled = 0,
                    updated_at = NOW()
@@ -1355,7 +1419,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
                     OR u.phone LIKE CONCAT('%', #{keyword}, '%')
                     OR u.referral_code LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(a.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(a.user_id, GREATEST(8, LENGTH(CAST(a.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR CAST(a.user_id AS CHAR) = #{keyword})
              </if>
             </script>
@@ -1371,7 +1435,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             <script>
             SELECT a.adjustment_no AS adjustmentNo,
                    a.user_id AS userId,
-                   CONCAT('U', LPAD(a.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(a.user_id, GREATEST(8, LENGTH(CAST(a.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    a.asset,
                    a.direction,
@@ -1429,7 +1493,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
                     OR u.phone LIKE CONCAT('%', #{keyword}, '%')
                     OR u.referral_code LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(a.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(a.user_id, GREATEST(8, LENGTH(CAST(a.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR CAST(a.user_id AS CHAR) = #{keyword})
              </if>
              ORDER BY a.created_at DESC, a.id DESC
@@ -1448,7 +1512,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             SELECT a.adjustment_no AS adjustmentNo,
                    a.user_id AS userId,
-                   CONCAT('U', LPAD(a.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(a.user_id, GREATEST(8, LENGTH(CAST(a.user_id AS CHAR))), '0')) AS userNo,
                    COALESCE(u.nickname, '未知用户') AS nickname,
                    a.asset,
                    a.direction,

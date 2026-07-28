@@ -67,7 +67,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               t.to_name AS transferToName,
               t.reason AS transferReason,
               t.transferred_at AS transferredAt,
-              c.updated_at AS updatedAt
+              c.updated_at AS updatedAt,
+              c.version
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -111,7 +112,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               t.to_name AS transferToName,
               t.reason AS transferReason,
               t.transferred_at AS transferredAt,
-              c.updated_at AS updatedAt
+              c.updated_at AS updatedAt,
+              c.version
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -156,7 +158,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               t.to_name AS transferToName,
               t.reason AS transferReason,
               t.transferred_at AS transferredAt,
-              c.updated_at AS updatedAt
+              c.updated_at AS updatedAt,
+              c.version
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -172,11 +175,12 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("""
             UPDATE nx_conversation
-               SET status='TRANSFERRED', owner_agent_id=#{targetId}, owner_agent_name=#{targetName}, updated_at=#{now}
-             WHERE conversation_no=#{conversationNo} AND status='OPEN' AND is_deleted=0
+               SET status='TRANSFERRED', owner_agent_id=#{targetId}, owner_agent_name=#{targetName}, version=version+1, updated_at=#{now}
+             WHERE conversation_no=#{conversationNo} AND status='OPEN' AND version=#{expectedVersion} AND is_deleted=0
             """)
     int markTransferred(@Param("conversationNo") String conversationNo, @Param("targetId") String targetId,
-                        @Param("targetName") String targetName, @Param("now") LocalDateTime now);
+                        @Param("targetName") String targetName, @Param("expectedVersion") Long expectedVersion,
+                        @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_conversation
@@ -185,12 +189,15 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                    owner_agent_name=#{targetName},
                    last_message=CONCAT('Transferred to ', #{targetName}),
                    last_message_at=#{now},
+                   version=version+1,
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
                AND status='TRANSFERRED'
+               AND version=#{expectedVersion}
             """)
     int fallbackConversation(@Param("conversationNo") String conversationNo, @Param("targetId") String targetId,
-                             @Param("targetName") String targetName, @Param("now") LocalDateTime now);
+                             @Param("targetName") String targetName, @Param("expectedVersion") Long expectedVersion,
+                             @Param("now") LocalDateTime now);
 
     @Insert("""
             INSERT INTO nx_conversation_transfer
@@ -205,12 +212,13 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("""
             UPDATE nx_conversation
-               SET status='OPEN', owner_agent_id=#{ownerAgentId}, owner_agent_name=#{ownerAgentName}, updated_at=#{now}
-             WHERE conversation_no=#{conversationNo} AND status='TRANSFERRED' AND is_deleted=0
+               SET status='OPEN', owner_agent_id=#{ownerAgentId}, owner_agent_name=#{ownerAgentName}, version=version+1, updated_at=#{now}
+             WHERE conversation_no=#{conversationNo} AND status='TRANSFERRED' AND version=#{expectedVersion} AND is_deleted=0
             """)
     int acceptConversation(@Param("conversationNo") String conversationNo,
                            @Param("ownerAgentId") String ownerAgentId,
                            @Param("ownerAgentName") String ownerAgentName,
+                           @Param("expectedVersion") Long expectedVersion,
                            @Param("now") LocalDateTime now);
 
     @Update("""
@@ -223,11 +231,12 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("""
             UPDATE nx_conversation
-               SET status='OPEN', owner_agent_id=#{fromAgentId}, owner_agent_name=#{fromAgentName}, updated_at=#{now}
-             WHERE conversation_no=#{conversationNo} AND status='TRANSFERRED' AND is_deleted=0
+               SET status='OPEN', owner_agent_id=#{fromAgentId}, owner_agent_name=#{fromAgentName}, version=version+1, updated_at=#{now}
+             WHERE conversation_no=#{conversationNo} AND status='TRANSFERRED' AND version=#{expectedVersion} AND is_deleted=0
             """)
     int returnConversation(@Param("conversationNo") String conversationNo, @Param("fromAgentId") String fromAgentId,
-                           @Param("fromAgentName") String fromAgentName, @Param("now") LocalDateTime now);
+                           @Param("fromAgentName") String fromAgentName, @Param("expectedVersion") Long expectedVersion,
+                           @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_conversation_transfer
@@ -241,15 +250,18 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
             UPDATE nx_conversation
                SET last_message=#{message},
                    last_message_at=#{now},
+                   version=version+1,
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
                AND status='TRANSFERRED'
+               AND version=#{expectedVersion}
                AND EXISTS (
                    SELECT 1 FROM nx_conversation_transfer t
                     WHERE t.conversation_no=#{conversationNo} AND t.status='PENDING' AND t.is_deleted=0
                )
             """)
     int markTransferWait(@Param("conversationNo") String conversationNo, @Param("message") String message,
+                         @Param("expectedVersion") Long expectedVersion,
                          @Param("now") LocalDateTime now);
 
     @Update("""
@@ -275,22 +287,27 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                    unread_count=0,
                    last_message=#{body},
                    last_message_at=#{now},
+                   version=version+1,
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
                AND status=#{expectedStatus}
+               AND version=#{expectedVersion}
             """)
     int replyConversation(@Param("conversationNo") String conversationNo, @Param("body") String body,
                           @Param("expectedStatus") String expectedStatus,
+                          @Param("expectedVersion") Long expectedVersion,
                           @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_conversation
-               SET status=#{status}, updated_at=#{now}
+               SET status=#{status}, version=version+1, updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
                AND status=#{expectedStatus}
+               AND version=#{expectedVersion}
             """)
     int updateConversationStatus(@Param("conversationNo") String conversationNo, @Param("status") String status,
                                  @Param("expectedStatus") String expectedStatus,
+                                 @Param("expectedVersion") Long expectedVersion,
                                  @Param("now") LocalDateTime now);
 
     @Update("""
@@ -298,11 +315,14 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                SET status='CLOSED',
                    last_message=#{message},
                    last_message_at=#{now},
+                   version=version+1,
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo}
                AND status<>'CLOSED'
+               AND version=#{expectedVersion}
                AND is_deleted=0
             """)
     int markConvertedToTicket(@Param("conversationNo") String conversationNo, @Param("message") String message,
+                              @Param("expectedVersion") Long expectedVersion,
                               @Param("now") LocalDateTime now);
 }

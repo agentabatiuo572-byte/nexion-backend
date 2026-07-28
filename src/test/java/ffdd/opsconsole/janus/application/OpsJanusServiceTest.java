@@ -34,6 +34,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -94,6 +95,43 @@ class OpsJanusServiceTest {
         assertThat(result.getData().getRecords()).isEmpty();
         verify(repository, never()).updateDeviceStatus(
                 any(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void pendingRemoteCommandCarriesTheExactRevalidatedApprovedUrl() {
+        when(repository.findPendingDeviceCommand(eq(7L), any())).thenReturn(Optional.of(Map.of(
+                "desiredStatus", "HIT",
+                "revision", 8L,
+                "remoteUrlKey", "finance-main",
+                "remoteTargetVersion", 3,
+                "remoteTargetCatalogVersion", 9L)));
+
+        ApiResult<Map<String, Object>> result = service.pendingCommand(7L, "device-1");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("hasCommand", true)
+                .containsEntry("remoteUrlKey", "finance-main")
+                .containsEntry("remoteTargetVersion", 3)
+                .containsEntry("remoteTargetCatalogVersion", 9L)
+                .containsEntry("remoteTargetUrl", "https://approved.example/path");
+        verify(remoteTargetRepository).find("finance-main", 3);
+        verify(remoteTargetNetworkGuard).allows(any());
+    }
+
+    @Test
+    void pendingRemoteCommandFailsClosedWhenTheExactTargetCannotBeConsumed() {
+        when(repository.findPendingDeviceCommand(eq(7L), any())).thenReturn(Optional.of(Map.of(
+                "desiredStatus", "HIT",
+                "revision", 8L,
+                "remoteUrlKey", "finance-main",
+                "remoteTargetVersion", 3,
+                "remoteTargetCatalogVersion", 9L)));
+        when(remoteTargetNetworkGuard.allows(any())).thenReturn(false);
+
+        ApiResult<Map<String, Object>> result = service.pendingCommand(7L, "device-1");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("JANUS_REMOTE_TARGET_UNAVAILABLE");
     }
 
     @Test

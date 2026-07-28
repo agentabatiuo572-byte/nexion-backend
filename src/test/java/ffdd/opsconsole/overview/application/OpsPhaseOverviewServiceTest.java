@@ -51,7 +51,7 @@ class OpsPhaseOverviewServiceTest {
         assertThat((List<?>) data.get("phaseDistribution")).hasSize(6);
         assertThat(String.valueOf(data.get("sourceStatement"))).contains("H1");
         assertThat(String.valueOf(data)).doesNotContain("Premium", "NEXv2", "NEX v2");
-        verify(auditLogService).record(any());
+        verify(auditLogService).recordRequired(any());
     }
 
     @Test

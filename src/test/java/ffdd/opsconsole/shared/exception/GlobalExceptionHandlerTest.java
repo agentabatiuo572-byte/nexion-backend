@@ -8,11 +8,14 @@ import static org.mockito.Mockito.verify;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import jakarta.servlet.DispatcherType;
 import jakarta.validation.ConstraintViolationException;
+import java.io.IOException;
 import java.util.Set;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.core.MethodParameter;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -101,6 +104,37 @@ class GlobalExceptionHandlerTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INTERNAL_ERROR.httpStatus());
         assertThat(result.getMessage()).isEqualTo("INTERNAL_SERVER_ERROR");
         assertThat(result.getMessage()).doesNotContain("Mysql", "Mapper", "INSERT");
+    }
+
+    @Test
+    void committedAsyncClientDisconnectDoesNotAttemptToWriteJsonIntoSseResponse() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setDispatcherType(DispatcherType.ASYNC);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setCommitted(true);
+
+        ApiResult<Void> result = handler.handleIOException(
+                new IOException("An established connection was aborted by the software in your host machine"),
+                request,
+                response);
+
+        assertThat(result).isNull();
+        assertThat(response.isCommitted()).isTrue();
+    }
+
+    @Test
+    void ordinaryIoFailureStillReturnsStableSanitized500() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        ApiResult<Void> result = handler.handleIOException(
+                new IOException("backend file read failed"),
+                request,
+                response);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INTERNAL_ERROR.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("INTERNAL_SERVER_ERROR");
+        assertThat(result.getMessage()).doesNotContain("file read");
     }
 
     @Test

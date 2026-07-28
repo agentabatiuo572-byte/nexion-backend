@@ -8,6 +8,8 @@ import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
 import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -33,6 +35,8 @@ public class NovaSocialRuntimeService {
     private final NovaRepository novaRepository;
     private final NovaSocialRuntimeRepository runtimeRepository;
     private final OpsNovaService novaService;
+    private final CopyAudiencePhaseProvider phaseProvider;
+    private final EventOutboxService eventOutboxService;
     private final String leaseOwner = UUID.randomUUID().toString();
 
     public void runScheduledSync() {
@@ -118,11 +122,39 @@ public class NovaSocialRuntimeService {
             completeClaimOrThrow(slotKey, now);
             return NovaSocialDispatchResult.skipped("NO_USER_OUTSIDE_COOLDOWN");
         }
+        int delivered = runtimeRepository.markNotificationsDelivered(bizNo, now);
+        if (delivered != inserted) {
+            throw new IllegalStateException("NOVA_SOCIAL_DELIVERY_COUNT_MISMATCH");
+        }
+        String currentPhase = safe(phaseProvider.currentPhase()).toUpperCase();
+        if (!currentPhase.matches("P[1-6]")) {
+            throw new IllegalStateException("NOVA_SOCIAL_PHASE_UNAVAILABLE");
+        }
+        var facts = runtimeRepository.notificationFacts(bizNo, currentPhase, now);
+        if (facts.size() != delivered) {
+            throw new IllegalStateException("NOVA_SOCIAL_DELIVERY_FACT_MISMATCH");
+        }
+        facts.forEach(fact -> {
+            Map<String, Object> payload = Map.of(
+                    "notification_id", fact.notificationId(),
+                    "channel", SOCIAL_CHANNEL,
+                    "priority", fact.priority());
+            eventOutboxService.publishUserEvent(
+                    "NOVA_NOTIFICATION", String.valueOf(fact.notificationId()), "nova.push_sent",
+                    fact.userId(), fact.phase(), fact.accountAgeMonths(), fact.cohort(), payload);
+            eventOutboxService.publishUserEvent(
+                    "NOTIFICATION", String.valueOf(fact.notificationId()), "notification.delivered",
+                    fact.userId(), fact.phase(), fact.accountAgeMonths(), fact.cohort(), Map.of(
+                            "campaign_id", bizNo,
+                            "notification_id", fact.notificationId(),
+                            "kind", fact.kind(),
+                            "priority", fact.priority()));
+        });
         if (runtimeRepository.markDispatchedIfStillActive(event.id(), now) != 1) {
             throw new IllegalStateException("NOVA_SOCIAL_EVENT_CHANGED_DURING_DISPATCH");
         }
         completeClaimOrThrow(slotKey, now);
-        return new NovaSocialDispatchResult(true, inserted, event.id(), "QUEUED_INTERNAL_NOTIFICATION");
+        return new NovaSocialDispatchResult(true, delivered, event.id(), "DELIVERED_INTERNAL_NOTIFICATION");
     }
 
     private void completeClaimOrThrow(String slotKey, LocalDateTime now) {

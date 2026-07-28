@@ -12,6 +12,8 @@ import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
 import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
+import ffdd.opsconsole.bi.domain.BiReportSnapshot;
+import ffdd.opsconsole.bi.domain.BiReportStreamDownload;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
 import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
@@ -28,13 +30,18 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.facade.TreasuryFinanceAnalyticsFacade;
+import java.io.ByteArrayInputStream;
+import java.io.SequenceInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -56,7 +63,17 @@ public class OpsBiService implements AuditReplayable {
             "KPI_SERIES", "FUNNEL_COHORT", "FINANCE_AGG", "OPERATIONS_AGG");
     private static final Set<String> DOWNLOADABLE_REPORT_TYPES = Set.of(
             "KPI_SERIES", "FUNNEL_COHORT", "FINANCE_AGG", "OPERATIONS_AGG", "NETWORK_TREE", "KYC_REGULATORY", "REGULATORY");
+    private static final Set<String> L2_STAGES = Set.of(
+            "auth.register_completed", "kyc.express_verified", "checkout.completed",
+            "wallet.reinvest", "withdraw.submitted");
+    private static final Set<String> L2_WINDOWS = Set.of("Day1", "Day7", "Day14", "Day30", "Day60");
+    private static final Set<String> L2_DIMENSIONS = Set.of("phase", "locale", "ref");
+    private static final Set<String> L2_METRICS = Set.of("cvr", "retention", "trial");
     private static final int NETWORK_TREE_ROW_CAP = 100_000;
+    private static final int FINANCE_DETAIL_ROW_CAP = 100_000;
+    private static final Set<String> FINANCE_DETAIL_FIELDS = Set.of(
+            "交易时间", "用户编码（脱敏）", "业务编号", "账单类型",
+            "资产", "方向", "金额", "余额", "状态");
 
     private final BiReportRepository reportRepository;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -122,39 +139,123 @@ public class OpsBiService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> funnelDrilldown(
             String stage, String cohort, String phase, String locale, String ref) {
-        Map<String, Object> dashboard = reportRepository.dashboard("L2");
+        String normalizedStage = trimOrDefault(stage, "");
+        String normalizedCohort = trimOrDefault(cohort, "");
+        String normalizedPhase = trimOrDefault(phase, "");
+        String normalizedLocale = trimOrDefault(locale, "");
+        String normalizedRef = trimOrDefault(ref, "");
+        String invalid = validateL2Filters(normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
+        if (invalid != null) return ApiResult.fail(400, invalid);
+        if (!normalizedStage.isEmpty() && !L2_STAGES.contains(normalizedStage)) {
+            return ApiResult.fail(400, "L2_STAGE_INVALID");
+        }
+        Map<String, Object> dashboard = reportRepository.l2Dashboard(
+                normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
         Map<String, Object> response = l2ReadResponse(dashboard, stage, cohort, phase, locale, ref);
         response.put("funnel", dashboard.getOrDefault("funnel", List.of()));
         response.put("funnelExt", dashboard.getOrDefault("funnelExt", List.of()));
         response.put("trialSteps", dashboard.getOrDefault("trialSteps", List.of()));
         response.put("stageEvents", dashboard.getOrDefault("stageEvents", List.of()));
+        response.put("cohorts", dashboard.getOrDefault("cohorts", List.of()));
+        response.put("monthlyCohorts", dashboard.getOrDefault("monthlyCohorts", List.of()));
+        response.put("curves", dashboard.getOrDefault("curves", Map.of()));
+        response.put("monthlyCurves", dashboard.getOrDefault("monthlyCurves", Map.of()));
+        response.put("crossAnalysis", dashboard.getOrDefault("crossAnalysis", Map.of()));
+        response.put("day7Kpi", dashboard.getOrDefault("day7Kpi", Map.of()));
         return ApiResult.ok(response);
     }
 
-    public ApiResult<Map<String, Object>> retentionCohortMatrix(String cohortRange, String window) {
-        Map<String, Object> dashboard = reportRepository.dashboard("L2");
-        Map<String, Object> response = l2ReadResponse(dashboard, null, cohortRange, null, null, null);
-        response.put("window", trimOrDefault(window, "Day1,Day7,Day30"));
+    public ApiResult<Map<String, Object>> retentionCohortMatrix(
+            String cohortRange, String window, String phase, String locale, String ref) {
+        String normalizedCohort = trimOrDefault(cohortRange, "");
+        String normalizedPhase = trimOrDefault(phase, "");
+        String normalizedLocale = trimOrDefault(locale, "");
+        String normalizedRef = trimOrDefault(ref, "");
+        String invalid = validateL2Filters(normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
+        if (invalid != null) return ApiResult.fail(400, invalid);
+        String normalizedWindow = trimOrDefault(window, "Day1,Day7,Day30");
+        List<String> windows = Arrays.stream(normalizedWindow.split(","))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (windows.isEmpty() || windows.stream().anyMatch(value -> !L2_WINDOWS.contains(value))) {
+            return ApiResult.fail(400, "L2_RETENTION_WINDOW_INVALID");
+        }
+        Map<String, Object> dashboard = reportRepository.l2Dashboard(
+                normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
+        Map<String, Object> response = l2ReadResponse(dashboard, null, cohortRange, phase, locale, ref);
+        response.put("window", String.join(",", windows));
         response.put("cohorts", dashboard.getOrDefault("cohorts", List.of()));
         response.put("retentionEvent", "app.dau");
         return ApiResult.ok(response);
     }
 
-    public ApiResult<Map<String, Object>> retentionCurve(String cohort) {
-        Map<String, Object> dashboard = reportRepository.dashboard("L2");
-        Map<String, Object> response = l2ReadResponse(dashboard, null, cohort, null, null, null);
+    public ApiResult<Map<String, Object>> retentionCurve(
+            String cohort, String phase, String locale, String ref) {
+        String normalizedCohort = trimOrDefault(cohort, "");
+        String normalizedPhase = trimOrDefault(phase, "");
+        String normalizedLocale = trimOrDefault(locale, "");
+        String normalizedRef = trimOrDefault(ref, "");
+        String invalid = validateL2Filters(normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
+        if (normalizedCohort.isEmpty() || invalid != null) {
+            return ApiResult.fail(400, invalid == null ? "L2_COHORT_INVALID" : invalid);
+        }
+        Map<String, Object> dashboard = reportRepository.l2Dashboard(
+                normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
+        Map<String, Object> response = l2ReadResponse(dashboard, null, cohort, phase, locale, ref);
         Map<String, Object> curves = mutableObjectMap(dashboard.get("curves"));
-        response.put("curve", StringUtils.hasText(cohort) ? curves.getOrDefault(cohort.trim(), List.of()) : curves);
+        if (normalizedCohort.matches("\\d{4}-\\d{2}")) {
+            curves = mutableObjectMap(dashboard.get("monthlyCurves"));
+        }
+        response.put("curve", curves.getOrDefault(normalizedCohort, List.of()));
         response.put("retentionEvent", "app.dau");
         return ApiResult.ok(response);
     }
 
-    public ApiResult<Map<String, Object>> funnelCross(String dim1, String dim2, String metric) {
-        Map<String, Object> dashboard = reportRepository.dashboard("L2");
-        Map<String, Object> response = l2ReadResponse(dashboard, null, null, dim1, dim2, null);
-        response.put("metric", trimOrDefault(metric, "cvr"));
+    public ApiResult<Map<String, Object>> funnelCross(
+            String dim1, String dim2, String metric,
+            String cohort, String phase, String locale, String ref) {
+        String normalizedDim1 = trimOrDefault(dim1, "ref").toLowerCase(Locale.ROOT);
+        String normalizedDim2 = trimOrDefault(dim2, "locale").toLowerCase(Locale.ROOT);
+        String normalizedMetric = trimOrDefault(metric, "cvr").toLowerCase(Locale.ROOT);
+        if (!L2_DIMENSIONS.contains(normalizedDim1) || !L2_DIMENSIONS.contains(normalizedDim2)
+                || normalizedDim1.equals(normalizedDim2)) {
+            return ApiResult.fail(400, "L2_CROSS_DIMENSION_INVALID");
+        }
+        if (!L2_METRICS.contains(normalizedMetric)) {
+            return ApiResult.fail(400, "L2_CROSS_METRIC_INVALID");
+        }
+        String normalizedCohort = trimOrDefault(cohort, "");
+        String normalizedPhase = trimOrDefault(phase, "");
+        String normalizedLocale = trimOrDefault(locale, "");
+        String normalizedRef = trimOrDefault(ref, "");
+        String invalid = validateL2Filters(normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
+        if (invalid != null) return ApiResult.fail(400, invalid);
+        Map<String, Object> dashboard = reportRepository.l2Dashboard(
+                normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
+        Map<String, Object> response = l2ReadResponse(dashboard, null, cohort, phase, locale, ref);
+        response.put("dimensions", List.of(normalizedDim1, normalizedDim2));
+        response.put("metric", normalizedMetric);
         response.put("crossAnalysis", dashboard.getOrDefault("crossAnalysis", Map.of()));
         return ApiResult.ok(response);
+    }
+
+    private String validateL2Filters(String cohort, String phase, String locale, String ref) {
+        if (StringUtils.hasText(cohort) && !validL2Cohort(cohort)) return "L2_COHORT_INVALID";
+        if (StringUtils.hasText(phase) && !phase.matches("(?i)^P[1-6]$")) return "L2_PHASE_INVALID";
+        if (StringUtils.hasText(locale) && !locale.matches("(?i)^[a-z]{2,8}(?:-[a-z0-9]{2,8})?$")) {
+            return "L2_LOCALE_INVALID";
+        }
+        if (StringUtils.hasText(ref) && (ref.length() > 96 || !ref.matches("^[\\p{L}\\p{N}._:-]+$"))) {
+            return "L2_REF_INVALID";
+        }
+        return null;
+    }
+
+    private boolean validL2Cohort(String cohort) {
+        return cohort.matches("^\\d{4}-W(?:0[1-9]|[1-4]\\d|5[0-3])$")
+                || cohort.matches("^\\d{4}-(?:0[1-9]|1[0-2])$");
     }
 
     private Map<String, Object> l2ReadResponse(
@@ -177,6 +278,8 @@ public class OpsBiService implements AuditReplayable {
                 "sameUserJoin", false,
                 "incompleteRatesAreNull", true)));
         response.put("sources", dashboard.getOrDefault("sources", List.of()));
+        if (dashboard.containsKey("reason")) response.put("reason", dashboard.get("reason"));
+        if (dashboard.containsKey("message")) response.put("message", dashboard.get("message"));
         return response;
     }
 
@@ -197,7 +300,10 @@ public class OpsBiService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> operationsOverview(
             String period, String phase, String from, String to) {
-        return ApiResult.ok(reportRepository.operationsDashboard(period, phase, from, to));
+        L4QuerySelection query = l4QuerySelection(period, phase, from, to);
+        if (query.error() != null) return ApiResult.fail(400, query.error());
+        return ApiResult.ok(reportRepository.operationsDashboard(
+                query.period(), query.phase(), query.from(), query.to()));
     }
 
     public ApiResult<Map<String, Object>> operationsDevices(
@@ -311,7 +417,10 @@ public class OpsBiService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> operationsSection(
             String section, String period, String phase, String from, String to, Map<String, Object> filters) {
-        Map<String, Object> dashboard = reportRepository.operationsDashboard(period, phase, from, to);
+        L4QuerySelection query = l4QuerySelection(period, phase, from, to);
+        if (query.error() != null) return ApiResult.fail(400, query.error());
+        Map<String, Object> dashboard = reportRepository.operationsDashboard(
+                query.period(), query.phase(), query.from(), query.to());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("module", "L4");
         response.put("available", dashboard.getOrDefault("available", false));
@@ -408,23 +517,45 @@ public class OpsBiService implements AuditReplayable {
         if (!AGGREGATE_EXPORT_TYPES.contains(reportType)) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "L5_EXPORT_TYPE_NOT_AVAILABLE");
         }
+        if ("FUNNEL_COHORT".equals(reportType)) {
+            String invalid = validateL2Filters(
+                    trimOrDefault(request.cohort(), ""),
+                    trimOrDefault(request.phase(), ""),
+                    trimOrDefault(request.locale(), ""),
+                    trimOrDefault(request.ref(), ""));
+            if (invalid != null) {
+                return ApiResult.fail(400, invalid);
+            }
+        } else if ("OPERATIONS_AGG".equals(reportType)) {
+            L4ExportSelection selection = l4Selection(request.timeRange());
+            L4QuerySelection query = l4QuerySelection(
+                    selection.period(), selection.phase(), selection.from(), selection.to());
+            if (query.error() != null) {
+                return ApiResult.fail(400, query.error());
+            }
+        } else if (StringUtils.hasText(request.cohort())
+                || StringUtils.hasText(request.phase())
+                || StringUtils.hasText(request.locale())
+                || StringUtils.hasText(request.ref())) {
+            return ApiResult.fail(400, "BI_REPORT_FILTER_NOT_SUPPORTED");
+        }
         boolean containsPii = containsSensitiveFields(request);
-        if (containsPii) {
+        boolean financeDetail = "FINANCE_AGG".equals(reportType) && containsPii;
+        if (containsPii && !financeDetail) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "AGGREGATE_EXPORT_MUST_BE_NON_SENSITIVE");
         }
         Long adminId = parseAdminIdFromContext();
         if (adminId == null) {
             return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
         }
-        String requiredPermission = createReportPermission(reportType, false);
+        String requiredPermission = createReportPermission(reportType, containsPii);
         Set<String> grantedPermissions = permissionCache.getPermissionCodes(adminId);
         if (!grantedPermissions.contains(requiredPermission)) {
             return ApiResult.fail(403, "PERMISSION_DENIED");
         }
-        if ("FINANCE_AGG".equals(reportType) && containsPii) {
-            return ApiResult.fail(
-                    OpsErrorCode.RETIRED_FEATURE.httpStatus(),
-                    "FINANCE_DETAIL_EXPORT_NOT_AVAILABLE");
+        if (financeDetail) {
+            ApiResult<Map<String, Object>> detailGuard = validateFinanceDetailRequest(request);
+            if (detailGuard != null) return detailGuard;
         }
         if ("NETWORK_TREE".equals(reportType)) {
             return ApiResult.fail(
@@ -453,14 +584,14 @@ public class OpsBiService implements AuditReplayable {
                 normalizeReportType(reportName),
                 trimOrDefault(request.timeRange(), "ON_DEMAND"),
                 "REGULATORY".equals(normalizeReportType(reportName)) ? "PDF" : "CSV",
-                trimOrDefault(request.timeRange(), "按需导出"),
+                reportScope(request),
                 trimOrDefault(request.fields(), "聚合指标"),
                 estimateRowCount(request),
                 containsPii,
                 containsPii ? maskingPolicy : "NONE",
                 containsPii ? "PENDING_CONFIRM" : "READY",
                 StringUtils.hasText(request.ticket()) ? "工单:" + request.ticket().trim() : "后台创建导出任务"));
-        reportRepository.saveSnapshotCsv(created.reportId(), reportCsv(created));
+        reportRepository.saveSnapshotCsv(created.reportId(), reportCsv(created, request));
         audit(containsPii ? "L_BI_REPORT_CREATE" : "admin.report_exported", created, currentActorUsername(), linked(
                 "reportId", created.reportId(),
                 "reason", request.reason().trim(),
@@ -469,11 +600,24 @@ public class OpsBiService implements AuditReplayable {
                 "containsPii", created.containsPii(),
                 "maskingPolicy", created.maskingPolicy(),
                 "scope", created.scope(),
+                "filters", l2FilterAudit(request),
                 "fields", created.fields(),
                 "rowCount", created.rowCount(),
                 "format", created.format(),
                 "status", created.status(),
                 "snapshot", "CREATION_TIME"));
+        if (!containsPii) {
+            reportRepository.publishReportExported(created.reportId(), linked(
+                    "reportId", created.reportId(),
+                    "exportType", created.type(),
+                    "scope", created.scope(),
+                    "rowCount", created.rowCount(),
+                    "containsPii", false,
+                    "maskingPolicy", created.maskingPolicy(),
+                    "operator", currentActorUsername(),
+                    "reason", request.reason().trim(),
+                    "format", created.format()));
+        }
         Map<String, Object> response = exportOverview().getData();
         response.put("created", created);
         return ApiResult.ok(response);
@@ -555,7 +699,7 @@ public class OpsBiService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "L5_EXPORT_TYPE_NOT_AVAILABLE");
         }
         if (Set.of("GENERATE", "RERUN", "APPROVE", "DOWNLOAD").contains(normalizedAction)
-                && reportRepository.findSnapshotCsv(report.reportId()).filter(StringUtils::hasText).isEmpty()) {
+                && !reportRepository.hasSnapshot(report.reportId())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REPORT_SNAPSHOT_NOT_AVAILABLE");
         }
         String requiredCode = "APPROVE".equals(normalizedAction)
@@ -591,6 +735,18 @@ public class OpsBiService implements AuditReplayable {
                 "idempotencyKey", idempotencyKey,
                 "includeSensitive", Boolean.TRUE.equals(request.includeSensitive()),
                 "includeDecrypted", false));
+        if ("APPROVE".equals(normalizedAction) && "READY".equals(nextStatus)) {
+            reportRepository.publishReportExported(report.reportId(), linked(
+                    "reportId", report.reportId(),
+                    "exportType", report.type(),
+                    "scope", report.scope(),
+                    "rowCount", report.rowCount(),
+                    "containsPii", Boolean.TRUE.equals(report.containsPii()),
+                    "maskingPolicy", report.maskingPolicy(),
+                    "operator", currentActorUsername(),
+                    "reason", request.reason().trim(),
+                    "format", report.format()));
+        }
         return ApiResult.ok(response);
     }
 
@@ -612,13 +768,15 @@ public class OpsBiService implements AuditReplayable {
         if (permissionFailure != null) {
             return permissionFailure;
         }
-        if (reportRepository.findSnapshotCsv(report.reportId()).filter(StringUtils::hasText).isEmpty()) {
+        if (!reportRepository.hasSnapshot(report.reportId())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REPORT_SNAPSHOT_NOT_AVAILABLE");
         }
+        Long adminId = parseAdminIdFromContext();
+        if (adminId == null) return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
         LocalDateTime issuedAt = LocalDateTime.now();
         LocalDateTime expiresAt = issuedAt.plusHours(24);
         String downloadToken = UUID.randomUUID().toString();
-        reportRepository.saveDownloadToken(report.reportId(), sha256(downloadToken), expiresAt);
+        reportRepository.saveDownloadToken(report.reportId(), sha256(downloadToken), expiresAt, adminId);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("reportId", report.reportId());
         response.put("downloadToken", downloadToken);
@@ -656,7 +814,10 @@ public class OpsBiService implements AuditReplayable {
         if (snapshot.isEmpty()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REPORT_SNAPSHOT_NOT_AVAILABLE");
         }
-        if (!reportRepository.isDownloadTokenValid(report.reportId(), sha256(downloadToken.trim()), LocalDateTime.now())) {
+        Long adminId = parseAdminIdFromContext();
+        if (adminId == null) return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+        if (!reportRepository.isDownloadTokenValid(
+                report.reportId(), sha256(downloadToken.trim()), LocalDateTime.now(), adminId)) {
             return ApiResult.fail(403, "DOWNLOAD_TOKEN_INVALID_OR_EXPIRED");
         }
         String body = "\ufeff" + snapshot.get();
@@ -674,17 +835,78 @@ public class OpsBiService implements AuditReplayable {
                 "snapshot", snapshot.isPresent() ? "CREATION_TIME" : "LEGACY_LIVE_FALLBACK",
                  "content", "KPI_SERIES".equals(normalizeText(report.type())) ? "L1_KPI_FACTS"
                          : "FUNNEL_COHORT".equals(normalizeText(report.type())) ? "L2_LIFECYCLE_FACTS"
+                         : "FINANCE_AGG".equals(normalizeText(report.type())) && Boolean.TRUE.equals(report.containsPii())
+                                 ? "L3_FINANCE_MASKED_DETAIL"
                          : "FINANCE_AGG".equals(normalizeText(report.type())) ? "L3_FINANCE_FACTS"
                          : "OPERATIONS_AGG".equals(normalizeText(report.type())) ? "L4_OPERATIONS_FACTS"
                          : "NETWORK_TREE".equals(normalizeText(report.type())) ? "L4_NETWORK_TREE_PARTIAL" : "REPORT_METADATA"));
         return ApiResult.ok(new BiReportDownloadFile(fileName, "text/csv;charset=UTF-8", body.getBytes(StandardCharsets.UTF_8)));
     }
 
-    private String reportCsv(BiReportView report) {
+    public ApiResult<BiReportStreamDownload> downloadStreamFile(String reportId, String downloadToken) {
+        if (!StringUtils.hasText(reportId)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REPORT_ID_REQUIRED");
+        }
+        if (!StringUtils.hasText(downloadToken)) {
+            return ApiResult.fail(403, "DOWNLOAD_TOKEN_REQUIRED");
+        }
+        BiReportView report = reportRepository.findReport(reportId.trim()).orElse(null);
+        if (report == null) return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
+        if (!isDownloadableReport(report)) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "L5_EXPORT_TYPE_NOT_AVAILABLE");
+        }
+        if (!"READY".equals(normalizeText(report.status()))) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        ApiResult<BiReportStreamDownload> permissionFailure = requireReportStreamAccess(report);
+        if (permissionFailure != null) return permissionFailure;
+        Long adminId = parseAdminIdFromContext();
+        if (adminId == null) return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+        if (!reportRepository.isDownloadTokenValid(
+                report.reportId(), sha256(downloadToken.trim()), LocalDateTime.now(), adminId)) {
+            return ApiResult.fail(403, "DOWNLOAD_TOKEN_INVALID_OR_EXPIRED");
+        }
+        Optional<BiReportSnapshot> snapshot = reportRepository.openSnapshot(report.reportId());
+        if (snapshot.isEmpty()) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "REPORT_SNAPSHOT_NOT_AVAILABLE");
+        }
+        BiReportSnapshot artifact = snapshot.get();
+        byte[] bom = "\ufeff".getBytes(StandardCharsets.UTF_8);
+        SequenceInputStream stream = new SequenceInputStream(
+                new ByteArrayInputStream(bom), artifact.inputStream());
+        String actor = currentActorUsername();
+        Runnable onComplete = () -> auditResource(
+                "L_BI_REPORT_DOWNLOAD_FILE", "BI_REPORT", report.reportId(), actor,
+                Boolean.TRUE.equals(report.containsPii()) ? "HIGH" : "MEDIUM", Map.of(
+                "reportId", report.reportId(),
+                "type", report.type(),
+                "maskingPolicy", report.maskingPolicy(),
+                "scope", report.scope(),
+                "fields", report.fields(),
+                "rowCount", report.rowCount(),
+                "format", report.format(),
+                "snapshot", artifact.objectKey().startsWith("legacy-db:")
+                        ? "LEGACY_DATABASE" : "MINIO_CREATION_TIME",
+                "artifactSha256", artifact.sha256()));
+        return ApiResult.ok(new BiReportStreamDownload(
+                report.reportId().toLowerCase(Locale.ROOT) + ".csv",
+                artifact.contentType(),
+                artifact.sizeBytes() + bom.length,
+                stream,
+                onComplete));
+    }
+
+    private String reportCsv(BiReportView report, BiReportCreateRequest request) {
         return switch (normalizeText(report.type())) {
             case "KPI_SERIES" -> kpiReportCsv();
-            case "FUNNEL_COHORT" -> funnelReportCsv();
-            case "FINANCE_AGG" -> financeReportCsv();
+            case "FUNNEL_COHORT" -> funnelReportCsv(request);
+            case "FINANCE_AGG" -> Boolean.TRUE.equals(report.containsPii())
+                    ? financeDetailReportCsv(request)
+                    : financeReportCsv();
             case "OPERATIONS_AGG" -> operationsReportCsv(report);
             case "NETWORK_TREE" -> networkTreeReportCsv(report);
             default -> metadataReportCsv(report);
@@ -715,19 +937,41 @@ public class OpsBiService implements AuditReplayable {
         return csv.toString();
     }
 
-    private String funnelReportCsv() {
-        Map<String, Object> dashboard = reportRepository.dashboard("L2");
+    private String funnelReportCsv(BiReportCreateRequest request) {
+        Map<String, Object> dashboard = l2ExportDashboard(request);
         Object funnel = dashboard.get("funnel");
         if (funnel instanceof List<?> rows && !rows.isEmpty()) {
-            StringBuilder csv = new StringBuilder(csvRow(List.of("生命周期阶段", "去重人数", "转化率", "业务事件", "数据来源")));
+            StringBuilder csv = new StringBuilder(csvRow(List.of(
+                    "记录类型", "阶段或同期群", "去重人数", "转化率", "Day1", "Day7",
+                    "Day14", "Day30", "Day60", "业务事件", "数据来源")));
             for (Object item : rows) {
                 Map<String, Object> row = mutableObjectMap(item);
                 csv.append(csvRow(List.of(
+                        "漏斗",
                         lifecycleStageLabel(stringValue(row.get("stage"))),
                         stringValue(row.get("users")),
                         stringValue(row.getOrDefault("cvr", row.get("conversionRate"))),
+                        "", "", "", "", "",
                         stringValue(row.getOrDefault("ev", row.get("event"))),
                         businessSourceLabel(stringValue(row.get("source"))))));
+            }
+            Object cohorts = dashboard.get("cohorts");
+            if (cohorts instanceof List<?> cohortRows) {
+                for (Object item : cohortRows) {
+                    Map<String, Object> row = mutableObjectMap(item);
+                    csv.append(csvRow(List.of(
+                            "留存",
+                            stringValue(row.get("cohort")),
+                            stringValue(row.get("size")),
+                            "",
+                            stringValue(row.get("d1")),
+                            stringValue(row.get("d7")),
+                            stringValue(row.get("d14")),
+                            stringValue(row.get("d30")),
+                            stringValue(row.get("d60")),
+                            "app.dau",
+                            "事件事实")));
+                }
             }
             return csv.toString();
         }
@@ -745,10 +989,138 @@ public class OpsBiService implements AuditReplayable {
         return csv.toString();
     }
 
+    private Map<String, Object> l2ExportDashboard(BiReportCreateRequest request) {
+        return reportRepository.l2Dashboard(
+                trimOrDefault(request.cohort(), ""),
+                trimOrDefault(request.phase(), ""),
+                trimOrDefault(request.locale(), ""),
+                trimOrDefault(request.ref(), ""));
+    }
+
+    private String reportScope(BiReportCreateRequest request) {
+        String base = trimOrDefault(request.timeRange(), "按需导出");
+        if (!"FUNNEL_COHORT".equals(normalizeReportType(request.exportType()))) {
+            return base;
+        }
+        Map<String, Object> filters = l2FilterAudit(request);
+        boolean hasSlice = filters.values().stream().anyMatch(value -> StringUtils.hasText(String.valueOf(value)));
+        return hasSlice ? base + "；切片=" + filters : base + "；切片=全部";
+    }
+
+    private Map<String, Object> l2FilterAudit(BiReportCreateRequest request) {
+        if (request == null || !"FUNNEL_COHORT".equals(normalizeReportType(request.exportType()))) {
+            return Map.of();
+        }
+        return linked(
+                "cohort", trimOrDefault(request.cohort(), ""),
+                "phase", trimOrDefault(request.phase(), "").toUpperCase(Locale.ROOT),
+                "locale", trimOrDefault(request.locale(), "").toLowerCase(Locale.ROOT),
+                "ref", trimOrDefault(request.ref(), ""));
+    }
+
     private String financeReportCsv() {
         StringBuilder csv = new StringBuilder(csvRow(List.of("分类", "财务事实", "当前值", "单位", "数据来源")));
         financeFactRows().forEach(row -> csv.append(csvRow(row)));
         return csv.toString();
+    }
+
+    private ApiResult<Map<String, Object>> validateFinanceDetailRequest(BiReportCreateRequest request) {
+        FinanceDetailSelection selection = financeDetailSelection(request);
+        if (selection == null) {
+            return ApiResult.fail(400, "FINANCE_DETAIL_SCOPE_INVALID");
+        }
+        if (selection.fields().isEmpty()) {
+            return ApiResult.fail(400, "FINANCE_DETAIL_FIELDS_INVALID");
+        }
+        String maskingPolicy = normalizeMaskingPolicy(request.maskPolicy());
+        if ("DECRYPTED".equals(maskingPolicy)) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "DECRYPTED_PII_EXPORT_BLOCKED");
+        }
+        long count = ledgerRepository.countLedgerBills(
+                null, null, null, null, null, selection.from(), selection.to());
+        if (count > FINANCE_DETAIL_ROW_CAP) {
+            return ApiResult.fail(422, "FINANCE_DETAIL_ROW_CAP_EXCEEDED");
+        }
+        return null;
+    }
+
+    private String financeDetailReportCsv(BiReportCreateRequest request) {
+        FinanceDetailSelection selection = financeDetailSelection(request);
+        if (selection == null) {
+            throw new IllegalStateException("FINANCE_DETAIL_SCOPE_INVALID_AFTER_VALIDATION");
+        }
+        List<TreasuryLedgerBillView> rows = ledgerRepository.pageLedgerBills(
+                null, null, null, null, null, selection.from(), selection.to(),
+                FINANCE_DETAIL_ROW_CAP, 0);
+        StringBuilder csv = new StringBuilder(csvRow(selection.fields()));
+        for (TreasuryLedgerBillView row : rows) {
+            List<String> values = selection.fields().stream()
+                    .map(field -> financeDetailValue(field, row))
+                    .toList();
+            csv.append(csvRow(values));
+        }
+        return csv.toString();
+    }
+
+    private String financeDetailValue(String field, TreasuryLedgerBillView row) {
+        return safeFinanceCsvValue(switch (field) {
+            case "交易时间" -> stringValue(row.createdAt());
+            case "用户编码（脱敏）" -> maskFinanceUser(row.userNo(), row.userId());
+            case "业务编号" -> stringValue(row.bizNo());
+            case "账单类型" -> stringValue(row.billType());
+            case "资产" -> stringValue(row.asset());
+            case "方向" -> stringValue(row.direction());
+            case "金额" -> stringValue(row.amount());
+            case "余额" -> stringValue(row.balanceAfter());
+            case "状态" -> stringValue(row.status());
+            default -> "";
+        });
+    }
+
+    private String safeFinanceCsvValue(String value) {
+        String text = trimOrDefault(value, "");
+        return text.matches("^[=+\\-@].*") ? "'" + text : text;
+    }
+
+    private String maskFinanceUser(String userNo, Long userId) {
+        String raw = StringUtils.hasText(userNo) ? userNo.trim()
+                : userId == null ? "" : "U" + userId;
+        if (raw.length() <= 4) return "***";
+        return raw.substring(0, 2) + "***" + raw.substring(raw.length() - 2);
+    }
+
+    private FinanceDetailSelection financeDetailSelection(BiReportCreateRequest request) {
+        if (request == null || !StringUtils.hasText(request.timeRange())
+                || !StringUtils.hasText(request.fields())) {
+            return null;
+        }
+        String[] dates = request.timeRange().trim().split("/", -1);
+        if (dates.length != 2) return null;
+        try {
+            LocalDate from = LocalDate.parse(dates[0].trim());
+            LocalDate inclusiveTo = LocalDate.parse(dates[1].trim());
+            if (inclusiveTo.isBefore(from) || inclusiveTo.isAfter(from.plusYears(1))) return null;
+            List<String> fields = Arrays.stream(request.fields().split("[,/，]"))
+                    .map(String::trim)
+                    .filter(StringUtils::hasText)
+                    .distinct()
+                    .toList();
+            if (fields.isEmpty() || fields.stream().anyMatch(field -> !FINANCE_DETAIL_FIELDS.contains(field))) {
+                return null;
+            }
+            return new FinanceDetailSelection(
+                    from.atStartOfDay(),
+                    inclusiveTo.plusDays(1).atStartOfDay(),
+                    fields);
+        } catch (RuntimeException invalid) {
+            return null;
+        }
+    }
+
+    private record FinanceDetailSelection(
+            LocalDateTime from,
+            LocalDateTime to,
+            List<String> fields) {
     }
 
     private List<List<String>> financeFactRows() {
@@ -911,6 +1283,47 @@ public class OpsBiService implements AuditReplayable {
 
     private record L4ExportSelection(String period, String phase, String from, String to) { }
 
+    private L4QuerySelection l4QuerySelection(String period, String phase, String from, String to) {
+        String normalizedPeriod = trimOrDefault(period, "week").toLowerCase(Locale.ROOT);
+        String normalizedPhase = trimOrDefault(phase, "ALL").toUpperCase(Locale.ROOT);
+        String normalizedFrom = trimOrDefault(from, "");
+        String normalizedTo = trimOrDefault(to, "");
+        if (!Set.of("day", "week", "month", "custom").contains(normalizedPeriod)) {
+            return new L4QuerySelection(normalizedPeriod, normalizedPhase, null, null, "L4_PERIOD_INVALID");
+        }
+        if (!"ALL".equals(normalizedPhase) && !normalizedPhase.matches("^P[1-6]$")) {
+            return new L4QuerySelection(normalizedPeriod, normalizedPhase, null, null, "L4_PHASE_INVALID");
+        }
+        if (!"custom".equals(normalizedPeriod)) {
+            if (StringUtils.hasText(normalizedFrom) || StringUtils.hasText(normalizedTo)) {
+                return new L4QuerySelection(normalizedPeriod, normalizedPhase, null, null, "L4_RANGE_NOT_SUPPORTED");
+            }
+            return new L4QuerySelection(normalizedPeriod, normalizedPhase, null, null, null);
+        }
+        try {
+            LocalDate start = LocalDate.parse(normalizedFrom);
+            LocalDate end = LocalDate.parse(normalizedTo);
+            LocalDate businessToday = LocalDate.now(ZoneOffset.ofHours(8));
+            if (start.isAfter(end) || end.isAfter(businessToday)
+                    || java.time.temporal.ChronoUnit.DAYS.between(start, end) > 399) {
+                return new L4QuerySelection(
+                        normalizedPeriod, normalizedPhase, normalizedFrom, normalizedTo, "L4_CUSTOM_RANGE_INVALID");
+            }
+            return new L4QuerySelection(normalizedPeriod, normalizedPhase, normalizedFrom, normalizedTo, null);
+        } catch (RuntimeException invalid) {
+            return new L4QuerySelection(
+                    normalizedPeriod, normalizedPhase, normalizedFrom, normalizedTo, "L4_CUSTOM_RANGE_INVALID");
+        }
+    }
+
+    private record L4QuerySelection(
+            String period,
+            String phase,
+            String from,
+            String to,
+            String error) {
+    }
+
     private void addFinanceSnapshotRow(List<List<String>> rows, Map<String, Object> snapshot,
                                        String key, String label, String unit) {
         if (snapshot.containsKey(key)) {
@@ -1005,7 +1418,9 @@ public class OpsBiService implements AuditReplayable {
         summary.put("totalBills", ledgerRepository.countLedgerBills(null, null, null));
         summary.put("earningBills", ledgerRepository.countLedgerBills("EARNING", null, null));
         summary.put("teamCommissionBills", ledgerRepository.countLedgerBills("TEAM_COMMISSION", null, null));
-        summary.put("genesisDividendBills", ledgerRepository.countLedgerBills("GENESIS_DIVIDEND", null, null));
+        summary.put("genesisDividendBills",
+                ledgerRepository.countLedgerBills("GENESIS_DIVIDEND", null, null)
+                        + ledgerRepository.countLedgerBills("GENESIS_EMISSION", null, null));
         summary.put("refundBills", ledgerRepository.countLedgerBills("REFUND", null, null));
         return summary;
     }
@@ -1172,7 +1587,9 @@ public class OpsBiService implements AuditReplayable {
     }
 
     private String csvCell(String value) {
-        String text = value == null ? "" : value;
+        String text = value == null ? "" : value.replace("\r", " ").replace("\n", " ");
+        String stripped = text.stripLeading();
+        if (!stripped.isEmpty() && "=+-@".indexOf(stripped.charAt(0)) >= 0) text = "'" + text;
         return "\"" + text.replace("\"", "\"\"") + "\"";
     }
 
@@ -1223,7 +1640,11 @@ public class OpsBiService implements AuditReplayable {
                 || exceeds(request.piiLevel(), 64)
                 || exceeds(request.maskPolicy(), 64)
                 || exceeds(request.recipient(), 128)
-                || exceeds(request.ticket(), 220)) {
+                || exceeds(request.ticket(), 220)
+                || exceeds(request.cohort(), 10)
+                || exceeds(request.phase(), 8)
+                || exceeds(request.locale(), 32)
+                || exceeds(request.ref(), 96)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BI_REPORT_FIELD_LENGTH_INVALID");
         }
         return null;
@@ -1352,6 +1773,14 @@ public class OpsBiService implements AuditReplayable {
                 : ApiResult.fail(403, "PERMISSION_DENIED");
     }
 
+    private ApiResult<BiReportStreamDownload> requireReportStreamAccess(BiReportView report) {
+        Long adminId = parseAdminIdFromContext();
+        if (adminId == null) return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+        return permissionCache.getPermissionCodes(adminId).contains(reportAccessPermission(report))
+                ? null
+                : ApiResult.fail(403, "PERMISSION_DENIED");
+    }
+
     private String normalizeMaskingPolicy(String value) {
         String text = value == null ? "" : value.trim();
         String upper = text.toUpperCase(Locale.ROOT);
@@ -1413,9 +1842,19 @@ public class OpsBiService implements AuditReplayable {
             return dashboardRowCount("L1", "kpis", "totals");
         }
         if ("FUNNEL_COHORT".equals(reportType)) {
-            return dashboardRowCount("L2", "funnel", "stages");
+            Map<String, Object> dashboard = l2ExportDashboard(request);
+            long funnelRows = dashboard.get("funnel") instanceof List<?> rows
+                    ? rows.size()
+                    : dashboard.get("stages") instanceof List<?> rows ? rows.size() : 0L;
+            long cohortRows = dashboard.get("cohorts") instanceof List<?> rows ? rows.size() : 0L;
+            return funnelRows + cohortRows;
         }
         if ("FINANCE_AGG".equals(reportType)) {
+            if (containsSensitiveFields(request)) {
+                FinanceDetailSelection selection = financeDetailSelection(request);
+                return selection == null ? 0L : ledgerRepository.countLedgerBills(
+                        null, null, null, null, null, selection.from(), selection.to());
+            }
             return financeFactRows().size();
         }
         if ("OPERATIONS_AGG".equals(reportType)) {
@@ -1523,6 +1962,10 @@ public class OpsBiService implements AuditReplayable {
                 trimOrDefault(request.maskPolicy(), ""),
                 trimOrDefault(request.recipient(), ""),
                 trimOrDefault(request.ticket(), ""),
+                trimOrDefault(request.cohort(), ""),
+                trimOrDefault(request.phase(), ""),
+                trimOrDefault(request.locale(), ""),
+                trimOrDefault(request.ref(), ""),
                 trimOrDefault(currentActorUsername(), ""));
         return sha256(canonical);
     }

@@ -13,6 +13,8 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.domain.SupportTicketMessageView;
+import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
+import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.domain.SupportAgentProfileView;
@@ -23,6 +25,7 @@ import ffdd.opsconsole.content.dto.SupportLoadConfigUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportLoadRebalanceRequest;
 import ffdd.opsconsole.content.dto.SupportTicketCreateRequest;
 import ffdd.opsconsole.content.dto.SupportTicketEscalateRequest;
+import ffdd.opsconsole.content.dto.SupportTicketNoteRequest;
 import ffdd.opsconsole.content.dto.SupportTicketPriorityRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.content.dto.SupportTicketReplyRequest;
@@ -48,6 +51,7 @@ import org.mockito.ArgumentCaptor;
 class OpsSupportTicketServiceTest {
     private final FakeSupportTicketRepository ticketRepository = new FakeSupportTicketRepository();
     private final ConversationRepository conversationRepository = mock(ConversationRepository.class);
+    private final SupportKnowledgeRepository knowledgeRepository = mock(SupportKnowledgeRepository.class);
     private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
@@ -62,9 +66,13 @@ class OpsSupportTicketServiceTest {
         when(supportAgentService.assignableSupportAgent(1L)).thenReturn(Optional.of(agent(1L, "Marina K.")));
         when(supportAgentService.assignableSupportAgent(7L)).thenReturn(Optional.of(agent(7L, "Tomas R.")));
         when(supportAgentService.assignableSupportAgent("7")).thenReturn(Optional.of(agent(7L, "Tomas R.")));
+        when(knowledgeRepository.listSla()).thenReturn(List.of(new SupportSlaView(
+                "withdrawal", 15, 24, "支付队列", "值班主管", 1L,
+                LocalDateTime.of(2026, 6, 18, 0, 0))));
         return new OpsSupportTicketService(
                 ticketRepository,
                 conversationRepository,
+                knowledgeRepository,
                 supportAgentService,
                 configFacade,
                 auditLogService,
@@ -90,7 +98,7 @@ class OpsSupportTicketServiceTest {
         assertThat(result.getData().messages()).hasSize(1);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("M2_SUPPORT_TICKET_CREATED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-m2-create");
         verify(idempotencyService).execute(eq("M2_SUPPORT_TICKET_CREATE"), eq("idem-m2-create"), anyString(), eq(ffdd.opsconsole.shared.api.ApiResult.class), any());
@@ -112,13 +120,15 @@ class OpsSupportTicketServiceTest {
     void archiveIsIndependentFromResolutionAndCanBeReversed() {
         ticketRepository.ticket = ticket("TK-1", "RESOLVED", "NORMAL");
 
-        var archived = service.archive("TK-1", "idem-m2-archive", new SupportTicketArchiveRequest(true, "Marina K.", "routine archive"));
+        var archived = service.archive("TK-1", "idem-m2-archive",
+                new SupportTicketArchiveRequest(true, "Marina K.", "routine archive", "RESOLVED", 0L));
 
         assertThat(archived.getCode()).isZero();
         assertThat(archived.getData().ticket().archived()).isTrue();
         assertThat(archived.getData().ticket().status()).isEqualTo("RESOLVED");
 
-        var restored = service.archive("TK-1", "idem-m2-unarchive", new SupportTicketArchiveRequest(false, "Marina K.", "routine restore"));
+        var restored = service.archive("TK-1", "idem-m2-unarchive",
+                new SupportTicketArchiveRequest(false, "Marina K.", "routine restore", "RESOLVED", 0L));
 
         assertThat(restored.getCode()).isZero();
         assertThat(restored.getData().ticket().archived()).isFalse();
@@ -129,7 +139,8 @@ class OpsSupportTicketServiceTest {
     void archiveRejectsAnActiveTicket() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
 
-        var result = service.archive("TK-1", "idem-m2-archive-active", new SupportTicketArchiveRequest(true, "Marina K.", "routine archive"));
+        var result = service.archive("TK-1", "idem-m2-archive-active",
+                new SupportTicketArchiveRequest(true, "Marina K.", "routine archive", "OPEN", 0L));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -149,7 +160,8 @@ class OpsSupportTicketServiceTest {
         var result = service.escalate(
                 "TK-1",
                 "idem-m2-escalate",
-                new SupportTicketEscalateRequest("7", "Ghost Name", "Marina K.", "customer needs realtime help"));
+                new SupportTicketEscalateRequest(
+                        "7", "Ghost Name", "Marina K.", "customer needs realtime help", "OPEN", 0L));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().conversation().conversationNo()).isEqualTo("CV-TK-1");
@@ -165,7 +177,8 @@ class OpsSupportTicketServiceTest {
 
         var result = service.escalate(
                 "TK-1", "idem-m2-escalate-ghost",
-                new SupportTicketEscalateRequest("999999", "Ghost Operator", "Marina K.", "invalid owner validation"));
+                new SupportTicketEscalateRequest(
+                        "999999", "Ghost Operator", "Marina K.", "invalid owner validation", "OPEN", 0L));
 
         assertThat(result.getCode()).isEqualTo(404);
         assertThat(result.getMessage()).isEqualTo("SUPPORT_AGENT_NOT_ASSIGNABLE");
@@ -175,7 +188,10 @@ class OpsSupportTicketServiceTest {
     void replyMovesResolvedTicketToPendingUserAndWritesMessage() {
         ticketRepository.ticket = ticket("TK-1", "RESOLVED", "NORMAL");
 
-        var result = service.reply("TK-1", "idem-m2-reply", new SupportTicketReplyRequest("We are checking now.", "Marina K.", null));
+        var result = service.reply(
+                "TK-1",
+                "idem-m2-reply",
+                new SupportTicketReplyRequest("We are checking now.", "Marina K.", null, "RESOLVED", 0L));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ticket().status()).isEqualTo("PENDING_USER");
@@ -187,7 +203,10 @@ class OpsSupportTicketServiceTest {
     void replyRejectsClosedTicketWith409() {
         ticketRepository.ticket = ticket("TK-1", "CLOSED", "NORMAL");
 
-        var result = service.reply("TK-1", "idem-m2-reply", new SupportTicketReplyRequest("hello", "Marina K.", null));
+        var result = service.reply(
+                "TK-1",
+                "idem-m2-reply",
+                new SupportTicketReplyRequest("hello", "Marina K.", null, "CLOSED", 0L));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -196,7 +215,10 @@ class OpsSupportTicketServiceTest {
     void updateStatusMovesOpenTicketToResolved() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "HIGH");
 
-        var result = service.updateStatus("TK-1", "idem-m2-status", new SupportTicketStatusRequest("RESOLVED", "Marina K.", "issue finished"));
+        var result = service.updateStatus(
+                "TK-1",
+                "idem-m2-status",
+                new SupportTicketStatusRequest("RESOLVED", "Marina K.", "issue finished", "OPEN", 0L));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ticket().status()).isEqualTo("RESOLVED");
@@ -205,11 +227,32 @@ class OpsSupportTicketServiceTest {
     }
 
     @Test
+    void updateStatusRequiresAuthoritativeStatusAndVersionPrecondition() {
+        ticketRepository.ticket = ticket("TK-1", "OPEN", "HIGH");
+
+        var missing = service.updateStatus(
+                "TK-1",
+                "idem-m2-status-missing-precondition",
+                new SupportTicketStatusRequest("RESOLVED", "Marina K.", "issue finished"));
+        var stale = service.updateStatus(
+                "TK-1",
+                "idem-m2-status-stale-precondition",
+                new SupportTicketStatusRequest("RESOLVED", "Marina K.", "issue finished", "OPEN", 9L));
+
+        assertThat(missing.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(missing.getMessage()).isEqualTo("SUPPORT_TICKET_PRECONDITION_REQUIRED");
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("SUPPORT_TICKET_CONFLICT");
+        assertThat(ticketRepository.ticket.status()).isEqualTo("OPEN");
+    }
+
+    @Test
     void updateStatusRejectsUnsupportedJumpFromResolvedToInProgress() {
         ticketRepository.ticket = ticket("TK-1", "RESOLVED", "HIGH");
 
         var result = service.updateStatus("TK-1", "idem-m2-status-jump",
-                new SupportTicketStatusRequest("IN_PROGRESS", "Marina K.", "invalid stale transition"));
+                new SupportTicketStatusRequest(
+                        "IN_PROGRESS", "Marina K.", "invalid stale transition", "RESOLVED", 0L));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -218,7 +261,10 @@ class OpsSupportTicketServiceTest {
     void updateStatusRejectsSameState() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "HIGH");
 
-        var result = service.updateStatus("TK-1", "idem-m2-status", new SupportTicketStatusRequest("OPEN", "Marina K.", "same state check"));
+        var result = service.updateStatus(
+                "TK-1",
+                "idem-m2-status",
+                new SupportTicketStatusRequest("OPEN", "Marina K.", "same state check", "OPEN", 0L));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
@@ -227,7 +273,10 @@ class OpsSupportTicketServiceTest {
     void updatePriorityRequiresReason() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
 
-        var result = service.updatePriority("TK-1", "idem-m2-priority", new SupportTicketPriorityRequest("URGENT", "Marina K.", "short"));
+        var result = service.updatePriority(
+                "TK-1",
+                "idem-m2-priority",
+                new SupportTicketPriorityRequest("URGENT", "Marina K.", "short", "OPEN", 0L));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
     }
@@ -236,7 +285,10 @@ class OpsSupportTicketServiceTest {
     void updatePriorityChangesNonTerminalTicket() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
 
-        var result = service.updatePriority("TK-1", "idem-m2-priority", new SupportTicketPriorityRequest("URGENT", "Marina K.", "payment escalation"));
+        var result = service.updatePriority(
+                "TK-1",
+                "idem-m2-priority",
+                new SupportTicketPriorityRequest("URGENT", "Marina K.", "payment escalation", "OPEN", 0L));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ticket().priority()).isEqualTo("URGENT");
@@ -246,7 +298,11 @@ class OpsSupportTicketServiceTest {
     void assignChangesOwnerAndAudits() {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
 
-        var result = service.assign("TK-1", "idem-m2-assign", new SupportTicketAssigneeRequest(7L, "Tomas R.", "Marina K.", "kyc specialist"));
+        var result = service.assign(
+                "TK-1",
+                "idem-m2-assign",
+                new SupportTicketAssigneeRequest(
+                        7L, "Tomas R.", "Marina K.", "kyc specialist", "OPEN", 0L));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ticket().assignedAdminId()).isEqualTo(7L);
@@ -258,11 +314,32 @@ class OpsSupportTicketServiceTest {
         ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
 
         var result = service.assign("TK-1", "idem-m2-assign-ghost",
-                new SupportTicketAssigneeRequest(999999L, "Ghost Operator", "Marina K.", "invalid owner validation"));
+                new SupportTicketAssigneeRequest(
+                        999999L, "Ghost Operator", "Marina K.", "invalid owner validation", "OPEN", 0L));
 
         assertThat(result.getCode()).isEqualTo(404);
         assertThat(result.getMessage()).isEqualTo("SUPPORT_AGENT_NOT_ASSIGNABLE");
         assertThat(ticketRepository.ticket.assignedAdminName()).isEqualTo("Marina K.");
+    }
+
+    @Test
+    void internalNoteIsStoredSeparatelyFromUserReply() {
+        ticketRepository.ticket = ticket("TK-1", "OPEN", "NORMAL");
+
+        var result = service.addInternalNote(
+                "TK-1",
+                "idem-m2-internal-note",
+                new SupportTicketNoteRequest(
+                        "Waiting for the payment reference.",
+                        "Marina K.",
+                        "internal support handoff",
+                        "OPEN",
+                        0L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().messages())
+                .anyMatch(message -> "internal".equals(message.senderType())
+                        && "Waiting for the payment reference.".equals(message.content()));
     }
 
     @Test
@@ -332,13 +409,33 @@ class OpsSupportTicketServiceTest {
                 .containsEntry("content.support.load.defaultCap", "7")
                 .containsEntry("content.support.load.burstCap", "11")
                 .containsEntry("content.support.load.warnPct", "75")
+                .containsEntry("content.support.load.version", "2")
                 .containsEntry("content.support.load.agent.agent-1.cap", "5")
                 .containsEntry("content.support.load.agent.agent-1.busy", "true");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("M1_SUPPORT_LOAD_CONFIG_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-m1-load");
+    }
+
+    @Test
+    void updateLoadConfigRejectsAStaleVisibleVersion() {
+        assertThat(service.updateLoadConfig("idem-m1-first", loadConfigRequest()).getCode()).isZero();
+
+        var stale = service.updateLoadConfig("idem-m1-stale", loadConfigRequest());
+
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("SUPPORT_LOAD_VERSION_CONFLICT");
+    }
+
+    @Test
+    void updateLoadConfigRequiresAnEightToTwoHundredCharacterReason() {
+        var request = new SupportLoadConfigUpdateRequest(
+                1L, true, 7, 11, 75, true, "备勤队列", Map.of(), "superadmin", "1234567");
+
+        assertThat(service.updateLoadConfig("idem-m1-short-reason", request).getCode())
+                .isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
     }
 
     @Test
@@ -346,6 +443,7 @@ class OpsSupportTicketServiceTest {
         var result = service.rebalanceLoad(
                 "idem-m1-rebalance",
                 new SupportLoadRebalanceRequest(
+                        1L,
                         List.of(Map.of("id", "agent-1", "cap", 4, "busy", false)),
                         "superadmin",
                         "shift load to backup team"));
@@ -354,10 +452,11 @@ class OpsSupportTicketServiceTest {
         assertThat(configFacade.values)
                 .containsEntry("content.support.load.agent.agent-1.cap", "4")
                 .containsEntry("content.support.load.agent.agent-1.busy", "false")
+                .containsEntry("content.support.load.version", "2")
                 .containsKey("content.support.load.lastRebalanceAt");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("M1_SUPPORT_LOAD_REBALANCED");
     }
 
@@ -381,6 +480,7 @@ class OpsSupportTicketServiceTest {
 
     private static SupportLoadConfigUpdateRequest loadConfigRequest() {
         return new SupportLoadConfigUpdateRequest(
+                1L,
                 true,
                 7,
                 11,
@@ -511,6 +611,25 @@ class OpsSupportTicketServiceTest {
                     current.assignedAdminId(), current.assignedAdminName(), now);
             messages.add(new SupportTicketMessageView((long) messages.size() + 1, current.id(), current.ticketNo(),
                     null, "system", "系统", body, now));
+        }
+
+        @Override
+        public boolean appendInternalNoteCas(
+                SupportTicketView ticket,
+                String body,
+                String operator,
+                LocalDateTime now) {
+            SupportTicketView current = this.ticket == null ? ticket : this.ticket;
+            messages.add(new SupportTicketMessageView(
+                    (long) messages.size() + 1,
+                    current.id(),
+                    current.ticketNo(),
+                    null,
+                    "internal",
+                    operator,
+                    body,
+                    now));
+            return true;
         }
 
         private SupportTicketView replace(SupportTicketView source, String priority, String status, String lastMessage,

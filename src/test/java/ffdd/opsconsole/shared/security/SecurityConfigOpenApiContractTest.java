@@ -21,4 +21,14 @@ class SecurityConfigOpenApiContractTest {
                 "\"/openapi/v1/topups/card/chargebacks\"",
                 "\"/openapi/v1/topups/provider-statements\"");
     }
+
+    @Test
+    void authenticatedStreamingResponsesMayCompleteTheirContainerManagedAsyncDispatch() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/shared/security/SecurityConfig.java"));
+
+        assertThat(source).contains(
+                ".dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()",
+                ".anyRequest().authenticated()");
+    }
 }

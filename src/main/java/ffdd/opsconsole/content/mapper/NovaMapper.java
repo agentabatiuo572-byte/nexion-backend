@@ -314,6 +314,37 @@ public interface NovaMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_nova_channel
+               SET channel_name = #{name}, trigger_rule = #{trigger},
+                   tick_rule = #{tick}, cooldown_rule = #{cooldown},
+                   ctr_pct = #{ctr}, enabled = #{enabled},
+                   operator = #{operator}, reason = #{reason}, updated_at = NOW()
+             WHERE channel_key = #{key} AND is_deleted = 0
+               AND channel_name = #{expectedName}
+               AND trigger_rule = #{expectedTrigger}
+               AND tick_rule = #{expectedTick}
+               AND cooldown_rule = #{expectedCooldown}
+               AND ctr_pct = #{expectedCtr}
+               AND enabled = #{expectedEnabled}
+            """)
+    int updateChannelIfCurrent(
+            @Param("key") String key,
+            @Param("expectedName") String expectedName,
+            @Param("expectedTrigger") String expectedTrigger,
+            @Param("expectedTick") String expectedTick,
+            @Param("expectedCooldown") String expectedCooldown,
+            @Param("expectedCtr") BigDecimal expectedCtr,
+            @Param("expectedEnabled") boolean expectedEnabled,
+            @Param("name") String name,
+            @Param("trigger") String trigger,
+            @Param("tick") String tick,
+            @Param("cooldown") String cooldown,
+            @Param("ctr") BigDecimal ctr,
+            @Param("enabled") boolean enabled,
+            @Param("operator") String operator,
+            @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_channel
                SET enabled = #{enabled},
                    operator = #{operator},
                    reason = #{reason},
@@ -325,6 +356,21 @@ public interface NovaMapper extends BaseMapper<Object> {
                             @Param("enabled") boolean enabled,
                             @Param("operator") String operator,
                             @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_channel
+               SET enabled = #{enabled}, operator = #{operator},
+                   reason = #{reason}, updated_at = NOW()
+             WHERE channel_key = #{key}
+               AND enabled = #{expectedEnabled}
+               AND is_deleted = 0
+            """)
+    int updateChannelStatusIfCurrent(
+            @Param("key") String key,
+            @Param("expectedEnabled") boolean expectedEnabled,
+            @Param("enabled") boolean enabled,
+            @Param("operator") String operator,
+            @Param("reason") String reason);
 
     @Update("""
             UPDATE nx_nova_channel
@@ -432,6 +478,61 @@ public interface NovaMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_nova_template
+               SET template_name = #{name}, cta = #{cta}, version = #{version},
+                   title_zh = #{titleZh}, body_zh = #{bodyZh},
+                   title_vi = #{titleVi}, body_vi = #{bodyVi},
+                   title_en = #{titleEn}, body_en = #{bodyEn},
+                   status = 'DRAFT', operator = #{operator}, reason = #{reason},
+                   updated_at = NOW()
+             WHERE channel_key = #{channel}
+               AND status = 'DRAFT'
+               AND version = #{expectedVersion}
+               AND title_zh = #{expectedTitleZh}
+               AND body_zh = #{expectedBodyZh}
+               AND title_vi = #{expectedTitleVi}
+               AND body_vi = #{expectedBodyVi}
+               AND COALESCE(title_en, '') = #{expectedTitleEn}
+               AND COALESCE(body_en, '') = #{expectedBodyEn}
+               AND is_deleted = 0
+            """)
+    int updateTemplateIfCurrent(
+            @Param("channel") String channel,
+            @Param("expectedVersion") String expectedVersion,
+            @Param("expectedTitleZh") String expectedTitleZh,
+            @Param("expectedBodyZh") String expectedBodyZh,
+            @Param("expectedTitleVi") String expectedTitleVi,
+            @Param("expectedBodyVi") String expectedBodyVi,
+            @Param("expectedTitleEn") String expectedTitleEn,
+            @Param("expectedBodyEn") String expectedBodyEn,
+            @Param("name") String name,
+            @Param("cta") String cta,
+            @Param("version") String version,
+            @Param("titleZh") String titleZh,
+            @Param("bodyZh") String bodyZh,
+            @Param("titleVi") String titleVi,
+            @Param("bodyVi") String bodyVi,
+            @Param("titleEn") String titleEn,
+            @Param("bodyEn") String bodyEn,
+            @Param("operator") String operator,
+            @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_template
+               SET status = #{status}, operator = #{operator},
+                   reason = #{reason}, updated_at = NOW()
+             WHERE channel_key = #{channel}
+               AND status = #{expectedStatus}
+               AND is_deleted = 0
+            """)
+    int updateTemplateStatusIfCurrent(
+            @Param("channel") String channel,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("status") String status,
+            @Param("operator") String operator,
+            @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_template
                SET is_deleted = 1,
                    operator = #{operator},
                    reason = #{reason},
@@ -453,6 +554,15 @@ public interface NovaMapper extends BaseMapper<Object> {
              ORDER BY dist_key ASC
             """)
     List<NovaSocialDistributionItem> socialDistribution();
+
+    @Select("""
+            SELECT dist_key AS `key`, dist_name AS name, pct, color
+              FROM nx_nova_social_distribution
+             WHERE is_deleted = 0
+             ORDER BY dist_key ASC
+             FOR UPDATE
+            """)
+    List<NovaSocialDistributionItem> lockSocialDistribution();
 
     @Insert("""
             INSERT INTO nx_nova_social_distribution (
@@ -659,10 +769,41 @@ public interface NovaMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_nova_social_event
+               SET status = #{status}, operator = #{operator}, reason = #{reason}, updated_at = NOW()
+             WHERE id = #{id}
+               AND status = #{expectedStatus}
+               AND updated_at = #{expectedUpdatedAt}
+               AND is_deleted = 0
+            """)
+    int updateSocialEventStatusIfCurrent(
+            @Param("id") long id,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedUpdatedAt") LocalDateTime expectedUpdatedAt,
+            @Param("status") String status,
+            @Param("operator") String operator,
+            @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_social_event
                SET is_deleted = 1, operator = #{operator}, reason = #{reason}, updated_at = NOW()
              WHERE id = #{id} AND is_deleted = 0
             """)
     int deleteSocialEvent(@Param("id") long id, @Param("operator") String operator, @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_nova_social_event
+               SET is_deleted = 1, operator = #{operator}, reason = #{reason}, updated_at = NOW()
+             WHERE id = #{id}
+               AND status = #{expectedStatus}
+               AND updated_at = #{expectedUpdatedAt}
+               AND is_deleted = 0
+            """)
+    int deleteSocialEventIfCurrent(
+            @Param("id") long id,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedUpdatedAt") LocalDateTime expectedUpdatedAt,
+            @Param("operator") String operator,
+            @Param("reason") String reason);
 
     @Update("""
             UPDATE nx_nova_social_event

@@ -191,6 +191,9 @@ public class OpsPlatformParamRegistryService {
         if ("content".equals(group) || key.startsWith("disclosure.")) {
             return new Owner("I", "I5", "I5 风险披露", "/content/disclosures");
         }
+        if ("e2".equals(group) || key.startsWith("e.task.")) {
+            return new Owner("E", "E2", "E2 收益与任务引擎", "/devices/tasks");
+        }
         if ("e6_compute".equals(group) || key.startsWith("e.compute.")) {
             return new Owner("E", "E6", "E6 算力与设备配置", "/devices/compute-config");
         }
@@ -206,8 +209,26 @@ public class OpsPlatformParamRegistryService {
         if (key.startsWith("growth.event.")) {
             return new Owner("H", "H4", "H4 增长活动", "/growth/events");
         }
+        if (key.startsWith("growth.wheel.")) {
+            return new Owner("H", "H3", "H3 任务引擎", "/growth/quest");
+        }
         if (key.startsWith("growth.checkin.") || key.startsWith("growth.earn_milestone.")) {
             return new Owner("H", "H5", "H5 签到与里程碑", "/growth/daily");
+        }
+        if (key.startsWith("growth.withdraw_nex_gate.")) {
+            return new Owner("H", "H1", "H1 Phase 调度器", "/growth/phase");
+        }
+        if (key.startsWith("k.rewards.")) {
+            return new Owner("H", "H8", "H8 新人礼与邀请奖励", "/growth/referral-rewards");
+        }
+        if (key.startsWith("g.genesis.")) {
+            return new Owner("G", "G4", "G4 Genesis 经济", "/finance-products/genesis");
+        }
+        if (key.startsWith("kyc.")) {
+            return new Owner("C", "C4", "C4 KYC 审核", "/users/kyc");
+        }
+        if (key.startsWith("treasury.d3.")) {
+            return new Owner("D", "D3", "D3 资金池与负债", "/finance/pool");
         }
         if (key.contains(".binary.")) {
             return new Owner("F", "F3", "F3 双轨结算引擎", "/network/binary");

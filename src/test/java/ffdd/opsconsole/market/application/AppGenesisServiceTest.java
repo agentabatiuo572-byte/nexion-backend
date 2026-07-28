@@ -46,7 +46,8 @@ class AppGenesisServiceTest {
         when(mapper.holdingCount("genesis-main")).thenReturn(0L);
         when(mapper.lockHoldingCount("genesis-main")).thenReturn(0L);
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.userPolicy(42L)).thenReturn(new AppGenesisMapper.UserPolicyRow(42L,"APPROVED","VN","P1",4,"2026-W30"));
+        when(mapper.userPolicy(42L)).thenReturn(new AppGenesisMapper.UserPolicyRow(
+                42L,"APPROVED","VN","P1",120,4,"2026-W30"));
         when(mapper.lockWallet(42L)).thenReturn(new BigDecimal("20000"));
         when(mapper.wallet(42L)).thenReturn(new BigDecimal("10001"));
         when(mapper.debitWallet(42L,new BigDecimal("9999.000000"))).thenReturn(1);
@@ -85,7 +86,8 @@ class AppGenesisServiceTest {
 
     @Test
     void kycFailureStopsBeforeWalletMutation(){
-        when(mapper.userPolicy(42L)).thenReturn(new AppGenesisMapper.UserPolicyRow(42L,"PENDING","VN","P1",4,"2026-W30"));
+        when(mapper.userPolicy(42L)).thenReturn(new AppGenesisMapper.UserPolicyRow(
+                42L,"PENDING","VN","P1",120,4,"2026-W30"));
         assertThatThrownBy(()->service.purchase(42L,"purchase-kyc",new AppGenesisService.PurchaseRequest(1)))
                 .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_KYC_REQUIRED");
         verify(mapper,never()).debitWallet(any(),any());
@@ -135,7 +137,7 @@ class AppGenesisServiceTest {
         when(mapper.updateSoldSupply(1L,1000L)).thenReturn(1);
         when(mapper.lockActiveUser(43L)).thenReturn(43L);
         when(mapper.userPolicy(43L)).thenReturn(new AppGenesisMapper.UserPolicyRow(
-                43L,"APPROVED","VN","P1",2,"2026-W30"));
+                43L,"APPROVED","VN","P1",60,2,"2026-W30"));
 
         assertThat(service.purchase(42L,"purchase-last-slot-winner",
                 new AppGenesisService.PurchaseRequest(1)).getCode()).isZero();
@@ -176,6 +178,69 @@ class AppGenesisServiceTest {
         assertThat(updateSupplySql)
                 .contains("sold_supply=#{soldSupply}")
                 .contains("total_supply>=#{soldSupply}");
+    }
+
+    @Test
+    void configuredEligibilityAndPresaleAreEnforcedBeforeAnyWalletMutation(){
+        when(config.activeValue("market.genesis.ops.eligibility.minAccountAgeDays"))
+                .thenReturn(Optional.of("180"));
+        when(config.activeValue("market.genesis.ops.presale.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("market.genesis.ops.presale.startAt"))
+                .thenReturn(Optional.of("2026-07-23T00:00:00Z"));
+        when(config.activeValue("market.genesis.ops.presale.endAt"))
+                .thenReturn(Optional.of("2026-08-23T00:00:00Z"));
+
+        assertThatThrownBy(()->service.purchase(42L,"purchase-age-gate",
+                new AppGenesisService.PurchaseRequest(1)))
+                .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_ACCOUNT_AGE_REQUIRED");
+        verify(mapper,never()).debitWallet(any(),any());
+    }
+
+    @Test
+    void activePresaleUsesConfiguredPriceAndAppliesCombinedPerUserCap(){
+        when(config.activeValue("market.genesis.ops.eligibility.maxPerUser")).thenReturn(Optional.of("5"));
+        when(config.activeValue("market.genesis.ops.presale.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("market.genesis.ops.presale.unitPrice")).thenReturn(Optional.of("7999"));
+        when(config.activeValue("market.genesis.ops.presale.maxPerUser")).thenReturn(Optional.of("2"));
+        when(config.activeValue("market.genesis.ops.presale.startAt"))
+                .thenReturn(Optional.of("2026-07-01T00:00:00Z"));
+        when(config.activeValue("market.genesis.ops.presale.endAt"))
+                .thenReturn(Optional.of("2026-08-01T00:00:00Z"));
+        when(mapper.userHoldingCount(42L,"genesis-main")).thenReturn(1L);
+        when(mapper.debitWallet(42L,new BigDecimal("7999.000000"))).thenReturn(1);
+
+        var result=service.purchase(42L,"purchase-presale-price",new AppGenesisService.PurchaseRequest(1));
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).debitWallet(42L,new BigDecimal("7999.000000"));
+        var eligibility=service.eligibility(42L).getData();
+        assertThat(eligibility).containsEntry("maxPerUser",2).containsEntry("remainingCap",1L);
+    }
+
+    @Test
+    void userCapBlocksPrimaryAndSecondaryAcquisitionBeforeWalletMutation(){
+        when(config.activeValue("market.genesis.ops.eligibility.maxPerUser")).thenReturn(Optional.of("2"));
+        when(mapper.userHoldingCount(42L,"genesis-main")).thenReturn(2L);
+
+        assertThatThrownBy(()->service.purchase(42L,"purchase-cap",
+                new AppGenesisService.PurchaseRequest(1)))
+                .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_USER_CAP_REACHED");
+        verify(mapper,never()).debitWallet(any(),any());
+    }
+
+    @Test
+    void publicAndAccountSnapshotsExposeTheSameServerCanonicalSalePolicy(){
+        when(config.activeValue("market.genesis.ops.eligibility.maxPerUser")).thenReturn(Optional.of("3"));
+        when(config.activeValue("market.genesis.ops.presale.showCountdown")).thenReturn(Optional.of("false"));
+
+        @SuppressWarnings("unchecked")
+        var publicSale=(java.util.Map<String,Object>)service.state().getData().get("sale");
+        @SuppressWarnings("unchecked")
+        var accountSale=(java.util.Map<String,Object>)service.account(42L).getData().get("sale");
+
+        assertThat(publicSale).isEqualTo(accountSale)
+                .containsEntry("maxPerUser",3)
+                .containsEntry("serverCanonical",true);
     }
 
     private AppGenesisMapper.SeriesRow series(){

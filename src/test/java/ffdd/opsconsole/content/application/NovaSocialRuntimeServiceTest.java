@@ -17,6 +17,9 @@ import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
 import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
+import ffdd.opsconsole.content.domain.NotificationEventFact;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -29,7 +32,10 @@ class NovaSocialRuntimeServiceTest {
     private final NovaRepository novaRepository = mock(NovaRepository.class);
     private final NovaSocialRuntimeRepository runtimeRepository = mock(NovaSocialRuntimeRepository.class);
     private final OpsNovaService novaService = mock(OpsNovaService.class);
-    private final NovaSocialRuntimeService service = new NovaSocialRuntimeService(novaRepository, runtimeRepository, novaService);
+    private final CopyAudiencePhaseProvider phaseProvider = mock(CopyAudiencePhaseProvider.class);
+    private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final NovaSocialRuntimeService service = new NovaSocialRuntimeService(
+            novaRepository, runtimeRepository, novaService, phaseProvider, outbox);
     private final LocalDateTime now = LocalDateTime.of(2026, 7, 12, 12, 0);
 
     @BeforeEach
@@ -46,6 +52,7 @@ class NovaSocialRuntimeServiceTest {
         when(runtimeRepository.latestNotificationAt()).thenReturn(Optional.empty());
         when(runtimeRepository.claimSlot(anyString(), anyString(), any(), eq(now))).thenReturn(true);
         when(runtimeRepository.completeSlot(anyString(), anyString(), eq(now))).thenReturn(true);
+        when(phaseProvider.currentPhase()).thenReturn("P3");
     }
 
     @Test
@@ -70,6 +77,11 @@ class NovaSocialRuntimeServiceTest {
                 eq(88L), any(), any(), any(), any(), any(), any(), any(), eq(""), eq(now.minusMinutes(10)), eq(now)))
                 .thenReturn(3);
         when(runtimeRepository.markDispatchedIfStillActive(88L, now)).thenReturn(1);
+        when(runtimeRepository.markNotificationsDelivered(anyString(), eq(now))).thenReturn(3);
+        when(runtimeRepository.notificationFacts(anyString(), eq("P3"), eq(now))).thenReturn(List.of(
+                new NotificationEventFact(101L, 1L, "nova_social", "normal", "", false, "P3", 4, "2026-W10"),
+                new NotificationEventFact(102L, 2L, "nova_social", "normal", "", false, "P3", 2, "2026-W11"),
+                new NotificationEventFact(103L, 3L, "nova_social", "normal", "", false, "P3", 1, "2026-W12")));
 
         var result = service.dispatchAt(now);
 
@@ -86,6 +98,10 @@ class NovaSocialRuntimeServiceTest {
         assertThat(bodyVi.getValue()).contains("N***", "H***", "10K–50K NEX");
         assertThat(bodyEn.getValue()).contains("N***", "H***", "10K–50K NEX");
         verify(runtimeRepository).markDispatchedIfStillActive(88L, now);
+        verify(runtimeRepository).markNotificationsDelivered(bizNo.getValue(), now);
+        verify(outbox, org.mockito.Mockito.times(3)).publishUserEvent(
+                eq("NOVA_NOTIFICATION"), anyString(), eq("nova.push_sent"), anyLong(),
+                eq("P3"), anyInt(), anyString(), any());
     }
 
     @Test

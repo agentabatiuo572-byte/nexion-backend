@@ -52,6 +52,9 @@ class UserOpsMapperSqlTest {
 
     @Test
     void c5SessionQueriesApplyTheConfiguredIdleBoundaryToCountsAndRows() throws Exception {
+        String totalSql = String.join("\n", UserOpsMapper.class
+                .getMethod("countSessionsByUser", Long.class)
+                .getAnnotation(Select.class).value());
         String countSql = String.join("\n", UserOpsMapper.class
                 .getMethod("countActiveSessionsByUser", Long.class, int.class)
                 .getAnnotation(Select.class).value());
@@ -62,6 +65,8 @@ class UserOpsMapperSqlTest {
                 .getMethod("pageSessions", Long.class, int.class, int.class, int.class)
                 .getAnnotation(Select.class).value());
 
+        assertThat(totalSql)
+                .contains("AND user_id = #{userId}");
         assertThat(countSql)
                 .contains("COALESCE(last_active_at,updated_at,created_at)")
                 .contains("INTERVAL #{idleDays} DAY");

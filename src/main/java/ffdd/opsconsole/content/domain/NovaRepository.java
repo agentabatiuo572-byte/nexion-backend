@@ -23,7 +23,20 @@ public interface NovaRepository {
     void updateChannel(String key, String name, String trigger, String tick, String cooldown,
                        BigDecimal ctr, boolean enabled, String operator, String reason);
 
+    default boolean updateChannelIfCurrent(
+            NovaChannelView current, String name, String trigger, String tick, String cooldown,
+            BigDecimal ctr, boolean enabled, String operator, String reason) {
+        updateChannel(current.key(), name, trigger, tick, cooldown, ctr, enabled, operator, reason);
+        return true;
+    }
+
     void updateChannelStatus(String key, boolean enabled, String operator, String reason);
+
+    default boolean updateChannelStatusIfCurrent(
+            String key, boolean expectedEnabled, boolean enabled, String operator, String reason) {
+        updateChannelStatus(key, enabled, operator, reason);
+        return true;
+    }
 
     void deleteChannel(String key, String operator, String reason);
 
@@ -39,11 +52,30 @@ public interface NovaRepository {
                         String titleZh, String bodyZh, String titleVi, String bodyVi,
                         String titleEn, String bodyEn, String operator, String reason);
 
+    default boolean updateTemplateIfCurrent(
+            NovaTemplateView current, String name, String cta, String version,
+            String titleZh, String bodyZh, String titleVi, String bodyVi,
+            String titleEn, String bodyEn, String operator, String reason) {
+        updateTemplate(current.channel(), name, cta, version, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, operator, reason);
+        return true;
+    }
+
     void updateTemplateStatus(String channel, String status, String operator, String reason);
+
+    default boolean updateTemplateStatusIfCurrent(
+            String channel, String expectedStatus, String status, String operator, String reason) {
+        updateTemplateStatus(channel, status, operator, reason);
+        return true;
+    }
 
     void deleteTemplate(String channel, String operator, String reason);
 
     List<NovaSocialDistributionItem> socialDistribution();
+
+    default List<NovaSocialDistributionItem> lockSocialDistribution() {
+        return socialDistribution();
+    }
 
     void upsertDistribution(String key, String name, int pct, String color, String operator, String reason);
 
@@ -96,7 +128,19 @@ public interface NovaRepository {
 
     void updateSocialEventStatus(long id, String status, String operator, String reason);
 
+    default boolean updateSocialEventStatusIfCurrent(
+            NovaSocialEventView current, String status, String operator, String reason) {
+        updateSocialEventStatus(current.id(), status, operator, reason);
+        return true;
+    }
+
     void deleteSocialEvent(long id, String operator, String reason);
+
+    default boolean deleteSocialEventIfCurrent(
+            NovaSocialEventView current, String operator, String reason) {
+        deleteSocialEvent(current.id(), operator, reason);
+        return true;
+    }
 
     int expireSocialEvents(LocalDateTime now);
 

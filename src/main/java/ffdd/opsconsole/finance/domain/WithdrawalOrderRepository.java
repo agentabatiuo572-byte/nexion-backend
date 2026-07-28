@@ -40,6 +40,18 @@ public interface WithdrawalOrderRepository {
 
     boolean transitionStatus(String withdrawalNo, String expectedStatus, String newStatus, String failureReason);
 
+    default boolean confirmSent(
+            String withdrawalNo,
+            String expectedStatus,
+            String chainTxHash,
+            LocalDateTime completedAt) {
+        return false;
+    }
+
+    default boolean chainTxHashUsedByOtherWithdrawal(String withdrawalNo, String chainTxHash) {
+        return false;
+    }
+
     default boolean transitionStatusWithLifecycle(
             String withdrawalNo,
             String expectedStatus,

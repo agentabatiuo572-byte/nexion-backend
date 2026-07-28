@@ -29,4 +29,22 @@ class TreasuryLedgerBillViewTest {
         assertThat(canonical).containsExactly(
                 "swap", "topup", "withdraw", "earning", "commission", "refund", "bonus");
     }
+
+    @Test
+    void classifiesRefundsBeforeWithdrawalsAndRewardsAsBonus() {
+        TreasuryLedgerBillView refund = row("WITHDRAW_FEE_OFFSET_REFUND");
+        TreasuryLedgerBillView referralReward = row("REFERRAL_REWARD");
+        TreasuryLedgerBillView questReward = row("QUEST_REWARD");
+
+        assertThat(refund.billType()).isEqualTo("refund");
+        assertThat(referralReward.billType()).isEqualTo("bonus");
+        assertThat(questReward.billType()).isEqualTo("bonus");
+    }
+
+    private static TreasuryLedgerBillView row(String bizType) {
+        return new TreasuryLedgerBillView(
+                1L, 1L, "U00000001", "user", "B-1", bizType,
+                "USDT", "IN", BigDecimal.ONE, BigDecimal.ONE, "POSTED", "remark",
+                LocalDateTime.MIN, LocalDateTime.MIN);
+    }
 }

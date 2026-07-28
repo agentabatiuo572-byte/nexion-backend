@@ -89,6 +89,10 @@ public class G4AdminCommandService {
         if(!open) throw new BizException(409,"G4_GENESIS_EMISSION_GATE_CLOSED");
         AppGenesisMapper.SeriesRow series=mapper.lockActiveSeries();
         if(series==null) throw new BizException(409,"G4_GENESIS_SERIES_NOT_FOUND");
+        AppGenesisMapper.EmissionBatchRow existing=mapper.lockEmissionBatch(batchNo);
+        if(existing!=null && "COMPLETED".equals(existing.status())){
+            return replayedBatch(batchNo,existing);
+        }
         List<AppGenesisMapper.HoldingRow> holdings=mapper.lockEmissionHoldings();
         BigDecimal rate=nz(series.dailyEmissionRatePct());
         // Genesis daily emission is a product liability based on the immutable series unit price.
@@ -96,6 +100,12 @@ public class G4AdminCommandService {
         BigDecimal total=holdings.stream().map(h->emissionAmount(series.priceUsdt(),rate)).reduce(BigDecimal.ZERO,BigDecimal::add);
         int inserted=mapper.insertEmissionBatch(new AppGenesisMapper.EmissionBatchWrite(batchNo,LocalDateTime.now(clock),rate,
                 holdings.size(),money(total),AdminActorResolver.resolve("system"),request.reason().trim(),request.decisionRef().trim()));
+        if(inserted==0){
+            existing=mapper.lockEmissionBatch(batchNo);
+            if(existing!=null && "COMPLETED".equals(existing.status())){
+                return replayedBatch(batchNo,existing);
+            }
+        }
         if(inserted==1){
             for(AppGenesisMapper.HoldingRow h:holdings){
                 BigDecimal amount=emissionAmount(series.priceUsdt(),rate);
@@ -114,7 +124,7 @@ public class G4AdminCommandService {
             if(mapper.markEmissionPaid(item.id(),paidAt)!=1) throw new BizException(409,"GENESIS_EMISSION_STATE_CONFLICT");
             AppGenesisMapper.UserPolicyRow policy=mapper.userPolicy(item.userId());
             if(policy==null) throw new BizException(409,"GENESIS_EMISSION_USER_ATTRIBUTION_MISSING");
-            outbox.publishUserEvent("GENESIS_HOLDING",item.holdingNo(),"genesis.dividend_paid",
+            outbox.publishUserEvent("GENESIS_HOLDING",item.holdingNo(),"genesis.emission_paid",
                     item.userId(),policy.phase(),policy.accountAgeMonths(),policy.cohort(),linked(
                             "holdingNo",item.holdingNo(),"amountUsdt",item.amountUsdt(),
                             "rateApplied",rate,"paidAt",paidAt));
@@ -128,6 +138,14 @@ public class G4AdminCommandService {
                 .actorType("ADMIN").actorUsername(AdminActorResolver.resolve(null)).method("POST")
                 .path("/api/admin/market/nex/genesis/dividend-batches/"+batchNo+"/rerun")
                 .result("SUCCESS").riskLevel("HIGH").detail(linked("idempotencyKey",idem,"reason",request.reason().trim(),"state",event)).build());
+        Map<String,Object> response=marketService.genesisOverview().getData();
+        response.put("updated",event);
+        return ApiResult.ok(response);
+    }
+
+    private ApiResult<Map<String,Object>> replayedBatch(String batchNo,AppGenesisMapper.EmissionBatchRow existing){
+        Map<String,Object> event=linked("batchNo",batchNo,"paidCount",existing.holderCount(),
+                "totalAmountUsdt",money(existing.totalAmountUsdt()),"replayed",true);
         Map<String,Object> response=marketService.genesisOverview().getData();
         response.put("updated",event);
         return ApiResult.ok(response);

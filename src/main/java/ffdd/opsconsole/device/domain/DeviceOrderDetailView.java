@@ -1,6 +1,7 @@
 package ffdd.opsconsole.device.domain;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 public record DeviceOrderDetailView(
@@ -17,6 +18,7 @@ public record DeviceOrderDetailView(
         String activationStatus,
         Long deviceId,
         String deviceInstanceNo,
+        LocalDateTime deviceActivatedAt,
         List<DeviceOrderHistoryView> history,
         List<DeviceOrderFundingView> funding,
         BigDecimal coverageCurrent,

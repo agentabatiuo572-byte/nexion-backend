@@ -28,6 +28,9 @@ import ffdd.opsconsole.finance.dto.WithdrawalParamUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalLimitsUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
+import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
+import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
@@ -56,6 +59,7 @@ import org.mockito.ArgumentCaptor;
 
 class OpsFinanceServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
+    private final GrowthRhythmFacade growthRhythmFacade = mock(GrowthRhythmFacade.class);
     private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeWithdrawalOrderRepository withdrawalRepository = new FakeWithdrawalOrderRepository();
@@ -73,6 +77,7 @@ class OpsFinanceServiceTest {
     private final OpsFinanceService service =
             new OpsFinanceService(
                     configFacade,
+                    growthRhythmFacade,
                     emergencyRepository,
                     coverageFacade,
                     withdrawalRepository,
@@ -96,6 +101,11 @@ class OpsFinanceServiceTest {
         when(disclosureGateFacade.checkUserGate(org.mockito.ArgumentMatchers.anyLong(), anyString(), anyString()))
                 .thenReturn(ApiResult.ok(null));
         when(operatorRoleResolver.resolveCode()).thenReturn(null);
+        when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                12, 7, "P3", 58,
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                new BigDecimal("20"), 30, new BigDecimal("5000"), BigDecimal.ONE,
+                false, List.of("H1"), true, List.of()));
         when(idempotencyService.execute(anyString(), anyString(), anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
         emergencyRepository.settings.put("killswitch.withdraw", "enabled");
@@ -104,6 +114,7 @@ class OpsFinanceServiceTest {
     private OpsFinanceService service(OpsReadTimeSeedPolicy seedPolicy) {
         return new OpsFinanceService(
                 configFacade,
+                growthRhythmFacade,
                 emergencyRepository,
                 coverageFacade,
                 withdrawalRepository,
@@ -131,6 +142,11 @@ class OpsFinanceServiceTest {
         configFacade.values.put("growth.phase.current", "P6");
         configFacade.values.put("growth.phase.month.11.withdrawPenaltyFeeRate", "0.275");
         configFacade.values.put("growth.phase.month.11.withdrawCooldownDays", "14");
+        when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                12, 11, "P6", 92,
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                new BigDecimal("27.5"), 14, new BigDecimal("2000"), BigDecimal.ONE,
+                true, List.of("H1"), true, List.of()));
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("110.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> result = service.withdrawalParams();
@@ -279,6 +295,29 @@ class OpsFinanceServiceTest {
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("dailyLimitCount", "d5")
                 .containsEntry("cooldownDays", "phase-h1");
+    }
+
+    @Test
+    void canonicalWithdrawalLimitsUseGrowthRhythmFacadeInsteadOfLegacyFlatMirrors() {
+        seedCanonicalD5();
+        configFacade.values.put("growth.phase.withdraw_cooldown_days", "99");
+        configFacade.values.put("growth.phase.withdraw_penalty_fee_rate", "0.99");
+        configFacade.values.put("growth.phase.compliance_hold_enabled", "false");
+        when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                12, 9, "P5", 40,
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                new BigDecimal("25"), 45, new BigDecimal("2000"), BigDecimal.ONE,
+                true, List.of("H1"), true, List.of()));
+
+        ApiResult<Map<String, Object>> result = service.withdrawalLimits();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("cooldownDays", 45)
+                .containsEntry("penaltyFeeRate", new BigDecimal("0.25"))
+                .containsEntry("complianceHoldEnabled", true)
+                .containsEntry("currentPhase", "P5")
+                .containsEntry("currentMonth", 9);
     }
 
     @Test
@@ -1251,6 +1290,57 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void sentWithdrawalClosesOnceWithChainProofAuditAndA4Fact() {
+        withdrawalRepository.order = withdrawal("WD-CONFIRM-1", "SENT");
+
+        ApiResult<WithdrawalOrderView> result = service.confirmWithdrawal(
+                "WD-CONFIRM-1",
+                "confirm-idempotency-key",
+                new WithdrawalConfirmationRequest(
+                        "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                        "finance-admin",
+                        "链上回执已达到最终确认数"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("CONFIRMED");
+        assertThat(result.getData().chainTxHash())
+                .isEqualTo("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        assertThat(result.getData().completedAt()).isNotNull();
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("CONFIRMED");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(eventOutboxService).publish(
+                org.mockito.ArgumentMatchers.eq("WITHDRAWAL"),
+                org.mockito.ArgumentMatchers.eq("WD-CONFIRM-1"),
+                org.mockito.ArgumentMatchers.eq("withdraw.confirmed"),
+                payload.capture());
+        assertThat(payload.getValue())
+                .containsEntry("state", "CONFIRMED")
+                .containsEntry(
+                        "chain_tx_hash",
+                        "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_CHAIN_CONFIRMED");
+    }
+
+    @Test
+    void confirmationFailsClosedBeforeTheWithdrawalWasSent() {
+        withdrawalRepository.order = withdrawal("WD-CONFIRM-2", "REVIEW_PASSED");
+
+        ApiResult<WithdrawalOrderView> result = service.confirmWithdrawal(
+                "WD-CONFIRM-2",
+                "confirm-idempotency-key",
+                new WithdrawalConfirmationRequest(
+                        "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+                        "finance-admin",
+                        "链上回执已达到最终确认数"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
     void expiredH1FastTrackFreezesWhenK5ReviewAppearsDuringCooldown() {
         LocalDateTime dueAt = LocalDateTime.now().minusMinutes(1);
         withdrawalRepository.order = withLifecycle(
@@ -1418,7 +1508,8 @@ class OpsFinanceServiceTest {
                 new BigDecimal("0.01"), new BigDecimal("1.00"), new BigDecimal("0.40"), new BigDecimal("0.40"),
                 new BigDecimal("0.40"), new BigDecimal("0.60"), order.amount().subtract(new BigDecimal("0.60")),
                 "10.0.0", holdUntil, owner, period, "REVIEW_PASSED",
-                "LOW", 41, 73, 91, "pass");
+                "LOW", 41, 73, 91, "pass",
+                order.networkFeeRate(), order.networkFeeMin(), order.networkFeeMax(), order.networkFee());
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
@@ -1648,6 +1739,28 @@ class OpsFinanceServiceTest {
                 return false;
             }
             updateStatus(withdrawalNo, newStatus, failureReason);
+            return true;
+        }
+
+        @Override
+        public boolean confirmSent(
+                String withdrawalNo,
+                String expectedStatus,
+                String chainTxHash,
+                LocalDateTime completedAt) {
+            if (order == null || !withdrawalNo.equals(order.withdrawalNo())
+                    || !expectedStatus.equals(order.status())
+                    || !"SENT".equals(D2WithdrawalStateMachine.canonical(order.status()))) {
+                return false;
+            }
+            updateStatus(withdrawalNo, "CONFIRMED", null);
+            order = new WithdrawalOrderView(
+                    order.id(), order.userId(), order.withdrawalNo(), order.asset(), order.chain(), order.amount(), order.fee(),
+                    order.targetAddress(), order.riskDecisionId(), chainTxHash, order.status(), order.chainSubmittedAt(),
+                    completedAt, order.failedAt(), order.failureReason(), order.chainBroadcastAttempts(), order.nextBroadcastAt(),
+                    order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
+                    order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(), order.riskScore(), order.hitRules(),
+                    order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
             return true;
         }
 

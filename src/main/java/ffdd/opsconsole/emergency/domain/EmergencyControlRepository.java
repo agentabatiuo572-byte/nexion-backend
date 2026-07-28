@@ -241,6 +241,11 @@ public interface EmergencyControlRepository {
         return false;
     }
 
+    default boolean requestExecutionCancellation(
+            String executionId, String reason, String operator) {
+        return false;
+    }
+
     boolean claimExecutionRollback(String executionId);
 
     boolean completeExecutionRollback(String executionId, LocalDateTime rollbackAt, String reason,

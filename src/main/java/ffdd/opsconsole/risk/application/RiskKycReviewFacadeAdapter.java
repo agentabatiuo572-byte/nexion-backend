@@ -84,22 +84,33 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
             String withdrawalNo,
             String operator,
             String reason) {
+        validateLargeReviewInput(
+                userNo, amountUsdt, withdrawalNo, reason, "K5_LARGE_WITHDRAWAL_REVIEW_INPUT_REQUIRED");
+        String normalizedUserNo = userNo.trim();
+        String normalizedWithdrawalNo = withdrawalNo.trim();
+        String normalizedReason = reason.trim();
         int threshold = riskRepository.kycLargeWithdrawReviewUsdt();
-        if (!requiresReview(userNo, amountUsdt, threshold)) {
+        if (!requiresReview(amountUsdt, threshold)) {
             return KycReviewTriggerResult.notRequired();
         }
-        var open = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElse(null);
+        var open = riskRepository.findOpenKycReviewTicketByUserForUpdate(normalizedUserNo).orElse(null);
         if (open != null) {
-            return merge(open, userNo, "D2", withdrawalNo, amountUsdt, threshold, operator, reason);
+            return merge(open, normalizedUserNo, "D2", normalizedWithdrawalNo, amountUsdt,
+                    threshold, operator, normalizedReason);
         }
         String ticketId = "KR-D2-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
         try {
-            riskRepository.createLargeWithdrawalKycReviewTicket(ticketId, userNo, amountUsdt, withdrawalNo, kycStatus, reason, actor(operator));
+            riskRepository.createLargeWithdrawalKycReviewTicket(
+                    ticketId, normalizedUserNo, amountUsdt, normalizedWithdrawalNo,
+                    kycStatus, normalizedReason, actor(operator));
         } catch (DuplicateKeyException race) {
-            var winner = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElseThrow(() -> race);
-            return merge(winner, userNo, "D2", withdrawalNo, amountUsdt, threshold, operator, reason);
+            var winner = riskRepository.findOpenKycReviewTicketByUserForUpdate(normalizedUserNo)
+                    .orElseThrow(() -> race);
+            return merge(winner, normalizedUserNo, "D2", normalizedWithdrawalNo, amountUsdt,
+                    threshold, operator, normalizedReason);
         }
-        audit("K5_KYC_REVIEW_TRIGGERED_BY_D2", ticketId, userNo, "D2", withdrawalNo, amountUsdt, threshold, operator, reason);
+        audit("K5_KYC_REVIEW_TRIGGERED_BY_D2", ticketId, normalizedUserNo, "D2",
+                normalizedWithdrawalNo, amountUsdt, threshold, operator, normalizedReason);
         return new KycReviewTriggerResult(true, true, ticketId, "K5_LARGE_WITHDRAWAL_REVIEW_REQUIRED");
     }
 
@@ -112,22 +123,33 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
             String exchangeNo,
             String operator,
             String reason) {
+        validateLargeReviewInput(
+                userNo, amountUsdt, exchangeNo, reason, "K5_LARGE_EXCHANGE_REVIEW_INPUT_REQUIRED");
+        String normalizedUserNo = userNo.trim();
+        String normalizedExchangeNo = exchangeNo.trim();
+        String normalizedReason = reason.trim();
         int threshold = riskRepository.kycLargeExchangeReviewUsdt();
-        if (!requiresReview(userNo, amountUsdt, threshold)) {
+        if (!requiresReview(amountUsdt, threshold)) {
             return KycReviewTriggerResult.notRequired();
         }
-        var open = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElse(null);
+        var open = riskRepository.findOpenKycReviewTicketByUserForUpdate(normalizedUserNo).orElse(null);
         if (open != null) {
-            return merge(open, userNo, "G2", exchangeNo, amountUsdt, threshold, operator, reason);
+            return merge(open, normalizedUserNo, "G2", normalizedExchangeNo, amountUsdt,
+                    threshold, operator, normalizedReason);
         }
         String ticketId = "KR-G2-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
         try {
-            riskRepository.createLargeExchangeKycReviewTicket(ticketId, userNo, amountUsdt, exchangeNo, kycStatus, reason, actor(operator));
+            riskRepository.createLargeExchangeKycReviewTicket(
+                    ticketId, normalizedUserNo, amountUsdt, normalizedExchangeNo,
+                    kycStatus, normalizedReason, actor(operator));
         } catch (DuplicateKeyException race) {
-            var winner = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElseThrow(() -> race);
-            return merge(winner, userNo, "G2", exchangeNo, amountUsdt, threshold, operator, reason);
+            var winner = riskRepository.findOpenKycReviewTicketByUserForUpdate(normalizedUserNo)
+                    .orElseThrow(() -> race);
+            return merge(winner, normalizedUserNo, "G2", normalizedExchangeNo, amountUsdt,
+                    threshold, operator, normalizedReason);
         }
-        audit("K5_KYC_REVIEW_TRIGGERED_BY_G2", ticketId, userNo, "G2", exchangeNo, amountUsdt, threshold, operator, reason);
+        audit("K5_KYC_REVIEW_TRIGGERED_BY_G2", ticketId, normalizedUserNo, "G2",
+                normalizedExchangeNo, amountUsdt, threshold, operator, normalizedReason);
         return new KycReviewTriggerResult(true, true, ticketId, "K5_LARGE_EXCHANGE_REVIEW_REQUIRED");
     }
 
@@ -174,14 +196,22 @@ public class RiskKycReviewFacadeAdapter implements RiskKycReviewFacade {
                 true, true, ticketId, "K5_CUMULATIVE_EXCHANGE_REVIEW_REQUIRED");
     }
 
-    private boolean requiresReview(String userNo, BigDecimal amountUsdt, int threshold) {
-        if (!StringUtils.hasText(userNo) || amountUsdt == null || amountUsdt.compareTo(BigDecimal.ZERO) <= 0) {
-            return false;
-        }
+    private boolean requiresReview(BigDecimal amountUsdt, int threshold) {
         if (threshold <= 0) {
             return true;
         }
         return amountUsdt.compareTo(BigDecimal.valueOf(threshold)) >= 0;
+    }
+
+    private void validateLargeReviewInput(
+            String userNo, BigDecimal amountUsdt, String sourceNo, String reason, String errorCode) {
+        if (!StringUtils.hasText(userNo)
+                || amountUsdt == null
+                || amountUsdt.compareTo(BigDecimal.ZERO) <= 0
+                || !StringUtils.hasText(sourceNo)
+                || !StringUtils.hasText(reason)) {
+            throw new IllegalArgumentException(errorCode);
+        }
     }
 
     private KycReviewTriggerResult merge(

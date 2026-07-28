@@ -56,7 +56,8 @@ public final class ComputeConfigRegistry {
         new DownloadFieldDef("enTitle", "英文标题", "Computer GPU share"),
         new DownloadFieldDef("enGuide", "英文说明", "Download the desktop client, sign in with the same account, and the computer appears in device inventory after connection."));
 
-    private static final Set<String> EXACT_PARAM_KEYS = exactParamKeys();
+    private static final List<String> ALL_PARAM_KEYS = List.copyOf(exactParamKeys());
+    private static final Set<String> EXACT_PARAM_KEYS = Set.copyOf(ALL_PARAM_KEYS);
 
     /** PATCH 白名单必须精确到注册字段，不能只按前缀放行未知档位或未知字段。 */
     public static boolean isComputeParamKey(String key) {
@@ -69,6 +70,49 @@ public final class ComputeConfigRegistry {
 
     public static boolean isCoefficientParamKey(String key) {
         return coeffKey("h5BaseFactor").equals(key) || coeffKey("continuityFullHours").equals(key);
+    }
+
+    /** 稳定顺序用于事务内统一加锁，避免单参数与批量参数并发时出现交叉死锁。 */
+    public static List<String> allParamKeys() {
+        return ALL_PARAM_KEYS;
+    }
+
+    /** 缺失或非法存量值的唯一默认来源，写前全局不变量校验也必须使用同一组默认值。 */
+    public static String defaultValue(String key) {
+        for (FlagDef flag : FLAGS) {
+            if (flagKey(flag.key()).equals(key)) {
+                return flag.defaultOn() ? "on" : "off";
+            }
+        }
+        for (CoeffDef coeff : COEFFICIENTS) {
+            if (coeffKey(coeff.key()).equals(key)) {
+                return coeff.defaultVal();
+            }
+        }
+        for (YieldDef item : YIELD_ESTIMATE) {
+            if (yieldKey(item.key()).equals(key)) {
+                return item.defaultVal();
+            }
+        }
+        for (GpuTierDef tier : GPU_TIERS) {
+            if (gpuTierKey(tier.id(), "label").equals(key)) {
+                return tier.label();
+            }
+            if (gpuTierKey(tier.id(), "tops").equals(key)) {
+                return tier.defaultTops();
+            }
+            for (int index = 0; index < KEYWORD_SLOTS.size(); index++) {
+                if (gpuTierKey(tier.id(), KEYWORD_SLOTS.get(index)).equals(key)) {
+                    return index < tier.keywords().size() ? tier.keywords().get(index) : "";
+                }
+            }
+        }
+        for (DownloadFieldDef field : DOWNLOAD_FIELDS) {
+            if (downloadKey(field.field()).equals(key)) {
+                return field.defaultVal();
+            }
+        }
+        throw new IllegalArgumentException("Unknown E6 compute config key: " + key);
     }
 
     private static Set<String> exactParamKeys() {

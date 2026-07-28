@@ -163,6 +163,19 @@ class MybatisRiskOpsRepositoryTest {
     }
 
     @Test
+    void currentScoreFailsClosedWhenEscalationIsBelowTheHighRiskBand() {
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        when(mapper.findCurrentScoreUser("U00000068")).thenReturn(
+                new RiskOpsMapper.ScoreUserRecord("U00000068", 88, "k4-v24", 5L, "now", "now"));
+        when(mapper.activeScoreModel()).thenReturn(new RiskOpsMapper.ScoreModelRecord(
+                24L, 9L, "active", "{}", "{}", "{}",
+                40, 90, 85, "invalid escalation threshold", "risk-admin", "risk-admin", "now", "now"));
+
+        assertThat(repository.findCurrentScoreUser("U00000068")).isEmpty();
+    }
+
+    @Test
     void ensureRiskSchemaDoesNotSeedDataWhenReadTimeSeedsAreDisabled() {
         when(mapper.countKycTicketOpenUserKeyColumn()).thenReturn(1);
         when(mapper.kycTicketOpenUserKeyExpression())

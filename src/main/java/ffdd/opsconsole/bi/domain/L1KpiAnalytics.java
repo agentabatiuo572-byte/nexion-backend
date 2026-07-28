@@ -5,6 +5,8 @@ import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -20,6 +22,7 @@ import java.util.function.Predicate;
 
 /** L1 pure read-model calculator over schema-accepted A4 KPI event facts. */
 public final class L1KpiAnalytics {
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final List<String> COLORS = List.of(
             "#2dd4bf", "#60a5fa", "#818cf8", "#c084fc",
             "#f472b6", "#fb7185", "#f59e0b", "#84cc16");
@@ -34,41 +37,24 @@ public final class L1KpiAnalytics {
             String phase,
             String locale,
             String ref) {
-        String normalizedWindow = normalizeWindow(window);
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime from = switch (normalizedWindow) {
-            case "1d" -> now.minusDays(1);
-            case "30d" -> now.minusDays(30);
-            default -> now.minusDays(7);
-        };
-        List<EventFact> all = rawRows == null ? List.of() : rawRows.stream()
-                .map(L1KpiAnalytics::eventFact)
-                .filter(Objects::nonNull)
-                .sorted(Comparator.comparing(EventFact::at))
-                .toList();
-        List<EventFact> filtered = all.stream()
-                .filter(event -> !event.at().isBefore(from) && !event.at().isAfter(now))
-                .filter(event -> matches(cohort, event.cohort()))
-                .filter(event -> matches(phase, event.phase()))
-                .filter(event -> matches(locale, event.locale()))
-                .filter(event -> matches(ref, event.ref()))
-                .toList();
+        LocalDateTime now = LocalDateTime.now(BUSINESS_ZONE);
+        WindowRange range = windowRange(window, now);
+        String normalizedWindow = range.label();
+        LocalDateTime from = range.from();
+        LocalDateTime end = range.to();
+        List<EventFact> all = facts(rawRows);
+        Predicate<EventFact> dimensions = dimensions(cohort, phase, locale, ref);
+        long windowSeconds = Math.max(1, ChronoUnit.SECONDS.between(from, end));
+        LocalDateTime previousFrom = from.minusSeconds(windowSeconds);
 
         List<KpiSpec> specs = specs();
         List<Map<String, Object>> kpis = new ArrayList<>();
         Map<String, Object> plain = new LinkedHashMap<>();
         Map<String, Object> ext = new LinkedHashMap<>();
         for (KpiSpec spec : specs) {
-            KpiValue current = value(spec.id(), filtered, now);
-            KpiValue previous = value(spec.id(), all.stream()
-                    .filter(event -> !event.at().isBefore(from.minusSeconds(ChronoUnit.SECONDS.between(from, now))))
-                    .filter(event -> event.at().isBefore(from))
-                    .filter(event -> matches(cohort, event.cohort()))
-                    .filter(event -> matches(phase, event.phase()))
-                    .filter(event -> matches(locale, event.locale()))
-                    .filter(event -> matches(ref, event.ref()))
-                    .toList(), from);
-            List<Double> spark = spark(spec.id(), filtered, from, now);
+            KpiValue current = value(spec.id(), all, from, end, dimensions);
+            KpiValue previous = value(spec.id(), all, previousFrom, from, dimensions);
+            List<Double> spark = spark(spec.id(), all, from, end, dimensions);
             String status = status(spec, current.value());
             kpis.add(linked(
                     "n", spec.id(), "kpiId", String.valueOf(spec.id()), "name", spec.name(),
@@ -91,8 +77,11 @@ public final class L1KpiAnalytics {
                 "module", "L1", "window", normalizedWindow,
                 "filters", linked("cohort", emptyToNull(cohort), "phase", emptyToNull(phase),
                         "locale", emptyToNull(locale), "ref", emptyToNull(ref)),
-                "kpis", kpis, "weeks", sparkLabels(from, now),
-                "phaseSwitchIndex", phaseSwitchIndex(filtered, from, now),
+                "kpis", kpis, "weeks", sparkLabels(from, end),
+                "phaseSwitchIndex", phaseSwitchIndex(all.stream()
+                        .filter(event -> within(event, from, end))
+                        .filter(dimensions)
+                        .toList(), from, end),
                 "kpiColors", COLORS, "kpiPlain", plain, "kpiExt", ext,
                 "capabilities", linked("eightKpis", true, "drilldown", true, "trend", true,
                         "incompleteRatesAreNull", true),
@@ -123,46 +112,112 @@ public final class L1KpiAnalytics {
                 "values", values, "filters", dashboard.get("filters"), "sources", dashboard.get("sources"));
     }
 
-    private static KpiValue value(int id, List<EventFact> events, LocalDateTime end) {
+    private static KpiValue value(
+            int id,
+            List<EventFact> events,
+            LocalDateTime from,
+            LocalDateTime end,
+            Predicate<EventFact> dimensions) {
         return switch (id) {
-            case 1 -> ratio(
-                    actors(events, event -> event.name().equals("device.first_yield_received")
-                            && event.latencySec() != null && event.latencySec() <= 90),
-                    actors(events, named("auth.register_completed")), "NO_REGISTRATION_DENOMINATOR");
-            case 2 -> day7(events, end);
-            case 3 -> ratio(actors(events, named("store.viewed")),
-                    actors(events, named("auth.register_completed")), "NO_REGISTRATION_DENOMINATOR");
-            case 4 -> ratio(actors(events, named("checkout.completed")),
-                    actors(events, named("store.viewed")), "NO_STORE_VIEW_DENOMINATOR");
-            case 5 -> ratio(actors(events, named("referral.invite_sent")),
-                    actors(events, event -> event.name().equals("device.purchase_completed")
-                            || event.name().equals("device.first_yield_received")), "NO_DEVICE_HOLDER_DENOMINATOR");
-            case 6 -> ratio(actors(events, named("nova.push_clicked")),
-                    actors(events, named("nova.push_sent")), "NO_PUSH_SENT_DENOMINATOR");
-            case 7 -> {
-                Set<String> directs = actors(events, named("referral.bound"));
-                Set<String> paid = actors(events, named("commission.paid"));
-                paid.retainAll(directs);
-                yield ratio(paid, directs, "NO_DIRECT_REFERRAL_DENOMINATOR");
-            }
-            case 8 -> genesis(events);
+            case 1 -> orderedRatio(
+                    anchors(events, "auth.register_completed", from, end, dimensions),
+                    events,
+                    event -> event.name().equals("device.first_yield_received")
+                            && event.latencySec() != null && event.latencySec() <= 90,
+                    90L,
+                    end,
+                    "NO_REGISTRATION_DENOMINATOR");
+            case 2 -> day7(events, from, end, dimensions);
+            case 3 -> orderedRatio(
+                    anchors(events, "auth.register_completed", from, end, dimensions),
+                    events, named("store.viewed"), null, end, "NO_REGISTRATION_DENOMINATOR");
+            case 4 -> orderedRatio(
+                    anchors(events, "store.viewed", from, end, dimensions),
+                    events, named("checkout.completed"), null, end, "NO_STORE_VIEW_DENOMINATOR");
+            case 5 -> orderedRatio(
+                    anchors(events, Set.of("device.purchase_completed", "device.first_yield_received"),
+                            from, end, dimensions),
+                    events, named("referral.invite_sent"), null, end, "NO_DEVICE_HOLDER_DENOMINATOR");
+            case 6 -> orderedRatio(
+                    anchors(events, "nova.push_sent", from, end, dimensions),
+                    events, named("nova.push_clicked"), null, end, "NO_PUSH_SENT_DENOMINATOR");
+            case 7 -> directReferralCommissionRate(
+                    anchors(events, "referral.bound", from, end, dimensions),
+                    events, end);
+            case 8 -> genesis(events.stream()
+                    .filter(event -> within(event, from, end))
+                    .filter(dimensions)
+                    .toList());
             default -> new KpiValue(null, 0, 0, "KPI_ID_UNKNOWN");
         };
     }
 
-    private static KpiValue day7(List<EventFact> events, LocalDateTime end) {
-        Map<String, EventFact> registrations = firstByActor(events, "auth.register_completed");
+    private static KpiValue day7(
+            List<EventFact> events,
+            LocalDateTime from,
+            LocalDateTime end,
+            Predicate<EventFact> dimensions) {
+        Map<String, EventFact> registrations = firstByActor(events.stream()
+                .filter(named("auth.register_completed"))
+                .filter(dimensions)
+                .filter(event -> {
+                    LocalDate matureOn = event.at().toLocalDate().plusDays(7);
+                    return !matureOn.isBefore(from.toLocalDate())
+                            && !matureOn.isAfter(end.toLocalDate());
+                })
+                .toList());
         Set<String> mature = new LinkedHashSet<>();
         Set<String> active = new LinkedHashSet<>();
         registrations.forEach((actor, registration) -> {
-            if (registration.at().toLocalDate().plusDays(7).isAfter(end.toLocalDate())) return;
             mature.add(actor);
             boolean found = events.stream().anyMatch(event -> event.actor().equals(actor)
                     && event.name().equals("app.dau")
+                    && !event.at().isAfter(end)
                     && ChronoUnit.DAYS.between(registration.at().toLocalDate(), event.at().toLocalDate()) == 7);
             if (found) active.add(actor);
         });
         return ratio(active, mature, "NO_MATURE_DAY7_COHORT");
+    }
+
+    private static KpiValue orderedRatio(
+            List<EventFact> denominatorEvents,
+            List<EventFact> allEvents,
+            Predicate<EventFact> numeratorPredicate,
+            Long maxLatencySeconds,
+            LocalDateTime observationEnd,
+            String unavailableReason) {
+        Map<String, EventFact> anchors = firstByActor(denominatorEvents);
+        Set<String> matched = new LinkedHashSet<>();
+        anchors.forEach((actor, anchor) -> {
+            boolean found = allEvents.stream().anyMatch(event -> event.actor().equals(actor)
+                    && numeratorPredicate.test(event)
+                    && !event.at().isBefore(anchor.at())
+                    && !event.at().isAfter(observationEnd)
+                    && (maxLatencySeconds == null
+                    || !event.at().isAfter(anchor.at().plusSeconds(maxLatencySeconds))));
+            if (found) matched.add(actor);
+        });
+        return ratio(matched, anchors.keySet(), unavailableReason);
+    }
+
+    private static KpiValue directReferralCommissionRate(
+            List<EventFact> referralEvents,
+            List<EventFact> allEvents,
+            LocalDateTime observationEnd) {
+        Map<String, EventFact> referrals = firstByActor(referralEvents);
+        Set<String> matchedReferredActors = new LinkedHashSet<>();
+        allEvents.stream()
+                .filter(event -> event.name().equals("commission.paid"))
+                .filter(event -> event.commissionKind().equalsIgnoreCase("network"))
+                .filter(event -> !event.at().isAfter(observationEnd))
+                .sorted(Comparator.comparing(EventFact::at))
+                .forEach(event -> {
+                    EventFact referral = referrals.get(event.sourceActor());
+                    if (referral != null && event.at().isAfter(referral.at())) {
+                        matchedReferredActors.add(event.sourceActor());
+                    }
+                });
+        return ratio(matchedReferredActors, referrals.keySet(), "NO_DIRECT_REFERRAL_DENOMINATOR");
     }
 
     private static KpiValue genesis(List<EventFact> events) {
@@ -188,16 +243,20 @@ public final class L1KpiAnalytics {
         return new KpiValue(round(matched.size() * 100D / denominator.size()), matched.size(), denominator.size(), null);
     }
 
-    private static List<Double> spark(int id, List<EventFact> events, LocalDateTime from, LocalDateTime to) {
+    private static List<Double> spark(
+            int id,
+            List<EventFact> events,
+            LocalDateTime from,
+            LocalDateTime to,
+            Predicate<EventFact> dimensions) {
         List<Double> result = new ArrayList<>();
         long seconds = Math.max(1, ChronoUnit.SECONDS.between(from, to));
         for (int index = 0; index < 6; index++) {
             LocalDateTime start = from.plusSeconds(seconds * index / 6);
             LocalDateTime end = from.plusSeconds(seconds * (index + 1) / 6);
-            KpiValue point = value(id, events.stream()
-                    .filter(event -> !event.at().isBefore(start) && event.at().isBefore(end.plusNanos(1)))
-                    .toList(), end);
-            if (point.value() != null) result.add(point.value());
+            KpiValue point = value(id, events, start, end, dimensions);
+            if (point.value() == null) return List.of();
+            result.add(point.value());
         }
         return result;
     }
@@ -255,20 +314,92 @@ public final class L1KpiAnalytics {
     }
 
     private static Map<String, EventFact> firstByActor(List<EventFact> events, String name) {
+        return firstByActor(events.stream().filter(named(name)).toList());
+    }
+
+    private static Map<String, EventFact> firstByActor(List<EventFact> events) {
         Map<String, EventFact> result = new LinkedHashMap<>();
-        events.stream().filter(named(name)).forEach(event -> result.putIfAbsent(event.actor(), event));
+        events.stream()
+                .sorted(Comparator.comparing(EventFact::at))
+                .forEach(event -> result.putIfAbsent(event.actor(), event));
         return result;
     }
 
+    private static List<EventFact> anchors(
+            List<EventFact> events,
+            String name,
+            LocalDateTime from,
+            LocalDateTime end,
+            Predicate<EventFact> dimensions) {
+        return anchors(events, Set.of(name), from, end, dimensions);
+    }
+
+    private static List<EventFact> anchors(
+            List<EventFact> events,
+            Set<String> names,
+            LocalDateTime from,
+            LocalDateTime end,
+            Predicate<EventFact> dimensions) {
+        return events.stream()
+                .filter(event -> names.contains(event.name()))
+                .filter(event -> within(event, from, end))
+                .filter(dimensions)
+                .toList();
+    }
+
+    private static boolean within(EventFact event, LocalDateTime from, LocalDateTime end) {
+        return !event.at().isBefore(from) && !event.at().isAfter(end);
+    }
+
+    private static Predicate<EventFact> dimensions(
+            String cohort,
+            String phase,
+            String locale,
+            String ref) {
+        return event -> matches(cohort, event.cohort())
+                && matches(phase, event.phase())
+                && matches(locale, event.locale())
+                && matches(ref, event.ref());
+    }
+
+    private static List<EventFact> facts(List<Map<String, Object>> rows) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        List<EventFact> result = new ArrayList<>();
+        Set<String> eventIds = new LinkedHashSet<>();
+        for (Map<String, Object> row : rows) {
+            EventFact fact = eventFact(row);
+            if (fact == null) {
+                throw new IllegalArgumentException("L1_EVENT_FACT_INVALID");
+            }
+            if (!fact.eventId().isBlank() && !eventIds.add(fact.eventId())) {
+                continue;
+            }
+            result.add(fact);
+        }
+        result.sort(Comparator.comparing(EventFact::at));
+        return List.copyOf(result);
+    }
+
     private static EventFact eventFact(Map<String, Object> row) {
+        if (row == null) return null;
+        String eventId = text(row, "eventId", "event_id");
         String name = text(row, "eventName", "event_name");
         String actor = text(row, "actorId", "actor_id");
+        String sourceActor = text(row, "sourceActorId", "source_actor_id");
+        String commissionKind = text(row, "commissionKind", "commission_kind", "kind", "tier");
         LocalDateTime at = dateTime(value(row, "eventTs", "event_ts"));
-        if (name.isBlank() || at == null) return null;
-        return new EventFact(name, actor, at, text(row, "cohort"),
+        Double latency = number(row, "latencySec", "latency_sec");
+        long quantity = longNumber(row, "quantity", 1);
+        if (name.isBlank() || actor.isBlank() || at == null
+                || ("device.first_yield_received".equals(name)
+                && (latency == null || !Double.isFinite(latency) || latency < 0))
+                || ("genesis.purchased".equals(name) && quantity <= 0)) {
+            return null;
+        }
+        return new EventFact(eventId, name, actor, sourceActor, commissionKind, at, text(row, "cohort"),
                 defaultText(text(row, "phase"), "unknown"), normalizeLocale(text(row, "locale")),
                 defaultText(text(row, "refCode", "ref_code", "ref"), "direct"),
-                number(row, "latencySec", "latency_sec"), longNumber(row, "quantity", 1));
+                latency, quantity);
     }
 
     private static LocalDateTime dateTime(Object raw) {
@@ -307,9 +438,34 @@ public final class L1KpiAnalytics {
         return expected == null || expected.isBlank() || "all".equalsIgnoreCase(expected) || expected.equalsIgnoreCase(actual);
     }
 
-    private static String normalizeWindow(String value) {
-        return Set.of("1d", "7d", "30d").contains(defaultText(value, "7d").toLowerCase(Locale.ROOT))
-                ? defaultText(value, "7d").toLowerCase(Locale.ROOT) : "7d";
+    private static WindowRange windowRange(String value, LocalDateTime now) {
+        String normalized = defaultText(value, "7d").toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("custom|")) {
+            String[] parts = normalized.split("\\|", -1);
+            try {
+                if (parts.length != 3) {
+                    throw new IllegalArgumentException("L1_CUSTOM_WINDOW_INVALID");
+                }
+                LocalDate fromDate = LocalDate.parse(parts[1]);
+                LocalDate toDate = LocalDate.parse(parts[2]);
+                if (fromDate.isAfter(toDate)
+                        || ChronoUnit.DAYS.between(fromDate, toDate) > 400
+                        || toDate.isAfter(now.toLocalDate())) {
+                    throw new IllegalArgumentException("L1_CUSTOM_WINDOW_INVALID");
+                }
+                LocalDateTime to = toDate.equals(now.toLocalDate())
+                        ? now : LocalDateTime.of(toDate, LocalTime.MAX);
+                return new WindowRange("custom", fromDate.atStartOfDay(), to);
+            } catch (RuntimeException exception) {
+                throw new IllegalArgumentException("L1_CUSTOM_WINDOW_INVALID", exception);
+            }
+        }
+        return switch (normalized) {
+            case "1d" -> new WindowRange("1d", now.minusDays(1), now);
+            case "30d" -> new WindowRange("30d", now.minusDays(30), now);
+            case "7d" -> new WindowRange("7d", now.minusDays(7), now);
+            default -> throw new IllegalArgumentException("L1_WINDOW_INVALID");
+        };
     }
 
     private static String normalizeLocale(String value) {
@@ -353,9 +509,11 @@ public final class L1KpiAnalytics {
         return result;
     }
 
-    private record EventFact(String name, String actor, LocalDateTime at, String cohort,
+    private record EventFact(String eventId, String name, String actor, String sourceActor,
+                             String commissionKind, LocalDateTime at, String cohort,
                              String phase, String locale, String ref, Double latencySec, long quantity) { }
     private record KpiValue(Double value, long numerator, long denominator, String reason) { }
+    private record WindowRange(String label, LocalDateTime from, LocalDateTime to) { }
     private record KpiSpec(int id, String name, double target, String unit, String direction,
                            List<Integer> band, String maturity, String plain, String formula,
                            List<String> events, String note, List<Map<String, Object>> jumps) { }

@@ -1,11 +1,15 @@
 package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.AppUserAuthService;
+import ffdd.opsconsole.auth.application.AppUserRegistrationService;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserPasswordResetCompleteRequest;
 import ffdd.opsconsole.auth.dto.UserTwoFactorLoginRequest;
 import ffdd.opsconsole.auth.dto.UserRefreshRequest;
+import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
+import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
+import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +24,21 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppUserAuthController {
     private final AppUserAuthService authService;
+    private final AppUserRegistrationService registrationService;
+
+    @PostMapping("/register/otp/send")
+    public ApiResult<UserRegistrationOtpResponse> sendRegistrationOtp(
+            @RequestBody(required = false) UserRegistrationOtpRequest request,
+            HttpServletRequest servletRequest) {
+        return registrationService.sendOtp(request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/register")
+    public ApiResult<UserLoginResponse> register(
+            @RequestBody(required = false) UserRegistrationRequest request,
+            HttpServletRequest servletRequest) {
+        return registrationService.register(request, servletRequest.getRemoteAddr());
+    }
 
     @PostMapping("/login")
     public ApiResult<UserLoginResponse> login(@RequestBody(required = false) UserLoginRequest request,

@@ -102,6 +102,7 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
                    version_no=COALESCE(version_no, 1) + 1,
                    updated_at=#{now}
              WHERE article_code=#{faqId} AND format='faq' AND is_deleted=0
+               AND status=#{expectedStatus} AND version_no=#{expectedVersion}
             """)
     int updateFaq(
             @Param("faqId") String faqId,
@@ -112,21 +113,34 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
             @Param("status") int status,
             @Param("language") String language,
             @Param("sortOrder") int sortOrder,
+            @Param("expectedStatus") int expectedStatus,
+            @Param("expectedVersion") int expectedVersion,
             @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_help_article
                SET status=#{status}, version_no=COALESCE(version_no, 1) + 1, updated_at=#{now}
              WHERE article_code=#{faqId} AND format='faq' AND is_deleted=0
+               AND status=#{expectedStatus} AND version_no=#{expectedVersion}
             """)
-    int updateFaqStatus(@Param("faqId") String faqId, @Param("status") int status, @Param("now") LocalDateTime now);
+    int updateFaqStatus(
+            @Param("faqId") String faqId,
+            @Param("status") int status,
+            @Param("expectedStatus") int expectedStatus,
+            @Param("expectedVersion") int expectedVersion,
+            @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_help_article
-               SET is_deleted=1, updated_at=#{now}
+               SET is_deleted=1, version_no=COALESCE(version_no, 1) + 1, updated_at=#{now}
              WHERE article_code=#{faqId} AND format='faq' AND is_deleted=0
+               AND status=#{expectedStatus} AND version_no=#{expectedVersion}
             """)
-    int deleteFaq(@Param("faqId") String faqId, @Param("now") LocalDateTime now);
+    int deleteFaq(
+            @Param("faqId") String faqId,
+            @Param("expectedStatus") int expectedStatus,
+            @Param("expectedVersion") int expectedVersion,
+            @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT

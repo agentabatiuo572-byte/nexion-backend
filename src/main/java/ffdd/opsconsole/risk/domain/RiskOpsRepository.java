@@ -87,6 +87,19 @@ public interface RiskOpsRepository {
         return List.of();
     }
 
+    /** Rebuilds welcome-gift farming rows from settled H8 facts grouped by canonical K1 entity. */
+    default void refreshWelcomeGiftArbitrageProjection(int minimumSettlements) {
+    }
+
+    /** Captures the five-minute F4 commission snapshot and rebuilds current leaderboard anomalies. */
+    default void refreshLeaderboardArbitrageProjection(int velocityMultiplier, boolean inclusive) {
+    }
+
+    /** Retires only scheduler-owned signals whose authoritative K2 row is no longer active. */
+    default int retireInactiveK2ProjectionSignals() {
+        return 0;
+    }
+
     /** Resolves affected users from canonical user/K1 relations, never from a browser-side selection. */
     default List<Long> arbitrageSubjectUserIds(String rowId) {
         return List.of();

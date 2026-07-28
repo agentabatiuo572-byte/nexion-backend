@@ -83,17 +83,37 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
                 toDbStatus(request.status()),
                 request.language(),
                 request.sortOrder(),
+                toDbStatus(request.expectedStatus()),
+                request.expectedVersion(),
                 now);
     }
 
     @Override
+    public boolean updateFaqCas(String faqId, SupportFaqUpsertRequest request, String expectedStatus, Integer expectedVersion, LocalDateTime now) {
+        return helpArticleMapper.updateFaq(
+                faqId, request.category().trim().toLowerCase(Locale.ROOT), request.surface().trim(),
+                request.question().trim(), request.answer().trim(), toDbStatus(request.status()),
+                request.language(), request.sortOrder(), toDbStatus(expectedStatus), expectedVersion, now) == 1;
+    }
+
+    @Override
     public void updateFaqStatus(String faqId, String status, LocalDateTime now) {
-        helpArticleMapper.updateFaqStatus(faqId, toDbStatus(status), now);
+        throw new UnsupportedOperationException("FAQ status writes require CAS");
+    }
+
+    @Override
+    public boolean updateFaqStatusCas(String faqId, String status, String expectedStatus, Integer expectedVersion, LocalDateTime now) {
+        return helpArticleMapper.updateFaqStatus(faqId, toDbStatus(status), toDbStatus(expectedStatus), expectedVersion, now) == 1;
     }
 
     @Override
     public void deleteFaq(String faqId, LocalDateTime now) {
-        helpArticleMapper.deleteFaq(faqId, now);
+        throw new UnsupportedOperationException("FAQ deletes require CAS");
+    }
+
+    @Override
+    public boolean deleteFaqCas(String faqId, String expectedStatus, Integer expectedVersion, LocalDateTime now) {
+        return helpArticleMapper.deleteFaq(faqId, toDbStatus(expectedStatus), expectedVersion, now) == 1;
     }
 
     @Override
@@ -111,6 +131,7 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
             entity.setResolutionHours(request.resolutionHours());
             entity.setQueue(request.queue().trim());
             entity.setEscalation(request.escalation().trim());
+            entity.setVersion(1L);
             entity.setStatus(1);
             entity.setCreatedAt(now);
             entity.setUpdatedAt(now);
@@ -124,7 +145,15 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
                 request.resolutionHours(),
                 request.queue().trim(),
                 request.escalation().trim(),
+                request.expectedVersion(),
                 now);
+    }
+
+    @Override
+    public boolean updateSlaCas(String category, SupportSlaUpdateRequest request, Long expectedVersion, LocalDateTime now) {
+        return slaRuleMapper.updateRule(
+                category.trim().toLowerCase(Locale.ROOT), request.firstResponseMins(), request.resolutionHours(),
+                request.queue().trim(), request.escalation().trim(), expectedVersion, now) == 1;
     }
 
     private int toDbStatus(String status) {

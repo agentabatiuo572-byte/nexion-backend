@@ -10,6 +10,7 @@ import ffdd.opsconsole.content.domain.LearningCourseVersionView;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
 import ffdd.opsconsole.content.dto.I18nIntegrityFixRequest;
 import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
+import ffdd.opsconsole.content.dto.I18nVersionActionRequest;
 import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.dto.LearningFeaturedUpdateRequest;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
@@ -22,9 +23,8 @@ import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -125,9 +125,27 @@ public class OpsI18nLearningController {
     public ApiResult<I18nMessagePairView> archiveLocalizedMessage(
             @PathVariable String messageKey,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody I18nActionRequest request) {
+            @RequestBody I18nVersionActionRequest request) {
         return executeCommand("I6_I18N_ARCHIVE:" + messageKey, idempotencyKey, request,
                 () -> i18nLearningService.archiveLocalizedMessage(messageKey, idempotencyKey, request));
+    }
+
+    @GetMapping("/messages/{messageKey}/versions")
+    @PreAuthorize("hasAuthority('content_i6_read')")
+    public ApiResult<java.util.List<I18nMessagePairView>> messageVersions(@PathVariable String messageKey) {
+        return i18nLearningService.messageVersions(messageKey);
+    }
+
+    @PostMapping("/messages/{messageKey}/versions/{version}/rollback")
+    @PreAuthorize("hasAuthority('content_i6_write')")
+    public ApiResult<I18nMessagePairView> rollbackLocalizedMessage(
+            @PathVariable String messageKey,
+            @PathVariable String version,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody I18nVersionActionRequest request) {
+        return executeCommand("I6_I18N_ROLLBACK:" + messageKey + ":" + version, idempotencyKey, request,
+                () -> i18nLearningService.rollbackLocalizedMessage(
+                        messageKey, version, idempotencyKey, request));
     }
 
     @PostMapping("/integrity/{issueCode}/fix")

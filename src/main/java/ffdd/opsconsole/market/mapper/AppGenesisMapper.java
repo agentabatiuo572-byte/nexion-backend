@@ -65,6 +65,7 @@ public interface AppGenesisMapper {
                      '--')) AS countryCode,
                    COALESCE((SELECT config_value FROM nx_config_item WHERE config_key='growth.phase.current'
                               AND status=1 AND is_deleted=0 LIMIT 1),'P1') AS phase,
+                   GREATEST(TIMESTAMPDIFF(DAY,u.created_at,NOW()),0) AS accountAgeDays,
                    GREATEST(TIMESTAMPDIFF(MONTH,u.created_at,NOW()),0) AS accountAgeMonths,
                    DATE_FORMAT(u.created_at,'%x-W%v') AS cohort
               FROM nx_user u
@@ -72,6 +73,13 @@ public interface AppGenesisMapper {
              WHERE u.id=#{userId} AND UPPER(u.status)='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     UserPolicyRow userPolicy(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_genesis_holding
+             WHERE user_id=#{userId} AND series_code=#{seriesCode} AND is_deleted=0
+               AND UPPER(status) IN ('ACTIVE','LISTED')
+            """)
+    long userHoldingCount(@Param("userId") Long userId, @Param("seriesCode") String seriesCode);
 
     @Select("""
             SELECT COUNT(*) FROM nx_emergency_geo_country_policy
@@ -211,6 +219,14 @@ public interface AppGenesisMapper {
             """)
     int insertEmissionBatch(EmissionBatchWrite row);
 
+    @Select("""
+            SELECT batch_no AS batchNo,UPPER(status) AS status,holder_count AS holderCount,
+                   total_amount_usdt AS totalAmountUsdt
+              FROM nx_genesis_emission_batch
+             WHERE batch_no=#{batchNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
+            """)
+    EmissionBatchRow lockEmissionBatch(@Param("batchNo") String batchNo);
+
     @Insert("""
             INSERT IGNORE INTO nx_genesis_emission_item
               (batch_no,holding_no,user_id,amount_usdt,status,created_at,updated_at,is_deleted)
@@ -249,7 +265,8 @@ public interface AppGenesisMapper {
 
     record SeriesRow(Long id,String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt,
                      Integer royaltyBps,BigDecimal dailyEmissionRatePct,String status) {}
-    record UserPolicyRow(Long userId,String kycStatus,String countryCode,String phase,Integer accountAgeMonths,String cohort) {}
+    record UserPolicyRow(Long userId,String kycStatus,String countryCode,String phase,Integer accountAgeDays,
+                         Integer accountAgeMonths,String cohort) {}
     record OrderWrite(String orderNo,String clientRequestNo,Long userId,String seriesCode,Integer quantity,
                       BigDecimal unitPriceUsdt,BigDecimal amountUsdt,String orderType,Long sellerUserId,
                       String holdingNo,BigDecimal royaltyUsdt,LocalDateTime completedAt) {}
@@ -264,6 +281,7 @@ public interface AppGenesisMapper {
     record EmissionRow(String batchNo,String holdingNo,BigDecimal amountUsdt,String status,LocalDateTime paidAt) {}
     record EmissionBatchWrite(String batchNo,LocalDateTime snapshotAt,BigDecimal dailyRatePct,Integer holderCount,
                               BigDecimal totalAmountUsdt,String operator,String reason,String decisionRef) {}
+    record EmissionBatchRow(String batchNo,String status,Integer holderCount,BigDecimal totalAmountUsdt) {}
     record EmissionItemWrite(String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt) {}
     record EmissionItemRow(Long id,String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt,String status) {}
     record LedgerWrite(Long userId,String bizNo,String bizType,String direction,BigDecimal amount,

@@ -28,7 +28,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4
-                ON k4.user_no = CONCAT('U', LPAD(w.user_id, 8, '0'))
+                ON k4.user_no = CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0'))
                AND k4.is_deleted = 0
                AND k4.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
               LEFT JOIN nx_admin_risk_score_model k4m
@@ -67,7 +67,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
                     OR w.target_address LIKE CONCAT('%', #{keyword}, '%')
                     OR w.chain_tx_hash LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(w.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
                     OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%')
                     OR hit.hit_reasons LIKE CONCAT('%', #{keyword}, '%')
@@ -122,7 +122,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.broadcast_dead_at AS broadcastDeadAt,
                    w.created_at AS createdAt,
                    w.updated_at AS updatedAt,
-                   CONCAT('U', LPAD(w.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) AS userNo,
                    u.nickname AS nickname,
                    CASE
                       WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
@@ -209,13 +209,17 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    k4m.band_low_max AS k4BandLowMax,
                    k4m.band_high_min AS k4BandHighMin,
                    k4m.auto_escalate_score AS k4AutoEscalateScore,
-                   w.d2_k3_risk_route AS k3RiskRoute
+                   w.d2_k3_risk_route AS k3RiskRoute,
+                   w.d2_network_fee_rate AS networkFeeRate,
+                   w.d2_network_fee_min AS networkFeeMin,
+                   w.d2_network_fee_max AS networkFeeMax,
+                   w.d2_network_fee AS networkFee
               FROM nx_withdrawal_order w
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
               LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=w.user_id AND kyc.is_deleted=0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4
-                ON k4.user_no = CONCAT('U', LPAD(w.user_id, 8, '0'))
+                ON k4.user_no = CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0'))
                AND k4.is_deleted = 0
                AND k4.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
               LEFT JOIN nx_admin_risk_score_model k4m
@@ -264,7 +268,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
                     OR w.target_address LIKE CONCAT('%', #{keyword}, '%')
                     OR w.chain_tx_hash LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(w.user_id, 8, '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
                     OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
                     OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%')
                     OR hit.hit_reasons LIKE CONCAT('%', #{keyword}, '%')
@@ -333,7 +337,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.broadcast_dead_at AS broadcastDeadAt,
                    w.created_at AS createdAt,
                    w.updated_at AS updatedAt,
-                   CONCAT('U', LPAD(w.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) AS userNo,
                    u.nickname AS nickname,
                    CASE
                      WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
@@ -420,13 +424,17 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    k4m.band_low_max AS k4BandLowMax,
                    k4m.band_high_min AS k4BandHighMin,
                    k4m.auto_escalate_score AS k4AutoEscalateScore,
-                   w.d2_k3_risk_route AS k3RiskRoute
+                   w.d2_k3_risk_route AS k3RiskRoute,
+                   w.d2_network_fee_rate AS networkFeeRate,
+                   w.d2_network_fee_min AS networkFeeMin,
+                   w.d2_network_fee_max AS networkFeeMax,
+                   w.d2_network_fee AS networkFee
               FROM nx_withdrawal_order w
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
               LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=w.user_id AND kyc.is_deleted=0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4
-                ON k4.user_no = CONCAT('U', LPAD(w.user_id, 8, '0'))
+                ON k4.user_no = CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0'))
                AND k4.is_deleted = 0
                AND k4.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
               LEFT JOIN nx_admin_risk_score_model k4m
@@ -495,6 +503,37 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             @Param("expectedStatus") String expectedStatus,
             @Param("newStatus") String newStatus,
             @Param("failureReason") String failureReason);
+
+    @Update("""
+            UPDATE nx_withdrawal_order
+               SET status = 'CONFIRMED',
+                   chain_tx_hash = #{chainTxHash},
+                   completed_at = #{completedAt},
+                   failure_reason = NULL,
+                   d2_version = d2_version + 1,
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE withdrawal_no = #{withdrawalNo}
+               AND status = #{expectedStatus}
+               AND UPPER(status) IN ('SENT', 'CHAIN_SUBMITTED')
+               AND (chain_tx_hash IS NULL OR chain_tx_hash = '' OR chain_tx_hash = #{chainTxHash})
+               AND is_deleted = 0
+            """)
+    int confirmSent(
+            @Param("withdrawalNo") String withdrawalNo,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("chainTxHash") String chainTxHash,
+            @Param("completedAt") LocalDateTime completedAt);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_withdrawal_order
+             WHERE chain_tx_hash = #{chainTxHash}
+               AND withdrawal_no != #{withdrawalNo}
+               AND is_deleted = 0
+            """)
+    int countOtherByChainTxHash(
+            @Param("withdrawalNo") String withdrawalNo,
+            @Param("chainTxHash") String chainTxHash);
 
     @Update("""
             UPDATE nx_withdrawal_order

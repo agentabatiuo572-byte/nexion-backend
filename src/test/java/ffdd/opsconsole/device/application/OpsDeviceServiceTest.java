@@ -406,6 +406,37 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e5DatacenterMutationsRequireA2ReplayEvenWithBusinessPermission() {
+        seedDatacenter("HK-1");
+        DeviceDatacenterUpsertRequest createRequest = new DeviceDatacenterUpsertRequest(
+                "HK-2", "Hong Kong 2", "active", 20,
+                "create isolated datacenter", "superadmin", "Hong Kong 2", "Hong Kong DC 2");
+        DeviceDatacenterUpsertRequest updateRequest = new DeviceDatacenterUpsertRequest(
+                "HK-1", "Hong Kong Updated", "maintenance", 21,
+                "update isolated datacenter", "superadmin", "Hong Kong Updated", "Hong Kong DC Updated");
+        DatacenterOpsRequest actionRequest = new DatacenterOpsRequest(
+                "operate isolated datacenter", "superadmin");
+
+        ApiResult<DeviceDatacenterView> create = service.createDatacenter("idem-dc-direct-create", createRequest);
+        ApiResult<DeviceDatacenterView> update = service.updateDatacenter(
+                "HK-1", "idem-dc-direct-update", updateRequest);
+        ApiResult<Map<String, Object>> delete = service.deleteDatacenter(
+                "HK-1", "idem-dc-direct-delete", actionRequest);
+        ApiResult<Map<String, Object>> pause = service.pauseDatacenter(
+                "HK-1", "idem-dc-direct-pause", actionRequest);
+        ApiResult<Map<String, Object>> resume = service.resumeDatacenter(
+                "HK-1", "idem-dc-direct-resume", actionRequest);
+
+        assertThat(List.of(create, update, delete, pause, resume))
+                .allSatisfy(result -> {
+                    assertThat(result.getCode()).isEqualTo(409);
+                    assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+                });
+        verify(idempotencyService, never()).execute(argThat(scope -> scope.startsWith("E5_DATACENTER_")), anyString(),
+                anyString(), eq(ApiResult.class), any());
+    }
+
+    @Test
     void e5DeactivateUsesItsOwnCanonicalAdminEvent() {
         deviceRepository.device = device("ONLINE", 0, null);
 
@@ -739,7 +770,8 @@ class OpsDeviceServiceTest {
                 seed, LocalDateTime.now(clock), LocalDateTime.now(clock)));
         DatacenterOpsRequest request = new DatacenterOpsRequest("maintenance", "superadmin");
 
-        ApiResult<Map<String, Object>> result = service.pauseDatacenter("HK-1", "idem-dc", request);
+        ApiResult<Map<String, Object>> result = inA2Replay(
+                () -> service.pauseDatacenter("HK-1", "idem-dc", request));
 
         assertThat(result.getCode()).isZero();
         assertThat(deviceRepository.pausedDc).isEqualTo("HK-1");
@@ -756,8 +788,9 @@ class OpsDeviceServiceTest {
                 "seed dc card",
                 "superadmin");
 
-        ApiResult<DeviceDatacenterView> created = service.createDatacenter("idem-dc-create", createRequest);
-        ApiResult<DeviceDatacenterView> updated = service.updateDatacenter(
+        ApiResult<DeviceDatacenterView> created = inA2Replay(
+                () -> service.createDatacenter("idem-dc-create", createRequest));
+        ApiResult<DeviceDatacenterView> updated = inA2Replay(() -> service.updateDatacenter(
                 "us-east-2",
                 "idem-dc-update",
                 new DeviceDatacenterUpsertRequest(
@@ -766,11 +799,11 @@ class OpsDeviceServiceTest {
                         "maintenance",
                         11,
                         "rename dc card",
-                        "superadmin"));
-        ApiResult<Map<String, Object>> deleted = service.deleteDatacenter(
+                        "superadmin")));
+        ApiResult<Map<String, Object>> deleted = inA2Replay(() -> service.deleteDatacenter(
                 "us-east-2",
                 "idem-dc-delete",
-                new DatacenterOpsRequest("remove dc card", "superadmin"));
+                new DatacenterOpsRequest("remove dc card", "superadmin")));
 
         assertThat(created.getCode()).isZero();
         assertThat(created.getData().regionLabel()).isEqualTo("美国 · 弗吉尼亚");
@@ -804,7 +837,8 @@ class OpsDeviceServiceTest {
         deviceRepository.referenceDevices = 2L;
         DatacenterOpsRequest request = new DatacenterOpsRequest("retire blocked dc", "superadmin");
 
-        ApiResult<Map<String, Object>> result = service.deleteDatacenter("HK-1", "idem-dc-del-dev", request);
+        ApiResult<Map<String, Object>> result = inA2Replay(
+                () -> service.deleteDatacenter("HK-1", "idem-dc-del-dev", request));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("DATACENTER_HAS_REFERENCES");
@@ -826,7 +860,8 @@ class OpsDeviceServiceTest {
         deviceRepository.referenceSkus = 3L;
         DatacenterOpsRequest request = new DatacenterOpsRequest("retire blocked dc", "superadmin");
 
-        ApiResult<Map<String, Object>> result = service.deleteDatacenter("HK-1", "idem-dc-del-ord", request);
+        ApiResult<Map<String, Object>> result = inA2Replay(
+                () -> service.deleteDatacenter("HK-1", "idem-dc-del-ord", request));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("DATACENTER_HAS_REFERENCES");
@@ -840,7 +875,8 @@ class OpsDeviceServiceTest {
         seedDatacenter("HK-1");
         DatacenterOpsRequest request = new DatacenterOpsRequest("retire dc", "superadmin");
 
-        ApiResult<Map<String, Object>> result = service.deleteDatacenter("HK-1", "idem-dc-del-ok", request);
+        ApiResult<Map<String, Object>> result = inA2Replay(
+                () -> service.deleteDatacenter("HK-1", "idem-dc-del-ok", request));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("deleted", true);
@@ -1873,6 +1909,12 @@ class OpsDeviceServiceTest {
     @Test
     void updateOrderStateAllowsAdjacentMainPathAndWritesAudit() {
         catalogRepository.order = order("OD-1", "paid");
+        catalogRepository.orderFacts = orderFacts(
+                "OD-1", "PAID", "PAID", "WAITING_PROVISIONING",
+                88L, "DEV-88", "Singapore", null);
+        catalogRepository.orderFunding = List.of(new DeviceOrderFundingView(
+                "D4_LEDGER", "OD-1", "SUCCESS", "OUT",
+                new BigDecimal("1299"), LocalDateTime.now(clock)));
 
         ApiResult<DeviceOrderView> result = service.updateOrderState(
                 "OD-1",
@@ -1885,6 +1927,61 @@ class OpsDeviceServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E4_ORDER_STATE_CHANGED");
+    }
+
+    private <T> T inA2Replay(Supplier<T> action) {
+        A2ReplayContext.enterReplay();
+        try {
+            return action.get();
+        } finally {
+            A2ReplayContext.exitReplay();
+        }
+    }
+
+    @Test
+    void updateOrderStateRejectsManualPaymentConfirmationWithoutD1OrD4Settlement() {
+        catalogRepository.order = order("OD-1", "placed");
+
+        ApiResult<DeviceOrderView> result = service.updateOrderState(
+                "OD-1",
+                "idem-order-payment",
+                new DeviceOrderStateRequest("paid", "manual payment", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_PAYMENT_CONFIRMATION_REQUIRED");
+        assertThat(catalogRepository.order.state()).isEqualTo("placed");
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
+    @Test
+    void updateOrderStateRejectsProvisioningWithoutSettledFundingAndAllocatedDevice() {
+        catalogRepository.order = order("OD-1", "paid");
+
+        ApiResult<DeviceOrderView> result = service.updateOrderState(
+                "OD-1",
+                "idem-order-provision",
+                new DeviceOrderStateRequest("provisioning", "start provisioning", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_PROVISIONING_EVIDENCE_REQUIRED");
+        assertThat(catalogRepository.order.state()).isEqualTo("paid");
+    }
+
+    @Test
+    void updateOrderStateRejectsActivationUntilE5HasActuallyActivatedTheLinkedDevice() {
+        catalogRepository.order = order("OD-1", "provisioning");
+        catalogRepository.orderFacts = orderFacts(
+                "OD-1", "PAID", "PROVISIONING", "PROVISIONING",
+                88L, "DEV-88", "Singapore", null);
+
+        ApiResult<DeviceOrderView> result = service.updateOrderState(
+                "OD-1",
+                "idem-order-activate",
+                new DeviceOrderStateRequest("activated", "mark live", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_DEVICE_ACTIVATION_REQUIRED");
+        assertThat(catalogRepository.order.state()).isEqualTo("provisioning");
     }
 
     @Test
@@ -2005,7 +2102,7 @@ class OpsDeviceServiceTest {
         assertThat(captor.getValue().getResourceId()).isEqualTo(paramKey);
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("paramKey", paramKey)
-                .containsEntry("before", "")
+                .containsEntry("before", "off")
                 .containsEntry("after", "on")
                 .containsEntry("idempotencyKey", "idem-e6");
     }
@@ -2056,6 +2153,55 @@ class OpsDeviceServiceTest {
         assertThat(updated.getData().values()).containsEntry(labelKey, "专业显卡").containsEntry(topsKey, "180");
         assertThat(configFacade.values).containsEntry(labelKey, "专业显卡").containsEntry(topsKey, "180");
         verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq("batch"), eq("compute.config_changed"), any());
+    }
+
+    @Test
+    void replayComputeConfigRejectsCrossTierOrderAndDuplicateKeywords() {
+        String g3Tops = ComputeConfigRegistry.gpuTierKey("G3", "tops");
+        String g2Keyword = ComputeConfigRegistry.gpuTierKey("G2", "keyword1");
+        A2ReplayContext.enterReplay();
+
+        ApiResult<ComputeConfigParamResponse> invalidOrder = service.updateComputeConfigParam(
+                g3Tops, "idem-e6-tops-order",
+                new ComputeConfigParamUpdateRequest("80", "reject overlapping GPU tiers", "superadmin"));
+        ApiResult<ComputeConfigBatchResponse> duplicateKeyword = service.updateComputeConfigBatch(
+                "idem-e6-keyword-duplicate",
+                new ComputeConfigBatchUpdateRequest(
+                        Map.of(g2Keyword, "gtx 1650"),
+                        "reject ambiguous GPU matching", "superadmin"));
+
+        assertThat(invalidOrder.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(invalidOrder.getMessage()).isEqualTo("COMPUTE_GPU_TOPS_ORDER_INVALID");
+        assertThat(duplicateKeyword.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(duplicateKeyword.getMessage()).isEqualTo("COMPUTE_GPU_KEYWORD_DUPLICATE");
+        assertThat(configFacade.values).doesNotContainKeys(g3Tops, g2Keyword);
+    }
+
+    @Test
+    void replayComputeFinancialAmplificationFailsClosedBelowB1ButRestrictiveChangeRemainsAvailable() {
+        String h5Factor = ComputeConfigRegistry.coeffKey("h5BaseFactor");
+        String continuityHours = ComputeConfigRegistry.coeffKey("continuityFullHours");
+        configFacade.values.put(h5Factor, "0.6");
+        configFacade.values.put(continuityHours, "4");
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
+        A2ReplayContext.enterReplay();
+
+        ApiResult<ComputeConfigParamResponse> higherH5 = service.updateComputeConfigParam(
+                h5Factor, "idem-e6-h5-redline",
+                new ComputeConfigParamUpdateRequest("0.7", "B1 blocks higher H5 yield", "superadmin"));
+        ApiResult<ComputeConfigParamResponse> fasterFullBonus = service.updateComputeConfigParam(
+                continuityHours, "idem-e6-continuity-redline",
+                new ComputeConfigParamUpdateRequest("3", "B1 blocks faster full bonus", "superadmin"));
+        ApiResult<ComputeConfigParamResponse> restrictive = service.updateComputeConfigParam(
+                h5Factor, "idem-e6-h5-restrictive",
+                new ComputeConfigParamUpdateRequest("0.5", "B1 allows lower H5 yield", "superadmin"));
+
+        assertThat(higherH5.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(fasterFullBonus.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(restrictive.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry(h5Factor, "0.5");
+        assertThat(configFacade.values).containsEntry(continuityHours, "4");
     }
 
     @Test
@@ -2366,6 +2512,39 @@ class OpsDeviceServiceTest {
         assertThat(configFacade.values.get("E.task.queueSaturation")).isEqualTo("0.42");
     }
 
+    @Test
+    void e2FinancialAmplificationFailsClosedBelowB1RedlineButRestrictiveChangesRemainAvailable() {
+        DeviceTaskView row = taskWithClass("TK-IG", "IG", 12);
+        catalogRepository.tasks.put(row.taskId(), row);
+        configFacade.values.put("E.task.queueSaturation", "0.35");
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
+        authenticateAs("trusted-admin", "device_e2_write");
+
+        ApiResult<Map<String, Object>> rewardIncrease = service.updateE2TaskPricing(
+                "idem-e2-reward-redline", new E2TaskPricingUpdateRequest(
+                        "IG", null, new BigDecimal("0.05"), null, null, null,
+                        "B1 redline blocks reward increase", "forged"));
+        ApiResult<Map<String, Object>> vramDecrease = service.updateE2TaskPricing(
+                "idem-e2-vram-redline", new E2TaskPricingUpdateRequest(
+                        "IG", null, null, 8, null, null,
+                        "B1 redline blocks wider eligibility", "forged"));
+        ApiResult<Map<String, Object>> queueIncrease = service.updateE2TaskPricing(
+                "idem-e2-queue-redline", new E2TaskPricingUpdateRequest(
+                        null, null, null, null, null, new BigDecimal("0.40"),
+                        "B1 redline blocks queue amplification", "forged"));
+        ApiResult<Map<String, Object>> restrictive = service.updateE2TaskPricing(
+                "idem-e2-vram-restrictive", new E2TaskPricingUpdateRequest(
+                        "IG", null, null, 16, null, null,
+                        "B1 redline allows stricter routing", "forged"));
+
+        assertThat(rewardIncrease.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(vramDecrease.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(queueIncrease.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(restrictive.getCode()).isZero();
+        assertThat(catalogRepository.tasks.get("TK-IG").minVram()).isEqualTo("16GB");
+    }
+
     private static DeviceGenerationGateUpsertRequest gateRequest(
             String skuId, String phaseId, boolean eligibility, boolean forceUnlock) {
         return new DeviceGenerationGateUpsertRequest(
@@ -2575,6 +2754,25 @@ class OpsDeviceServiceTest {
                 "1m",
                 null,
                 null);
+    }
+
+    private static DeviceOrderFacts orderFacts(
+            String orderNo,
+            String paymentStatus,
+            String orderStatus,
+            String activationStatus,
+            Long deviceId,
+            String deviceInstanceNo,
+            String dcLocation,
+            LocalDateTime activatedAt) {
+        return new DeviceOrderFacts(
+                orderNo, 1L, 1, "SINGLE",
+                new BigDecimal("1299"), BigDecimal.ZERO, new BigDecimal("1299"),
+                null, "USDT_WALLET", paymentStatus, orderStatus, activationStatus,
+                1L, "stellarbox-test", "NexionBox Test",
+                deviceId, deviceInstanceNo, dcLocation,
+                LocalDateTime.now().minusMinutes(1), LocalDateTime.now().minusSeconds(30),
+                activatedAt, LocalDateTime.now());
     }
 
     private static final class FakeDeviceOpsRepository implements DeviceOpsRepository {
@@ -2800,6 +2998,8 @@ class OpsDeviceServiceTest {
         private final Map<String, DeviceTaskView> tasks = new LinkedHashMap<>();
         private final Map<Integer, DevicePhoneTierRewardView> phoneTierRewards = new LinkedHashMap<>();
         private DeviceOrderView order;
+        private DeviceOrderFacts orderFacts;
+        private List<DeviceOrderFundingView> orderFunding = List.of();
         private DeviceSkuUpsertRequest lastSkuRequest;
         private final Map<String, DevicePhaseView> phases = new LinkedHashMap<>();
         private final Map<String, DeviceGenerationGateView> generationGates = new LinkedHashMap<>();
@@ -3447,6 +3647,9 @@ class OpsDeviceServiceTest {
             if (order == null || !order.orderNo().equals(orderNo)) {
                 return Optional.empty();
             }
+            if (orderFacts != null) {
+                return Optional.of(orderFacts);
+            }
             return Optional.of(new DeviceOrderFacts(orderNo, 1L, 1, "SINGLE",
                     order.amount(), BigDecimal.ZERO, order.amount(), null, "USDT_WALLET",
                     "PAID", "PAID", "WAITING_PROVISIONING", 1L, order.skuId(), order.skuName(),
@@ -3460,7 +3663,7 @@ class OpsDeviceServiceTest {
 
         @Override
         public List<DeviceOrderFundingView> listOrderFunding(String orderNo) {
-            return List.of();
+            return orderFunding;
         }
 
         @Override

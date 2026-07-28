@@ -23,8 +23,6 @@ public interface AppGrowthLifecycleMapper {
               FROM nx_growth_voucher_grant g
               JOIN nx_growth_voucher v
                 ON v.voucher_id = g.voucher_id
-               AND v.is_deleted = 0
-               AND LOWER(v.status) = 'active'
              WHERE g.user_id = #{userId}
                AND g.voucher_id = #{voucherId}
                AND g.status = 'AVAILABLE'

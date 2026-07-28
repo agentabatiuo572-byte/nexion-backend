@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.domain;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 public interface NovaSocialRuntimeRepository {
@@ -11,6 +12,22 @@ public interface NovaSocialRuntimeRepository {
     boolean completeSlot(String slotKey, String leaseOwner, LocalDateTime now);
 
     Optional<LocalDateTime> latestNotificationAt();
+
+    Optional<LocalDateTime> latestNotificationAt(String notificationType);
+
+    List<NovaBusinessEventFact> pendingBusinessFacts(
+            String channel, List<String> eventNames, int limit);
+
+    boolean claimBusinessFact(
+            String channel, String sourceEventId, String eventName, LocalDateTime now);
+
+    void completeBusinessFact(
+            String channel,
+            String sourceEventId,
+            String status,
+            String reason,
+            int notificationCount,
+            LocalDateTime now);
 
     int enqueueNotifications(
             long eventId,
@@ -24,6 +41,26 @@ public interface NovaSocialRuntimeRepository {
             String ctaHref,
             LocalDateTime cooldownSince,
             LocalDateTime now);
+
+    int enqueueBusinessNotifications(
+            String channel,
+            String notificationType,
+            String sourceEventId,
+            Long userId,
+            String bizNo,
+            String titleZh,
+            String bodyZh,
+            String titleVi,
+            String bodyVi,
+            String titleEn,
+            String bodyEn,
+            String ctaHref,
+            LocalDateTime cooldownSince,
+            LocalDateTime now);
+
+    int markNotificationsDelivered(String bizNo, LocalDateTime now);
+
+    List<NotificationEventFact> notificationFacts(String bizNo, String currentPhase, LocalDateTime now);
 
     int markDispatchedIfStillActive(long eventId, LocalDateTime now);
 }

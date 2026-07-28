@@ -366,6 +366,9 @@ public class OpsCopyAbService {
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
+        if (!matchesRevision(current, request.expectedRevision())) {
+            return ApiResult.fail(409, "COPY_REVISION_CONFLICT");
+        }
         String version = resolveRequestedVersion(current, request.version());
         if (version == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_REQUIRED");
@@ -420,6 +423,9 @@ public class OpsCopyAbService {
         CopyContentRow current = copyAbRepository.findCopyForUpdate(copyKey.trim()).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
+        }
+        if (!matchesRevision(current, request.expectedRevision())) {
+            return ApiResult.fail(409, "COPY_REVISION_CONFLICT");
         }
         String version = resolveRequestedVersion(current, request.version());
         if (version == null) {
@@ -566,6 +572,11 @@ public class OpsCopyAbService {
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
+        if (!matchesRevision(current, request.expectedRevision())
+                || !StringUtils.hasText(request.expectedVersion())
+                || !current.version().equalsIgnoreCase(request.expectedVersion().trim())) {
+            return ApiResult.fail(409, "COPY_REVISION_CONFLICT");
+        }
         CopyVersionRow target = copyAbRepository.findVersion(current.key(), version).orElse(null);
         if (target == null) {
             return ApiResult.fail(404, "COPY_VERSION_NOT_FOUND");
@@ -621,9 +632,10 @@ public class OpsCopyAbService {
         if (current == null) {
             return ApiResult.fail(404, "COPY_NOT_FOUND");
         }
-        if (StringUtils.hasText(request.expectedVersion())
-                && !current.version().equalsIgnoreCase(request.expectedVersion().trim())) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_VERSION_CONFLICT");
+        if (!matchesRevision(current, request.expectedRevision())
+                || !StringUtils.hasText(request.expectedVersion())
+                || !current.version().equalsIgnoreCase(request.expectedVersion().trim())) {
+            return ApiResult.fail(409, "COPY_REVISION_CONFLICT");
         }
         if ("archived".equals(current.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
@@ -719,10 +731,13 @@ public class OpsCopyAbService {
         if (idempotencyKey.trim().length() > IDEMPOTENCY_KEY_MAX_LENGTH) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "IDEMPOTENCY_KEY_INVALID");
         }
-        if (request == null || !StringUtils.hasText(request.value()) || request.value().trim().length() > 80) {
+        if (request == null || !StringUtils.hasText(request.value()) || request.value().trim().length() > 80
+                || !StringUtils.hasText(request.expectedValue())
+                || request.expectedValue().trim().length() > 80) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_FRAMEWORK_VALUE_INVALID");
         }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 6) {
+        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8
+                || request.reason().trim().length() > 200) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         String resourceId = StringUtils.hasText(paramKey) ? paramKey.trim() : "";
@@ -736,9 +751,12 @@ public class OpsCopyAbService {
 
     private ApiResult<CopyFrameworkParamView> updateFrameworkParamOnce(
             String paramKey, String idempotencyKey, CopyFrameworkUpdateRequest request) {
-        CopyFrameworkParamView current = findFramework(paramKey);
+        CopyFrameworkParamView current = copyAbRepository.findFrameworkParamForUpdate(paramKey).orElse(null);
         if (current == null) {
             return ApiResult.fail(404, "COPY_FRAMEWORK_PARAM_NOT_FOUND");
+        }
+        if (!current.current().equals(request.expectedValue().trim())) {
+            return ApiResult.fail(409, "COPY_FRAMEWORK_VALUE_CONFLICT");
         }
         if (request.value().trim().equals(current.current())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
@@ -1366,7 +1384,8 @@ public class OpsCopyAbService {
                 request.vi() == null ? null : request.vi().trim(),
                 request.copyPosition() == null ? null : request.copyPosition().trim(),
                 operator(request.operator()),
-                request.reason().trim());
+                request.reason().trim(),
+                request.expectedRevision());
     }
 
     private CopyVersionPublishRequest normalizePublish(CopyVersionPublishRequest request, String version) {
@@ -1382,7 +1401,15 @@ public class OpsCopyAbService {
                 request.vi() == null ? null : request.vi().trim(),
                 request.copyPosition() == null ? null : request.copyPosition().trim(),
                 operator(request.operator()),
-                request.reason().trim());
+                request.reason().trim(),
+                request.expectedRevision());
+    }
+
+    private boolean matchesRevision(CopyContentRow current, Long expectedRevision) {
+        return current != null
+                && current.revision() != null
+                && expectedRevision != null
+                && current.revision().equals(expectedRevision);
     }
 
     private String resolveRequestedVersion(CopyContentRow current, String requestedVersion) {

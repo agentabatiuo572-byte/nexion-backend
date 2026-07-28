@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -64,7 +65,7 @@ class G4AdminCommandServiceTest {
         when(mapper.insertLedger(any())).thenReturn(1);
         when(mapper.markEmissionPaid(eq(100L), any())).thenReturn(1);
         when(mapper.userPolicy(42L)).thenReturn(
-                new AppGenesisMapper.UserPolicyRow(42L, "APPROVED", "VN", "P1", 4, "2026-W30"));
+                new AppGenesisMapper.UserPolicyRow(42L, "APPROVED", "VN", "P1", 120, 4, "2026-W30"));
         when(market.genesisOverview()).thenReturn(ApiResult.ok(new LinkedHashMap<>(Map.of("domain", "G4"))));
 
         var result = service.rerunEmission("g4-batch-1", "20260722", request("rerun daily emission", "FIN-20260722"));
@@ -76,7 +77,7 @@ class G4AdminCommandServiceTest {
         verify(mapper).insertEmissionItem(item.capture());
         assertThat(batch.getValue().totalAmountUsdt()).isEqualByComparingTo("9.999000");
         assertThat(item.getValue().amountUsdt()).isEqualByComparingTo("9.999000");
-        verify(outbox).publishUserEvent(anyString(), eq("GN-0001"), eq("genesis.dividend_paid"),
+        verify(outbox).publishUserEvent(anyString(), eq("GN-0001"), eq("genesis.emission_paid"),
                 eq(42L), eq("P1"), eq(4), eq("2026-W30"), any());
     }
 
@@ -90,6 +91,30 @@ class G4AdminCommandServiceTest {
 
         verify(audit).recordRequired(any());
         verify(outbox).publish(anyString(), anyString(), eq("admin.genesis_param_changed"), any());
+    }
+
+    @Test
+    void completedNaturalBatchKeyReplaysWithoutDuplicateWalletLedgerEventOrAudit() {
+        when(config.activeValue("growth.phase.genesis_emissions_open")).thenReturn(Optional.of("1"));
+        when(mapper.lockActiveSeries()).thenReturn(new AppGenesisMapper.SeriesRow(
+                1L, "genesis-main", "Genesis Node", 1000, new BigDecimal("9999"),
+                250, new BigDecimal("0.1"), "ACTIVE"));
+        when(mapper.lockEmissionBatch("20260722")).thenReturn(new AppGenesisMapper.EmissionBatchRow(
+                "20260722", "COMPLETED", 1, new BigDecimal("9.999000")));
+        when(market.genesisOverview()).thenReturn(ApiResult.ok(new LinkedHashMap<>(Map.of("domain", "G4"))));
+
+        var result = service.rerunEmission("different-client-key", "20260722",
+                request("replay completed emission", "FIN-20260722"));
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        var updated = (Map<String, Object>) result.getData().get("updated");
+        assertThat(updated).containsEntry("replayed", true).containsEntry("paidCount", 1);
+        verify(mapper, never()).lockEmissionHoldings();
+        verify(mapper, never()).creditWallet(any(), any());
+        verify(mapper, never()).insertLedger(any());
+        verify(outbox, never()).publish(anyString(), anyString(), anyString(), any());
+        verify(audit, never()).recordRequired(any());
     }
 
     private NexMarketValueUpdateRequest request(String reason, String decisionRef) {

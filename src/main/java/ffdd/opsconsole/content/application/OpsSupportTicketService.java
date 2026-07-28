@@ -3,8 +3,11 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportTicketDetail;
+import ffdd.opsconsole.content.domain.SupportTicketSlaTarget;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationRepository;
+import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
+import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketEscalationResult;
 import ffdd.opsconsole.content.domain.SupportTicketView;
@@ -13,6 +16,7 @@ import ffdd.opsconsole.content.dto.SupportTicketAssigneeRequest;
 import ffdd.opsconsole.content.dto.SupportTicketArchiveRequest;
 import ffdd.opsconsole.content.dto.SupportTicketCreateRequest;
 import ffdd.opsconsole.content.dto.SupportTicketEscalateRequest;
+import ffdd.opsconsole.content.dto.SupportTicketNoteRequest;
 import ffdd.opsconsole.content.dto.SupportTicketPriorityRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.content.dto.SupportTicketReplyRequest;
@@ -60,10 +64,12 @@ public class OpsSupportTicketService {
     private static final DateTimeFormatter TICKET_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final String LOAD_GROUP = "content_support_load";
     private static final String LOAD_PREFIX = "content.support.load.";
+    private static final String LOAD_VERSION_KEY = LOAD_PREFIX + "version";
     private static final Pattern LOAD_AGENT_KEY = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
 
     private final SupportTicketRepository ticketRepository;
     private final ConversationRepository conversationRepository;
+    private final SupportKnowledgeRepository knowledgeRepository;
     private final OpsSupportAgentService supportAgentService;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
@@ -88,11 +94,15 @@ public class OpsSupportTicketService {
         return ApiResult.ok(loadConfigView());
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> updateLoadConfig(String idempotencyKey, SupportLoadConfigUpdateRequest request) {
         ensureSeedData();
         ApiResult<Map<String, Object>> guard = requireSupportCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (request.expectedVersion() == null || request.expectedVersion() < 1L) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_LOAD_EXPECTED_VERSION_REQUIRED");
         }
         Map<String, SupportAgentLoadStateRequest> agentState = request.agentState() == null ? Map.of() : request.agentState();
         for (String agentId : agentState.keySet()) {
@@ -111,6 +121,10 @@ public class OpsSupportTicketService {
             String idempotencyKey,
             SupportLoadConfigUpdateRequest request,
             Map<String, SupportAgentLoadStateRequest> agentState) {
+        long currentVersion = currentLoadVersionForUpdate();
+        if (request.expectedVersion() != currentVersion) {
+            return ApiResult.fail(409, "SUPPORT_LOAD_VERSION_CONFLICT");
+        }
         int defaultCap = boundedInt(request.defaultCap(), 0, 40, 8);
         int burstCap = boundedInt(request.burstCap(), 0, 40, Math.max(defaultCap, 12));
         int warnPct = boundedInt(request.warnPct(), 50, 100, 80);
@@ -131,21 +145,28 @@ public class OpsSupportTicketService {
             upsertLoadValue("agent." + agentId + ".cap", String.valueOf(cap), "NUMBER", remark);
             upsertLoadValue("agent." + agentId + ".busy", String.valueOf(busy), "BOOLEAN", remark);
         });
+        upsertLoadValue("version", String.valueOf(currentVersion + 1L), "NUMBER", remark);
         audit("M1_SUPPORT_LOAD_CONFIG_CHANGED", "SUPPORT_LOAD_CONFIG", "m1.support.load", request.operator(), Map.of(
                 "reason", remark,
                 "idempotencyKey", idempotencyKey.trim(),
                 "agentCount", agentState.size(),
+                "beforeVersion", currentVersion,
+                "afterVersion", currentVersion + 1L,
                 "defaultCap", defaultCap,
                 "burstCap", burstCap,
                 "warnPct", warnPct));
         return loadConfig();
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> rebalanceLoad(String idempotencyKey, SupportLoadRebalanceRequest request) {
         ensureSeedData();
         ApiResult<Map<String, Object>> guard = requireSupportCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
+        }
+        if (request.expectedVersion() == null || request.expectedVersion() < 1L) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_LOAD_EXPECTED_VERSION_REQUIRED");
         }
         List<Map<String, Object>> agents = request.agents() == null ? List.of() : request.agents();
         for (Map<String, Object> agent : agents) {
@@ -164,6 +185,10 @@ public class OpsSupportTicketService {
             String idempotencyKey,
             SupportLoadRebalanceRequest request,
             List<Map<String, Object>> agents) {
+        long currentVersion = currentLoadVersionForUpdate();
+        if (request.expectedVersion() != currentVersion) {
+            return ApiResult.fail(409, "SUPPORT_LOAD_VERSION_CONFLICT");
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         String remark = request.reason().trim();
         for (Map<String, Object> agent : agents) {
@@ -174,10 +199,13 @@ public class OpsSupportTicketService {
             upsertLoadValue("agent." + agentId + ".busy", String.valueOf(busy), "BOOLEAN", remark);
         }
         configFacade.upsertAdminValue(LOAD_PREFIX + "lastRebalanceAt", now.toString(), "STRING", LOAD_GROUP, remark);
+        upsertLoadValue("version", String.valueOf(currentVersion + 1L), "NUMBER", remark);
         audit("M1_SUPPORT_LOAD_REBALANCED", "SUPPORT_LOAD_CONFIG", "m1.support.load", request.operator(), Map.of(
                 "reason", remark,
                 "idempotencyKey", idempotencyKey.trim(),
                 "agentCount", agents.size(),
+                "beforeVersion", currentVersion,
+                "afterVersion", currentVersion + 1L,
                 "rebalancedAt", now.toString()));
         Map<String, Object> view = loadConfigView();
         view.put("rebalanced", true);
@@ -221,9 +249,56 @@ public class OpsSupportTicketService {
         if (!StringUtils.hasText(ticketNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TICKET_NO_REQUIRED");
         }
-        return ticketRepository.findByTicketNo(ticketNo.trim())
-                .map(ticket -> ApiResult.ok(new SupportTicketDetail(ticket, ticketRepository.messages(ticket.ticketNo()))))
-                .orElseGet(() -> ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND"));
+        SupportTicketView ticket = ticketRepository.findByTicketNo(ticketNo.trim()).orElse(null);
+        if (ticket == null) {
+            return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
+        }
+        List<ffdd.opsconsole.content.domain.SupportTicketMessageView> messages =
+                ticketRepository.messages(ticket.ticketNo());
+        SupportSlaView rule = knowledgeRepository.listSla().stream()
+                .filter(row -> normalizeCategory(ticket.category()).equals(row.category()))
+                .findFirst()
+                .orElse(null);
+        if (rule == null || rule.version() == null || rule.version() < 1) {
+            return ApiResult.fail(503, "SUPPORT_TICKET_SLA_UNAVAILABLE");
+        }
+        return ApiResult.ok(new SupportTicketDetail(ticket, messages, slaTarget(ticket, messages, rule)));
+    }
+
+    private SupportTicketSlaTarget slaTarget(
+            SupportTicketView ticket,
+            List<ffdd.opsconsole.content.domain.SupportTicketMessageView> messages,
+            SupportSlaView rule) {
+        LocalDateTime evaluatedAt = LocalDateTime.now(clock);
+        LocalDateTime createdAt = ticket.createdAt();
+        LocalDateTime firstResponseDeadlineAt = createdAt.plusMinutes(rule.firstResponseMins());
+        LocalDateTime resolutionDeadlineAt = createdAt.plusHours(rule.resolutionHours());
+        LocalDateTime firstResponseAt = messages.stream()
+                .filter(message -> "agent".equalsIgnoreCase(message.senderType()))
+                .map(ffdd.opsconsole.content.domain.SupportTicketMessageView::createdAt)
+                .filter(java.util.Objects::nonNull)
+                .min(LocalDateTime::compareTo)
+                .orElse(null);
+        LocalDateTime resolvedAt = TERMINAL_STATUSES.contains(normalizeStatus(ticket.status()))
+                ? (ticket.closedAt() == null ? ticket.updatedAt() : ticket.closedAt())
+                : null;
+        return new SupportTicketSlaTarget(
+                rule.version(),
+                rule.firstResponseMins(),
+                rule.resolutionHours(),
+                rule.queue(),
+                rule.escalation(),
+                firstResponseDeadlineAt,
+                resolutionDeadlineAt,
+                firstResponseAt,
+                resolvedAt,
+                firstResponseAt == null
+                        ? evaluatedAt.isAfter(firstResponseDeadlineAt)
+                        : firstResponseAt.isAfter(firstResponseDeadlineAt),
+                resolvedAt == null
+                        ? evaluatedAt.isAfter(resolutionDeadlineAt)
+                        : resolvedAt.isAfter(resolutionDeadlineAt),
+                evaluatedAt);
     }
 
     @Transactional
@@ -292,11 +367,18 @@ public class OpsSupportTicketService {
         if (ticket == null) {
             return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
         }
+        ApiResult<SupportTicketDetail> precondition = requireTicketPrecondition(
+                ticket, request.expectedStatus(), request.expectedVersion());
+        if (precondition != null) {
+            return precondition;
+        }
         if (Boolean.TRUE.equals(ticket.archived()) || "CLOSED".equalsIgnoreCase(ticket.status())) {
             return invalidState();
         }
         String actor = authenticatedOperator(request.operator());
-        ticketRepository.appendReply(ticket, request.body().trim(), actor, LocalDateTime.now(clock));
+        if (!ticketRepository.appendReplyCas(ticket, request.body().trim(), actor, LocalDateTime.now(clock))) {
+            return ticketConflict();
+        }
         audit("M2_SUPPORT_TICKET_REPLIED", ticket.ticketNo(), actor, Map.of(
                 "bodyLength", request.body().trim().length(),
                 "reason", reasonOrDefault(request.reason(), "agent reply"),
@@ -323,6 +405,11 @@ public class OpsSupportTicketService {
         if (ticket == null) {
             return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
         }
+        ApiResult<SupportTicketDetail> precondition = requireTicketPrecondition(
+                ticket, request.expectedStatus(), request.expectedVersion());
+        if (precondition != null) {
+            return precondition;
+        }
         if (Boolean.TRUE.equals(ticket.archived())) {
             return invalidState();
         }
@@ -332,7 +419,9 @@ public class OpsSupportTicketService {
         }
         String actor = authenticatedOperator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        ticketRepository.updateStatus(ticket, target, actor, now);
+        if (!ticketRepository.updateStatusCas(ticket, target, actor, now)) {
+            return ticketConflict();
+        }
         ticketRepository.appendSystemTrace(ticket, "状态由" + statusLabel(ticket.status()) + "变更为" + statusLabel(target) + "（" + actor + "）", now);
         audit("M2_SUPPORT_TICKET_STATUS_CHANGED", ticket.ticketNo(), actor, Map.of(
                 "from", ticket.status(),
@@ -361,13 +450,20 @@ public class OpsSupportTicketService {
         if (ticket == null) {
             return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
         }
+        ApiResult<SupportTicketDetail> precondition = requireTicketPrecondition(
+                ticket, request.expectedStatus(), request.expectedVersion());
+        if (precondition != null) {
+            return precondition;
+        }
         if (Boolean.TRUE.equals(ticket.archived()) || TERMINAL_STATUSES.contains(normalizeStatus(ticket.status()))) {
             return invalidState();
         }
         String target = normalizePriority(request.priority());
         String actor = authenticatedOperator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        ticketRepository.updatePriority(ticket, target, now);
+        if (!ticketRepository.updatePriorityCas(ticket, target, now)) {
+            return ticketConflict();
+        }
         ticketRepository.appendSystemTrace(ticket, "优先级由" + priorityLabel(ticket.priority()) + "变更为" + priorityLabel(target) + "（" + actor + "）", now);
         audit("M2_SUPPORT_TICKET_PRIORITY_CHANGED", ticket.ticketNo(), actor, Map.of(
                 "from", ticket.priority(),
@@ -396,6 +492,11 @@ public class OpsSupportTicketService {
         if (ticket == null) {
             return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
         }
+        ApiResult<SupportTicketDetail> precondition = requireTicketPrecondition(
+                ticket, request.expectedStatus(), request.expectedVersion());
+        if (precondition != null) {
+            return precondition;
+        }
         if (Boolean.TRUE.equals(ticket.archived()) || "CLOSED".equalsIgnoreCase(ticket.status())) {
             return invalidState();
         }
@@ -406,7 +507,9 @@ public class OpsSupportTicketService {
         String actor = authenticatedOperator(request.operator());
         String targetName = targetAgent.name();
         LocalDateTime now = LocalDateTime.now(clock);
-        ticketRepository.assign(ticket, request.assignedAdminId(), targetName, now);
+        if (!ticketRepository.assignCas(ticket, request.assignedAdminId(), targetName, now)) {
+            return ticketConflict();
+        }
         ticketRepository.appendSystemTrace(ticket, "负责人由 " + assignedName(ticket.assignedAdminName()) + " 转交给 " + targetName + "（" + actor + "）", now);
         audit("M2_SUPPORT_TICKET_ASSIGNED", ticket.ticketNo(), actor, Map.of(
                 "assignedAdminId", request.assignedAdminId(),
@@ -435,6 +538,11 @@ public class OpsSupportTicketService {
         if (ticket == null) {
             return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
         }
+        ApiResult<SupportTicketDetail> precondition = requireTicketPrecondition(
+                ticket, request.expectedStatus(), request.expectedVersion());
+        if (precondition != null) {
+            return precondition;
+        }
         boolean target = !Boolean.FALSE.equals(request.archived());
         boolean current = Boolean.TRUE.equals(ticket.archived());
         if (target == current || (target && !TERMINAL_STATUSES.contains(normalizeStatus(ticket.status())))) {
@@ -442,7 +550,9 @@ public class OpsSupportTicketService {
         }
         String actor = authenticatedOperator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        ticketRepository.archive(ticket, target, actor, now);
+        if (!ticketRepository.archiveCas(ticket, target, actor, now)) {
+            return ticketConflict();
+        }
         ticketRepository.appendSystemTrace(ticket, target ? "工单已归档（" + actor + "）" : "工单已恢复到已解决队列（" + actor + "）", now);
         audit(target ? "M2_SUPPORT_TICKET_ARCHIVED" : "M2_SUPPORT_TICKET_UNARCHIVED", ticket.ticketNo(), actor, Map.of(
                 "from", current,
@@ -478,10 +588,15 @@ public class OpsSupportTicketService {
         if (ticket == null) {
             return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
         }
+        ApiResult<SupportTicketEscalationResult> precondition = requireTicketPrecondition(
+                ticket, request.expectedStatus(), request.expectedVersion());
+        if (precondition != null) {
+            return precondition;
+        }
         if (Boolean.TRUE.equals(ticket.archived()) || TERMINAL_STATUSES.contains(normalizeStatus(ticket.status()))) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SUPPORT_TICKET_ESCALATION_STATE_INVALID");
         }
-        if (ticket.userId() == null || ticket.userId() <= 0) {
+        if (ticket.userId() == null || ticket.userId() <= 0 || !Boolean.TRUE.equals(ticket.userExists())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_TICKET_USER_REQUIRED_FOR_ESCALATION");
         }
         SupportAgentProfileView targetAgent = supportAgentService.assignableSupportAgent(request.ownerAgentId()).orElse(null);
@@ -496,6 +611,10 @@ public class OpsSupportTicketService {
         String ownerName = targetAgent.name();
         String openingText = "工单 " + ticket.ticketNo() + " 已升级为即时会话：" + ticket.title();
         LocalDateTime now = LocalDateTime.now(clock);
+        if (!ticketRepository.appendSystemTraceCas(
+                ticket, "已升级为即时会话 " + conversationNo + "，请在会话台继续接待。", now)) {
+            return ticketConflict();
+        }
         ContentConversationView conversation = conversationRepository.createConversation(
                 conversationNo,
                 ticket.userId(),
@@ -504,7 +623,6 @@ public class OpsSupportTicketService {
                 ownerName,
                 openingText,
                 now);
-        ticketRepository.appendSystemTrace(ticket, "已升级为即时会话 " + conversationNo + "，请在会话台继续接待。", now);
         SupportTicketDetail updatedTicket = detail(ticket.ticketNo()).getData();
         audit("M2_SUPPORT_TICKET_ESCALATED", ticket.ticketNo(), actor, Map.of(
                 "conversationNo", conversationNo,
@@ -514,6 +632,61 @@ public class OpsSupportTicketService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(new SupportTicketEscalationResult(updatedTicket, conversation));
+    }
+
+    @Transactional
+    public ApiResult<SupportTicketDetail> addInternalNote(
+            String ticketNo,
+            String idempotencyKey,
+            SupportTicketNoteRequest request) {
+        ensureSeedData();
+        if (!StringUtils.hasText(ticketNo)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TICKET_NO_REQUIRED");
+        }
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(
+                    OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(),
+                    OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null || !StringUtils.hasText(request.body())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "INTERNAL_NOTE_REQUIRED");
+        }
+        if (request.body().trim().length() > 2000) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "INTERNAL_NOTE_TOO_LONG");
+        }
+        return idempotentCommand(
+                "M2_SUPPORT_TICKET_INTERNAL_NOTE",
+                idempotencyKey,
+                requestHash(ticketNo, String.valueOf(request)),
+                () -> addInternalNoteOnce(ticketNo, idempotencyKey, request));
+    }
+
+    private ApiResult<SupportTicketDetail> addInternalNoteOnce(
+            String ticketNo,
+            String idempotencyKey,
+            SupportTicketNoteRequest request) {
+        SupportTicketView ticket = find(ticketNo);
+        if (ticket == null) {
+            return ApiResult.fail(404, "SUPPORT_TICKET_NOT_FOUND");
+        }
+        ApiResult<SupportTicketDetail> precondition = requireTicketPrecondition(
+                ticket, request.expectedStatus(), request.expectedVersion());
+        if (precondition != null) {
+            return precondition;
+        }
+        if (Boolean.TRUE.equals(ticket.archived())) {
+            return invalidState();
+        }
+        String actor = authenticatedOperator(request.operator());
+        if (!ticketRepository.appendInternalNoteCas(
+                ticket, request.body().trim(), actor, LocalDateTime.now(clock))) {
+            return ticketConflict();
+        }
+        audit("M2_SUPPORT_TICKET_INTERNAL_NOTE_ADDED", ticket.ticketNo(), actor, Map.of(
+                "bodyLength", request.body().trim().length(),
+                "reason", reasonOrDefault(request.reason(), "internal note"),
+                "idempotencyKey", idempotencyKey.trim()));
+        return detail(ticket.ticketNo());
     }
 
     private ApiResult<SupportTicketDetail> requireCreateCommand(String idempotencyKey, SupportTicketCreateRequest request) {
@@ -545,7 +718,7 @@ public class OpsSupportTicketService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 6) {
+        if (!StringUtils.hasText(reason) || reason.trim().length() < 8 || reason.trim().length() > 200) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
@@ -556,6 +729,7 @@ public class OpsSupportTicketService {
         int defaultCap = boundedInt(parseInt(values.get(LOAD_PREFIX + "defaultCap")), 1, 40, 8);
         Map<String, Object> loadConfig = new LinkedHashMap<>();
         loadConfig.put("autoBalance", boolValue(values, "autoBalance", false));
+        loadConfig.put("version", boundedLong(parseLong(values.get(LOAD_VERSION_KEY)), 1L, Long.MAX_VALUE, 1L));
         loadConfig.put("defaultCap", defaultCap);
         loadConfig.put("burstCap", boundedInt(parseInt(values.get(LOAD_PREFIX + "burstCap")), defaultCap, 40, 12));
         loadConfig.put("warnPct", boundedInt(parseInt(values.get(LOAD_PREFIX + "warnPct")), 50, 100, 80));
@@ -603,6 +777,14 @@ public class OpsSupportTicketService {
         configFacade.upsertAdminValue(LOAD_PREFIX + suffix, value, valueType, LOAD_GROUP, remark);
     }
 
+    private long currentLoadVersionForUpdate() {
+        return boundedLong(
+                configFacade.activeValueForUpdate(LOAD_VERSION_KEY).map(this::parseLong).orElse(null),
+                1L,
+                Long.MAX_VALUE,
+                1L);
+    }
+
     private boolean boolValue(Map<String, String> values, String suffix, boolean fallback) {
         String value = values.get(LOAD_PREFIX + suffix);
         return StringUtils.hasText(value) ? Boolean.parseBoolean(value) : fallback;
@@ -628,8 +810,24 @@ public class OpsSupportTicketService {
         }
     }
 
+    private Long parseLong(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
     private int boundedInt(Integer value, int min, int max, int fallback) {
         int raw = value == null ? fallback : value;
+        return Math.max(min, Math.min(max, raw));
+    }
+
+    private long boundedLong(Long value, long min, long max, long fallback) {
+        long raw = value == null ? fallback : value;
         return Math.max(min, Math.min(max, raw));
     }
 
@@ -765,6 +963,27 @@ public class OpsSupportTicketService {
         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
     }
 
+    private <T> ApiResult<T> requireTicketPrecondition(
+            SupportTicketView ticket,
+            String expectedStatus,
+            Long expectedVersion) {
+        if (!StringUtils.hasText(expectedStatus) || expectedVersion == null || expectedVersion < 0) {
+            return ApiResult.fail(
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "SUPPORT_TICKET_PRECONDITION_REQUIRED");
+        }
+        long currentVersion = ticket.version() == null ? 0L : ticket.version();
+        if (!normalizeStatus(expectedStatus).equals(normalizeStatus(ticket.status()))
+                || expectedVersion.longValue() != currentVersion) {
+            return ApiResult.fail(409, "SUPPORT_TICKET_CONFLICT");
+        }
+        return null;
+    }
+
+    private <T> ApiResult<T> ticketConflict() {
+        return ApiResult.fail(409, "SUPPORT_TICKET_CONFLICT");
+    }
+
     private boolean canChangeStatus(String currentStatus, String targetStatus) {
         String current = normalizeStatus(currentStatus);
         return STATUS_TRANSITIONS.getOrDefault(current, Set.of()).contains(targetStatus);
@@ -822,13 +1041,13 @@ public class OpsSupportTicketService {
     }
 
     private void audit(String action, String resourceType, String resourceId, String operator, Map<String, Object> detail) {
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType(resourceType)
                 .resourceId(resourceId)
                 .bizNo(resourceId)
                 .actorType("ADMIN")
-                .actorUsername(operator(operator))
+                .actorUsername(authenticatedOperator(operator))
                 .result("SUCCESS")
                 .riskLevel("MEDIUM")
                 .detail(detail)

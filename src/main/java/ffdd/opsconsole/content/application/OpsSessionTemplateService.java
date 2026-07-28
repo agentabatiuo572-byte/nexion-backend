@@ -5,6 +5,8 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SessionAdvisorPolicyView;
 import ffdd.opsconsole.content.domain.SessionCategoryView;
 import ffdd.opsconsole.content.domain.SessionCtaOption;
+import ffdd.opsconsole.content.domain.I18nLearningRepository;
+import ffdd.opsconsole.content.domain.I18nMessagePairView;
 import ffdd.opsconsole.content.domain.SessionReplyTemplateView;
 import ffdd.opsconsole.content.domain.SessionScriptView;
 import ffdd.opsconsole.content.domain.SessionSegmentField;
@@ -25,6 +27,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.time.Clock;
@@ -35,7 +38,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,10 +74,13 @@ public class OpsSessionTemplateService {
     private static final Set<String> TEMPLATE_TYPES = Set.of("advisor", "support");
     private static final List<String> DEFAULT_AUDIENCE_OPTIONS = List.of("全量用户", "新注册用户", "高价值用户", "活跃设备用户");
     private static final DateTimeFormatter TEMPLATE_ID_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
 
     private final SessionTemplateRepository templateRepository;
+    private final I18nLearningRepository i18nLearningRepository;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
+    private final EventOutboxService eventOutboxService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 
@@ -131,6 +140,14 @@ public class OpsSessionTemplateService {
                 "to", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishGovernanceEvent(
+                "SESSION_CATEGORY",
+                seed.type(),
+                "admin.conversation_category_toggled",
+                current ? "on" : "off",
+                value,
+                request.operator(),
+                request.reason());
         return ApiResult.ok(updated);
     }
 
@@ -168,6 +185,16 @@ public class OpsSessionTemplateService {
                 "to", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishGovernanceEvent(
+                "SESSION_POLICY",
+                normalizedField,
+                "enabled".equals(normalizedField)
+                        ? "admin.conversation_autopush_toggled"
+                        : "admin.conversation_autopush_changed",
+                current,
+                value,
+                request.operator(),
+                request.reason());
         return ApiResult.ok(advisorPolicy());
     }
 
@@ -251,6 +278,12 @@ public class OpsSessionTemplateService {
         if (!validPublicationTransition(current.status(), status)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_SCRIPT_STATUS_TRANSITION_INVALID");
         }
+        if ("published".equals(status)) {
+            String i18nError = requirePublishedLocalizedCopy("script", current.id(), current.text());
+            if (i18nError != null) {
+                return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), i18nError);
+            }
+        }
         templateRepository.updateScriptStatus(current.id(), status, LocalDateTime.now(clock));
         SessionScriptView updated = templateRepository.findScript(current.id()).orElse(current);
         audit("M5_SESSION_SCRIPT_STATUS_CHANGED", current.id(), request.operator(), detail(
@@ -258,6 +291,14 @@ public class OpsSessionTemplateService {
                 "to", status,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishGovernanceEvent(
+                "SESSION_SCRIPT",
+                current.id(),
+                "admin.conversation_script_published",
+                current.status(),
+                status,
+                request.operator(),
+                request.reason());
         return ApiResult.ok(updated);
     }
 
@@ -292,6 +333,14 @@ public class OpsSessionTemplateService {
                 "audience", audience,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishGovernanceEvent(
+                "SESSION_SCRIPT",
+                current.id(),
+                "admin.conversation_autopush_changed",
+                current.audience(),
+                audience,
+                request.operator(),
+                request.reason());
         return ApiResult.ok(updated);
     }
 
@@ -341,6 +390,12 @@ public class OpsSessionTemplateService {
         if (!validPublicationTransition(current.status(), status)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_REPLY_TEMPLATE_STATUS_TRANSITION_INVALID");
         }
+        if ("published".equals(status)) {
+            String i18nError = requirePublishedLocalizedCopy("template", current.id(), current.text());
+            if (i18nError != null) {
+                return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), i18nError);
+            }
+        }
         templateRepository.updateReplyTemplateStatus(current.id(), status, LocalDateTime.now(clock));
         SessionReplyTemplateView updated = templateRepository.findReplyTemplate(current.id()).orElse(current);
         audit("M5_SESSION_REPLY_TEMPLATE_STATUS_CHANGED", current.id(), request.operator(), detail(
@@ -348,7 +403,60 @@ public class OpsSessionTemplateService {
                 "to", status,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishGovernanceEvent(
+                "SESSION_REPLY_TEMPLATE",
+                current.id(),
+                "admin.conversation_template_published",
+                current.status(),
+                status,
+                request.operator(),
+                request.reason());
         return ApiResult.ok(updated);
+    }
+
+    private String requirePublishedLocalizedCopy(String kind, String contentId, String canonicalZh) {
+        String messageKey = "conversation." + kind + "." + contentId.toLowerCase(Locale.ROOT);
+        I18nMessagePairView localized = i18nLearningRepository.findPublishedMessagePair(messageKey).orElse(null);
+        if (localized == null
+                || !"published".equalsIgnoreCase(localized.status())
+                || !StringUtils.hasText(localized.en())
+                || !StringUtils.hasText(localized.zh())
+                || !StringUtils.hasText(localized.vi())) {
+            return "SESSION_TEMPLATE_I18N_NOT_PUBLISHED";
+        }
+        Set<String> canonicalPlaceholders = placeholders(canonicalZh);
+        if (!canonicalZh.trim().equals(localized.zh().trim())
+                || !canonicalPlaceholders.equals(placeholders(localized.en()))
+                || !canonicalPlaceholders.equals(placeholders(localized.zh()))
+                || !canonicalPlaceholders.equals(placeholders(localized.vi()))) {
+            return "SESSION_TEMPLATE_I18N_MISMATCH";
+        }
+        return null;
+    }
+
+    private Set<String> placeholders(String text) {
+        Matcher matcher = PLACEHOLDER_PATTERN.matcher(text == null ? "" : text);
+        Set<String> values = new TreeSet<>();
+        while (matcher.find()) {
+            values.add(matcher.group());
+        }
+        return values;
+    }
+
+    private void publishGovernanceEvent(
+            String aggregateType,
+            String targetId,
+            String eventName,
+            String fromStatus,
+            String toStatus,
+            String requestedOperator,
+            String reason) {
+        eventOutboxService.publish(aggregateType, targetId, eventName, detail(
+                "target_id", targetId,
+                "from_status", fromStatus,
+                "to_status", toStatus,
+                "operator", operator(requestedOperator),
+                "reason", reason.trim()));
     }
 
     private SessionAdvisorPolicyView advisorPolicy() {

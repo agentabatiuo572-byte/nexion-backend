@@ -31,6 +31,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -51,8 +52,9 @@ class AppWithdrawalK3RoutingServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final WithdrawalRiskRuleFacade k3 = mock(WithdrawalRiskRuleFacade.class);
     private final RiskKycReviewFacade k5 = mock(RiskKycReviewFacade.class);
+    private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, k5);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, k5, ledger);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -70,6 +72,9 @@ class AppWithdrawalK3RoutingServiceTest {
         when(config.activeValue("withdrawal.daily_count_limit")).thenReturn(Optional.of("10"));
         when(config.activeValue("withdrawal.max_balance_pct")).thenReturn(Optional.of("0.8"));
         when(config.activeValue("withdrawal.nex_fee_offset_rate")).thenReturn(Optional.of("0.4"));
+        when(config.activeValue("withdrawal.fee_rate")).thenReturn(Optional.of("0.001"));
+        when(config.activeValue("withdrawal.fee_min_usdt")).thenReturn(Optional.of("0.1"));
+        when(config.activeValue("withdrawal.fee_max_usdt")).thenReturn(Optional.of("5"));
         GrowthRhythmSnapshot rhythm = mock(GrowthRhythmSnapshot.class);
         when(rhythm.currentMonth()).thenReturn(3);
         when(rhythm.currentPhase()).thenReturn("P2");
@@ -78,7 +83,6 @@ class AppWithdrawalK3RoutingServiceTest {
         when(rhythmFacade.snapshot()).thenReturn(rhythm);
         when(mapper.reserveFunds(eq(7L), any(), any(), eq(3L))).thenReturn(1);
         when(mapper.insertWithdrawal(any())).thenReturn(1);
-        when(mapper.insertLedger(any())).thenReturn(1);
         when(mapper.attribution(7L)).thenReturn(new Attribution("P2", 1, "2026-W30"));
         when(k3.evaluate(any())).thenReturn(new WithdrawalRiskDecision("pass", null, null, List.of()));
         when(k5.triggerLargeWithdrawalReview(anyString(), any(), anyString(), anyString(), anyString(), anyString()))

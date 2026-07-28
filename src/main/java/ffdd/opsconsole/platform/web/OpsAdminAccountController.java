@@ -13,6 +13,12 @@ import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +36,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsAdminAccountController {
     private final OpsAdminAccountService accountService;
+    private final AdminIdempotencyService idempotencyService;
 
     @GetMapping("/accounts/overview")
     public ApiResult<AdminAccountOverview> overview() {
@@ -41,7 +48,8 @@ public class OpsAdminAccountController {
     public ApiResult<AdminAccountOverview.OperatorRecord> createAccount(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AdminAccountCreateRequest request) {
-        return accountService.createAccount(idempotencyKey, request);
+        return idempotent("ACCOUNT_CREATE", idempotencyKey, "", request,
+                () -> accountService.createAccount(idempotencyKey, request));
     }
 
     @PatchMapping("/accounts/{accountId}/role")
@@ -50,7 +58,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountRoleUpdateRequest request) {
-        return accountService.changeRole(idempotencyKey, accountId, request);
+        return idempotent("ACCOUNT_ROLE", idempotencyKey, accountId, request,
+                () -> accountService.changeRole(idempotencyKey, accountId, request));
     }
 
     @PatchMapping("/accounts/{accountId}/profile")
@@ -59,7 +68,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountProfileUpdateRequest request) {
-        return accountService.updateProfile(idempotencyKey, accountId, request);
+        return idempotent("ACCOUNT_PROFILE", idempotencyKey, accountId, request,
+                () -> accountService.updateProfile(idempotencyKey, accountId, request));
     }
 
     @PatchMapping("/accounts/{accountId}/status")
@@ -68,7 +78,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountStatusUpdateRequest request) {
-        return accountService.updateStatus(idempotencyKey, accountId, request);
+        return idempotent("ACCOUNT_STATUS", idempotencyKey, accountId, request,
+                () -> accountService.updateStatus(idempotencyKey, accountId, request));
     }
 
     @PostMapping("/accounts/{accountId}/reset-2fa")
@@ -77,7 +88,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountActionRequest request) {
-        return accountService.reset2fa(idempotencyKey, accountId, request);
+        return idempotent("ACCOUNT_2FA_RESET", idempotencyKey, accountId, request,
+                () -> accountService.reset2fa(idempotencyKey, accountId, request));
     }
 
     @PostMapping("/accounts/{accountId}/password/reset")
@@ -86,7 +98,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountActionRequest request) {
-        return accountService.resetPassword(idempotencyKey, accountId, request);
+        return idempotent("ACCOUNT_PASSWORD_RESET", idempotencyKey, accountId, request,
+                () -> accountService.resetPassword(idempotencyKey, accountId, request));
     }
 
     @PostMapping("/accounts/{accountId}/sessions/revoke")
@@ -95,7 +108,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountActionRequest request) {
-        return accountService.revokeSessions(idempotencyKey, accountId, request);
+        return idempotent("ACCOUNT_SESSIONS_REVOKE", idempotencyKey, accountId, request,
+                () -> accountService.revokeSessions(idempotencyKey, accountId, request));
     }
 
     @PostMapping("/accounts/{accountId}/sessions/{sessionId}/revoke")
@@ -105,7 +119,8 @@ public class OpsAdminAccountController {
             @PathVariable String accountId,
             @PathVariable String sessionId,
             @RequestBody(required = false) AdminAccountActionRequest request) {
-        return accountService.revokeSession(idempotencyKey, accountId, sessionId, request);
+        return idempotent("ACCOUNT_SESSION_REVOKE", idempotencyKey, accountId + ":" + sessionId, request,
+                () -> accountService.revokeSession(idempotencyKey, accountId, sessionId, request));
     }
 
     @PatchMapping("/accounts/security-baselines/{baselineKey}")
@@ -114,7 +129,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String baselineKey,
             @RequestBody(required = false) AdminAccountSecurityBaselineUpdateRequest request) {
-        return accountService.updateSecurityBaseline(idempotencyKey, baselineKey, request);
+        return idempotent("SECURITY_BASELINE", idempotencyKey, baselineKey, request,
+                () -> accountService.updateSecurityBaseline(idempotencyKey, baselineKey, request));
     }
 
     @PatchMapping("/rbac/actions/{actionId}/grants")
@@ -123,7 +139,8 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String actionId,
             @RequestBody(required = false) AdminRbacGrantUpdateRequest request) {
-        return accountService.updateRbacGrants(idempotencyKey, actionId, request);
+        return idempotent("RBAC_GRANTS", idempotencyKey, actionId, request,
+                () -> accountService.updateRbacGrants(idempotencyKey, actionId, request));
     }
 
     @PostMapping("/rbac/actions")
@@ -131,6 +148,37 @@ public class OpsAdminAccountController {
     public ApiResult<AdminAccountOverview.RbacAction> registerRbacAction(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AdminRbacActionCreateRequest request) {
-        return accountService.registerRbacAction(idempotencyKey, request);
+        return idempotent("RBAC_ACTION_CREATE", idempotencyKey, "", request,
+                () -> accountService.registerRbacAction(idempotencyKey, request));
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> idempotent(
+            String scope,
+            String idempotencyKey,
+            String target,
+            Object request,
+            Supplier<ApiResult<T>> action) {
+        try {
+            String requestHash = sha256(target + "|" + String.valueOf(request));
+            return (ApiResult<T>) idempotencyService.execute(
+                    "A1:" + scope,
+                    idempotencyKey,
+                    requestHash,
+                    ApiResult.class,
+                    (Supplier) action);
+        } catch (BizException ex) {
+            return ApiResult.fail(ex.getCode(), ex.getMessage());
+        }
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 }

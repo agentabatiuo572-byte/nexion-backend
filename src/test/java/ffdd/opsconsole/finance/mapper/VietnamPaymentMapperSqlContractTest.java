@@ -49,4 +49,47 @@ class VietnamPaymentMapperSqlContractTest {
         assertThat(listSql).contains("account_number_last4 AS accountLast4")
                 .doesNotContain("account_number_encrypted", "account_number_hash");
     }
+
+    @Test
+    void receiptRegistrationRecordsPhysicalCashAndFusesRoutingWithoutBlockingSettlement() throws Exception {
+        String sql = String.join("\n", VietnamPaymentMapper.class.getMethod(
+                "addVietQrBankReceivedToday", Long.class, java.math.BigDecimal.class,
+                java.time.LocalDate.class).getAnnotation(Update.class).value());
+        String pendingSql = String.join("\n", VietnamPaymentMapper.class.getMethod(
+                "sumPendingUnverifiedDepositUsdt").getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("received_today_vnd + #{receivedVnd}")
+                .contains("DAILY_CAP_EXCEEDED_AFTER_RECEIPT")
+                .contains("THEN 'FUSED'")
+                .contains("DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))")
+                .doesNotContain("CURRENT_DATE")
+                .doesNotContain("<= daily_cap_vnd");
+        assertThat(pendingSql)
+                .contains("status = 'OPEN'")
+                .contains("received_vnd > 0")
+                .doesNotContain("view_type IN");
+    }
+
+    @Test
+    void receiptRowsPersistImmutableTimingAndIntentTransitionOwnership() throws Exception {
+        String insertSql = String.join("\n", VietnamPaymentMapper.class.getMethod(
+                "insertVietQrReceipt",
+                String.class, String.class, Long.class, Long.class, String.class,
+                java.math.BigDecimal.class, java.math.BigDecimal.class, java.math.BigDecimal.class,
+                String.class, String.class, java.time.LocalDateTime.class,
+                java.time.LocalDateTime.class, boolean.class)
+                .getAnnotation(Insert.class).value());
+        String lockSql = String.join("\n", VietnamPaymentMapper.class.getMethod(
+                "findVietQrReconciliationForUpdate", Long.class)
+                .getAnnotation(Select.class).value());
+
+        assertThat(insertSql)
+                .contains("received_at")
+                .contains("intent_transition_required");
+        assertThat(lockSql)
+                .contains("received_at AS receivedAt")
+                .contains("intent_transition_required AS intentTransitionRequired")
+                .contains("FOR UPDATE");
+    }
 }

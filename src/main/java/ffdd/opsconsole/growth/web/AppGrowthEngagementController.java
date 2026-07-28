@@ -19,6 +19,18 @@ public class AppGrowthEngagementController {
     private final AppGrowthEngagementService service;
     private final AppGrowthWheelService wheelService;
 
+    @GetMapping("/api/quests/state")
+    public ApiResult<Map<String, Object>> questState(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.questState(userId);
+    }
+
+    @GetMapping("/api/events")
+    public ApiResult<Map<String, Object>> eventState(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.eventState(userId);
+    }
+
     @GetMapping("/api/points/state")
     public ApiResult<Map<String, Object>> pointState(Authentication authentication) {
         Long userId = userId(authentication);
@@ -83,6 +95,24 @@ public class AppGrowthEngagementController {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
                 : service.claimDailyMilestone(userId, milestoneId, idempotencyKey);
+    }
+
+    @PostMapping("/api/points/streak-saver/use")
+    public ApiResult<Map<String, Object>> useStreakSaver(
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.useStreakSaver(userId, idempotencyKey);
+    }
+
+    @PostMapping("/api/points/power-ups/{powerUpId}/activate")
+    public ApiResult<Map<String, Object>> activateStreakPowerUp(
+            @PathVariable Long powerUpId,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden()
+                : service.activateStreakPowerUp(userId, powerUpId, idempotencyKey);
     }
 
     @PostMapping("/api/earnings/milestones/evaluate")

@@ -54,6 +54,7 @@ public final class D2WithdrawalStateMachine {
             case "UNFREEZE" -> FROZEN.equals(current) ? REVIEW_PENDING : null;
             case "REJECT" -> REVIEW_PENDING.equals(current) ? REVIEW_REJECTED : null;
             case "REFUND" -> REFUNDABLE.contains(current) ? REFUNDED : null;
+            case "CONFIRM" -> SENT.equals(current) ? CONFIRMED : null;
             default -> null;
         };
     }

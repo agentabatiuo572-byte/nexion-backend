@@ -168,6 +168,10 @@ public interface TreasuryLedgerRepository {
         return currentUserBalance(userId, asset);
     }
 
+    default boolean userExists(Long userId) {
+        return true;
+    }
+
     void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                          BigDecimal amount, String status, String remark);
 }

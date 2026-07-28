@@ -474,6 +474,26 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public void refreshWelcomeGiftArbitrageProjection(int minimumSettlements) {
+        int safeMinimum = Math.max(1, Math.min(minimumSettlements, 100));
+        mapper.retireWelcomeGiftArbitrageRows();
+        mapper.upsertWelcomeGiftArbitrageRows(safeMinimum);
+    }
+
+    @Override
+    public void refreshLeaderboardArbitrageProjection(int velocityMultiplier, boolean inclusive) {
+        int safeMultiplier = Math.max(2, Math.min(velocityMultiplier, 20));
+        mapper.captureLeaderboardSnapshot();
+        mapper.retireLeaderboardArbitrageRows();
+        mapper.upsertLeaderboardArbitrageRows(safeMultiplier, inclusive);
+    }
+
+    @Override
+    public int retireInactiveK2ProjectionSignals() {
+        return mapper.retireInactiveK2ProjectionSignals();
+    }
+
+    @Override
     public List<Long> arbitrageSubjectUserIds(String rowId) {
         return mapper.arbitrageSubjectUserIds(rowId);
     }
@@ -631,7 +651,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 || active.autoEscalateScore() == null
                 || active.bandLowMax() < 0 || active.bandLowMax() >= active.bandHighMin()
                 || active.bandHighMin() > 100
-                || active.autoEscalateScore() < 0 || active.autoEscalateScore() > 100) {
+                || active.autoEscalateScore() < 70 || active.autoEscalateScore() > 100
+                || active.autoEscalateScore() < active.bandHighMin()) {
             return Optional.empty();
         }
         return mapScoreUser(row, new RiskScoreConfigView(
@@ -898,7 +919,16 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         response.put("params", mapper.riskParams("k1"));
         response.put("clusters", new PageResult<>(clusterTotal, normalizedClusterPageNum, normalizedClusterPageSize, clusters));
         response.put("whitelist", new PageResult<>(whitelistTotal, normalizedWhitelistPageNum, normalizedWhitelistPageSize, whitelist));
-        response.put("sources", List.of("nx_risk_decision:device_fingerprint", "nx_admin_risk_multi_account_cluster", "nx_admin_risk_ip_whitelist", "nx_admin_risk_param:k1"));
+        response.put("sources", List.of(
+                "nx_user_registration_otp:consumed_client_ip",
+                "nx_risk_decision:device_fingerprint",
+                "nx_wallet_bank_card:card_token",
+                "nx_referral_reward_settlement:welcome_gift",
+                "nx_user_wallet:cumulative_deposit_usdt",
+                "nx_wallet_ledger:deposit_fallback",
+                "nx_admin_risk_multi_account_cluster",
+                "nx_admin_risk_ip_whitelist",
+                "nx_admin_risk_param:k1"));
         return response;
     }
 

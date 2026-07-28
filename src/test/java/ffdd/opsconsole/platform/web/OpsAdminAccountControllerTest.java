@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import ffdd.opsconsole.platform.application.OpsAdminAccountService;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
@@ -16,12 +18,20 @@ import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.util.List;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 class OpsAdminAccountControllerTest {
     private final OpsAdminAccountService accountService = mock(OpsAdminAccountService.class);
-    private final OpsAdminAccountController controller = new OpsAdminAccountController(accountService);
+    private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final OpsAdminAccountController controller = new OpsAdminAccountController(accountService, idempotencyService);
+
+    OpsAdminAccountControllerTest() {
+        when(idempotencyService.execute(anyString(), anyString(), anyString(), any(), any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+    }
 
     @Test
     void overviewDelegatesToApplicationService() {

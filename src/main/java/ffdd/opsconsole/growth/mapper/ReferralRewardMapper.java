@@ -27,9 +27,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                )
                AND NOT EXISTS (
                  SELECT 1
@@ -41,31 +41,31 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                     AND JSON_VALID(risk_cluster.nodes_json) = 1
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                )
                AND NOT EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
-                  WHERE cluster.is_deleted = 0 AND cluster.status = 'frozen'
+                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
                     AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
-                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                )
                AND (#{holdRisky} = FALSE OR (
                  NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
                     WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
                       AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
-                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                  )
                ))
                AND s.id IS NULL
@@ -95,9 +95,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                )
                AND NOT EXISTS (
                  SELECT 1
@@ -109,31 +109,31 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                     AND JSON_VALID(risk_cluster.nodes_json) = 1
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                )
                AND NOT EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
-                  WHERE cluster.is_deleted = 0 AND cluster.status = 'frozen'
+                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
                     AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
-                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                )
                AND (#{holdRisky} = FALSE OR (
                  NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
                     WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
                       AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
-                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                  )
                ))
             """)
@@ -179,9 +179,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                )
                AND NOT EXISTS (
                  SELECT 1
@@ -193,31 +193,31 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                     AND JSON_VALID(risk_cluster.nodes_json) = 1
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                )
                AND NOT EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
-                  WHERE cluster.is_deleted = 0 AND cluster.status = 'frozen'
+                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
                     AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
-                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                )
                AND (#{holdRisky} = FALSE OR (
                  NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
                     WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
                       AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
-                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                  )
                ))
                AND s.id IS NULL
@@ -228,16 +228,20 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
     @Select("""
             SELECT COUNT(*) FROM nx_user u
               JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+              LEFT JOIN nx_referral_reward_settlement s
+                ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
+               AND s.id IS NULL
                AND (EXISTS (
                  SELECT 1 FROM nx_admin_risk_arbitrage_row risk
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                ) OR EXISTS (
                  SELECT 1
                    FROM nx_admin_risk_arbitrage_row risk
@@ -248,28 +252,28 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                     AND JSON_VALID(risk_cluster.nodes_json) = 1
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
-                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(risk_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                ) OR EXISTS (
                  SELECT 1 FROM nx_admin_risk_multi_account_cluster cluster
-                  WHERE cluster.is_deleted = 0 AND cluster.status = 'frozen'
+                  WHERE cluster.is_deleted = 0 AND cluster.status IN ('detected','flagged','frozen')
                     AND cluster.nodes_json IS NOT NULL AND JSON_VALID(cluster.nodes_json) = 1
-                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                    AND (JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                      OR JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                ) OR (#{holdRisky} = TRUE AND (
                  EXISTS (
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, 8, '0')), '%')
+                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, 8, '0')), '%'))
+                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
                  ) OR EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
                     WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
                       AND review_cluster.nodes_json IS NOT NULL AND JSON_VALID(review_cluster.nodes_json) = 1
-                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
-                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, 8, '0'))) IS NOT NULL)
+                      AND (JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                        OR JSON_SEARCH(review_cluster.nodes_json, 'one', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'))) IS NOT NULL)
                  )
                )))
             """)

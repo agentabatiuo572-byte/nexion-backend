@@ -61,22 +61,48 @@ public class AppCanonicalBoundaryService {
     public ApiResult<Map<String, Object>> trialEligibility(Long userId, String clientStatus) {
         String state = normalizeState(mapper.findTrialState(userId), "ELIGIBLE");
         if (StringUtils.hasText(clientStatus) && !state.equals(normalizeState(clientStatus, ""))) {
-            return reject(userId, "free_trial_state",
-                    "客户端试用状态与服务器领取记录不一致，服务器拒绝按客户端状态重新领取",
-                    "/api/trial/eligibility", "TRIAL_STATE_CONFLICT");
+            return rejectTrialStateTamper(userId);
         }
         return ApiResult.ok(linked("state", state, "canStart", "ELIGIBLE".equals(state), "source", "nx_trial_claim"));
     }
 
+    /**
+     * Records the canonical H2 lifecycle rejection in J3. The controller calls this after comparing
+     * the client claim with {@link ffdd.opsconsole.growth.application.AppTrialLifecycleService},
+     * so J3 never has to infer the current trial state from a second projection.
+     */
+    public ApiResult<Map<String, Object>> rejectTrialStateTamper(Long userId) {
+        return reject(userId, "free_trial_state",
+                "客户端试用状态与服务器领取记录不一致，服务器拒绝按客户端状态重新领取",
+                "/api/trial/eligibility", "TRIAL_STATE_CONFLICT");
+    }
+
     public ApiResult<Map<String, Object>> kycStatus(Long userId, Boolean clientWalletPaired) {
-        String status = normalizeState(mapper.kycStatus(userId), "NONE");
-        boolean paired = mapper.walletPaired(userId);
+        CanonicalStateMapper.KycWallet wallet = mapper.kycWallet(userId);
+        String status = normalizeState(wallet == null ? null : wallet.status(), "NONE");
+        String pairedAddress = wallet == null || !StringUtils.hasText(wallet.pairedAddress())
+                ? null : wallet.pairedAddress().trim();
+        String network = normalizeWithdrawalNetwork(wallet == null ? null : wallet.network());
+        boolean paired = "APPROVED".equals(status) && pairedAddress != null && network != null;
         if (clientWalletPaired != null && clientWalletPaired != paired) {
             return reject(userId, "wallet_pairing",
                     "客户端钱包配对状态与服务器 KYC 及钱包地址记录不一致，服务器拒绝放行",
                     "/api/kyc/status", "WALLET_PAIRING_CONFLICT");
         }
-        return ApiResult.ok(linked("status", status, "walletPaired", paired, "source", "KYC_AUTHORITY_LEDGER"));
+        return ApiResult.ok(linked(
+                "status", status, "walletPaired", paired,
+                "pairedAddress", paired ? pairedAddress : null,
+                "network", paired ? network : null,
+                "source", "KYC_AUTHORITY_LEDGER"));
+    }
+
+    private String normalizeWithdrawalNetwork(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "TRC20", "USDT-TRC20" -> "USDT-TRC20";
+            case "ERC20", "USDT-ERC20" -> "USDT-ERC20";
+            default -> null;
+        };
     }
 
     public ApiResult<Map<String, Object>> securityState(Long userId, Boolean clientTwoFactorEnabled) {
@@ -255,6 +281,8 @@ public class AppCanonicalBoundaryService {
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,
                 "gpuModel", device.gpuModel(), "vramTotalGb", device.vramTotalGb(),
                 "basePowerW", device.basePowerW(), "location", device.location(),
+                "actualPaidUsdt", zero(device.actualPaidUsdt()).setScale(6, RoundingMode.HALF_UP),
+                "cumulativeOutputUsdt", zero(device.cumulativeOutputUsdt()).setScale(6, RoundingMode.HALF_UP),
                 "capacityPct", capacityPct, "capacityAgeMonths", ageMonths,
                 "capacityConfigKey", switchKey,
                 "capacitySubsidized", capacitySubsidized,
@@ -386,10 +414,15 @@ public class AppCanonicalBoundaryService {
         String orderStatus = normalizeState(order.orderStatus(), "PENDING_PAYMENT");
         String paymentStatus = normalizeState(order.paymentStatus(), "PENDING");
         String activationStatus = normalizeState(order.activationStatus(), "WAITING_PAYMENT");
+        if (orderStatus.contains("CHARGEBACK") || paymentStatus.contains("CHARGEBACK")) return "chargeback";
+        if (orderStatus.contains("REFUND") || paymentStatus.contains("REFUND")
+                || activationStatus.contains("REFUND")) return "refunded";
+        if (orderStatus.contains("PROVISIONING_FAILED")
+                || activationStatus.contains("PROVISIONING_FAILED")) return "provisioning_failed";
+        if (orderStatus.contains("PAYMENT_FAILED") || paymentStatus.contains("FAIL")) return "payment_failed";
+        if (orderStatus.contains("EXPIRE") || paymentStatus.contains("EXPIRE")) return "expired";
+        if (orderStatus.contains("CANCEL") || paymentStatus.contains("CANCEL")) return "cancelled";
         if ("COMPLETED".equals(orderStatus) || "ACTIVATED".equals(activationStatus)) return "activated";
-        if (orderStatus.contains("CANCEL") || orderStatus.contains("FAIL") || orderStatus.contains("EXPIRE")
-                || orderStatus.contains("REFUND") || paymentStatus.contains("FAIL")
-                || paymentStatus.contains("EXPIRE") || paymentStatus.contains("REFUND")) return "cancelled";
         if (activationStatus.contains("PROVISION") || orderStatus.contains("PROVISION")) return "provisioning";
         if ("PAID".equals(paymentStatus) || order.paidAt() != null) return "paid";
         return "placed";

@@ -3,7 +3,6 @@ package ffdd.opsconsole.finance.application;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.Attribution;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.KycWalletRow;
-import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.LedgerWrite;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WalletRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalWrite;
@@ -15,12 +14,14 @@ import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskContext;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
+import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +32,8 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +47,8 @@ import org.springframework.util.StringUtils;
 public class AppWithdrawalService {
     private static final Set<String> CHAINS = Set.of("USDT-TRC20", "USDT-ERC20");
     private static final BigDecimal MIN_WITHDRAWAL = new BigDecimal("20.000000");
+    private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
+    private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
 
     private final AppWithdrawalMapper mapper;
     private final PlatformConfigFacade config;
@@ -53,11 +58,48 @@ public class AppWithdrawalService {
     private final EventOutboxService outbox;
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
     private final RiskKycReviewFacade riskKycReviewFacade;
+    private final TreasuryLedgerPostingFacade ledgerPostingFacade;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         return ApiResult.ok(linked("withdrawals", mapper.userWithdrawals(userId, 50),
                 "source", "nx_withdrawal_order"));
+    }
+
+    public ApiResult<Map<String, Object>> policy(Long userId) {
+        if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        int dailyLimit = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
+        BigDecimal balanceMaxRatio = requiredDecimal("withdrawal.max_balance_pct");
+        BigDecimal networkFeeRate = requiredDecimal("withdrawal.fee_rate");
+        BigDecimal networkFeeMin = requiredDecimal("withdrawal.fee_min_usdt");
+        BigDecimal networkFeeMax = requiredDecimal("withdrawal.fee_max_usdt");
+        BigDecimal nexFeeOffsetRate = requiredDecimal("withdrawal.nex_fee_offset_rate");
+        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
+        if (dailyLimit < 1 || dailyLimit > 10
+                || balanceMaxRatio.signum() <= 0 || balanceMaxRatio.compareTo(BigDecimal.ONE) > 0
+                || networkFeeRate.signum() < 0 || networkFeeRate.compareTo(new BigDecimal("0.05")) > 0
+                || networkFeeMin.signum() < 0 || networkFeeMax.compareTo(networkFeeMin) < 0
+                || nexFeeOffsetRate.signum() <= 0
+                || rhythm == null || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1
+                || rhythm.withdrawCooldownDays() <= 0 || rhythm.withdrawPenaltyFeeRate() == null
+                || ratio(rhythm.withdrawPenaltyFeeRate()).signum() < 0
+                || ratio(rhythm.withdrawPenaltyFeeRate()).compareTo(BigDecimal.ONE) > 0) {
+            throw new BizException(503, "WITHDRAWAL_POLICY_UNAVAILABLE");
+        }
+        List<String> enabledNetworks = CHAINS.stream().sorted().filter(this::networkEnabled).toList();
+        if (enabledNetworks.isEmpty()) throw new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE");
+        boolean withdrawalEnabled = withdrawGateEnabled();
+        return ApiResult.ok(linked(
+                "minAmount", MIN_WITHDRAWAL, "dailyLimitCount", dailyLimit,
+                "balanceMaxRatio", balanceMaxRatio, "networkFeeRate", networkFeeRate,
+                "networkFeeMin", networkFeeMin, "networkFeeMax", networkFeeMax,
+                "nexFeeOffsetRate", nexFeeOffsetRate,
+                "penaltyFeeRate", rhythm.withdrawPenaltyFeeRate(),
+                "cooldownDays", rhythm.withdrawCooldownDays(),
+                "complianceHoldEnabled", rhythm.complianceHoldEnabled(),
+                "enabledNetworks", enabledNetworks, "currentPhase", rhythm.currentPhase(),
+                "currentMonth", rhythm.currentMonth(), "withdrawalEnabled", withdrawalEnabled,
+                "gateSource", "J1", "source", "D5+H1"));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -76,6 +118,9 @@ public class AppWithdrawalService {
 
     private ApiResult<Map<String, Object>> submitOnce(
             Long userId, BigDecimal amount, String chain, String address) {
+        if (!withdrawGateEnabled()) {
+            return ApiResult.fail(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
+        }
         KycWalletRow kyc = mapper.lockKycWallet(userId);
         if (kyc == null || !"APPROVED".equalsIgnoreCase(kyc.status())
                 || !StringUtils.hasText(kyc.pairedAddress()) || !StringUtils.hasText(kyc.network())) {
@@ -115,12 +160,36 @@ public class AppWithdrawalService {
         }
         BigDecimal nexOffsetRate = requiredDecimal("withdrawal.nex_fee_offset_rate");
         if (nexOffsetRate.signum() <= 0) throw new BizException(503, "D5_NEX_OFFSET_INVALID");
+        BigDecimal networkFeeRate = requiredDecimal("withdrawal.fee_rate");
+        BigDecimal networkFeeMin = requiredDecimal("withdrawal.fee_min_usdt");
+        BigDecimal networkFeeMax = requiredDecimal("withdrawal.fee_max_usdt");
+        if (networkFeeRate.signum() < 0 || networkFeeRate.compareTo(new BigDecimal("0.05")) > 0
+                || networkFeeMin.signum() < 0 || networkFeeMax.compareTo(networkFeeMin) < 0) {
+            throw new BizException(503, "D5_NETWORK_FEE_INVALID");
+        }
 
-        BigDecimal grossFee = amount.multiply(penaltyRate).setScale(6, RoundingMode.DOWN);
+        BigDecimal networkFee = amount.multiply(networkFeeRate)
+                .max(networkFeeMin)
+                .min(networkFeeMax)
+                .setScale(6, RoundingMode.DOWN);
+        BigDecimal penaltyFee = amount.multiply(penaltyRate).setScale(6, RoundingMode.DOWN);
+        BigDecimal grossFee = networkFee.add(penaltyFee).setScale(6, RoundingMode.DOWN);
         BigDecimal requiredNex = grossFee.divide(nexOffsetRate, 6, RoundingMode.UP);
         BigDecimal nexBurned = safe(wallet.nexAvailable()).min(requiredNex).setScale(6, RoundingMode.DOWN);
         BigDecimal feeWaived = nexBurned.multiply(nexOffsetRate).min(grossFee).setScale(6, RoundingMode.DOWN);
         BigDecimal actualFee = grossFee.subtract(feeWaived).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        // NEX offset is deterministic and audit-replayable: waive the H1 penalty first, then the
+        // external network fee. This keeps unavoidable chain cost visible for as long as possible.
+        BigDecimal penaltyFeeWaived = feeWaived.min(penaltyFee).setScale(6, RoundingMode.DOWN);
+        BigDecimal networkFeeWaived = feeWaived.subtract(penaltyFeeWaived)
+                .min(networkFee).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        BigDecimal actualPenaltyFee = penaltyFee.subtract(penaltyFeeWaived)
+                .max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        BigDecimal actualNetworkFee = networkFee.subtract(networkFeeWaived)
+                .max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        if (actualNetworkFee.add(actualPenaltyFee).compareTo(actualFee) != 0) {
+            throw new BizException(503, "D5_FEE_COMPONENT_INVARIANT_BROKEN");
+        }
         BigDecimal netReceive = amount.subtract(actualFee).setScale(6, RoundingMode.DOWN);
         if (netReceive.signum() <= 0) return ApiResult.fail(422, "WITHDRAWAL_NET_AMOUNT_INVALID");
 
@@ -176,7 +245,9 @@ public class AppWithdrawalService {
             throw new BizException(409, "WITHDRAWAL_WALLET_CONFLICT");
         }
         WithdrawalWrite write = new WithdrawalWrite(
-                userId, withdrawalNo, chain, amount, address, holdUntil, penaltyPct, grossFee,
+                userId, withdrawalNo, chain, amount, address, holdUntil,
+                networkFeeRate, networkFeeMin, networkFeeMax, networkFee,
+                penaltyPct, grossFee,
                 nexBurned, nexOffsetRate, feeWaived, actualFee, netReceive,
                 frozen ? (k5Review.requiresReview() ? "K5_REVIEW" : "K3_RULE_FREEZE")
                         : delayed ? "K3_RULE_DELAY" : fastTrack ? "H1_PHASE_COOLDOWN" : null,
@@ -190,13 +261,8 @@ public class AppWithdrawalService {
             withdrawalRiskRuleFacade.recordDecision(riskContext, riskDecision);
         }
 
-        BigDecimal usdtAfter = safe(wallet.usdtAvailable()).subtract(amount);
-        requireLedger(new LedgerWrite(userId, withdrawalNo + ":USDT", "WITHDRAW_SUBMIT", "USDT",
-                amount, usdtAfter, "D2 withdrawal funds reserved"));
-        if (nexBurned.signum() > 0) {
-            requireLedger(new LedgerWrite(userId, withdrawalNo + ":NEX", "WITHDRAW_FEE_OFFSET", "NEX",
-                    nexBurned, safe(wallet.nexAvailable()).subtract(nexBurned), "D5 optional NEX fee offset"));
-        }
+        postWithdrawalLedgers(
+                withdrawalNo, userId, amount, netReceive, actualNetworkFee, actualPenaltyFee, nexBurned);
 
         Attribution at = mapper.attribution(userId);
         if (at == null || at.accountAgeMonths() == null || !StringUtils.hasText(at.cohort())) {
@@ -204,8 +270,14 @@ public class AppWithdrawalService {
         }
         Map<String, Object> detail = linked(
                 "withdrawal_id", withdrawalNo, "amount_usdt", amount, "chain", chain,
-                "penalty_fee_rate", penaltyPct, "gross_fee", grossFee, "nex_burned", nexBurned,
-                "fee_waived", feeWaived, "actual_fee", actualFee, "net_receive", netReceive,
+                "network_fee_rate", networkFeeRate, "network_fee_min", networkFeeMin,
+                "network_fee_max", networkFeeMax, "network_fee", networkFee,
+                "penalty_fee_rate", penaltyPct, "penalty_fee", penaltyFee,
+                "gross_fee", grossFee, "nex_burned", nexBurned,
+                "fee_waived", feeWaived,
+                "penalty_fee_waived", penaltyFeeWaived, "network_fee_waived", networkFeeWaived,
+                "actual_penalty_fee", actualPenaltyFee, "actual_network_fee", actualNetworkFee,
+                "actual_fee", actualFee, "net_receive", netReceive,
                 "cooldown_days", rhythm.withdrawCooldownDays(), "hold_until", holdUntil,
                 "risk_route", riskRoute, "k3_risk_route", riskDecision.action(),
                 "risk_rule_id", riskDecision.primaryRuleId(), "k4_priority", k4Priority,
@@ -238,8 +310,14 @@ public class AppWithdrawalService {
         }
         return ApiResult.ok(linked(
                 "withdrawalNo", withdrawalNo, "amount", amount, "chain", chain, "status", status,
-                "holdUntil", holdUntil, "penaltyFeeRate", penaltyPct, "grossFee", grossFee,
-                "nexBurned", nexBurned, "feeWaived", feeWaived, "actualFee", actualFee,
+                "holdUntil", holdUntil, "networkFeeRate", networkFeeRate,
+                "networkFeeMin", networkFeeMin, "networkFeeMax", networkFeeMax,
+                "networkFee", networkFee, "penaltyFeeRate", penaltyPct,
+                "penaltyFee", penaltyFee, "grossFee", grossFee,
+                "nexBurned", nexBurned, "feeWaived", feeWaived,
+                "penaltyFeeWaived", penaltyFeeWaived, "networkFeeWaived", networkFeeWaived,
+                "actualPenaltyFee", actualPenaltyFee, "actualNetworkFee", actualNetworkFee,
+                "actualFee", actualFee,
                 "netReceive", netReceive, "riskRoute", riskRoute, "k3RiskRoute", riskDecision.action(),
                 "k4Priority", k4Priority,
                 "riskRuleId", riskDecision.primaryRuleId(), "k5TicketId", k5Review.ticketId(),
@@ -289,8 +367,42 @@ public class AppWithdrawalService {
                         java.util.stream.Collectors.joining(";"), value -> value.isEmpty() ? null : value));
     }
 
-    private void requireLedger(LedgerWrite row) {
-        if (mapper.insertLedger(row) != 1) throw new BizException(409, "WITHDRAWAL_LEDGER_CONFLICT");
+    private void postWithdrawalLedgers(
+            String withdrawalNo,
+            Long userId,
+            BigDecimal amount,
+            BigDecimal netReceive,
+            BigDecimal actualNetworkFee,
+            BigDecimal actualPenaltyFee,
+            BigDecimal nexBurned) {
+        BigDecimal totalUsdtOut = netReceive.add(actualNetworkFee).add(actualPenaltyFee);
+        if (totalUsdtOut.compareTo(amount) != 0) {
+            throw new BizException(503, "D5_LEDGER_COMPONENT_INVARIANT_BROKEN");
+        }
+        postPositiveLedger(
+                withdrawalNo + ":USDT:PRINCIPAL", userId, "WITHDRAW_NET_PRINCIPAL", "USDT",
+                netReceive, "D2 withdrawal net principal");
+        postPositiveLedger(
+                withdrawalNo + ":USDT:NETWORK_FEE", userId, "WITHDRAW_NETWORK_FEE", "USDT",
+                actualNetworkFee, "D5 actual network fee after NEX offset");
+        postPositiveLedger(
+                withdrawalNo + ":USDT:PENALTY_FEE", userId, "WITHDRAW_PENALTY_FEE", "USDT",
+                actualPenaltyFee, "H1 actual withdrawal penalty after NEX offset");
+        postPositiveLedger(
+                withdrawalNo + ":NEX:OFFSET", userId, "WITHDRAW_FEE_OFFSET", "NEX",
+                nexBurned, "D5 NEX fee offset; penalty first, then network fee");
+    }
+
+    private void postPositiveLedger(
+            String bizNo,
+            Long userId,
+            String bizType,
+            String asset,
+            BigDecimal amount,
+            String remark) {
+        if (amount.signum() <= 0) return;
+        ledgerPostingFacade.postLedgerEntry(
+                bizNo, userId, bizType, asset, "OUT", amount, "POSTED", remark);
     }
 
     private boolean networkEnabled(String chain) {
@@ -299,6 +411,12 @@ public class AppWithdrawalService {
                 .filter(Set.of("true", "false", "1", "0", "on", "off")::contains)
                 .map(Set.of("true", "1", "on")::contains)
                 .orElseThrow(() -> new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE"));
+    }
+
+    private boolean withdrawGateEnabled() {
+        return KillSwitchState.enabled(
+                Optional.ofNullable(mapper.emergencyValue(WITHDRAW_KILLSWITCH_KEY)),
+                Optional.ofNullable(mapper.emergencyValue(WITHDRAW_LEGACY_KILLSWITCH_KEY)));
     }
 
     private BigDecimal requiredDecimal(String key) {

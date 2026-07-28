@@ -73,7 +73,9 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               t.created_at AS createdAt,
               t.updated_at AS updatedAt,
               t.archived,
-              t.archived_at AS archivedAt
+              t.archived_at AS archivedAt,
+              t.version,
+              EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists
             FROM nx_support_ticket t
             WHERE t.is_deleted=0
              <if test='scope == "active"'>AND t.archived=0</if>
@@ -121,7 +123,9 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               t.created_at AS createdAt,
               t.updated_at AS updatedAt,
               t.archived,
-              t.archived_at AS archivedAt
+              t.archived_at AS archivedAt,
+              t.version,
+              EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists
             FROM nx_support_ticket t
             WHERE t.is_deleted=0 AND t.ticket_no=#{ticketNo}
             LIMIT 1
@@ -132,32 +136,57 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
             UPDATE nx_support_ticket
                SET status=#{status},
                    closed_at=CASE WHEN #{status} IN ('RESOLVED','CLOSED') THEN #{now} ELSE NULL END,
-                   updated_at=#{now}
+                   updated_at=#{now},
+                   version=version+1
              WHERE ticket_no=#{ticketNo} AND is_deleted=0
+               AND status=#{expectedStatus} AND version=#{expectedVersion} AND archived=0
             """)
-    int updateStatus(@Param("ticketNo") String ticketNo, @Param("status") String status, @Param("now") LocalDateTime now);
+    int updateStatus(
+            @Param("ticketNo") String ticketNo,
+            @Param("status") String status,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_support_ticket
-               SET priority=#{priority}, updated_at=#{now}
+               SET priority=#{priority}, updated_at=#{now}, version=version+1
              WHERE ticket_no=#{ticketNo} AND is_deleted=0
+               AND status=#{expectedStatus} AND version=#{expectedVersion} AND archived=0
             """)
-    int updatePriority(@Param("ticketNo") String ticketNo, @Param("priority") String priority, @Param("now") LocalDateTime now);
+    int updatePriority(
+            @Param("ticketNo") String ticketNo,
+            @Param("priority") String priority,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_support_ticket
-               SET assigned_admin_id=#{assignedAdminId}, assigned_admin_name=#{assignedAdminName}, updated_at=#{now}
+               SET assigned_admin_id=#{assignedAdminId}, assigned_admin_name=#{assignedAdminName},
+                   updated_at=#{now}, version=version+1
              WHERE ticket_no=#{ticketNo} AND is_deleted=0
+               AND status=#{expectedStatus} AND version=#{expectedVersion} AND archived=0
             """)
     int assign(@Param("ticketNo") String ticketNo, @Param("assignedAdminId") Long assignedAdminId,
-               @Param("assignedAdminName") String assignedAdminName, @Param("now") LocalDateTime now);
+               @Param("assignedAdminName") String assignedAdminName,
+               @Param("expectedStatus") String expectedStatus,
+               @Param("expectedVersion") long expectedVersion,
+               @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_support_ticket
-               SET archived=#{archived}, archived_at=CASE WHEN #{archived}=1 THEN #{now} ELSE NULL END, updated_at=#{now}
+               SET archived=#{archived}, archived_at=CASE WHEN #{archived}=1 THEN #{now} ELSE NULL END,
+                   updated_at=#{now}, version=version+1
              WHERE ticket_no=#{ticketNo} AND is_deleted=0
+               AND status=#{expectedStatus} AND version=#{expectedVersion}
             """)
-    int archive(@Param("ticketNo") String ticketNo, @Param("archived") boolean archived, @Param("now") LocalDateTime now);
+    int archive(
+            @Param("ticketNo") String ticketNo,
+            @Param("archived") boolean archived,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_support_ticket
@@ -168,10 +197,31 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
                    user_unread_count=user_unread_count+1,
                    message_count=message_count+1,
                    closed_at=NULL,
-                   updated_at=#{now}
+                   updated_at=#{now},
+                   version=version+1
              WHERE ticket_no=#{ticketNo} AND is_deleted=0
+               AND status=#{expectedStatus} AND version=#{expectedVersion} AND archived=0
             """)
-    int appendReplyHeader(@Param("ticketNo") String ticketNo, @Param("body") String body, @Param("now") LocalDateTime now);
+    int appendReplyHeader(
+            @Param("ticketNo") String ticketNo,
+            @Param("body") String body,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_support_ticket
+               SET message_count=message_count+1,
+                   updated_at=#{now},
+                   version=version+1
+             WHERE ticket_no=#{ticketNo} AND is_deleted=0
+               AND status=#{expectedStatus} AND version=#{expectedVersion} AND archived=0
+            """)
+    int appendInternalNoteHeader(
+            @Param("ticketNo") String ticketNo,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_support_ticket
@@ -182,4 +232,21 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
              WHERE ticket_no=#{ticketNo} AND is_deleted=0
             """)
     int appendSystemTraceHeader(@Param("ticketNo") String ticketNo, @Param("body") String body, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_support_ticket
+               SET last_message=#{body},
+                   last_message_at=#{now},
+                   message_count=message_count+1,
+                   updated_at=#{now},
+                   version=version+1
+             WHERE ticket_no=#{ticketNo} AND is_deleted=0
+               AND status=#{expectedStatus} AND version=#{expectedVersion} AND archived=0
+            """)
+    int appendSystemTraceHeaderCas(
+            @Param("ticketNo") String ticketNo,
+            @Param("body") String body,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("now") LocalDateTime now);
 }

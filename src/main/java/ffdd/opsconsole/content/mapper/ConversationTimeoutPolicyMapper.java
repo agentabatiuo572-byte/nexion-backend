@@ -184,6 +184,7 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
                SET status='CLOSED',
                    last_message=#{message},
                    last_message_at=#{now},
+                   version=version+1,
                    updated_at=#{now}
              WHERE conversation_no=#{conversationNo}
                AND status='OPEN'

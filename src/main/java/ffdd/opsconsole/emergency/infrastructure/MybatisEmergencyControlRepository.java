@@ -496,6 +496,13 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public boolean requestExecutionCancellation(
+            String executionId, String reason, String operator) {
+        ensureTables();
+        return mapper.requestExecutionCancellation(executionId, reason, operator) == 1;
+    }
+
+    @Override
     public boolean claimExecutionRollback(String executionId) {
         ensureTables();
         return mapper.claimExecutionRollback(executionId) == 1;

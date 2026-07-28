@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -36,6 +37,7 @@ public class AppGenesisService {
     private static final String LEGACY_KILL_KEY = "J.killswitch.genesis";
     private static final String DISCLOSURE_KEY = "disclosure.gate.genesis";
     private static final String EMISSION_GATE_KEY = "growth.phase.genesis_emissions_open";
+    private static final String SALE_PREFIX = "market.genesis.ops.";
 
     private final AppGenesisMapper mapper;
     private final PlatformConfigFacade config;
@@ -48,20 +50,29 @@ public class AppGenesisService {
         AppGenesisMapper.SeriesRow series = requireSeries();
         long sold = mapper.holdingCount(series.seriesCode());
         boolean marketEnabled = marketEnabled();
+        SalePolicy salePolicy = salePolicy(series);
         return ApiResult.ok(linked(
                 "series", seriesView(series, sold),
                 "market", linked("enabled", marketEnabled, "restoreOwner", "J1", "internalP2POnly", true),
                 "emission", linked("open", emissionOpen(), "owner", "H1", "dailyRatePct", nz(series.dailyEmissionRatePct())),
+                "sale", salePolicy.publicView(clock.instant()),
                 "listings", mapper.listings(), "transactions", mapper.transactions(),
                 "serverCanonical", true,
                 "sources", List.of("nx_genesis_series", "nx_genesis_holding", "nx_genesis_order",
-                        "nx_genesis_emission_batch", "nx_genesis_emission_item", "nx_wallet_ledger")));
+                        "nx_genesis_emission_batch", "nx_genesis_emission_item", "nx_wallet_ledger",
+                        "nx_config_item:market.genesis.ops.*")));
     }
 
     public ApiResult<Map<String, Object>> account(Long userId) {
         requireUser(userId);
         AppGenesisMapper.SeriesRow series = requireSeries();
         return ApiResult.ok(accountView(userId, series));
+    }
+
+    public ApiResult<Map<String, Object>> eligibility(Long userId) {
+        requireUser(userId);
+        AppGenesisMapper.SeriesRow series = requireSeries();
+        return ApiResult.ok(eligibilityView(userId, series, salePolicy(series)));
     }
 
     @Transactional
@@ -74,16 +85,17 @@ public class AppGenesisService {
     }
 
     private ApiResult<Map<String, Object>> purchaseInternal(Long userId, String idempotencyKey, int quantity) {
-        requireEligibleUser(userId);
         if (!marketEnabled()) throw new BizException(409, "GENESIS_MARKET_PAUSED");
         AppGenesisMapper.SeriesRow series = mapper.lockActiveSeries();
         if (series == null) throw new BizException(409, "GENESIS_SERIES_UNAVAILABLE");
+        SalePolicy salePolicy = salePolicy(series);
+        requireEligibleUser(userId, series, salePolicy, quantity);
         long sold = mapper.lockHoldingCount(series.seriesCode());
         if (sold + quantity > series.totalSupply()) throw new BizException(409, "GENESIS_SOLD_OUT");
         if (mapper.updateSoldSupply(series.id(), sold + quantity) != 1) {
             throw new BizException(409, "GENESIS_SUPPLY_CONFLICT");
         }
-        BigDecimal unitPrice = money(series.priceUsdt());
+        BigDecimal unitPrice = salePolicy.purchasePrice(clock.instant(), money(series.priceUsdt()));
         BigDecimal amount = money(unitPrice.multiply(BigDecimal.valueOf(quantity)));
         BigDecimal beforeBalance = requireWallet(userId);
         if (beforeBalance.compareTo(amount) < 0 || mapper.debitWallet(userId, amount) != 1) {
@@ -134,10 +146,11 @@ public class AppGenesisService {
     }
 
     private ApiResult<Map<String, Object>> listInternal(Long userId, String holdingNo, String key, BigDecimal price) {
-        requireEligibleUser(userId);
         if (!marketEnabled()) throw new BizException(409, "GENESIS_MARKET_PAUSED");
         AppGenesisMapper.HoldingRow holding = requireHolding(holdingNo);
         if (!userId.equals(holding.userId())) throw new BizException(403, "GENESIS_HOLDING_OWNER_REQUIRED");
+        AppGenesisMapper.SeriesRow series = requireSeries();
+        requireEligibleUser(userId, series, salePolicy(series), 0);
         if (!"ACTIVE".equals(holding.status()) || mapper.listHolding(holding.id(), userId, price, LocalDateTime.now(clock)) != 1) {
             throw new BizException(409, "GENESIS_HOLDING_NOT_LISTABLE");
         }
@@ -182,7 +195,6 @@ public class AppGenesisService {
     }
 
     private ApiResult<Map<String, Object>> buyListingInternal(Long userId, String holdingNo, String key) {
-        requireEligibleUser(userId);
         if (!marketEnabled()) throw new BizException(409, "GENESIS_MARKET_PAUSED");
         AppGenesisMapper.HoldingRow holding = requireHolding(holdingNo);
         if (!"LISTED".equals(holding.status()) || holding.listingPriceUsdt() == null) {
@@ -193,6 +205,7 @@ public class AppGenesisService {
         if (series == null || !series.seriesCode().equals(holding.seriesCode())) {
             throw new BizException(409, "GENESIS_SERIES_UNAVAILABLE");
         }
+        requireEligibleUser(userId, series, salePolicy(series), 1);
         BigDecimal price = money(holding.listingPriceUsdt());
         BigDecimal royalty = price.multiply(BigDecimal.valueOf(series.royaltyBps()))
                 .divide(BigDecimal.valueOf(10_000), 6, RoundingMode.HALF_UP);
@@ -235,10 +248,12 @@ public class AppGenesisService {
     }
 
     private Map<String, Object> accountView(Long userId, AppGenesisMapper.SeriesRow series) {
+        SalePolicy policy = salePolicy(series);
         return linked("series", seriesView(series, mapper.holdingCount(series.seriesCode())),
                 "holdings", mapper.holdings(userId), "emissions", mapper.emissions(userId),
                 "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", marketEnabled(),
-                "emissionOpen", emissionOpen(), "serverCanonical", true);
+                "emissionOpen", emissionOpen(), "sale", policy.publicView(clock.instant()),
+                "eligibility", eligibilityView(userId, series, policy), "serverCanonical", true);
     }
 
     private Map<String, Object> seriesView(AppGenesisMapper.SeriesRow series, long sold) {
@@ -251,14 +266,97 @@ public class AppGenesisService {
                 "dailyEmissionRatePct", nz(series.dailyEmissionRatePct()));
     }
 
-    private void requireEligibleUser(Long userId) {
+    private void requireEligibleUser(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy salePolicy,
+                                     int acquiringQuantity) {
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         AppGenesisMapper.UserPolicyRow policy = requirePolicy(userId);
-        if (!"APPROVED".equals(policy.kycStatus())) throw new BizException(403, "GENESIS_KYC_REQUIRED");
+        if (salePolicy.eligibilityEnabled() && salePolicy.kycRequired()
+                && !"APPROVED".equals(policy.kycStatus())) {
+            throw new BizException(403, "GENESIS_KYC_REQUIRED");
+        }
+        int ageDays = policy.accountAgeDays() == null ? 0 : Math.max(0, policy.accountAgeDays());
+        if (salePolicy.eligibilityEnabled() && ageDays < salePolicy.minAccountAgeDays()) {
+            throw new BizException(403, "GENESIS_ACCOUNT_AGE_REQUIRED");
+        }
         if (policy.countryCode() == null || policy.countryCode().length() != 2) {
             throw new BizException(403, "GENESIS_COUNTRY_REQUIRED");
         }
         if (mapper.geoBlocked(policy.countryCode()) > 0) throw new BizException(403, "GENESIS_GEO_BLOCKED");
+        if (acquiringQuantity > 0) {
+            salePolicy.requireSaleOpen(clock.instant());
+            long owned = mapper.userHoldingCount(userId, series.seriesCode());
+            if (owned + acquiringQuantity > salePolicy.effectiveMaxPerUser()) {
+                throw new BizException(409, "GENESIS_USER_CAP_REACHED");
+            }
+        }
+    }
+
+    private Map<String, Object> eligibilityView(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy policy) {
+        AppGenesisMapper.UserPolicyRow user = requirePolicy(userId);
+        long owned = mapper.userHoldingCount(userId, series.seriesCode());
+        List<String> reasons = new java.util.ArrayList<>();
+        if (policy.eligibilityEnabled() && policy.kycRequired() && !"APPROVED".equals(user.kycStatus())) {
+            reasons.add("KYC_REQUIRED");
+        }
+        int ageDays = user.accountAgeDays() == null ? 0 : Math.max(0, user.accountAgeDays());
+        if (policy.eligibilityEnabled() && ageDays < policy.minAccountAgeDays()) reasons.add("ACCOUNT_AGE_REQUIRED");
+        if (user.countryCode() == null || user.countryCode().length() != 2) reasons.add("COUNTRY_REQUIRED");
+        else if (mapper.geoBlocked(user.countryCode()) > 0) reasons.add("GEO_BLOCKED");
+        if (!policy.saleOpen(clock.instant())) reasons.add("PRESALE_NOT_OPEN");
+        int max = policy.effectiveMaxPerUser();
+        if (owned >= max) reasons.add("USER_CAP_REACHED");
+        return linked("eligible", reasons.isEmpty(), "reasons", reasons,
+                "ownedCount", owned, "maxPerUser", max,
+                "remainingCap", Math.max(0L, (long) max - owned),
+                "kycRequired", policy.eligibilityEnabled() && policy.kycRequired(),
+                "minAccountAgeDays", policy.eligibilityEnabled() ? policy.minAccountAgeDays() : 0,
+                "accountAgeDays", ageDays, "serverCanonical", true);
+    }
+
+    private SalePolicy salePolicy(AppGenesisMapper.SeriesRow series) {
+        try {
+            boolean eligibilityEnabled = configBoolean("eligibility.enabled", true);
+            boolean kycRequired = configBoolean("eligibility.kycRequired", true);
+            int eligibilityMax = configInteger("eligibility.maxPerUser", 5);
+            int minAccountAgeDays = configInteger("eligibility.minAccountAgeDays", 0);
+            boolean presaleEnabled = configBoolean("presale.enabled", false);
+            boolean showCountdown = configBoolean("presale.showCountdown", true);
+            BigDecimal presalePrice = configDecimal("presale.unitPrice", money(series.priceUsdt()));
+            int presaleMax = configInteger("presale.maxPerUser", eligibilityMax);
+            Instant startAt = configInstant("presale.startAt");
+            Instant endAt = configInstant("presale.endAt");
+            if (eligibilityMax < 0 || minAccountAgeDays < 0 || presaleMax < 0 || presalePrice.signum() <= 0) {
+                throw new IllegalArgumentException();
+            }
+            if (presaleEnabled && (startAt == null || endAt == null || !startAt.isBefore(endAt))) {
+                throw new IllegalArgumentException();
+            }
+            return new SalePolicy(eligibilityEnabled, kycRequired, eligibilityMax, minAccountAgeDays,
+                    presaleEnabled, showCountdown, money(presalePrice), presaleMax, startAt, endAt);
+        } catch (RuntimeException ex) {
+            if (ex instanceof BizException bizException) throw bizException;
+            throw new BizException(503, "GENESIS_SALE_POLICY_INVALID");
+        }
+    }
+
+    private boolean configBoolean(String key, boolean fallback) {
+        return config.activeValue(SALE_PREFIX + key).map(raw -> {
+            if ("true".equalsIgnoreCase(raw.trim())) return true;
+            if ("false".equalsIgnoreCase(raw.trim())) return false;
+            throw new IllegalArgumentException();
+        }).orElse(fallback);
+    }
+
+    private int configInteger(String key, int fallback) {
+        return config.activeValue(SALE_PREFIX + key).map(raw -> Integer.parseInt(raw.trim())).orElse(fallback);
+    }
+
+    private BigDecimal configDecimal(String key, BigDecimal fallback) {
+        return config.activeValue(SALE_PREFIX + key).map(raw -> new BigDecimal(raw.trim())).orElse(fallback);
+    }
+
+    private Instant configInstant(String key) {
+        return config.activeValue(SALE_PREFIX + key).map(raw -> Instant.parse(raw.trim())).orElse(null);
     }
 
     private AppGenesisMapper.UserPolicyRow requirePolicy(Long userId) {
@@ -366,6 +464,46 @@ public class AppGenesisService {
         Map<String, Object> result = new LinkedHashMap<>();
         for (int i = 0; i < values.length; i += 2) result.put(String.valueOf(values[i]), values[i + 1]);
         return result;
+    }
+
+    private record SalePolicy(boolean eligibilityEnabled, boolean kycRequired, int eligibilityMaxPerUser,
+                              int minAccountAgeDays, boolean presaleEnabled, boolean showCountdown,
+                              BigDecimal presaleUnitPrice, int presaleMaxPerUser,
+                              Instant presaleStartAt, Instant presaleEndAt) {
+        int effectiveMaxPerUser() {
+            int eligibilityMax = eligibilityEnabled ? eligibilityMaxPerUser : Integer.MAX_VALUE;
+            return presaleEnabled ? Math.min(eligibilityMax, presaleMaxPerUser) : eligibilityMax;
+        }
+
+        boolean saleOpen(Instant now) {
+            return !presaleEnabled || (presaleStartAt != null && presaleEndAt != null
+                    && !now.isBefore(presaleStartAt) && now.isBefore(presaleEndAt));
+        }
+
+        void requireSaleOpen(Instant now) {
+            if (!saleOpen(now)) throw new BizException(409, "GENESIS_PRESALE_NOT_OPEN");
+        }
+
+        BigDecimal purchasePrice(Instant now, BigDecimal regularUnitPrice) {
+            requireSaleOpen(now);
+            return presaleEnabled ? presaleUnitPrice : regularUnitPrice;
+        }
+
+        Map<String, Object> publicView(Instant now) {
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("eligibilityEnabled", eligibilityEnabled);
+            view.put("kycRequired", eligibilityEnabled && kycRequired);
+            view.put("maxPerUser", effectiveMaxPerUser());
+            view.put("minAccountAgeDays", eligibilityEnabled ? minAccountAgeDays : 0);
+            view.put("presaleEnabled", presaleEnabled);
+            view.put("showCountdown", presaleEnabled && showCountdown);
+            view.put("unitPriceUsdt", presaleUnitPrice);
+            view.put("startAt", presaleStartAt);
+            view.put("endAt", presaleEndAt);
+            view.put("open", saleOpen(now));
+            view.put("serverCanonical", true);
+            return view;
+        }
     }
 
     public record PurchaseRequest(Integer quantity) {}

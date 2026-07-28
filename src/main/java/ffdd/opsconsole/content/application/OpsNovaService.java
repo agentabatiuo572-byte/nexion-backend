@@ -296,7 +296,10 @@ public class OpsNovaService {
         if ("ACTIVE".equals(status) && !current.get().expiresAt().isAfter(LocalDateTime.now())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_ALREADY_EXPIRED");
         }
-        novaRepository.updateSocialEventStatus(id, status, operator(request.operator()), request.reason().trim());
+        if (!novaRepository.updateSocialEventStatusIfCurrent(
+                current.get(), status, operator(request.operator()), request.reason().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_CONCURRENT_MODIFICATION");
+        }
         NovaSocialEventView updated = novaRepository.socialEvent(id).orElseThrow();
         audit("I2_NOVA_SOCIAL_EVENT_STATUS_CHANGED", String.valueOf(id), operator(request.operator()), idempotencyKey, request.reason(),
                 Map.of("from", current.get().status(), "to", status));
@@ -314,7 +317,10 @@ public class OpsNovaService {
         if (current.isEmpty()) {
             return ApiResult.ok();
         }
-        novaRepository.deleteSocialEvent(id, operator(request.operator()), request.reason().trim());
+        if (!novaRepository.deleteSocialEventIfCurrent(
+                current.get(), operator(request.operator()), request.reason().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_CONCURRENT_MODIFICATION");
+        }
         audit("I2_NOVA_SOCIAL_EVENT_DELETED", String.valueOf(id), operator(request.operator()), idempotencyKey, request.reason(),
                 Map.of("eventType", current.get().eventType()));
         return ApiResult.ok();
@@ -401,7 +407,7 @@ public class OpsNovaService {
                 request.trigger().trim(),
                 request.tick().trim(),
                 request.cooldown().trim(),
-                safeCtr(request.ctr()),
+                BigDecimal.ZERO,
                 false,
                 novaRepository.nextChannelOrder(),
                 operator(request.operator()),
@@ -435,16 +441,19 @@ public class OpsNovaService {
                 .isEmpty()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PUBLISHED_TEMPLATE_REQUIRED");
         }
-        novaRepository.updateChannel(
-                normalizedKey,
+        boolean updatedInDatabase = novaRepository.updateChannelIfCurrent(
+                current.get(),
                 request.name().trim(),
                 request.trigger().trim(),
                 request.tick().trim(),
                 request.cooldown().trim(),
-                safeCtr(request.ctr()),
+                current.get().ctr(),
                 enabled,
                 operator(request.operator()),
                 request.reason().trim());
+        if (!updatedInDatabase) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_CHANNEL_CONCURRENT_MODIFICATION");
+        }
         NovaChannelView updated = novaRepository.channel(normalizedKey).orElseThrow();
         audit("I2_NOVA_CHANNEL_UPDATED", normalizedKey, operator(request.operator()), idempotencyKey, request.reason(), Map.of(
                 "fromCtr", current.get().ctr(),
@@ -476,7 +485,11 @@ public class OpsNovaService {
                 .isEmpty()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_PUBLISHED_TEMPLATE_REQUIRED");
         }
-        novaRepository.updateChannelStatus(normalizedKey, request.enabled(), operator(request.operator()), request.reason().trim());
+        if (!novaRepository.updateChannelStatusIfCurrent(
+                normalizedKey, current.get().enabled(), request.enabled(),
+                operator(request.operator()), request.reason().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_CHANNEL_CONCURRENT_MODIFICATION");
+        }
         NovaChannelView updated = novaRepository.channel(normalizedKey).orElseThrow();
         audit(request.enabled() ? "I2_NOVA_CHANNEL_RESTORED" : "I2_NOVA_CHANNEL_KILLED", normalizedKey,
                 operator(request.operator()), idempotencyKey, request.reason(), Map.of("enabled", request.enabled()));
@@ -553,9 +566,16 @@ public class OpsNovaService {
         if (current.isEmpty()) {
             return ApiResult.fail(404, "NOVA_TEMPLATE_NOT_FOUND");
         }
-        novaRepository.updateTemplate(normalizedChannel, request.name().trim(), request.cta().trim(), request.version().trim(),
+        if (!"DRAFT".equalsIgnoreCase(current.get().status())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_NOT_DRAFT");
+        }
+        boolean updatedInDatabase = novaRepository.updateTemplateIfCurrent(
+                current.get(), request.name().trim(), request.cta().trim(), request.version().trim(),
                 request.titleZh().trim(), request.bodyZh().trim(), request.titleVi().trim(), request.bodyVi().trim(),
                 trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()), operator(request.operator()), request.reason().trim());
+        if (!updatedInDatabase) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
+        }
         novaRepository.channel(normalizedChannel)
                 .filter(NovaChannelView::enabled)
                 .ifPresent(channelView -> novaRepository.updateChannelStatus(
@@ -602,13 +622,22 @@ public class OpsNovaService {
         if (current.isEmpty()) {
             return ApiResult.fail(404, "NOVA_TEMPLATE_NOT_FOUND");
         }
+        boolean legalTransition = ("DRAFT".equalsIgnoreCase(current.get().status()) && "PUBLISHED".equals(status))
+                || ("PUBLISHED".equalsIgnoreCase(current.get().status()) && "ARCHIVED".equals(status));
+        if (!legalTransition) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_TRANSITION_INVALID");
+        }
         if (status.equals(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         if ("PUBLISHED".equals(status) && !hasCompleteLocalizedContent(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZED_CONTENT_REQUIRED");
         }
-        novaRepository.updateTemplateStatus(normalizedChannel, status, operator(request.operator()), request.reason().trim());
+        if (!novaRepository.updateTemplateStatusIfCurrent(
+                normalizedChannel, current.get().status(), status,
+                operator(request.operator()), request.reason().trim())) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
+        }
         novaRepository.channel(normalizedChannel)
                 .filter(NovaChannelView::enabled)
                 .filter(channelView -> !"PUBLISHED".equals(status))
@@ -641,6 +670,24 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_DISTRIBUTION_TOTAL_MUST_BE_100");
         }
         novaRepository.ensureTables();
+        List<NovaSocialDistributionItem> current = novaRepository.lockSocialDistribution();
+        if (request.expectedItems() != null) {
+            Map<String, Integer> expected = request.expectedItems().stream().collect(Collectors.toMap(
+                    item -> normalizeDistributionKey(item.key()),
+                    NovaDistributionUpdateRequest.Item::pct,
+                    (left, right) -> right,
+                    LinkedHashMap::new));
+            Map<String, Integer> actual = current.stream().collect(Collectors.toMap(
+                    NovaSocialDistributionItem::key,
+                    NovaSocialDistributionItem::pct,
+                    (left, right) -> right,
+                    LinkedHashMap::new));
+            if (!actual.equals(expected)) {
+                return ApiResult.fail(
+                        OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                        "NOVA_SOCIAL_DISTRIBUTION_CONCURRENT_MODIFICATION");
+            }
+        }
         next.forEach((key, value) -> {
             DistributionOption option = DISTRIBUTION_OPTIONS.get(key);
             novaRepository.upsertDistribution(key, option.name(), value, option.color(), operator(request.operator()), request.reason().trim());

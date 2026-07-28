@@ -161,6 +161,30 @@ public interface ContentExperimentRuntimeMapper extends BaseMapper<Object> {
     CopyBodyRow findPublishedCopy(@Param("copyKey") String copyKey);
 
     @Select("""
+            SELECT v.copy_key AS copyKey,
+                   v.version AS version,
+                   v.zh_text AS zhText,
+                   v.en_text AS enText,
+                   v.vi_text AS viText
+              FROM nx_content_copy_position p
+              JOIN nx_content_copy c
+                ON c.copy_position = p.position_key
+               AND c.is_deleted = 0
+               AND c.status = 'PUBLISHED'
+              JOIN nx_content_copy_version v
+                ON v.copy_key = c.copy_key
+               AND v.version = c.current_version
+               AND v.is_deleted = 0
+               AND v.status = 'PUBLISHED'
+             WHERE p.position_key = #{positionKey}
+               AND p.status = 'ACTIVE'
+               AND p.is_deleted = 0
+             ORDER BY c.updated_at DESC, c.id DESC
+             LIMIT 2
+            """)
+    List<CopyBodyRow> findPublishedCopiesByPosition(@Param("positionKey") String positionKey);
+
+    @Select("""
             SELECT copy_key AS copyKey,
                    version AS version,
                    zh_text AS zhText,

@@ -23,6 +23,14 @@ public interface AppWithdrawalMapper {
     Long findActiveUser(@Param("userId") Long userId);
 
     @Select("""
+            SELECT setting_value
+              FROM nx_emergency_control_setting
+             WHERE setting_key=#{settingKey} AND is_deleted=0
+             LIMIT 1
+            """)
+    String emergencyValue(@Param("settingKey") String settingKey);
+
+    @Select("""
             SELECT w.user_id userId,w.usdt_available usdtAvailable,w.nex_available nexAvailable,
                    w.pending_withdraw pendingWithdraw,w.version
               FROM nx_user_wallet w
@@ -46,7 +54,7 @@ public interface AppWithdrawalMapper {
     int countLast24Hours(@Param("userId") Long userId);
 
     @Select("""
-            SELECT CONCAT('U', LPAD(u.id, 8, '0')) userNo,
+            SELECT CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) userNo,
                    (SELECT COUNT(1) FROM nx_withdrawal_order w
                      WHERE w.user_id=u.id AND w.created_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR)
                        AND w.is_deleted=0) withdrawalCount24h,
@@ -75,7 +83,7 @@ public interface AppWithdrawalMapper {
                    k4m.auto_escalate_score k4AutoEscalateScore
               FROM nx_user u
               LEFT JOIN nx_admin_risk_score_user k4
-                ON k4.user_no=CONCAT('U',LPAD(u.id,8,'0'))
+                ON k4.user_no=CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))
                AND k4.is_deleted=0
                AND k4.as_of>=DATE_SUB(NOW(),INTERVAL 1 DAY)
               LEFT JOIN nx_admin_risk_score_model k4m
@@ -109,6 +117,7 @@ public interface AppWithdrawalMapper {
             INSERT INTO nx_withdrawal_order
               (user_id,withdrawal_no,asset,chain,amount,fee,target_address,status,
                d2_version,d2_hold_until,d2_penalty_fee_rate,d2_gross_fee,d2_nex_burned,
+               d2_network_fee_rate,d2_network_fee_min,d2_network_fee_max,d2_network_fee,
                d2_nex_fee_offset_rate,d2_fee_waived,d2_actual_fee,d2_net_receive,
                d2_lifecycle_owner,d2_freeze_period,d2_routing_priority,d2_k3_risk_route,
                d2_k4_risk_score,d2_k4_model_version,d2_k4_as_of,
@@ -118,6 +127,7 @@ public interface AppWithdrawalMapper {
             VALUES
               (#{userId},#{withdrawalNo},'USDT',#{chain},#{amount},#{actualFee},#{targetAddress},#{status},
                0,#{holdUntil},#{penaltyFeeRate},#{grossFee},#{nexBurned},
+               #{networkFeeRate},#{networkFeeMin},#{networkFeeMax},#{networkFee},
                #{nexFeeOffsetRate},#{feeWaived},#{actualFee},#{netReceive},
                #{lifecycleOwner},#{freezePeriod},#{routingPriority},#{k3RiskRoute},
                #{k4RiskScore},#{k4ModelVersion},#{k4AsOf},#{k4BandLowMax},#{k4BandHighMin},#{k4AutoEscalateScore},
@@ -125,17 +135,11 @@ public interface AppWithdrawalMapper {
             """)
     int insertWithdrawal(WithdrawalWrite write);
 
-    @Insert("""
-            INSERT INTO nx_wallet_ledger
-              (user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,remark,created_at,updated_at,is_deleted)
-            VALUES
-              (#{userId},#{bizNo},#{bizType},#{asset},'OUT',#{amount},#{balanceAfter},'POSTED',#{remark},NOW(),NOW(),0)
-            """)
-    int insertLedger(LedgerWrite write);
-
     @Select("""
             SELECT w.withdrawal_no withdrawalNo,w.amount,w.fee,w.chain,w.target_address targetAddress,
                    w.status,w.d2_hold_until holdUntil,w.d2_penalty_fee_rate penaltyFeeRate,
+                   w.d2_network_fee_rate networkFeeRate,w.d2_network_fee_min networkFeeMin,
+                   w.d2_network_fee_max networkFeeMax,w.d2_network_fee networkFee,
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
                    w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt
               FROM nx_withdrawal_order w
@@ -160,7 +164,9 @@ public interface AppWithdrawalMapper {
 
     record WithdrawalWrite(
             Long userId, String withdrawalNo, String chain, BigDecimal amount, String targetAddress,
-            LocalDateTime holdUntil, BigDecimal penaltyFeeRate, BigDecimal grossFee,
+            LocalDateTime holdUntil,
+            BigDecimal networkFeeRate, BigDecimal networkFeeMin, BigDecimal networkFeeMax, BigDecimal networkFee,
+            BigDecimal penaltyFeeRate, BigDecimal grossFee,
             BigDecimal nexBurned, BigDecimal nexFeeOffsetRate, BigDecimal feeWaived,
             BigDecimal actualFee, BigDecimal netReceive, String lifecycleOwner, String freezePeriod,
             String routingPriority, String k3RiskRoute,
@@ -180,10 +186,6 @@ public interface AppWithdrawalMapper {
             Integer k4BandLowMax,
             Integer k4BandHighMin,
             Integer k4AutoEscalateScore) { }
-
-    record LedgerWrite(
-            Long userId, String bizNo, String bizType, String asset,
-            BigDecimal amount, BigDecimal balanceAfter, String remark) { }
 
     record Attribution(String phase, Integer accountAgeMonths, String cohort) { }
 }

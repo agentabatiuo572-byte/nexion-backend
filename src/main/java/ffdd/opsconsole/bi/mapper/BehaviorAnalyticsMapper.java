@@ -30,13 +30,36 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT INTO nx_behavior_event_fact
-              (event_id,dedupe_key,event_name,session_hash,actor_hash,route,page_level,parent_l1,parent_l2,
+              (event_id,client_event_id,dedupe_key,event_name,session_hash,actor_hash,route,page_level,parent_l1,parent_l2,
                dwell_ms,x_norm,y_norm,zone,element_id,device_type,locale,occurred_at,created_at)
             VALUES
-              (#{eventId},#{dedupeKey},#{eventName},#{sessionHash},#{actorHash},#{route},#{pageLevel},#{parentL1},#{parentL2},
+              (#{eventId},#{clientEventId},#{dedupeKey},#{eventName},#{sessionHash},#{actorHash},#{route},#{pageLevel},#{parentL1},#{parentL2},
                #{dwellMs},#{xNorm},#{yNorm},#{zone},#{elementId},#{deviceType},#{locale},#{occurredAt},NOW())
             """)
     int insertFact(BehaviorFactRow row);
+
+    @Select("""
+            SELECT event_name AS eventName,session_hash AS sessionHash,route,dwell_ms AS dwellMs
+             FROM nx_behavior_event_fact
+             WHERE client_event_id=#{clientEventId}
+             LIMIT 1
+             FOR UPDATE
+            """)
+    ExistingEventRow findByClientEventId(@Param("clientEventId") String clientEventId);
+
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_behavior_event_fact
+               SET dwell_ms=#{dwellMs}
+             WHERE client_event_id=#{clientEventId}
+               AND event_name='app.page_viewed'
+               AND session_hash=#{sessionHash}
+               AND route=#{route}
+               AND dwell_ms<=#{dwellMs}
+            """)
+    int backfillPageDwell(@Param("clientEventId") String clientEventId,
+                          @Param("sessionHash") String sessionHash,
+                          @Param("route") String route,
+                          @Param("dwellMs") long dwellMs);
 
     @Select("""
             SELECT COUNT(*) FROM nx_behavior_event_fact
@@ -51,6 +74,13 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
              ORDER BY occurred_at DESC LIMIT 1
             """)
     LocalDateTime latestEventAt(@Param("sessionHash") String sessionHash, @Param("eventName") String eventName);
+
+    @Select("""
+            SELECT occurred_at FROM nx_behavior_event_fact
+             WHERE session_hash=#{sessionHash}
+             ORDER BY occurred_at DESC LIMIT 1
+            """)
+    LocalDateTime latestSessionEventAt(@Param("sessionHash") String sessionHash);
 
     @Select("SELECT COUNT(*) FROM nx_behavior_event_fact WHERE dedupe_key=#{dedupeKey}")
     long countByDedupeKey(@Param("dedupeKey") String dedupeKey);
@@ -179,9 +209,10 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                         @Param("deviceType") String deviceType, @Param("locale") String locale);
 
     record CatalogRow(String route, String titleZh, int pageLevel, String parentL1, String parentL2, boolean tracked) {}
-    record BehaviorFactRow(String eventId, String dedupeKey, String eventName, String sessionHash, String actorHash, String route,
+    record BehaviorFactRow(String eventId, String clientEventId, String dedupeKey, String eventName, String sessionHash, String actorHash, String route,
                            int pageLevel, String parentL1, String parentL2, Long dwellMs, Double xNorm, Double yNorm,
                            String zone, String elementId, String deviceType, String locale, LocalDateTime occurredAt) {}
+    record ExistingEventRow(String eventName, String sessionHash, String route, Long dwellMs) {}
     record ActivityRow(String route, long pv, long uv, long clicks, long dwellMs, double bounceRate, int pageCount) {}
     record TrendRow(String bucket, long pv, long clicks) {}
     record ClickPointRow(double x, double y, long weight) {}

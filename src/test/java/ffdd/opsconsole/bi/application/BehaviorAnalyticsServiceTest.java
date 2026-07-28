@@ -44,7 +44,7 @@ class BehaviorAnalyticsServiceTest {
                 .thenReturn("evt-1");
 
         var result = service.ingest(42L, new BehaviorEventRequest(
-                "app.page_viewed", "0123456789abcdef0123456789abcdef", "/pages/store/detail?sku=secret",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.page_viewed", "0123456789abcdef0123456789abcdef", "/pages/store/detail?sku=secret",
                 1200L, null, null, null, null, Instant.now().toEpochMilli(), "H5", "zh-CN"));
 
         assertThat(result.getCode()).isZero();
@@ -59,7 +59,7 @@ class BehaviorAnalyticsServiceTest {
                 new BehaviorAnalyticsMapper.CatalogRow("/pages/store/detail", "商品", 3,
                         "/pages/store/store", "/pages/store/store", true));
         assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
-                "app.element_clicked", "0123456789abcdef0123456789abcdef", "/pages/store/detail",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.element_clicked", "0123456789abcdef0123456789abcdef", "/pages/store/detail",
                 null, 1.2, 0.5, "CONTENT", null, Instant.now().toEpochMilli(), "H5", "zh-CN")))
                 .isInstanceOf(BizException.class);
     }
@@ -71,7 +71,7 @@ class BehaviorAnalyticsServiceTest {
                         "/pages/store/store", "/pages/store/store", true));
 
         assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
-                "app.element_clicked", "0123456789abcdef0123456789abcdef", "/pages/store/detail",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.element_clicked", "0123456789abcdef0123456789abcdef", "/pages/store/detail",
                 null, 0.5, 0.1, "BOTTOM", null, Instant.now().toEpochMilli(), "H5", "zh-CN")))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("L6_ZONE_INVALID");
@@ -85,8 +85,8 @@ class BehaviorAnalyticsServiceTest {
         when(mapper.countByDedupeKey(org.mockito.ArgumentMatchers.anyString())).thenReturn(1L);
 
         var result = service.ingest(42L, new BehaviorEventRequest(
-                "app.page_viewed", "0123456789abcdef0123456789abcdef", "/pages/store/detail",
-                1200L, null, null, null, null, 123456789L, "APP", "en-US"));
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.page_viewed", "0123456789abcdef0123456789abcdef", "/pages/store/detail",
+                1200L, null, null, null, null, Instant.now().toEpochMilli(), "APP", "en-US"));
 
         assertThat(result.getData()).containsEntry("duplicate", true).containsEntry("accepted", false);
         verify(outbox, org.mockito.Mockito.never()).publishClientAnalyticsEvent(
@@ -100,5 +100,40 @@ class BehaviorAnalyticsServiceTest {
         assertThatThrownBy(() -> service.clickHeat("/pages/store/store", "7d", "ALL", "ALL", "L1"))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("L6_AGGREGATE_NODE_NO_COORDINATES");
+    }
+
+    @Test
+    void invalidQueryValuesFailClosedInsteadOfFallingBack() {
+        assertThatThrownBy(() -> service.behavior("forever", "ALL", "ALL", "ALL", "pv"))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_WINDOW_INVALID");
+        assertThatThrownBy(() -> service.behavior("7d", "ALL", "ALL", "L9", "pv"))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_DEPTH_INVALID");
+        assertThatThrownBy(() -> service.behavior("7d", "ALL", "ALL", "ALL", "money"))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_SORT_INVALID");
+    }
+
+    @Test
+    void missingStaleAndOutOfOrderClientTimesFailClosed() {
+        when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(
+                new BehaviorAnalyticsMapper.CatalogRow("/pages/store/detail", "商品", 3,
+                        "/pages/store/store", "/pages/store/store", true));
+        when(mapper.latestSessionEventAt(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(java.time.LocalDateTime.now().plusSeconds(1));
+
+        assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.page_viewed",
+                "0123456789abcdef0123456789abcdef", "/pages/store/detail",
+                0L, null, null, null, null, null, "APP", "en-US")))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_CLIENT_TIME_INVALID");
+        assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "app.page_viewed",
+                "0123456789abcdef0123456789abcdef", "/pages/store/detail",
+                0L, null, null, null, null, Instant.now().minusSeconds(86_401).toEpochMilli(), "APP", "en-US")))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_CLIENT_TIME_INVALID");
+        assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
+                "cccccccccccccccccccccccccccccccc", "app.page_viewed",
+                "0123456789abcdef0123456789abcdef", "/pages/store/detail",
+                0L, null, null, null, null, Instant.now().toEpochMilli(), "APP", "en-US")))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_EVENT_OUT_OF_ORDER");
     }
 }

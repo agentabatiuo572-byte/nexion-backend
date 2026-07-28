@@ -63,7 +63,7 @@ public class OpsKillSwitchService {
     private static final List<GateSeed> GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现闸", "提现申请、审核与链上广播", "控制所有提现资金出口", "提现出口一键止血", true, true, "immediate", ""),
             new GateSeed("staking", "质押闸", "新质押与高息档恢复", "控制新增质押和未来利息负债", "恢复会增加未来利息负债", true, true, "delayed", ""),
-            new GateSeed("genesis", "Genesis 闸", "创世节点购买与二级市场", "控制节点购买、分红和交易流", "恢复会放大节点分红和交易流", true, true, "delayed", ""),
+            new GateSeed("genesis", "Genesis 闸", "创世节点购买与二级市场", "控制节点购买、分红和交易流", "恢复会立即放大节点排放和交易流", true, true, "immediate", ""),
             new GateSeed("exchange", "兑换闸", "NEX 与 USDT 兑换", "控制兑换资金出口", "兑换出口一键止血", true, true, "immediate", ""),
             new GateSeed("trial", "试用闸", "试用权益派发与续期", "控制不直接出金的试用权益", "不直接出钱但影响增长权益", false, false, "none", ""));
 
@@ -633,8 +633,11 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EMERGENCY_SLA_READONLY");
         }
         String value;
+        String expectedValue;
         try {
             value = normalizeSlaValue(seed, request.value());
+            expectedValue = requireExpectedValue(request.expectedValue(), "EMERGENCY_SLA_EXPECTED_VALUE_REQUIRED");
+            normalizeSlaValue(seed, expectedValue);
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
@@ -642,15 +645,41 @@ public class OpsKillSwitchService {
         return idempotent(
                 "J1_EMERGENCY_SLA:" + seed.id(),
                 idempotencyKey,
-                requestHash(seed.id(), value, request.reason(), operator),
-                () -> updateEmergencySlaOnce(seed, value, idempotencyKey, request, operator));
+                requestHash(seed.id(), value, expectedValue, request.reason(), operator),
+                () -> updateEmergencySlaOnce(seed, value, expectedValue, idempotencyKey, request, operator));
     }
 
     private ApiResult<Map<String, Object>> updateEmergencySlaOnce(
-            EmergencySlaSeed seed, String value, String idempotencyKey,
+            EmergencySlaSeed seed, String value, String expectedValue, String idempotencyKey,
             EmergencyConfigUpdateRequest request, String operator) {
-        String before = activeValue(emergencySlaConfigKey(seed.id())).orElse(seed.defaultValue());
-        emergencyRepository.upsertSetting(emergencySlaConfigKey(seed.id()), value, "NUMBER", GROUP_EMERGENCY, "J1 emergency SLA parameter", operator);
+        String configKey = emergencySlaConfigKey(seed.id());
+        Optional<String> current = activeValue(configKey);
+        if (current.isEmpty()) {
+            auditRejected("J1_EMERGENCY_SLA_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "paramKey", seed.id(), "expectedValue", expectedValue,
+                    "reason", request.reason().trim(), "result", "STATE_UNAVAILABLE"));
+            return ApiResult.fail(409, "J1_CONFIG_STATE_UNAVAILABLE");
+        }
+        String before = current.get().trim();
+        if (!before.equals(expectedValue)) {
+            auditRejected("J1_EMERGENCY_SLA_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "paramKey", seed.id(), "expectedValue", expectedValue, "actualValue", before,
+                    "reason", request.reason().trim(), "result", "STALE_VERSION"));
+            return ApiResult.fail(409, "J1_CONFIG_STALE_VERSION");
+        }
+        if (normalizeSlaValue(seed, before).equals(value)) {
+            auditRejected("J1_EMERGENCY_SLA_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "paramKey", seed.id(), "expectedValue", expectedValue, "actualValue", before,
+                    "reason", request.reason().trim(), "result", "NO_CHANGES"));
+            return ApiResult.fail(409, "J1_CONFIG_NO_CHANGES");
+        }
+        if (!emergencyRepository.compareAndSetSetting(configKey, before, value, operator)) {
+            String actual = activeValue(configKey).orElse("<missing>");
+            auditRejected("J1_EMERGENCY_SLA_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "paramKey", seed.id(), "expectedValue", expectedValue, "actualValue", actual,
+                    "reason", request.reason().trim(), "result", "CONCURRENT_WRITE"));
+            return ApiResult.fail(409, "J1_CONFIG_STALE_VERSION");
+        }
         audit("J1_EMERGENCY_SLA_CHANGED", seed.id(), operator, Map.of(
                 "paramKey", seed.id(),
                 "before", before,
@@ -674,8 +703,11 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "AUTO_RULE_READONLY");
         }
         String value;
+        String expectedValue;
         try {
             value = normalizeAutoRuleValue(seed, request.value());
+            expectedValue = requireExpectedValue(request.expectedValue(), "AUTO_RULE_EXPECTED_VALUE_REQUIRED");
+            normalizeAutoRuleValue(seed, expectedValue);
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
@@ -683,15 +715,41 @@ public class OpsKillSwitchService {
         return idempotent(
                 "J1_AUTO_RULE:" + seed.id(),
                 idempotencyKey,
-                requestHash(seed.id(), value, request.reason(), operator),
-                () -> updateAutoRuleOnce(seed, value, idempotencyKey, request, operator));
+                requestHash(seed.id(), value, expectedValue, request.reason(), operator),
+                () -> updateAutoRuleOnce(seed, value, expectedValue, idempotencyKey, request, operator));
     }
 
     private ApiResult<Map<String, Object>> updateAutoRuleOnce(
-            AutoRuleSeed seed, String value, String idempotencyKey,
+            AutoRuleSeed seed, String value, String expectedValue, String idempotencyKey,
             EmergencyConfigUpdateRequest request, String operator) {
-        String before = activeValue(autoRuleConfigKey(seed.id())).orElse(seed.threshold());
-        emergencyRepository.upsertSetting(autoRuleConfigKey(seed.id()), value, seed.valueType().toUpperCase(Locale.ROOT), GROUP_AUTORULE, "J1 auto trigger rule threshold", operator);
+        String configKey = autoRuleConfigKey(seed.id());
+        Optional<String> current = activeValue(configKey);
+        if (current.isEmpty()) {
+            auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "ruleId", seed.id(), "expectedValue", expectedValue,
+                    "reason", request.reason().trim(), "result", "STATE_UNAVAILABLE"));
+            return ApiResult.fail(409, "J1_CONFIG_STATE_UNAVAILABLE");
+        }
+        String before = current.get().trim();
+        if (!before.equals(expectedValue)) {
+            auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", before,
+                    "reason", request.reason().trim(), "result", "STALE_VERSION"));
+            return ApiResult.fail(409, "J1_CONFIG_STALE_VERSION");
+        }
+        if (normalizeAutoRuleValue(seed, before).equals(value)) {
+            auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", before,
+                    "reason", request.reason().trim(), "result", "NO_CHANGES"));
+            return ApiResult.fail(409, "J1_CONFIG_NO_CHANGES");
+        }
+        if (!emergencyRepository.compareAndSetSetting(configKey, before, value, operator)) {
+            String actual = activeValue(configKey).orElse("<missing>");
+            auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
+                    "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", actual,
+                    "reason", request.reason().trim(), "result", "CONCURRENT_WRITE"));
+            return ApiResult.fail(409, "J1_CONFIG_STALE_VERSION");
+        }
         audit("J1_AUTO_RULE_CHANGED", seed.id(), operator, Map.of(
                 "ruleId", seed.id(),
                 "before", before,
@@ -980,6 +1038,10 @@ public class OpsKillSwitchService {
             throw new IllegalArgumentException(errorCode);
         }
         return value.trim();
+    }
+
+    private String requireExpectedValue(String value, String errorCode) {
+        return normalizeConfigValue(value, errorCode);
     }
 
     private ApiResult<Map<String, Object>> validationFailed(String message) {

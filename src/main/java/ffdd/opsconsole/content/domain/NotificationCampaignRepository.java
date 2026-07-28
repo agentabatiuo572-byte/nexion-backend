@@ -71,5 +71,10 @@ public interface NotificationCampaignRepository {
 
     Optional<NotificationCapRuleView> findCapRule(String tier);
 
-    void updateCapRule(String tier, String cap, String operator, LocalDateTime now);
+    boolean updateCapRuleIfCurrent(
+            String tier,
+            String cap,
+            String expectedCap,
+            String operator,
+            LocalDateTime now);
 }

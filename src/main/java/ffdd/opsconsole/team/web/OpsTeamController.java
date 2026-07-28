@@ -68,12 +68,15 @@ public class OpsTeamController {
         return teamService.leadershipPool();
     }
 
-    /** F4: 手动触发领导池周结算(注入+票权分配)。F4-MD2,幂等(同周已结算则跳过)。 */
+    /**
+     * F4 资金动作禁止绕过 A2。保留端点用于旧客户端明确收到 A2_CONFIRMATION_REQUIRED;
+     * 正常入口是 A2 f4_pool_settle 提案,批准后由 OpsTeamService replay 执行。
+     */
     @PostMapping("/leadership-pool/settle")
-    @PreAuthorize("hasAuthority('network_f4_write')")
+    @PreAuthorize("hasAuthority('network_f4_pool_fund')")
     public ApiResult<Map<String, Object>> leadershipPoolSettle() {
-        int settled = leadershipPoolService.injectAndSettleCurrentWeek();
-        return ApiResult.ok(Map.of("settled", settled, "source", "LeadershipPoolService.injectAndSettleCurrentWeek"));
+        int settled = leadershipPoolService.injectAndSettleApprovedCurrentWeek("direct-endpoint", "");
+        return ApiResult.ok(Map.of("settled", settled, "source", "F4_A2_APPROVED_REPLAY"));
     }
 
     @PatchMapping("/ranks/{rank}/thresholds/{field}")

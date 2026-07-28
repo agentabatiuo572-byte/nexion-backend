@@ -4,14 +4,18 @@ package ffdd.opsconsole.bi.infrastructure;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
+import ffdd.opsconsole.bi.domain.BiReportSnapshot;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
 import ffdd.opsconsole.bi.domain.L2FunnelAnalytics;
 import ffdd.opsconsole.bi.domain.L4OperationsAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +27,8 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class MybatisBiReportRepository implements BiReportRepository {
     private final BiReportMapper mapper;
+    private final BiReportArtifactStore artifactStore;
+    private final EventOutboxService eventOutboxService;
 
     @PostConstruct
     void ensureSchema() {
@@ -97,14 +103,39 @@ public class MybatisBiReportRepository implements BiReportRepository {
 
     @Override
     public void saveSnapshotCsv(String reportId, String snapshotCsv) {
-        if (mapper.updateSnapshotCsv(reportId, snapshotCsv) != 1) {
+        artifactStore.storeCsv(reportId, snapshotCsv);
+        if (mapper.updateSnapshotCsv(reportId, "@MINIO:" + reportId) != 1) {
             throw new IllegalStateException("BI_REPORT_SNAPSHOT_WRITE_FAILED");
         }
     }
 
     @Override
     public Optional<String> findSnapshotCsv(String reportId) {
-        return Optional.ofNullable(mapper.findSnapshotCsv(reportId));
+        Optional<BiReportSnapshot> artifact = artifactStore.open(reportId);
+        if (artifact.isPresent()) {
+            try (BiReportSnapshot snapshot = artifact.get()) {
+                return Optional.of(new String(snapshot.inputStream().readAllBytes(), StandardCharsets.UTF_8));
+            } catch (IOException exception) {
+                throw new IllegalStateException("BI_REPORT_ARTIFACT_READ_FAILED", exception);
+            }
+        }
+        String legacy = mapper.findSnapshotCsv(reportId);
+        return legacy == null || legacy.startsWith("@MINIO:")
+                ? Optional.empty()
+                : Optional.of(legacy);
+    }
+
+    @Override
+    public boolean hasSnapshot(String reportId) {
+        if (artifactStore.exists(reportId)) return true;
+        String legacy = mapper.findSnapshotCsv(reportId);
+        return StringUtils.hasText(legacy) && !legacy.startsWith("@MINIO:");
+    }
+
+    @Override
+    public Optional<BiReportSnapshot> openSnapshot(String reportId) {
+        Optional<BiReportSnapshot> artifact = artifactStore.open(reportId);
+        return artifact.isPresent() ? artifact : BiReportRepository.super.openSnapshot(reportId);
     }
 
     @Override
@@ -115,13 +146,31 @@ public class MybatisBiReportRepository implements BiReportRepository {
     }
 
     @Override
+    public void saveDownloadToken(
+            String reportId, String tokenHash, LocalDateTime expiresAt, Long adminId) {
+        if (adminId == null || adminId <= 0) throw new IllegalArgumentException("ADMIN_AUTH_REQUIRED");
+        artifactStore.issueGrant(reportId, tokenHash, adminId, expiresAt);
+    }
+
+    @Override
     public boolean isDownloadTokenValid(String reportId, String tokenHash, LocalDateTime now) {
         return mapper.countValidDownloadToken(reportId, tokenHash, now) == 1;
     }
 
     @Override
+    public boolean isDownloadTokenValid(
+            String reportId, String tokenHash, LocalDateTime now, Long adminId) {
+        return adminId != null && artifactStore.isGrantValid(reportId, tokenHash, adminId, now);
+    }
+
+    @Override
     public boolean updateActionIfStatus(String reportId, String action, String expectedStatus, String nextStatus, String reason) {
         return mapper.updateActionIfStatus(reportId, action, expectedStatus, nextStatus, reason) == 1;
+    }
+
+    @Override
+    public String publishReportExported(String reportId, Map<String, Object> payload) {
+        return eventOutboxService.publish("BI_REPORT", reportId, "admin.report_exported", payload);
     }
 
     private Map<String, Object> kpiDashboard() {
@@ -147,17 +196,30 @@ public class MybatisBiReportRepository implements BiReportRepository {
     }
 
     private Map<String, Object> funnelDashboard() {
+        return funnelDashboard(null, null, null, null, true);
+    }
+
+    @Override
+    public Map<String, Object> l2Dashboard(String cohort, String phase, String locale, String ref) {
+        return funnelDashboard(cohort, phase, locale, ref, false);
+    }
+
+    private Map<String, Object> funnelDashboard(
+            String cohort, String phase, String locale, String ref, boolean allowIndependentFallback) {
         Map<String, Object> dashboard = linked(
                 "module", "L2",
-                "stages", List.of(
+                "sources", List.of("nx_event_outbox:event_name", "nx_event_schema_registry"));
+        if (allowIndependentFallback) {
+            dashboard.put("stages", List.of(
                         stage("registered", mapper.countA4DistinctActors("auth.register_completed"), "nx_event_outbox:auth.register_completed"),
                         stage("profileCompleted", mapper.countA4DistinctActors("onboarding.profile_completed"), "nx_event_outbox:onboarding.profile_completed"),
                         stage("kycSubmitted", mapper.countA4DistinctActors("kyc.express_started"), "nx_event_outbox:kyc.express_started"),
                         stage("kycApproved", mapper.countA4DistinctActors("kyc.express_verified"), "nx_event_outbox:kyc.express_verified"),
                         stage("ordered", mapper.countA4DistinctActors("checkout.started"), "nx_event_outbox:checkout.started"),
-                        stage("walletActivity", mapper.countA4DistinctActors("wallet.topup_confirmed"), "nx_event_outbox:wallet.topup_confirmed")),
-                "sources", List.of("nx_event_outbox:event_name", "nx_event_schema_registry"));
-        Map<String, Object> analytics = L2FunnelAnalytics.calculate(mapper.selectL2EventFacts());
+                        stage("walletActivity", mapper.countA4DistinctActors("wallet.topup_confirmed"), "nx_event_outbox:wallet.topup_confirmed")));
+        }
+        Map<String, Object> analytics = L2FunnelAnalytics.calculate(
+                mapper.selectL2EventFacts(), cohort, phase, locale, ref);
         dashboard.put("capabilities", linked(
                 "sameUserFunnel", Boolean.TRUE.equals(analytics.get("available")),
                 "cohortRetention", Boolean.TRUE.equals(analytics.get("available")),
@@ -167,6 +229,7 @@ public class MybatisBiReportRepository implements BiReportRepository {
             dashboard.putAll(analytics);
             dashboard.put("module", "L2");
         } else {
+            dashboard.putAll(analytics);
             dashboard.put("degraded", analytics);
         }
         return dashboard;

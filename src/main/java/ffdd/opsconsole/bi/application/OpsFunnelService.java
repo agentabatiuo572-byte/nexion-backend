@@ -38,9 +38,14 @@ public class OpsFunnelService {
     private final AuditLogService auditLogService;
 
     public ApiResult<Map<String, Object>> overview(String cohort, String phase, String ref) {
+        return overview(cohort, phase, ref, "purchase");
+    }
+
+    public ApiResult<Map<String, Object>> overview(String cohort, String phase, String ref, String stage) {
         Filter filter = filter(cohort, phase, ref);
+        String normalizedStage = normalizeStage(stage);
         Map<String, Object> result = mutable(B3FunnelAnalytics.calculate(
-                mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref()));
+                mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref(), normalizedStage));
         result.put("savedViews", mapper.selectB3Views(currentAdminId()));
         result.put("crossDomainLinks", List.of(
                 linked("label", "L2 完整下钻", "href", "/analytics/funnel-cohort"),
@@ -49,7 +54,8 @@ public class OpsFunnelService {
         audit("admin.funnel_viewed", "GET", "READ", linked(
                 "cohort", filter.valueOrAll(filter.cohort()),
                 "phase", filter.valueOrAll(filter.phase()),
-                "ref", filter.valueOrAll(filter.ref())));
+                "ref", filter.valueOrAll(filter.ref()),
+                "stage", normalizedStage));
         return ApiResult.ok(result);
     }
 

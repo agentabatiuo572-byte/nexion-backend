@@ -54,6 +54,7 @@ public class AppExchangeService {
     private final EventOutboxService outbox;
     private final AuditLogService audit;
     private final RiskKycReviewFacade riskKycReviewFacade;
+    private final G2ExchangeFeeAllocationService feeAllocationService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
@@ -146,6 +147,8 @@ public class AppExchangeService {
                 "IN", toAmount, money(toAfter), "G2 canonical swap credit; fee allocated server-side")) != 1) {
             throw new BizException(409, "EXCHANGE_LEDGER_CONFLICT");
         }
+        G2ExchangeFeeAllocationService.Allocation allocation =
+                feeAllocationService.allocate(exchangeNo, fee, price);
         AppExchangeMapper.UserAttribution attribution = requireAttribution(userId);
         Map<String, Object> event = linked(
                 "exchangeNo", exchangeNo, "fromAsset", request.fromAsset(), "toAsset", toAsset,
@@ -157,6 +160,9 @@ public class AppExchangeService {
         Map<String, Object> result = stateMap(userId, mapper.lockWalletGate(userId));
         result.put("order", orderMap(write));
         result.put("feeUsdt", fee);
+        result.put("feeAllocation", linked(
+                "burnPoolUsdt", allocation.burnPoolUsdt(),
+                "feeBufferUsdt", allocation.feeBufferUsdt()));
         result.put("receiptId", receiptId);
         return ApiResult.ok(result);
     }

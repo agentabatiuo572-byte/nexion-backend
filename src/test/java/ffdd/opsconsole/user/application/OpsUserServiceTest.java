@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -864,6 +865,20 @@ class OpsUserServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_MASKED_EXPORT_CREATED");
+    }
+
+    @Test
+    void kycExportRejectsUnknownScopeBeforeCreatingAJob() {
+        ApiResult<Map<String, Object>> result = service.createKycExport(
+                "idem-c4-export-invalid-scope",
+                new UserKycExportRequest("UNMASKED_ALL", "quarterly regulatory package", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("C4_EXPORT_SCOPE_INVALID");
+        verifyNoInteractions(biKycExportFacade);
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_MASKED_EXPORT_REJECTED");
     }
 
     @Test

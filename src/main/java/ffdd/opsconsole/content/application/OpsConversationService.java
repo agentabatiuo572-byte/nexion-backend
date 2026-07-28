@@ -500,7 +500,8 @@ public class OpsConversationService {
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
-        if (!"OPEN".equalsIgnoreCase(conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
+                || !"OPEN".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
         String targetType = normalizeTargetType(request.targetType());
@@ -529,14 +530,7 @@ public class OpsConversationService {
             return invalidState();
         }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        audit("I9_CONVERSATION_TRANSFERRED", conversation.conversationNo(), request.operator(), Map.of(
-                "fromAgentId", conversation.ownerAgentId(),
-                "fromAgentName", conversation.ownerAgentName(),
-                "toType", targetType,
-                "toId", targetId,
-                "toName", targetName,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+        // Routine handoff trace is the transfer ledger plus system message; it must not enter A2.
         return ApiResult.ok(updated);
     }
 
@@ -554,26 +548,24 @@ public class OpsConversationService {
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
-        if (!"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
+                || !"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
         String actor = operator(request.operator());
         var acceptingAgent = supportAgentService.currentAssignableSupportAgent().orElse(null);
-        if (acceptingAgent == null
-                || !"agent".equalsIgnoreCase(conversation.transferToType())
-                || !(String.valueOf(acceptingAgent.adminId()).equals(conversation.transferToId())
-                    || acceptingAgent.id().equals(conversation.transferToId()))) {
+        boolean queueOrStandby = "queue".equalsIgnoreCase(conversation.transferToType())
+                || "standby".equalsIgnoreCase(conversation.transferToType());
+        boolean assignedToActor = "agent".equalsIgnoreCase(conversation.transferToType())
+                && (String.valueOf(acceptingAgent == null ? null : acceptingAgent.adminId()).equals(conversation.transferToId())
+                    || (acceptingAgent != null && acceptingAgent.id().equals(conversation.transferToId())));
+        if (acceptingAgent == null || (!queueOrStandby && !assignedToActor)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "CONVERSATION_TRANSFER_ACCEPT_FORBIDDEN");
         }
         if (!conversationRepository.acceptTransfer(conversation, acceptingAgent.id(), acceptingAgent.name(), actor, LocalDateTime.now(clock))) {
             return invalidState();
         }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        audit("I9_CONVERSATION_TRANSFER_ACCEPTED", conversation.conversationNo(), request.operator(), Map.of(
-                "fromAgentId", conversation.transferFromAgentId(),
-                "acceptedBy", actor,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
     }
 
@@ -591,18 +583,15 @@ public class OpsConversationService {
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
-        if (!"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
+                || !"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
-        if (!conversationRepository.returnTransfer(conversation, request.reason().trim(), operator(request.operator()), LocalDateTime.now(clock))) {
+        String returnTarget = "standby".equalsIgnoreCase(request.target()) ? "standby" : "from";
+        if (!conversationRepository.returnTransfer(conversation, returnTarget, request.reason().trim(), operator(request.operator()), LocalDateTime.now(clock))) {
             return invalidState();
         }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        audit("I9_CONVERSATION_TRANSFER_RETURNED", conversation.conversationNo(), request.operator(), Map.of(
-                "returnToAgentId", conversation.transferFromAgentId(),
-                "returnedBy", operator(request.operator()),
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
     }
 
@@ -620,7 +609,8 @@ public class OpsConversationService {
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
-        if (!"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
+                || !"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
         String actor = operator(request.operator());
@@ -628,11 +618,6 @@ public class OpsConversationService {
             return invalidState();
         }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        audit("I9_CONVERSATION_TRANSFER_WAITED", conversation.conversationNo(), actor, Map.of(
-                "fromAgentId", conversation.transferFromAgentId(),
-                "toTargetId", conversation.transferToId(),
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
     }
 
@@ -650,7 +635,8 @@ public class OpsConversationService {
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
-        if ("TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
+                || "TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
         String body = request.body().trim();
@@ -781,7 +767,7 @@ public class OpsConversationService {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
         String targetStatus = normalizeStatus(request.status());
-        if (!matchesExpectedStatus(request.expectedStatus(), conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)) {
             return invalidState();
         }
         if (!canDirectStatusChange(conversation.status(), targetStatus)) {
@@ -815,7 +801,7 @@ public class OpsConversationService {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
         boolean archived = request == null || request.archived() == null || request.archived();
-        if (!matchesExpectedStatus(request.expectedStatus(), conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)) {
             return invalidState();
         }
         if (archived && "TRANSFERRED".equalsIgnoreCase(conversation.status())) {
@@ -860,7 +846,10 @@ public class OpsConversationService {
         for (String id : ids.stream().sorted().toList()) {
             ContentConversationView row = conversationRepository.findByConversationNoForUpdate(id).orElse(null);
             if (row == null) return ApiResult.fail(404, "CONVERSATION_NOT_FOUND:" + id);
-            if (!"RESOLVED".equalsIgnoreCase(row.status())) return invalidBatchState();
+            Long expectedVersion = request.expectedVersions() == null ? null : request.expectedVersions().get(id);
+            if (!"RESOLVED".equalsIgnoreCase(row.status())
+                    || expectedVersion == null
+                    || !expectedVersion.equals(row.version())) return invalidBatchState();
             lockedRows.put(id, row);
         }
         List<ContentConversationView> rows = ids.stream().map(lockedRows::get).toList();
@@ -898,7 +887,8 @@ public class OpsConversationService {
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
-        if (!"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
+                || !"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
         String actor = operator(request.operator());
@@ -908,11 +898,6 @@ public class OpsConversationService {
             return invalidState();
         }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        audit("I9_CONVERSATION_TRANSFER_FALLBACK", conversation.conversationNo(), actor, Map.of(
-                "fromTargetId", conversation.transferToId(),
-                "toTargetId", "standby-pool",
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
     }
 
@@ -942,13 +927,6 @@ public class OpsConversationService {
                 continue;
             }
             changed += 1;
-            audit("I9_CONVERSATION_TRANSFER_AUTO_FALLBACK", locked.conversationNo(), "system", auditDetail(
-                    "fromTargetId", locked.transferToId(),
-                    "toTargetId", "standby-pool",
-                    "transferredAt", locked.transferredAt(),
-                    "timeoutMinutes", TRANSFER_TIMEOUT_MINUTES,
-                    "reason", reason,
-                    "idempotencyKey", "system:auto-timeout-fallback:" + locked.conversationNo() + ":" + now));
         }
         return changed;
     }
@@ -967,7 +945,8 @@ public class OpsConversationService {
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
-        if ("CLOSED".equalsIgnoreCase(conversation.status())) {
+        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
+                || "CLOSED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
         String category = normalizeTicketCategory(request.category());
@@ -1276,9 +1255,12 @@ public class OpsConversationService {
         return StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : "";
     }
 
-    private boolean matchesExpectedStatus(String expectedStatus, String actualStatus) {
-        return !StringUtils.hasText(expectedStatus)
-                || normalizeStatus(expectedStatus).equals(normalizeStatus(actualStatus));
+    private boolean matchesExpectedSnapshot(String expectedStatus, Long expectedVersion, ContentConversationView actual) {
+        return StringUtils.hasText(expectedStatus)
+                && expectedVersion != null
+                && expectedVersion >= 0
+                && normalizeStatus(expectedStatus).equals(normalizeStatus(actual.status()))
+                && expectedVersion.equals(actual.version());
     }
 
     private boolean invalidReason(String reason) {
@@ -1402,7 +1384,7 @@ public class OpsConversationService {
     }
 
     private void audit(String action, String conversationNo, String operator, Map<String, Object> detail) {
-        auditLogService.record(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("CONVERSATION")
                 .resourceId(conversationNo)

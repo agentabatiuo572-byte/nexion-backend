@@ -12,6 +12,7 @@ import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EarningMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EventReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakState;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakPowerUp;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.VoucherClaimDefinition;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -28,6 +29,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,6 +49,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppGrowthEngagementService {
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
     private final AppGrowthEngagementMapper mapper;
     private final VoucherGrantFacade voucherGrantFacade;
@@ -55,30 +59,83 @@ public class AppGrowthEngagementService {
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
 
+    public ApiResult<Map<String, Object>> questState(Long userId) {
+        requireReadableUser(userId);
+        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
+        if (rhythm == null || rhythm.currentMonth() <= 0 || rhythm.questBonusMultiplier() == null) {
+            throw conflict("H1_RHYTHM_UNAVAILABLE");
+        }
+        Map<String, Object> promo = mapper.questPromoBanner();
+        return ApiResult.ok(linked(
+                "quests", safeList(mapper.questState(userId)),
+                "promoBanner", promo == null ? Map.of() : new LinkedHashMap<>(promo),
+                "questBonusMultiplier", positiveOrOne(rhythm.questBonusMultiplier()),
+                "rhythmMonth", rhythm.currentMonth(),
+                "source", "nx_mission + nx_user_mission + nx_growth_promo_banner + H1 rhythm"));
+    }
+
+    public ApiResult<Map<String, Object>> eventState(Long userId) {
+        requireReadableUser(userId);
+        List<Map<String, Object>> events = safeList(mapper.eventState(userId));
+        long featuredOngoing = events.stream()
+                .filter(row -> Boolean.TRUE.equals(row.get("featured"))
+                        || row.get("featured") instanceof Number number && number.intValue() == 1)
+                .filter(row -> "ongoing".equals(String.valueOf(row.get("state"))))
+                .count();
+        if (featuredOngoing > 1) {
+            throw conflict("EVENT_FEATURED_UNIQUE_VIOLATION");
+        }
+        return ApiResult.ok(linked(
+                "events", events,
+                "serverTimeUtc", java.time.Instant.now().toString(),
+                "source", "nx_event_quest + nx_user_event_quest"));
+    }
+
     public ApiResult<Map<String, Object>> pointState(Long userId) {
         requireReadableUser(userId);
-        Map<String, Object> streak = new LinkedHashMap<>(mapper.pointState(userId));
+        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
+        Map<String, Object> rawStreak = mapper.pointState(userId, today);
+        Map<String, Object> streak = rawStreak == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(rawStreak);
         Object checkedInToday = streak.get("checkedInToday");
         streak.put("checkedInToday", checkedInToday instanceof Boolean value
                 ? value
                 : checkedInToday instanceof Number number && number.intValue() != 0);
         streak.putIfAbsent("lastCheckInDate", null);
         return ApiResult.ok(linked(
+                "rewardAsset", "NEX",
+                "serverDate", today.toString(),
+                "nextResetAtUtc", ZonedDateTime.of(
+                        today.plusDays(1), java.time.LocalTime.MIDNIGHT, H5_BUSINESS_ZONE)
+                        .toInstant().toString(),
                 "streak", streak,
                 "dailyMilestones", safeList(mapper.dailyMilestoneState(userId)),
                 "earningMilestones", safeList(mapper.earningMilestoneState(userId)),
-                "source", "nx_user_streak + nx_daily_check_in + milestone ledgers"));
+                "rules", safeList(mapper.checkInRuleState()),
+                "powerUps", safeList(mapper.streakPowerUpState(userId)),
+                "topStreakers", safeList(mapper.topStreakers()),
+                "source", "nx_user_streak + nx_daily_check_in + NEX wallet + milestone ledgers"));
     }
 
     public ApiResult<Map<String, Object>> voucherState(Long userId) {
         requireReadableUser(userId);
         Attribution attribution = attribution(userId);
-        List<Map<String, Object>> rows = safeList(mapper.voucherState(userId, System.currentTimeMillis()));
+        long nowMillis = System.currentTimeMillis();
+        List<Map<String, Object>> rows = safeList(mapper.voucherState(userId, nowMillis));
         List<Map<String, Object>> vouchers = rows.stream().map(row -> {
             Map<String, Object> item = new LinkedHashMap<>(row);
             boolean audienceEligible = !"new".equalsIgnoreCase(String.valueOf(row.get("audience")))
                     || attribution.accountAgeMonths() == 0;
-            item.put("claimable", audienceEligible && "UNCLAIMED".equalsIgnoreCase(String.valueOf(row.get("grantStatus"))));
+            String grantStatus = String.valueOf(row.getOrDefault("grantStatus", "UNCLAIMED")).toUpperCase(Locale.ROOT);
+            long endAt = row.get("endAt") instanceof Number number ? number.longValue() : 0L;
+            if ("AVAILABLE".equals(grantStatus) && endAt > 0 && endAt < nowMillis) {
+                grantStatus = "EXPIRED";
+            }
+            boolean definitionOpen = !truthy(row.get("definitionDeleted"))
+                    && "active".equalsIgnoreCase(String.valueOf(row.get("definitionStatus")));
+            item.put("grantStatus", grantStatus);
+            item.put("claimable", audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus));
             item.put("audienceEligible", audienceEligible);
             return item;
         }).toList();
@@ -136,6 +193,9 @@ public class AppGrowthEngagementService {
             if ("NEX".equals(rewardType)) {
                 amount = positive(amount);
                 creditNex(userId, "EVENT:" + code + ":" + userId, "EVENT_REWARD", amount, "H4 event reward");
+            } else if ("USDT".equals(rewardType)) {
+                amount = positive(amount);
+                creditUsdt(userId, "EVENT:" + code + ":" + userId, "EVENT_REWARD", amount, "H4 event reward");
             } else if ("BADGE".equals(rewardType) && StringUtils.hasText(reward.badgeCode())) {
                 grantBadge(userId, reward.badgeCode(), "EVENT_BADGE_GRANT_CONFLICT");
             } else {
@@ -155,7 +215,7 @@ public class AppGrowthEngagementService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> checkIn(Long userId, String idempotencyKey) {
         requireUser(userId);
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         return executeOnce("DAILY_CHECK_IN", userId, idempotencyKey, today, () -> {
             Long missionId = mapper.dailyMissionId();
             if (missionId == null) throw conflict("DAILY_MISSION_NOT_CONFIGURED");
@@ -176,10 +236,15 @@ public class AppGrowthEngagementService {
                 throw conflict("DAILY_CHECK_IN_CONFLICT");
             }
             if (mapper.updateStreak(userId, streak, today) != 1) throw conflict("DAILY_STREAK_CONFLICT");
-            creditPoints(userId, "DAILY:" + userId + ":" + today, "DAILY_CHECK_IN", reward);
+            BigDecimal rewardNex = BigDecimal.valueOf(reward).setScale(6);
+            creditNex(userId, "DAILY:" + userId + ":" + today, "DAILY_CHECK_IN",
+                    rewardNex, "H5 daily check-in");
             Map<String, Object> detail = linked(
-                    "checkInDate", today.toString(), "basePoints", base, "rewardPoints", reward,
-                    "streakBonusPoints", streakBonus, "multiplier", multiplier, "streakDays", streak);
+                    "checkInDate", today.toString(),
+                    "baseNex", BigDecimal.valueOf(base).setScale(6),
+                    "rewardNex", rewardNex,
+                    "streakBonusNex", BigDecimal.valueOf(streakBonus).setScale(6),
+                    "multiplier", multiplier, "streakDays", streak);
             audit("H5_DAILY_CHECKED_IN", "DAILY_CHECK_IN", today.toString(), today.toString(), userId, detail);
             Attribution attribution = attribution(userId);
             publish("DAILY_CHECK_IN", userId + ":" + today, "daily.checkin",
@@ -188,6 +253,68 @@ public class AppGrowthEngagementService {
                 publish("DAILY_CHECK_IN", userId + ":" + today, "daily.lucky_triggered",
                         userId, attribution, linked("multiplier", multiplier));
             }
+            return ApiResult.ok(detail);
+        });
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> useStreakSaver(Long userId, String idempotencyKey) {
+        requireUser(userId);
+        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
+        return executeOnce("DAILY_STREAK_SAVER", userId, idempotencyKey, today, () -> {
+            mapper.ensureUserStreak(userId);
+            StreakState before = mapper.lockStreak(userId);
+            if (before == null) throw conflict("USER_STREAK_UNAVAILABLE");
+            if (before.streakSavers() == null || before.streakSavers() <= 0) {
+                return ApiResult.fail(409, "DAILY_STREAK_SAVER_EMPTY");
+            }
+            if (before.lastCheckInDate() == null
+                    || !before.lastCheckInDate().isBefore(today.minusDays(1))) {
+                return ApiResult.fail(409, "DAILY_STREAK_NOT_BROKEN");
+            }
+            int restored = Math.max(1, Math.min(30, Math.max(0, before.longestStreak())));
+            LocalDate effectiveLast = today.minusDays(1);
+            if (mapper.useStreakSaver(userId, restored, effectiveLast) != 1) {
+                throw conflict("DAILY_STREAK_SAVER_CONFLICT");
+            }
+            Map<String, Object> detail = linked(
+                    "restoredStreak", restored,
+                    "streakSavers", before.streakSavers() - 1,
+                    "effectiveLastCheckInDate", effectiveLast.toString());
+            audit("H5_STREAK_SAVER_USED", "USER_STREAK", String.valueOf(userId),
+                    "STREAK-SAVER:" + userId + ":" + today, userId, detail);
+            publish("USER_STREAK", String.valueOf(userId), "daily.streak_restored",
+                    userId, attribution(userId), detail);
+            return ApiResult.ok(detail);
+        });
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> activateStreakPowerUp(
+            Long userId, Long powerUpId, String idempotencyKey) {
+        requireUser(userId);
+        if (powerUpId == null || powerUpId <= 0) {
+            return ApiResult.fail(422, "POWER_UP_ID_REQUIRED");
+        }
+        return executeOnce("DAILY_POWER_UP_ACTIVATE", userId, idempotencyKey, powerUpId, () -> {
+            StreakPowerUp row = mapper.lockActivatablePowerUp(userId, powerUpId);
+            if (row == null) return ApiResult.fail(409, "DAILY_POWER_UP_NOT_ACTIVATABLE");
+            if (mapper.activatePowerUp(userId, row) != 1) {
+                throw conflict("DAILY_POWER_UP_ACTIVATION_CONFLICT");
+            }
+            if (StringUtils.hasText(row.badgeCode())) {
+                grantBadge(userId, row.badgeCode(), "DAILY_POWER_UP_BADGE_GRANT_CONFLICT");
+            }
+            Map<String, Object> detail = linked(
+                    "powerUpId", row.powerUpId(),
+                    "powerUpCode", row.powerUpCode(),
+                    "badgeCode", row.badgeCode(),
+                    "status", "ACTIVATED");
+            String sourceId = userId + ":" + row.powerUpCode();
+            audit("H5_POWER_UP_ACTIVATED", "USER_STREAK_POWER_UP", sourceId,
+                    sourceId, userId, detail);
+            publish("USER_STREAK_POWER_UP", sourceId, "daily.power_up_activated",
+                    userId, attribution(userId), detail);
             return ApiResult.ok(detail);
         });
     }
@@ -206,7 +333,6 @@ public class AppGrowthEngagementService {
             String bizNo = "DAILY-MS:" + userId + ":" + row.milestoneId();
             int tickets = 0;
             switch (rewardType) {
-                case "POINTS" -> creditPoints(userId, bizNo, "DAILY_MILESTONE", positiveWholeNumber(amount));
                 case "NEX" -> creditNex(userId, bizNo, "DAILY_MILESTONE", positive(amount),
                         "H5 daily milestone claim");
                 case "USDT" -> creditUsdt(userId, bizNo, "DAILY_MILESTONE", positive(amount),
@@ -315,6 +441,17 @@ public class AppGrowthEngagementService {
 
     private List<Map<String, Object>> safeList(List<Map<String, Object>> value) {
         return value == null ? List.of() : value;
+    }
+
+    private boolean truthy(Object value) {
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        if (value instanceof Number number) {
+            return number.intValue() != 0;
+        }
+        return "true".equalsIgnoreCase(String.valueOf(value))
+                || "1".equals(String.valueOf(value));
     }
 
     private Attribution attribution(Long userId) {
@@ -439,7 +576,7 @@ public class AppGrowthEngagementService {
     private String normalizeDailyRewardType(String rewardType) {
         String normalized = StringUtils.hasText(rewardType)
                 ? rewardType.trim().toUpperCase(Locale.ROOT) : "";
-        if (!Set.of("POINTS", "USDT", "NEX", "SPIN", "BADGE").contains(normalized)) {
+        if (!Set.of("USDT", "NEX", "SPIN", "BADGE").contains(normalized)) {
             throw conflict("REWARD_TYPE_UNSUPPORTED");
         }
         return normalized;

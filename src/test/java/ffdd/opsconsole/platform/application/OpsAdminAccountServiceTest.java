@@ -341,7 +341,8 @@ class OpsAdminAccountServiceTest {
     void disablingLastTwoSuperBoundaryIsRejected() {
         admins.get(2).setStatus(0);
         AdminAccountStatusUpdateRequest request =
-                new AdminAccountStatusUpdateRequest("disabled", "offboarding", "superadmin");
+                new AdminAccountStatusUpdateRequest(
+                        "disabled", "offboarding", "superadmin", versionOf("1"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.updateStatus("idem-a1-1", "1", request);
 
@@ -351,7 +352,7 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void createAccountPersistsRealAdminWithoutReturningPlaintextCredentialAndWritesAudit() {
+    void createAccountPersistsRealAdminWithOneTimeServerCredentialAndWritesAudit() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
                 "risk.new",
                 "新风控成员",
@@ -383,8 +384,10 @@ class OpsAdminAccountServiceTest {
                 .filter(admin -> "risk.new".equals(admin.getUsername()))
                 .findFirst()
                 .orElseThrow();
-        assertThat(passwordEncoder.matches("RiskNew@12345678", created.getPasswordHash())).isTrue();
-        assertThat(result.getData().toString()).doesNotContain("RiskNew@12345678");
+        assertThat(result.getData().temporaryPassword()).hasSize(20);
+        assertThat(passwordEncoder.matches(result.getData().temporaryPassword(), created.getPasswordHash())).isTrue();
+        assertThat(passwordEncoder.matches("RiskNew@12345678", created.getPasswordHash())).isFalse();
+        assertThat(result.getData().temporaryPassword()).isNotEqualTo("RiskNew@12345678");
         verify(roleRelationMapper).ensurePrimaryRole(5L, "RISK");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -423,7 +426,8 @@ class OpsAdminAccountServiceTest {
                 "风控值班长",
                 "",
                 "operator profile correction",
-                "superadmin");
+                "superadmin",
+                versionOf("4"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result =
                 service.updateProfile("idem-profile-1", "4", request);
@@ -491,7 +495,8 @@ class OpsAdminAccountServiceTest {
     @Test
     void changeRoleAcceptsExplicitUnassignedAndRemovesThePrimaryRole() {
         AdminAccountRoleUpdateRequest request =
-                new AdminAccountRoleUpdateRequest("unassigned", "remove obsolete access", "superadmin");
+                new AdminAccountRoleUpdateRequest(
+                        "unassigned", "remove obsolete access", "superadmin", versionOf("4"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.changeRole("idem-unassign-1", "4", request);
 
@@ -503,7 +508,8 @@ class OpsAdminAccountServiceTest {
     @Test
     void reset2faRejectsEffectiveSuperFloor() {
         admins.get(2).setStatus(0);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("security recovery", "superadmin");
+        AdminAccountActionRequest request =
+                new AdminAccountActionRequest("security recovery", "superadmin", versionOf("1"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result =
                 service.reset2fa("idem-reset-super-floor", "1", request);
@@ -521,7 +527,8 @@ class OpsAdminAccountServiceTest {
             state.setTfaSecretEncrypted("encrypted-risk-secret");
             state.setTfaBoundAt(LocalDateTime.now());
         });
-        AdminAccountActionRequest request = new AdminAccountActionRequest("verified recovery", "superadmin");
+        AdminAccountActionRequest request =
+                new AdminAccountActionRequest("verified recovery", "superadmin", versionOf("4"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result =
                 service.reset2fa("idem-reset-risk", "4", request);
@@ -551,7 +558,7 @@ class OpsAdminAccountServiceTest {
     }
 
     @Test
-    void createAccountRejectsMissingOrWeakInitialPassword() {
+    void createAccountGeneratesServerSideTemporaryPasswordAndIgnoresClientCredential() {
         AdminAccountCreateRequest request = new AdminAccountCreateRequest(
                 "finance.shift",
                 "资金测试值班",
@@ -564,23 +571,19 @@ class OpsAdminAccountServiceTest {
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.createAccount("idem-create-shift", request);
 
-        assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("INITIAL_PASSWORD_REQUIRED");
-
-        ApiResult<AdminAccountOverview.OperatorRecord> weak = service.createAccount(
-                "idem-create-shift-weak",
-                new AdminAccountCreateRequest(
-                        "finance.shift",
-                        "资金测试值班",
-                        null,
-                        "finance",
-                        null,
-                        "local e2e shift bootstrap",
-                        "superadmin",
-                        "short"));
-
-        assertThat(weak.getCode()).isEqualTo(422);
-        assertThat(weak.getMessage()).isEqualTo("INITIAL_PASSWORD_WEAK");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().temporaryPassword())
+                .hasSize(20)
+                .containsPattern("[a-z]")
+                .containsPattern("[A-Z]")
+                .containsPattern("\\d")
+                .containsPattern("[^A-Za-z0-9]");
+        AdminEntity created = admins.stream()
+                .filter(admin -> "finance.shift".equals(admin.getUsername()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(passwordEncoder.matches(result.getData().temporaryPassword(), created.getPasswordHash())).isTrue();
+        assertThat(result.getData().temporaryPassword()).isNotEqualTo(request.initialPassword());
     }
 
     @Test
@@ -666,7 +669,8 @@ class OpsAdminAccountServiceTest {
     @Test
     void updateSecurityBaselineParsesSessionLimitAndAudits() {
         AdminAccountSecurityBaselineUpdateRequest request =
-                new AdminAccountSecurityBaselineUpdateRequest("45min / 10h", "shorten console sessions", "superadmin");
+                new AdminAccountSecurityBaselineUpdateRequest(
+                        "45min / 10h", "shorten console sessions", "superadmin", "30min / 8h");
 
         ApiResult<AdminAccountOverview.SecurityBaseline> result =
                 service.updateSecurityBaseline("idem-sec-1", "session", request);
@@ -724,7 +728,8 @@ class OpsAdminAccountServiceTest {
     @Test
     void resetPasswordReturnsTemporaryPasswordOnceAndMarksChangeRequired() {
         authenticateAs(1L);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("operator forgot password", "superadmin");
+        AdminAccountActionRequest request =
+                new AdminAccountActionRequest("operator forgot password", "superadmin", versionOf("4"));
 
         ApiResult<AdminAccountPasswordResetResponse> result =
                 service.resetPassword("idem-password-reset", "4", request);
@@ -751,7 +756,8 @@ class OpsAdminAccountServiceTest {
     void revokeSessionsDeletesRedisBackedAdminSessionsAndAudits() {
         authenticateAs(1L);
         when(adminSessionRegistry.revokeSessions(4L)).thenReturn(2);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("suspected account takeover", "superadmin");
+        AdminAccountActionRequest request =
+                new AdminAccountActionRequest("suspected account takeover", "superadmin", versionOf("4"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-1", "4", request);
 
@@ -770,7 +776,8 @@ class OpsAdminAccountServiceTest {
         roleRelations.put(5L, "SUPPORT");
         authenticateAs(4L);
         when(adminSessionRegistry.revokeSessions(5L)).thenReturn(1);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("suspected support console misuse", "risk.lead");
+        AdminAccountActionRequest request =
+                new AdminAccountActionRequest("suspected support console misuse", "risk.lead", versionOf("5"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-risk", "5", request);
 
@@ -783,7 +790,8 @@ class OpsAdminAccountServiceTest {
     void revokeSessionsRejectsDisabledSuperTarget() {
         admins.add(admin(6L, "ops.shift", "平台审计值班", "ops.shift@nexion.io", 1, 0));
         authenticateAs(1L);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("super cleanup requires account-disable flow", "superadmin");
+        AdminAccountActionRequest request = new AdminAccountActionRequest(
+                "super cleanup requires account-disable flow", "superadmin", versionOf("6"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result =
                 service.revokeSessions("idem-session-e2e-cleanup", "6", request);
@@ -796,7 +804,8 @@ class OpsAdminAccountServiceTest {
     @Test
     void revokeSessionsRejectsSelfTarget() {
         authenticateAs(4L);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("self test should be blocked", "risk.lead");
+        AdminAccountActionRequest request =
+                new AdminAccountActionRequest("self test should be blocked", "risk.lead", versionOf("4"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-self", "4", request);
 
@@ -810,7 +819,8 @@ class OpsAdminAccountServiceTest {
         admins.add(admin(5L, "finance.ops", "财务专员", "finance-ops@nexion.io", 0, 1));
         roleRelations.put(5L, "FINANCE");
         authenticateAs(5L);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("finance should not force logout", "finance.ops");
+        AdminAccountActionRequest request =
+                new AdminAccountActionRequest("finance should not force logout", "finance.ops", versionOf("4"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-role", "4", request);
 
@@ -822,7 +832,8 @@ class OpsAdminAccountServiceTest {
     @Test
     void revokeSessionsRejectsRiskOperatorBeforeSuperTargetCheck() {
         authenticateAs(4L);
-        AdminAccountActionRequest request = new AdminAccountActionRequest("super admin target should be protected", "risk.lead");
+        AdminAccountActionRequest request = new AdminAccountActionRequest(
+                "super admin target should be protected", "risk.lead", versionOf("1"));
 
         ApiResult<AdminAccountOverview.OperatorRecord> result = service.revokeSessions("idem-session-super-target", "1", request);
 
@@ -847,7 +858,8 @@ class OpsAdminAccountServiceTest {
     void replayA1AccountStatusUpdateInvokesUpdateStatusAndSucceeds() {
         AuditReplayCommand cmd = new AuditReplayCommand("A", "a1_account_status_update", Map.of(
                 "accountId", "4",
-                "status", "disabled"));
+                "status", "disabled",
+                "expectedVersion", versionOf("4")));
         AuditReplayContext ctx = new AuditReplayContext("superadmin", "replay disable risk operator", "idem-replay-status");
 
         ApiResult<?> result = service.replay(cmd, ctx);
@@ -909,6 +921,14 @@ class OpsAdminAccountServiceTest {
                 List.of("M", "-", "-", "-", "-", "-", "-", "R"));
         registerTestAction("audit_export", "审计全量导出(A2)", "基座/应急", 30,
                 List.of("M", "-", "-", "-", "-", "-", "-", "M"));
+    }
+
+    private String versionOf(String accountId) {
+        return service.overview().getData().operators().stream()
+                .filter(operator -> accountId.equals(operator.id()))
+                .findFirst()
+                .orElseThrow()
+                .version();
     }
 
     private void registerTestAction(String id, String action, String domainGroup, int sort, List<String> grants) {

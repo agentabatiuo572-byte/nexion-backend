@@ -23,6 +23,7 @@ class OpsPlatformParamRegistryServiceTest {
         when(source.findAllActive()).thenReturn(List.of(
                 item("feature.ops.maintenanceBanner", "off", "admin_feature_flag"),
                 item("wallet.exchange.spread_bps", "35", "wallet_exchange"),
+                item("E.task.queueSaturation", "80", "E2"),
                 item("content.risk_disclosure.version", "v3", "content")));
         when(emergency.currentKillSwitches()).thenReturn(List.of(
                 Map.of("key", "exchange", "name", "兑换闸", "status", "disabled", "lastChange", "2026-07-18T10:00:00"),
@@ -30,8 +31,8 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows()).hasSize(5);
-        assertThat(overview.rows()).extracting(row -> row.domain()).contains("A", "G", "I", "J");
+        assertThat(overview.rows()).hasSize(6);
+        assertThat(overview.rows()).extracting(row -> row.domain()).contains("A", "E", "G", "I", "J");
         assertThat(overview.rows()).filteredOn(row -> row.canonicalKey().equals("feature.ops.maintenanceBanner"))
                 .singleElement()
                 .satisfies(row -> {
@@ -42,8 +43,14 @@ class OpsPlatformParamRegistryServiceTest {
         assertThat(overview.rows()).filteredOn(row -> row.canonicalKey().equals("emergency.geo-block"))
                 .singleElement()
                 .satisfies(row -> assertThat(row.ownerRoute()).isEqualTo("/emergency/geo-block"));
+        assertThat(overview.rows()).filteredOn(row -> row.canonicalKey().equals("E.task.queueSaturation"))
+                .singleElement()
+                .satisfies(row -> {
+                    assertThat(row.ownerCode()).isEqualTo("E2");
+                    assertThat(row.ownerRoute()).isEqualTo("/devices/tasks");
+                });
         assertThat(overview.stats().registeredCount()).isEqualTo(overview.rows().size());
-        assertThat(overview.stats().domainCount()).isEqualTo(4);
+        assertThat(overview.stats().domainCount()).isEqualTo(5);
     }
 
     @Test
@@ -84,6 +91,24 @@ class OpsPlatformParamRegistryServiceTest {
             assertThat(row.currentValue()).doesNotContain("plain-secret");
             assertThat(row.valueType()).isEqualTo("SECRET");
         });
+    }
+
+    @Test
+    void registryResolvesEveryCurrentCrossDomainConfigFamilyToItsRealOwner() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("E.task.queueSaturation", "80", "E2"),
+                item("growth.wheel.pool_signature", "sig", "growth"),
+                item("growth.withdraw_nex_gate.hold_days", "7", "growth"),
+                item("K.rewards.referral.version", "3", "GROWTH_REFERRAL"),
+                item("G.genesis.lottery.monthlyCapacity", "100000", "market"),
+                item("kyc.network_whitelist", "TRC20", "kyc"),
+                item("treasury.d3.forecast-config.version", "4", "treasury")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).extracting(row -> row.ownerCode())
+                .containsExactlyInAnyOrder("E2", "H3", "H1", "H8", "G4", "C4", "D3");
     }
 
     private PlatformConfigItem item(String key, String value, String group) {

@@ -35,6 +35,14 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     String kycStatus(@Param("userId") Long userId);
 
     @Select("""
+            SELECT status, paired_address pairedAddress, network
+              FROM nx_kyc_profile
+             WHERE user_id=#{userId} AND is_deleted=0
+             LIMIT 1
+            """)
+    KycWallet kycWallet(@Param("userId") Long userId);
+
+    @Select("""
             SELECT COALESCE((
                 SELECT two_factor_enabled
                   FROM nx_user_security
@@ -141,24 +149,36 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     UserCanonicalProfile userCanonicalProfile(@Param("userId") Long userId);
 
     @Select("""
-            SELECT id,
-                   instance_no AS instanceNo,
-                   name,
-                   device_type AS deviceType,
-                   product_code AS productCode,
-                   status,
-                   activated_at AS activatedAt,
-                   purchased_at AS purchasedAt,
-                   daily_usdt AS dailyUsdt,
-                   daily_nex AS dailyNex,
-                   gpu_model AS gpuModel,
-                   vram_total_gb AS vramTotalGb,
-                   base_power_w AS basePowerW,
-                   dc_location AS location
-              FROM nx_user_device
-             WHERE user_id = #{userId} AND is_deleted = 0
-               AND UPPER(ownership_status) = 'OWNED'
-             ORDER BY purchased_at ASC, id ASC
+            SELECT d.id,
+                   d.instance_no AS instanceNo,
+                   d.name,
+                   d.device_type AS deviceType,
+                   d.product_code AS productCode,
+                   d.status,
+                   d.activated_at AS activatedAt,
+                   d.purchased_at AS purchasedAt,
+                   d.daily_usdt AS dailyUsdt,
+                   d.daily_nex AS dailyNex,
+                   d.gpu_model AS gpuModel,
+                   d.vram_total_gb AS vramTotalGb,
+                   d.base_power_w AS basePowerW,
+                   d.dc_location AS location,
+                   COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
+                            NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0) AS actualPaidUsdt,
+                   COALESCE((SELECT SUM(r.reward_usdt)
+                               FROM nx_compute_receipt r
+                              WHERE r.user_device_id = d.id AND r.is_deleted = 0
+                                AND UPPER(r.earning_status) IN
+                                    ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')), 0) AS cumulativeOutputUsdt
+              FROM nx_user_device d
+              LEFT JOIN nx_product p
+                ON p.id = d.product_id AND p.is_deleted = 0
+              LEFT JOIN nx_order o
+                ON o.order_no = d.source_order_no AND o.user_id = d.user_id
+               AND o.payment_status = 'PAID' AND o.is_deleted = 0
+             WHERE d.user_id = #{userId} AND d.is_deleted = 0
+               AND UPPER(d.ownership_status) = 'OWNED'
+             ORDER BY d.purchased_at ASC, d.id ASC
             """)
     List<OwnedDevice> ownedDevices(@Param("userId") Long userId);
 
@@ -348,6 +368,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     record DeviceEarnings(BigDecimal dailyUsdt, BigDecimal dailyNex) {
     }
 
+    record KycWallet(String status, String pairedAddress, String network) {
+    }
+
     record UserCanonicalProfile(BigDecimal usdtAvailable, BigDecimal nexAvailable, LocalDateTime joinedAt) {
     }
 
@@ -368,7 +391,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             String gpuModel,
             Integer vramTotalGb,
             BigDecimal basePowerW,
-            String location) {
+            String location,
+            BigDecimal actualPaidUsdt,
+            BigDecimal cumulativeOutputUsdt) {
     }
 
     record ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock) {

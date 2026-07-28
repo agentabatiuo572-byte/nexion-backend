@@ -862,11 +862,39 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             INSERT INTO nx_risk_signal (
                 signal_no, user_id, signal_type, severity, evidence, created_by, created_at, updated_at, is_deleted
             ) VALUES (#{signalNo}, #{userId}, #{signalType}, #{severity}, #{evidence}, #{operator}, NOW(), NOW(), 0)
-            ON DUPLICATE KEY UPDATE signal_no = VALUES(signal_no)
+            ON DUPLICATE KEY UPDATE
+                updated_at = IF(is_deleted = 1, NOW(), updated_at),
+                user_id = IF(is_deleted = 1, VALUES(user_id), user_id),
+                signal_type = IF(is_deleted = 1, VALUES(signal_type), signal_type),
+                severity = IF(is_deleted = 1, VALUES(severity), severity),
+                evidence = IF(is_deleted = 1, VALUES(evidence), evidence),
+                created_by = IF(is_deleted = 1, VALUES(created_by), created_by),
+                is_deleted = 0
             """)
     int insertSignalIfAbsent(@Param("signalNo") String signalNo, @Param("userId") Long userId,
                              @Param("signalType") String signalType, @Param("severity") String severity,
                              @Param("evidence") String evidence, @Param("operator") String operator);
+
+    @Update("""
+            UPDATE nx_risk_signal risk_signal
+               SET risk_signal.is_deleted = 1,
+                   risk_signal.updated_at = NOW()
+             WHERE risk_signal.is_deleted = 0
+               AND risk_signal.created_by = 'K2_PROJECTION'
+               AND risk_signal.signal_type IN (
+                   'risk.arbitrage_suspected',
+                   'risk.trial_cycle_detected',
+                   'risk.leaderboard_velocity_flagged'
+               )
+               AND risk_signal.evidence LIKE 'row=%'
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM nx_admin_risk_arbitrage_row row_fact
+                    WHERE row_fact.is_deleted = 0
+                      AND risk_signal.evidence LIKE CONCAT('row=', row_fact.row_id, ';%')
+               )
+            """)
+    int retireInactiveK2ProjectionSignals();
 
     @Insert("""
             INSERT INTO nx_admin_risk_score_user
@@ -971,7 +999,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     @Select("""
             SELECT w.withdrawal_no AS withdrawalNo,
-                   CONCAT('U', LPAD(w.user_id, 8, '0')) AS userNo,
+                   CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) AS userNo,
                    w.amount AS amount,
                    (
                        SELECT COUNT(1)
@@ -1242,7 +1270,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT CONCAT('K2-E3-U', a.user_id),
                    'tradein',
                    NULL,
-                   CONCAT('U', LPAD(a.user_id, 8, '0')),
+                   CONCAT('U', LPAD(a.user_id,
+                       GREATEST(8, CHAR_LENGTH(CAST(a.user_id AS CHAR))), '0')),
                    CONCAT(COUNT(DISTINCT a.id), ' 次置换'),
                    '近 30 天',
                    CONCAT(COUNT(DISTINCT a.id), ' 次高频下架置换'),
@@ -1295,7 +1324,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_arbitrage_row
                SET is_deleted = 1, updated_at = NOW()
-             WHERE row_id LIKE 'K2-H2-U%'
+             WHERE (row_id LIKE 'K2-H2-U%' OR row_id LIKE 'K2-H2-C%')
                AND is_deleted = 0
             """)
     int retireH2TrialCycleRows();
@@ -1305,10 +1334,50 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                 row_id,view_key,cluster_id,cell1,cell2,cell3,cell4,cell5,cell6,
                 level_value,actions_csv,is_deleted
             )
-            SELECT CONCAT('K2-H2-U', facts.user_id),
+            WITH starts AS (
+              SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) AS UNSIGNED) AS user_id
+                FROM nx_event_outbox e
+               WHERE e.is_deleted = 0
+                 AND e.event_name = 'trial.started'
+                 AND e.analytics_event = 1
+                 AND e.schema_registered = 1
+                 AND e.is_server_authoritative = 1
+                 AND e.created_at >= DATE_SUB(NOW(), INTERVAL #{windowDays} DAY)
+                 AND JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) REGEXP '^[1-9][0-9]*$'
+            ),
+            membership AS (
+              SELECT starts.user_id,
+                     (
+                       SELECT c.cluster_id
+                         FROM nx_admin_risk_multi_account_cluster c
+                        WHERE c.is_deleted = 0
+                          AND c.nodes_json IS NOT NULL
+                          AND JSON_VALID(c.nodes_json) = 1
+                          AND JSON_SEARCH(c.nodes_json, 'one', CONCAT('U', LPAD(starts.user_id,
+                                  GREATEST(8, CHAR_LENGTH(CAST(starts.user_id AS CHAR))), '0'))) IS NOT NULL
+                        ORDER BY FIELD(c.status, 'frozen', 'flagged', 'detected', 'released', 'cleared'), c.id DESC
+                        LIMIT 1
+                     ) AS cluster_id
+                FROM starts
+                JOIN nx_user u ON u.id = starts.user_id AND u.is_deleted = 0
+            ),
+            facts AS (
+              SELECT COALESCE(membership.cluster_id, CONCAT('USER:', membership.user_id)) AS entity_key,
+                     MAX(membership.cluster_id) AS cluster_id,
+                     MIN(membership.user_id) AS representative_user_id,
+                     COUNT(*) AS cycle_count
+                FROM membership
+               GROUP BY entity_key
+              HAVING COUNT(*) >= #{minimumCycles}
+            )
+            SELECT CASE
+                     WHEN facts.cluster_id IS NULL THEN CONCAT('K2-H2-U', facts.representative_user_id)
+                     ELSE CONCAT('K2-H2-C', LEFT(SHA2(facts.cluster_id, 256), 40))
+                   END,
                    'trial',
                    facts.cluster_id,
-                   CONCAT('U', LPAD(facts.user_id, 8, '0')),
+                   COALESCE(facts.cluster_id, CONCAT('U', LPAD(facts.representative_user_id,
+                       GREATEST(8, CHAR_LENGTH(CAST(facts.representative_user_id AS CHAR))), '0'))),
                    CONCAT(facts.cycle_count, ' 次 / ', #{windowDays}, ' 天'),
                    CONCAT(COALESCE(JSON_LENGTH(cluster.nodes_json), 1), ' 个关联账户'),
                    CONCAT('H2 服务器试用开始事件 ', facts.cycle_count, ' 次'),
@@ -1317,34 +1386,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    LEAST(5, GREATEST(2, facts.cycle_count)),
                    IF(facts.cluster_id IS NULL, 'flag', 'flag,freeze'),
                    0
-              FROM (
-                    SELECT starts.user_id,
-                           COUNT(*) AS cycle_count,
-                           (
-                             SELECT c.cluster_id
-                               FROM nx_admin_risk_multi_account_cluster c
-                              WHERE c.is_deleted = 0
-                                AND c.nodes_json IS NOT NULL
-                                AND JSON_VALID(c.nodes_json) = 1
-                                AND JSON_SEARCH(c.nodes_json, 'one', CONCAT('U', LPAD(starts.user_id, 8, '0'))) IS NOT NULL
-                              ORDER BY FIELD(c.status, 'frozen', 'flagged', 'detected', 'released', 'cleared'), c.id DESC
-                              LIMIT 1
-                           ) AS cluster_id
-                      FROM (
-                            SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) AS UNSIGNED) AS user_id
-                              FROM nx_event_outbox e
-                             WHERE e.is_deleted = 0
-                               AND e.event_name = 'trial.started'
-                               AND e.analytics_event = 1
-                               AND e.schema_registered = 1
-                               AND e.is_server_authoritative = 1
-                               AND e.created_at >= DATE_SUB(NOW(), INTERVAL #{windowDays} DAY)
-                               AND JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) REGEXP '^[1-9][0-9]*$'
-                           ) starts
-                      JOIN nx_user u ON u.id = starts.user_id AND u.is_deleted = 0
-                     GROUP BY starts.user_id
-                    HAVING COUNT(*) >= #{minimumCycles}
-                   ) facts
+              FROM facts
               LEFT JOIN nx_admin_risk_multi_account_cluster cluster
                 ON cluster.cluster_id = facts.cluster_id AND cluster.is_deleted = 0
             ON DUPLICATE KEY UPDATE
@@ -1368,29 +1410,245 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT r.row_id AS rowId,
                    u.id AS userId,
                    r.cluster_id AS clusterId,
-                   COUNT(e.id) AS cycleCount
+                   CAST(SUBSTRING_INDEX(r.cell2, ' ', 1) AS UNSIGNED) AS cycleCount
               FROM nx_admin_risk_arbitrage_row r
               JOIN nx_user u
-                ON r.row_id = CONCAT('K2-H2-U', u.id)
-               AND u.is_deleted = 0
-              JOIN nx_event_outbox e
-                ON CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.user_id')) AS UNSIGNED) = u.id
-               AND e.is_deleted = 0
-               AND e.event_name = 'trial.started'
-               AND e.analytics_event = 1
-               AND e.schema_registered = 1
-               AND e.is_server_authoritative = 1
-               AND e.created_at >= DATE_SUB(NOW(), INTERVAL #{windowDays} DAY)
+                ON u.is_deleted = 0
+               AND (
+                    (r.cluster_id IS NULL AND r.row_id = CONCAT('K2-H2-U', u.id))
+                 OR EXISTS (
+                      SELECT 1
+                        FROM nx_admin_risk_multi_account_cluster cluster
+                       WHERE cluster.cluster_id = r.cluster_id
+                         AND cluster.is_deleted = 0
+                         AND cluster.nodes_json IS NOT NULL
+                         AND JSON_VALID(cluster.nodes_json) = 1
+                         AND JSON_SEARCH(cluster.nodes_json, 'one', CONCAT('U', LPAD(u.id,
+                                 GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
+                    )
+               )
              WHERE r.is_deleted = 0
                AND r.view_key = 'trial'
-               AND r.row_id LIKE 'K2-H2-U%'
-             GROUP BY r.row_id, u.id, r.cluster_id
-            HAVING COUNT(e.id) >= #{minimumCycles}
+               AND CAST(SUBSTRING_INDEX(r.cell2, ' ', 1) AS UNSIGNED) >= #{minimumCycles}
              ORDER BY u.id ASC
             """)
     List<TrialCycleDetectionRecord> trialCycleDetections(
             @Param("minimumCycles") int minimumCycles,
             @Param("windowDays") int windowDays);
+
+    @Update("""
+            UPDATE nx_admin_risk_arbitrage_row
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE row_id LIKE 'K2-GIFT-C%'
+               AND disposition IS NULL
+               AND is_deleted = 0
+            """)
+    int retireWelcomeGiftArbitrageRows();
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_arbitrage_row (
+                row_id,view_key,cluster_id,cell1,cell2,cell3,cell4,cell5,cell6,
+                level_value,actions_csv,is_deleted
+            )
+            SELECT CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40)),
+                   'gift',
+                   cluster.cluster_id,
+                   cluster.cluster_id,
+                   CONCAT(COUNT(DISTINCT settlement.invited_user_id), ' 个关联账户'),
+                   CONCAT(COUNT(DISTINCT settlement.id), ' 已发 / 0 已拦'),
+                   CONCAT(ROUND(SUM(settlement.newcomer_usdt), 2), ' USDT + ',
+                          ROUND(SUM(settlement.newcomer_nex), 2), ' NEX'),
+                   CONCAT('K1 实体簇内新人礼已结算 ', COUNT(DISTINCT settlement.id), ' 笔'),
+                   NULL,
+                   CASE
+                     WHEN COUNT(DISTINCT settlement.id) >= 4 THEN 5
+                     WHEN COUNT(DISTINCT settlement.id) >= 3 THEN 4
+                     ELSE 3
+                   END,
+                   'blockgift,freeze',
+                   0
+              FROM nx_admin_risk_multi_account_cluster cluster
+              JOIN nx_referral_reward_settlement settlement
+                ON settlement.is_deleted = 0
+               AND UPPER(settlement.status) = 'SETTLED'
+              JOIN nx_user invited
+                ON invited.id = settlement.invited_user_id
+               AND invited.is_deleted = 0
+               AND JSON_VALID(cluster.nodes_json) = 1
+               AND JSON_SEARCH(cluster.nodes_json, 'one',
+                       CONCAT('U', LPAD(invited.id,
+                           GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
+             WHERE cluster.is_deleted = 0
+               AND cluster.nodes_json IS NOT NULL
+             GROUP BY cluster.cluster_id
+            HAVING COUNT(DISTINCT settlement.id) >= #{minimumSettlements}
+            ON DUPLICATE KEY UPDATE
+                view_key = VALUES(view_key),
+                cluster_id = VALUES(cluster_id),
+                cell1 = VALUES(cell1),
+                cell2 = VALUES(cell2),
+                cell3 = VALUES(cell3),
+                cell4 = VALUES(cell4),
+                cell5 = VALUES(cell5),
+                cell6 = VALUES(cell6),
+                level_value = VALUES(level_value),
+                actions_csv = VALUES(actions_csv),
+                is_deleted = 0,
+                updated_at = NOW()
+            """)
+    int upsertWelcomeGiftArbitrageRows(@Param("minimumSettlements") int minimumSettlements);
+
+    @Insert("""
+            INSERT INTO nx_risk_k2_leaderboard_snapshot (
+                period_type,period_key,snapshot_bucket,user_id,cumulative_usdt,direct_count,is_deleted
+            )
+            SELECT 'week',
+                   DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), '%Y-%m-%d'),
+                   FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(NOW()) / 300) * 300),
+                   commission.user_id,
+                   SUM(commission.amount_usdt),
+                   (
+                     SELECT COUNT(*)
+                       FROM nx_user direct_user
+                      WHERE direct_user.sponsor_user_id = commission.user_id
+                        AND direct_user.is_deleted = 0
+                        AND direct_user.created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+                   ),
+                   0
+              FROM nx_commission_event commission
+             WHERE commission.is_deleted = 0
+               AND commission.amount_usdt > 0
+               AND UPPER(commission.status) NOT IN ('FAILED','REJECTED','CANCELLED','REVERSED')
+               AND commission.created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+             GROUP BY commission.user_id
+            ON DUPLICATE KEY UPDATE
+                cumulative_usdt = VALUES(cumulative_usdt),
+                direct_count = VALUES(direct_count),
+                is_deleted = 0,
+                updated_at = NOW()
+            """)
+    int captureLeaderboardSnapshot();
+
+    @Update("""
+            UPDATE nx_admin_risk_arbitrage_row
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE row_id LIKE 'K2-LB-%'
+               AND disposition IS NULL
+               AND is_deleted = 0
+            """)
+    int retireLeaderboardArbitrageRows();
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_arbitrage_row (
+                row_id,view_key,cluster_id,cell1,cell2,cell3,cell4,cell5,cell6,
+                level_value,actions_csv,is_deleted
+            )
+            WITH ranked AS (
+              SELECT snapshot.*,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY snapshot.user_id
+                       ORDER BY snapshot.snapshot_bucket DESC
+                     ) AS rn
+                FROM nx_risk_k2_leaderboard_snapshot snapshot
+               WHERE snapshot.is_deleted = 0
+                 AND snapshot.period_type = 'week'
+                 AND snapshot.period_key =
+                     DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), '%Y-%m-%d')
+            ),
+            pairs AS (
+              SELECT user_id,
+                     MAX(period_key) AS period_key,
+                     MAX(CASE WHEN rn = 1 THEN cumulative_usdt END) AS current_usdt,
+                     MAX(CASE WHEN rn = 1 THEN direct_count END) AS current_directs,
+                     MAX(CASE WHEN rn = 2 THEN direct_count END) AS previous_directs,
+                     MAX(CASE WHEN rn = 1 THEN cumulative_usdt END)
+                       - MAX(CASE WHEN rn = 2 THEN cumulative_usdt END) AS delta_usdt
+                FROM ranked
+               WHERE rn <= 2
+               GROUP BY user_id
+              HAVING COUNT(*) = 2
+                 AND delta_usdt > 0
+            ),
+            clean_deltas AS (
+              SELECT pairs.*
+               FROM pairs
+               WHERE NOT EXISTS (
+                       SELECT 1
+                         FROM nx_risk_signal risk_signal
+                        WHERE risk_signal.user_id = pairs.user_id
+                          AND risk_signal.signal_type = 'risk.leaderboard_velocity_flagged'
+                          AND risk_signal.is_deleted = 0
+                     )
+            ),
+            ordered_deltas AS (
+              SELECT clean_deltas.delta_usdt,
+                     ROW_NUMBER() OVER (ORDER BY clean_deltas.delta_usdt) AS rn,
+                     COUNT(*) OVER () AS total_count
+                FROM clean_deltas
+            ),
+            baseline AS (
+              /* MEDIAN_BASELINE: exclude already flagged accounts before the median is computed. */
+              SELECT AVG(delta_usdt) AS median_delta
+                FROM ordered_deltas
+               WHERE rn IN ((total_count + 1) DIV 2, (total_count + 2) DIV 2)
+            ),
+            candidates AS (
+              SELECT pairs.*,
+                     baseline.median_delta,
+                     (
+                       SELECT cluster.cluster_id
+                         FROM nx_admin_risk_multi_account_cluster cluster
+                        WHERE cluster.is_deleted = 0
+                          AND cluster.nodes_json IS NOT NULL
+                          AND JSON_VALID(cluster.nodes_json) = 1
+                          AND JSON_SEARCH(cluster.nodes_json, 'one',
+                                  CONCAT('U', LPAD(pairs.user_id,
+                                      GREATEST(8, CHAR_LENGTH(CAST(pairs.user_id AS CHAR))), '0'))) IS NOT NULL
+                        ORDER BY FIELD(cluster.status, 'frozen', 'flagged', 'detected', 'released', 'cleared'),
+                                 cluster.id DESC
+                        LIMIT 1
+                     ) AS cluster_id
+                FROM pairs
+                CROSS JOIN baseline
+               WHERE baseline.median_delta > 0
+                 AND (
+                      (#{inclusive} = TRUE
+                       AND pairs.delta_usdt >= baseline.median_delta * #{velocityMultiplier})
+                   OR (#{inclusive} = FALSE
+                       AND pairs.delta_usdt > baseline.median_delta * #{velocityMultiplier})
+                 )
+            )
+            SELECT CONCAT('K2-LB-', candidates.period_key, '-U', candidates.user_id),
+                   'board',
+                   candidates.cluster_id,
+                   CONCAT('U', LPAD(candidates.user_id,
+                       GREATEST(8, CHAR_LENGTH(CAST(candidates.user_id AS CHAR))), '0')),
+                   CONCAT(ROUND(candidates.current_usdt, 2), ' USDT'),
+                   CONCAT(ROUND(candidates.delta_usdt / candidates.median_delta, 2), 'x 基线'),
+                   CONCAT(GREATEST(candidates.current_directs - candidates.previous_directs, 0), ' 新增直推'),
+                   COALESCE(candidates.cluster_id, '未关联 K1 簇'),
+                   NULL,
+                   IF(candidates.delta_usdt > candidates.median_delta * 10, 4, 3),
+                   IF(candidates.cluster_id IS NULL, 'boardflag', 'boardflag,freeze'),
+                   0
+              FROM candidates
+            ON DUPLICATE KEY UPDATE
+                view_key = VALUES(view_key),
+                cluster_id = VALUES(cluster_id),
+                cell1 = VALUES(cell1),
+                cell2 = VALUES(cell2),
+                cell3 = VALUES(cell3),
+                cell4 = VALUES(cell4),
+                cell5 = VALUES(cell5),
+                cell6 = VALUES(cell6),
+                level_value = VALUES(level_value),
+                actions_csv = VALUES(actions_csv),
+                is_deleted = 0,
+                updated_at = NOW()
+            """)
+    int upsertLeaderboardArbitrageRows(
+            @Param("velocityMultiplier") int velocityMultiplier,
+            @Param("inclusive") boolean inclusive);
 
     @Select("""
             SELECT DISTINCT u.id
@@ -1401,7 +1659,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                AND (
                     r.row_id = CONCAT('K2-H2-U', u.id)
                  OR r.row_id = CONCAT('K2-E3-U', u.id)
-                 OR r.cell1 = CONCAT('U', LPAD(u.id, 8, '0'))
+                 OR r.cell1 = CONCAT('U', LPAD(u.id,
+                        GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))
                  OR EXISTS (
                       SELECT 1
                         FROM nx_admin_risk_multi_account_cluster c
@@ -1409,7 +1668,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                          AND c.is_deleted = 0
                          AND c.nodes_json IS NOT NULL
                          AND JSON_VALID(c.nodes_json) = 1
-                         AND JSON_SEARCH(c.nodes_json, 'one', CONCAT('U', LPAD(u.id, 8, '0'))) IS NOT NULL
+                         AND JSON_SEARCH(c.nodes_json, 'one', CONCAT('U', LPAD(u.id,
+                                 GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'))) IS NOT NULL
                     )
                )
              ORDER BY u.id ASC
@@ -1698,7 +1958,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_override o
               LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,8,'0'))=o.user_no AND u.is_deleted=0
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=o.user_no AND u.is_deleted=0
                SET o.active=0,o.updated_at=NOW()
              WHERE o.active=1 AND o.is_deleted=0 AND u.id IS NULL
             """)
@@ -1707,7 +1967,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_contribution c
               LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,8,'0'))=c.user_no AND u.is_deleted=0
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=c.user_no AND u.is_deleted=0
                SET c.is_deleted=1
              WHERE c.is_deleted=0 AND u.id IS NULL
             """)
@@ -1716,7 +1976,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_user s
               LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no AND u.is_deleted=0
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no AND u.is_deleted=0
                SET s.is_deleted=1,s.updated_at=NOW()
              WHERE s.is_deleted=0 AND u.id IS NULL
             """)
@@ -1725,7 +1985,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Insert("""
             INSERT INTO nx_admin_risk_score_user
               (user_no,model_score,model_version,row_version,as_of,updated_text,is_deleted)
-            SELECT CONCAT('U',LPAD(u.id,8,'0')),0,'pending',0,NOW(),'待首次评分',0
+            SELECT CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),0,'pending',0,NOW(),'待首次评分',0
               FROM nx_user u
              WHERE u.is_deleted=0
             ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW()
@@ -1767,7 +2027,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT s.user_no
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                AND u.is_deleted=0
              WHERE s.is_deleted=0
              ORDER BY s.id
@@ -1778,7 +2038,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT s.user_no
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                AND u.is_deleted=0
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
@@ -1825,7 +2085,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT COUNT(*)
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                AND u.is_deleted=0
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
@@ -1866,25 +2126,25 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     long countScoreUsersNeedingProjection(@Param("modelVersion") long modelVersion);
 
     @Select("""
-            SELECT CONCAT('U',LPAD(u.id,8,'0')) AS userNo,
+            SELECT CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')) AS userNo,
                    COALESCE((SELECT MAX(c.account_count)
                                FROM nx_admin_risk_multi_account_cluster c
                               WHERE c.is_deleted=0 AND c.status IN ('detected','flagged','frozen')
                                 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json)=1
-                                AND JSON_SEARCH(c.nodes_json,'one',CONCAT('U',LPAD(u.id,8,'0'))) IS NOT NULL),0)
+                                AND JSON_SEARCH(c.nodes_json,'one',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))) IS NOT NULL),0)
                      AS multiAccountClusterSize,
                    EXISTS(SELECT 1 FROM nx_admin_risk_multi_account_cluster c
                            WHERE c.is_deleted=0 AND c.status='frozen'
                              AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json)=1
-                             AND JSON_SEARCH(c.nodes_json,'one',CONCAT('U',LPAD(u.id,8,'0'))) IS NOT NULL)
+                             AND JSON_SEARCH(c.nodes_json,'one',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))) IS NOT NULL)
                      AS multiAccountFraud,
                    (SELECT COUNT(*) FROM nx_admin_risk_arbitrage_row a
                      WHERE a.is_deleted=0 AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
-                       LIKE CONCAT('%',CONCAT('U',LPAD(u.id,8,'0')),'%')) AS arbitrageSignals,
+                       LIKE CONCAT('%',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),'%')) AS arbitrageSignals,
                    EXISTS(SELECT 1 FROM nx_admin_risk_arbitrage_row a
                            WHERE a.is_deleted=0 AND a.disposition IN ('cluster_frozen','gift_blocked','account_flagged')
                              AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
-                               LIKE CONCAT('%',CONCAT('U',LPAD(u.id,8,'0')),'%')) AS severeArbitrage,
+                               LIKE CONCAT('%',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),'%')) AS severeArbitrage,
                    COALESCE(kyc.status,'PENDING') AS kycStatus,
                    (SELECT COUNT(*) FROM nx_withdrawal_order w
                      WHERE w.user_id=u.id AND w.is_deleted=0 AND w.created_at>=NOW()-INTERVAL 24 HOUR)
@@ -1918,7 +2178,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                              AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected
               FROM nx_user u
               LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
-             WHERE CONCAT('U',LPAD(u.id,8,'0'))=#{userNo} AND u.is_deleted=0
+             WHERE CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=#{userNo} AND u.is_deleted=0
              LIMIT 1
             """)
     ScoreRawInputRecord scoreRawInput(@Param("userNo") String userNo);
@@ -1937,7 +2197,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    u.referral_code AS referralCode
               FROM nx_admin_risk_score_user s
               LEFT JOIN nx_user u
-                ON CONCAT('U', LPAD(u.id, 8, '0')) = s.user_no
+                ON CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) = s.user_no
                AND u.is_deleted = 0
              WHERE s.is_deleted = 0
                AND (
@@ -2034,7 +2294,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
      */
     @Update("""
             UPDATE nx_admin_risk_score_user s
-              JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no
+              JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                SET s.as_of=GREATEST(COALESCE(s.as_of,'1970-01-01'),NOW(),
                    COALESCE(u.updated_at,'1970-01-01'),
                    COALESCE((SELECT MAX(k1.updated_at)
@@ -2421,13 +2681,74 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     java.util.Set<String> activeIpWhitelistCidrs();
 
     @Select("""
-            SELECT u.id AS userId,CONCAT('U',LPAD(u.id,8,'0')) AS userNo,u.created_at AS joinedAt,
-                   NULL AS sponsorUserId,NULL AS gotWelcomeGift,NULL AS depositCumulativeUsdt,
-                   COALESCE(u.status,'ACTIVE') AS accountStatus,
-                   'device' AS layer,d.device_fingerprint AS rawKey,
-                   CONCAT(LEFT(d.device_fingerprint,6),'***') AS maskedKey
-              FROM nx_user u JOIN nx_risk_decision d ON d.user_id=u.id AND d.is_deleted=0
-             WHERE u.is_deleted=0 AND d.device_fingerprint IS NOT NULL AND d.device_fingerprint<>''
+            WITH user_context AS (
+              SELECT u.id AS userId,
+                     CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')) AS userNo,
+                     u.created_at AS joinedAt,
+                     u.sponsor_user_id AS sponsorUserId,
+                     EXISTS(
+                       SELECT 1 FROM nx_referral_reward_settlement settlement
+                        WHERE settlement.invited_user_id=u.id
+                          AND settlement.status='SETTLED' AND settlement.is_deleted=0
+                     ) AS gotWelcomeGift,
+                     COALESCE(
+                       wallet.cumulative_deposit_usdt,
+                       (SELECT COALESCE(SUM(ledger.amount),0)
+                          FROM nx_wallet_ledger ledger
+                         WHERE ledger.user_id=u.id AND ledger.is_deleted=0
+                           AND ledger.asset='USDT' AND ledger.direction='IN'
+                           AND ledger.status='SUCCESS'
+                           AND ledger.biz_type IN (
+                             'CARD_TOPUP','CHAIN_TOPUP','DEPOSIT','TOPUP','VIETQR_DEPOSIT'
+                           )),
+                       0
+                     ) AS depositCumulativeUsdt,
+                     u.status AS accountStatus,
+                     REPLACE(COALESCE(u.country_code,''),'+','') AS normalizedCountryCode,
+                     u.phone AS phone
+                FROM nx_user u
+                LEFT JOIN nx_user_wallet wallet ON wallet.user_id=u.id AND wallet.is_deleted=0
+               WHERE u.is_deleted=0
+            ),
+            registration_ip AS (
+              SELECT DISTINCT REPLACE(COALESCE(country_code,''),'+','') AS normalizedCountryCode,
+                     phone,client_ip
+                FROM nx_user_registration_otp
+               WHERE consumed_at IS NOT NULL AND is_deleted=0
+                 AND created_at>=DATE_SUB(NOW(),INTERVAL 1 DAY)
+                 AND client_ip IS NOT NULL AND client_ip<>'' AND client_ip<>'unknown'
+            )
+            SELECT DISTINCT context.userId,context.userNo,context.joinedAt,context.sponsorUserId,
+                   context.gotWelcomeGift,context.depositCumulativeUsdt,context.accountStatus,
+                   'ip' AS layer,registration.client_ip AS rawKey,
+                   CASE
+                     WHEN registration.client_ip REGEXP '^[0-9]+\\\\.[0-9]+\\\\.[0-9]+\\\\.[0-9]+$'
+                       THEN CONCAT(SUBSTRING_INDEX(registration.client_ip,'.',3),'.*')
+                     ELSE CONCAT(LEFT(registration.client_ip,8),'***')
+                   END AS maskedKey
+              FROM user_context context
+              JOIN registration_ip registration
+                ON registration.normalizedCountryCode=context.normalizedCountryCode
+               AND registration.phone=context.phone
+            UNION ALL
+            SELECT DISTINCT context.userId,context.userNo,context.joinedAt,context.sponsorUserId,
+                   context.gotWelcomeGift,context.depositCumulativeUsdt,context.accountStatus,
+                   'device' AS layer,decision.device_fingerprint AS rawKey,
+                   CONCAT(LEFT(decision.device_fingerprint,6),'***') AS maskedKey
+              FROM user_context context
+              JOIN nx_risk_decision decision
+                ON decision.user_id=context.userId AND decision.is_deleted=0
+             WHERE decision.device_fingerprint IS NOT NULL AND decision.device_fingerprint<>''
+            UNION ALL
+            SELECT DISTINCT context.userId,context.userNo,context.joinedAt,context.sponsorUserId,
+                   context.gotWelcomeGift,context.depositCumulativeUsdt,context.accountStatus,
+                   'payment' AS layer,card.card_token AS rawKey,
+                   CONCAT(COALESCE(NULLIF(card.brand,''),'CARD'),' ••••',card.last4) AS maskedKey
+              FROM user_context context
+              JOIN nx_wallet_bank_card card
+                ON card.user_id=context.userId AND card.is_deleted=0
+             WHERE card.status IN ('BOUND','ACTIVE','VERIFIED')
+               AND card.card_token IS NOT NULL AND card.card_token<>''
             """)
     List<MultiAccountSignalFactRecord> multiAccountSignalFacts();
 
@@ -2514,7 +2835,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                         ELSE CONCAT('剩 ',GREATEST(0,TIMESTAMPDIFF(DAY,NOW(),t.due_at)),' 天') END AS slaTxt,
                    t.info_json AS infoJson,t.history_json AS histJson,t.version
               FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
               LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE t.is_deleted = 0
              <if test='filter != null and filter != ""'>
@@ -2538,7 +2859,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
                    t.info_json AS infoJson,t.history_json AS histJson,t.version
               FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
               LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE t.ticket_id = #{ticketId} AND t.is_deleted = 0
              LIMIT 1
@@ -2552,7 +2873,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
                    t.info_json AS infoJson,t.history_json AS histJson,t.version
               FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
               LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE t.user_no=#{userNo} AND t.status='in-review' AND t.is_deleted=0
              ORDER BY t.id DESC LIMIT 1
@@ -2566,7 +2887,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
                    t.info_json AS infoJson,t.history_json AS histJson,t.version
               FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,8,'0'))=t.user_no AND u.is_deleted=0
+              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
               LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE t.user_no=#{userNo} AND t.status='in-review' AND t.is_deleted=0
              ORDER BY t.id DESC LIMIT 1 FOR UPDATE

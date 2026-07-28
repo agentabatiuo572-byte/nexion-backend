@@ -206,25 +206,25 @@ ON DUPLICATE KEY UPDATE value_text=VALUES(value_text),is_deleted=0,updated_at=NO
 
 UPDATE nx_admin_risk_score_override o
   LEFT JOIN nx_user u
-    ON CONCAT('U',LPAD(u.id,8,'0'))=o.user_no AND u.is_deleted=0
+    ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=o.user_no AND u.is_deleted=0
    SET o.active=0,o.updated_at=NOW()
  WHERE o.active=1 AND o.is_deleted=0 AND u.id IS NULL;
 
 UPDATE nx_admin_risk_score_contribution c
   LEFT JOIN nx_user u
-    ON CONCAT('U',LPAD(u.id,8,'0'))=c.user_no AND u.is_deleted=0
+    ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=c.user_no AND u.is_deleted=0
    SET c.is_deleted=1
  WHERE c.is_deleted=0 AND u.id IS NULL;
 
 UPDATE nx_admin_risk_score_user s
   LEFT JOIN nx_user u
-    ON CONCAT('U',LPAD(u.id,8,'0'))=s.user_no AND u.is_deleted=0
+    ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no AND u.is_deleted=0
    SET s.is_deleted=1,s.updated_at=NOW()
  WHERE s.is_deleted=0 AND u.id IS NULL;
 
 INSERT INTO nx_admin_risk_score_user
   (user_no,model_score,model_version,row_version,as_of,updated_text,is_deleted)
-SELECT CONCAT('U',LPAD(u.id,8,'0')),0,'pending',0,NOW(),'待首次评分',0
+SELECT CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),0,'pending',0,NOW(),'待首次评分',0
   FROM nx_user u
  WHERE u.is_deleted=0
 ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW();

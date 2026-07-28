@@ -5,5 +5,6 @@ public record B5AlertSubscriptionRequest(
         Boolean email,
         Boolean webhook,
         String webhookUrl,
+        Long expectedVersion,
         String operator) {
 }

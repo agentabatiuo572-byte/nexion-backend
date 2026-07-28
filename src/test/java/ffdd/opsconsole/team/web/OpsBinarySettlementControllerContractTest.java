@@ -17,6 +17,7 @@ class OpsBinarySettlementControllerContractTest {
         assertThat(source).contains("@Valid @RequestBody BinaryLegAssignmentRequest");
         assertThat(source).contains("@Valid @RequestBody BinarySettlementRequest");
         assertThat(source).contains("Authentication authentication", "actor.id()", "actor.username()");
+        assertThat(source).contains("request.reason()");
         assertThat(source).doesNotContain("request.operator()");
     }
 

@@ -46,6 +46,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -195,7 +196,10 @@ public class OpsTreasuryService {
                 "reserveTotalUsdt", money(reserveTotal),
                 "asOf", now,
                 "waterLevel", waterLevel(reserveTotal));
-        response.put("sources", List.of("nx_treasury_reserve_ledger", "nx_staking_position.amount_usdt"));
+        response.put("sources", List.of(
+                "nx_treasury_reserve_ledger",
+                "nx_vietqr_reconciliation.received_vnd converted at locked FX",
+                "nx_staking_position.amount_usdt"));
         return ApiResult.ok(response);
     }
 
@@ -604,7 +608,9 @@ public class OpsTreasuryService {
             throw new BizException(400, "VOUCHER_NO_REQUIRED");
         }
         String voucherNo = request.voucherNo().trim();
-        if (!voucherNo.matches("[A-Za-z0-9][A-Za-z0-9:_./-]{5,95}") || voucherNo.matches("(?i)^D3-\\d+$")) {
+        if (!voucherNo.matches("[A-Za-z0-9][A-Za-z0-9:_./-]{5,95}")
+                || voucherNo.matches("(?i)^D3-\\d+$")
+                || voucherNo.matches("(?i).*(bootstrap|fixture).*")) {
             throw new BizException(400, "VOUCHER_NO_INVALID");
         }
         String reason = request.reason().trim();
@@ -629,7 +635,10 @@ public class OpsTreasuryService {
         if (ledgerRepository.reserveVoucherExists(voucherNo)) {
             throw new BizException(409, "VOUCHER_ALREADY_REGISTERED");
         }
-        BigDecimal oldReserve = currentReserveWithVietQr().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal oldReserve = currentReserveWithVietQr()
+                .subtract(safe(ledgerRepository.sumActiveStakingPrincipalUsdt()))
+                .max(BigDecimal.ZERO)
+                .setScale(2, RoundingMode.HALF_UP);
         BigDecimal newReserve = oldReserve.add(amount).setScale(2, RoundingMode.HALF_UP);
         try {
             ledgerRepository.recordReserveInjection(voucherNo, amount, reason, operator, idempotencyKey);
@@ -862,6 +871,9 @@ public class OpsTreasuryService {
         if (userId != null && userId <= 0) {
             throw new BizException(400, "USER_ID_INVALID");
         }
+        if (userId != null && !ledgerRepository.userExists(userId)) {
+            throw new BizException(404, "USER_NOT_FOUND");
+        }
         String keyword = trimToNull(request == null ? null : request.keyword());
         String bizNo = trimToNull(request == null ? null : request.bizNo());
         String status = normalizeD4Status(request == null ? null : request.status());
@@ -876,15 +888,27 @@ public class OpsTreasuryService {
     }
 
     public ApiResult<Map<String, Object>> userLedger(Long userId) {
+        return userLedger(userId, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> userLedger(Long userId, String fromText, String toText) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
+        if (!ledgerRepository.userExists(userId)) {
+            throw new BizException(404, "USER_NOT_FOUND");
+        }
         ensureD4FallbackSeedData();
-        long total = ledgerRepository.countLedgerBills(null, userId, null, null, null, null, null);
+        LocalDateTime from = parseD4Time(fromText, false);
+        LocalDateTime to = parseD4Time(toText, true);
+        requireD4TimeRange(from, to);
+        long total = ledgerRepository.countLedgerBills(null, userId, null, null, null, from, to);
         if (total > D4_MAX_AUDIT_ROWS) {
             return ApiResult.fail(422, "D4_USER_LEDGER_TOO_LARGE_REFINE_RANGE");
         }
-        List<TreasuryLedgerBillView> rows = ledgerRepository.userLedgerRows(userId, D4_MAX_AUDIT_ROWS);
+        List<TreasuryLedgerBillView> rows = ledgerRepository.pageLedgerBills(
+                null, userId, null, null, null, from, to, D4_MAX_AUDIT_ROWS, 0);
         String userNo = rows.stream()
                 .map(TreasuryLedgerBillView::userNo)
                 .filter(StringUtils::hasText)
@@ -922,14 +946,26 @@ public class OpsTreasuryService {
     }
 
     public ApiResult<Map<String, Object>> runningBalance(Long userId) {
+        return runningBalance(userId, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> runningBalance(Long userId, String fromText, String toText) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(400, "USER_ID_REQUIRED");
         }
-        long total = ledgerRepository.countLedgerBills(null, userId, null, null, null, null, null);
+        if (!ledgerRepository.userExists(userId)) {
+            throw new BizException(404, "USER_NOT_FOUND");
+        }
+        LocalDateTime from = parseD4Time(fromText, false);
+        LocalDateTime to = parseD4Time(toText, true);
+        requireD4TimeRange(from, to);
+        long total = ledgerRepository.countLedgerBills(null, userId, null, null, null, from, to);
         if (total > D4_MAX_AUDIT_ROWS) {
             return ApiResult.fail(422, "D4_RUNNING_BALANCE_TOO_LARGE_REFINE_RANGE");
         }
-        List<TreasuryLedgerBillView> ordered = ledgerRepository.userLedgerRows(userId, D4_MAX_AUDIT_ROWS).stream()
+        List<TreasuryLedgerBillView> ordered = ledgerRepository.pageLedgerBills(
+                        null, userId, null, null, null, from, to, D4_MAX_AUDIT_ROWS, 0).stream()
                 .sorted(java.util.Comparator.comparing(TreasuryLedgerBillView::createdAt)
                         .thenComparing(TreasuryLedgerBillView::id))
                 .toList();
@@ -937,7 +973,20 @@ public class OpsTreasuryService {
         Map<String, BigDecimal> latestLedger = new LinkedHashMap<>();
         List<Map<String, Object>> rows = new ArrayList<>();
         int breakCount = 0;
+        int unsettledCount = 0;
         for (TreasuryLedgerBillView row : ordered) {
+            boolean settled = isSettledLedgerStatus(row.status());
+            if (!settled) {
+                unsettledCount++;
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("bill", row);
+                item.put("expectedBalanceAfter", previous.get(row.asset()));
+                item.put("difference", BigDecimal.ZERO);
+                item.put("breakDetected", false);
+                item.put("settlementBucket", "UNSETTLED");
+                rows.add(item);
+                continue;
+            }
             BigDecimal signed = isCreditDirection(row.direction()) ? safe(row.amount()) : safe(row.amount()).negate();
             BigDecimal expected = previous.containsKey(row.asset())
                     ? previous.get(row.asset()).add(signed)
@@ -950,25 +999,48 @@ public class OpsTreasuryService {
             item.put("expectedBalanceAfter", expected);
             item.put("difference", difference);
             item.put("breakDetected", broken);
+            item.put("settlementBucket", "SETTLED");
             rows.add(item);
             previous.put(row.asset(), safe(row.balanceAfter()));
             latestLedger.put(row.asset(), safe(row.balanceAfter()));
         }
-        Map<String, BigDecimal> reconciliation = new LinkedHashMap<>();
-        for (String asset : List.of("USDT", "NEX")) {
-            BigDecimal wallet = ledgerRepository.actualUserBalance(userId, asset).orElse(BigDecimal.ZERO);
-            BigDecimal difference = wallet.subtract(latestLedger.getOrDefault(asset, BigDecimal.ZERO));
-            reconciliation.put(asset, difference);
-            if (difference.compareTo(BigDecimal.ZERO) != 0) breakCount++;
+        boolean currentWalletScope = to == null || !to.isBefore(LocalDateTime.now(clock));
+        Map<String, BigDecimal> reconciliation = null;
+        String reconciliationScope;
+        String reconciliationNote;
+        if (currentWalletScope) {
+            reconciliation = new LinkedHashMap<>();
+            for (String asset : List.of("USDT", "NEX")) {
+                BigDecimal wallet = ledgerRepository.actualUserBalance(userId, asset).orElse(BigDecimal.ZERO);
+                BigDecimal difference = wallet.subtract(latestLedger.getOrDefault(asset, BigDecimal.ZERO));
+                reconciliation.put(asset, difference);
+                if (difference.compareTo(BigDecimal.ZERO) != 0) breakCount++;
+            }
+            reconciliationScope = "CURRENT_WALLET";
+            reconciliationNote = "区间覆盖当前账本末端，已核对最新已结算账本余额与当前钱包。";
+        } else {
+            reconciliationScope = "HISTORICAL_RANGE";
+            reconciliationNote = "历史截止区间仅检查区间内已结算流水连续性，不使用当前钱包余额核对。";
         }
-        return ApiResult.ok(section(
+        Map<String, Object> response = section(
                 "userId", userId,
                 "total", total,
                 "rows", rows,
                 "breakCount", breakCount,
-                "reconciliation", reconciliation,
+                "unsettledCount", unsettledCount,
+                "reconciliationScope", reconciliationScope,
+                "reconciliationNote", reconciliationNote,
                 "balanced", breakCount == 0,
-                "sources", List.of("nx_wallet_ledger", "nx_user_wallet")));
+                "sources", currentWalletScope
+                        ? List.of("nx_wallet_ledger", "nx_user_wallet")
+                        : List.of("nx_wallet_ledger"));
+        response.put("reconciliation", reconciliation);
+        return ApiResult.ok(response);
+    }
+
+    private boolean isSettledLedgerStatus(String status) {
+        String normalized = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+        return Set.of("SUCCESS", "POSTED", "COMPLETED", "CONFIRMED").contains(normalized);
     }
 
     public byte[] ledgerBillsCsv(TreasuryLedgerQueryRequest request, String reason) {
@@ -1016,6 +1088,17 @@ public class OpsTreasuryService {
                         "format", "CSV",
                         "reason", exportReason,
                         "masking", "forced"));
+        String exportId = "D4-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        eventOutboxService.publish("BI_REPORT", exportId, "admin.report_exported", section(
+                "reportId", exportId,
+                "exportType", "BILL_CSV",
+                "scope", userId == null ? "platform" : "user",
+                "rowCount", rows.size(),
+                "containsPii", true,
+                "maskingPolicy", "MASKED",
+                "operator", AdminActorResolver.resolve(null),
+                "reason", exportReason,
+                "format", "CSV"));
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
 

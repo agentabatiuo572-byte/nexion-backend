@@ -160,10 +160,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Set<String> RETIRED_K2_PARAM_KEYS = Set.of(
             "rewardRisk.lockMode", "rewardRisk.usdtAmount", "rewardRisk.nexAmount");
     private static final Map<String, K2ActionSpec> K2_ACTIONS = Map.of(
-            "mark", new K2ActionSpec("flag", "已标记套利", "K2_ARBITRAGE_MARKED", "risk_k2_row_flag"),
-            "block-gift", new K2ActionSpec("blockgift", "新人礼已拦截", "K2_WELCOME_GIFT_BLOCKED", "risk_k2_row_blockgift"),
-            "board-flag", new K2ActionSpec("boardflag", "已标记刷榜", "K2_LEADERBOARD_FLAGGED", "risk_k2_row_boardflag"),
-            "freeze-cluster", new K2ActionSpec("freeze", "已联动 K1 冻结", "K2_CLUSTER_FREEZE_LINKED", "risk_k2_row_freeze"));
+            "mark", new K2ActionSpec("flag", "account_flagged", "K2_ARBITRAGE_MARKED", "risk_k2_row_flag"),
+            "block-gift", new K2ActionSpec("blockgift", "gift_blocked", "K2_WELCOME_GIFT_BLOCKED", "risk_k2_row_blockgift"),
+            "board-flag", new K2ActionSpec("boardflag", "leaderboard_flagged", "K2_LEADERBOARD_FLAGGED", "risk_k2_row_boardflag"),
+            "freeze-cluster", new K2ActionSpec("freeze", "cluster_frozen", "K2_CLUSTER_FREEZE_LINKED", "risk_k2_row_freeze"));
     private static final List<K2ViewSpec> K2_VIEWS = List.of(
             new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
                     List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益"),
@@ -947,12 +947,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     @Transactional
     public ApiResult<Map<String, Object>> arbitrageOverview() {
+        refreshK2AuthoritativeProjection();
         List<RiskArbitrageParamView> currentParams = riskRepository.arbitrageParams();
-        int[] trialBoundary = trialCycleBoundary(currentParams);
-        riskRepository.refreshE3TradeinArbitrageProjection();
-        List<RiskOpsRepository.TrialCycleDetection> trialDetections =
-                riskRepository.refreshTrialCycleArbitrageProjection(trialBoundary[0], trialBoundary[1]);
-        emitTrialCycleSignals(trialDetections, trialBoundary[1]);
         List<RiskArbitrageRowView> rows = riskRepository.arbitrageRows();
         Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
                 .collect(Collectors.groupingBy(RiskArbitrageRowView::viewKey, LinkedHashMap::new, Collectors.toList()));
@@ -976,6 +972,27 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("views", views);
         response.put("redlines", List.of("K2 only marks and emits signals", "account freezing is linked to K1 action chain", "welcome gift blocking never touches settled assets"));
         return ApiResult.ok(response);
+    }
+
+    @Transactional
+    public void refreshK2AuthoritativeProjection() {
+        List<RiskArbitrageParamView> params = riskRepository.arbitrageParams();
+        int[] trialBoundary = trialCycleBoundary(params);
+        int giftMinimum = thresholdMinimum(
+                params, "welcomeGiftAnomalyThreshold", K2_WELCOME_GIFT_THRESHOLD, 2);
+        int boardMultiplier = thresholdValue(
+                params, "leaderboardVelocityMultiplier", K2_LEADERBOARD_THRESHOLD, 5);
+        boolean boardInclusive = thresholdOperator(
+                params, "leaderboardVelocityMultiplier", K2_LEADERBOARD_THRESHOLD).equals(">=");
+
+        riskRepository.refreshE3TradeinArbitrageProjection();
+        List<RiskOpsRepository.TrialCycleDetection> trialDetections =
+                riskRepository.refreshTrialCycleArbitrageProjection(trialBoundary[0], trialBoundary[1]);
+        riskRepository.refreshWelcomeGiftArbitrageProjection(giftMinimum);
+        riskRepository.refreshLeaderboardArbitrageProjection(boardMultiplier, boardInclusive);
+        riskRepository.retireInactiveK2ProjectionSignals();
+        emitTrialCycleSignals(trialDetections, trialBoundary[1]);
+        emitDetectedArbitrageSignals(riskRepository.arbitrageRows());
     }
 
     @Transactional
@@ -1142,9 +1159,45 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 Math.max(1, Math.min(Integer.parseInt(matcher.group(3)), 365))};
     }
 
+    private int thresholdMinimum(
+            List<RiskArbitrageParamView> params, String key, Pattern pattern, int fallback) {
+        int value = thresholdValue(params, key, pattern, fallback);
+        return ">".equals(thresholdOperator(params, key, pattern)) ? value + 1 : value;
+    }
+
+    private int thresholdValue(
+            List<RiskArbitrageParamView> params, String key, Pattern pattern, int fallback) {
+        String configured = params.stream()
+                .filter(param -> key.equals(param.key()))
+                .map(RiskArbitrageParamView::value)
+                .findFirst()
+                .orElse("");
+        Matcher matcher = pattern.matcher(configured.trim().replace("X", "x"));
+        if (!matcher.matches()) return fallback;
+        try {
+            return Integer.parseInt(matcher.group(2));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private String thresholdOperator(
+            List<RiskArbitrageParamView> params, String key, Pattern pattern) {
+        String configured = params.stream()
+                .filter(param -> key.equals(param.key()))
+                .map(RiskArbitrageParamView::value)
+                .findFirst()
+                .orElse("");
+        Matcher matcher = pattern.matcher(configured.trim().replace("X", "x"));
+        if (matcher.matches()) return matcher.group(1);
+        return "welcomeGiftAnomalyThreshold".equals(key) ? ">=" : ">";
+    }
+
     private void emitTrialCycleSignals(List<RiskOpsRepository.TrialCycleDetection> detections, int windowDays) {
         for (RiskOpsRepository.TrialCycleDetection detection : detections) {
-            String signalNo = "K2-TC-" + requestHash(String.valueOf(detection.userId())).substring(0, 40);
+            String signalNo = "K2-TC-" + requestHash(
+                    detection.rowId(),
+                    String.valueOf(detection.userId())).substring(0, 40);
             String evidence = "row=" + detection.rowId() + ";cycles=" + detection.cycleCount()
                     + ";windowDays=" + windowDays + ";source=A4:trial.started";
             if (!riskRepository.recordSignalIfAbsent(signalNo, detection.userId(),
@@ -1165,16 +1218,18 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private void emitArbitrageActionSignal(
             RiskArbitrageRowView row, String action, List<Long> subjectUserIds, String actor) {
-        String signalType = "board-flag".equals(action)
+        String signalType = "board".equals(row.viewKey()) || "board-flag".equals(action)
                 ? "risk.leaderboard_velocity_flagged"
                 : "risk.arbitrage_suspected";
         String severity = "freeze-cluster".equals(action) ? "CRITICAL" : "HIGH";
+        boolean inserted = false;
         for (Long userId : subjectUserIds) {
-            String signalNo = "K2-" + requestHash(row.rowId(), action, String.valueOf(userId)).substring(0, 40);
-            riskRepository.recordSignalIfAbsent(signalNo, userId, signalType, severity,
+            String signalNo = "K2-" + requestHash(row.rowId(), String.valueOf(userId)).substring(0, 40);
+            inserted |= riskRepository.recordSignalIfAbsent(signalNo, userId, signalType, severity,
                     "row=" + row.rowId() + ";view=" + row.viewKey() + ";action=" + action,
                     actor);
         }
+        if (!inserted) return;
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("row_id", row.rowId());
         payload.put("view_key", row.viewKey());
@@ -1183,6 +1238,15 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         payload.put("subject_user_ids", subjectUserIds);
         if (StringUtils.hasText(row.clusterId())) payload.put("cluster_id", row.clusterId());
         eventOutboxService.publish("RISK_ARBITRAGE_ROW", row.rowId(), signalType, payload);
+    }
+
+    private void emitDetectedArbitrageSignals(List<RiskArbitrageRowView> rows) {
+        for (RiskArbitrageRowView row : rows) {
+            if ("trial".equals(row.viewKey())) continue;
+            List<Long> subjectUserIds = riskRepository.arbitrageSubjectUserIds(row.rowId());
+            if (subjectUserIds.isEmpty()) continue;
+            emitArbitrageActionSignal(row, "detected", subjectUserIds, "K2_PROJECTION");
+        }
     }
 
     public ApiResult<Map<String, Object>> scoringOverview() {

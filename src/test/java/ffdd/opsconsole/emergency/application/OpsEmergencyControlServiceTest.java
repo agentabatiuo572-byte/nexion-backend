@@ -63,6 +63,7 @@ class OpsEmergencyControlServiceTest {
     private final EventConsumerDeliveryService consumerDeliveryService = mock(EventConsumerDeliveryService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final GeoEdgeHealthMonitor geoEdgeHealthMonitor = new GeoEdgeHealthMonitor(java.time.Clock.systemUTC());
+    private final J4DomainActionGateway j4DomainActionGateway = mock(J4DomainActionGateway.class);
     private final org.springframework.transaction.PlatformTransactionManager transactionManager =
             mock(org.springframework.transaction.PlatformTransactionManager.class);
     private final OpsEmergencyControlService service = new OpsEmergencyControlService(
@@ -78,10 +79,12 @@ class OpsEmergencyControlServiceTest {
             consumerDeliveryService,
             idempotencyService,
             geoEdgeHealthMonitor,
+            j4DomainActionGateway,
             transactionManager);
 
     @org.junit.jupiter.api.BeforeEach
     void stubLocksNoActive() {
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
         var authentication = new org.springframework.security.authentication.TestingAuthenticationToken(
                 "superadmin",
                 "",
@@ -89,9 +92,17 @@ class OpsEmergencyControlServiceTest {
                 "emergency_j4_playbook_execute",
                 "emergency_j1_gate_kill",
                 "emergency_j1_gate_resume",
-                "content_i3_write");
+                "emergency_j2_emergency_block",
+                "user_c2_account_freeze",
+                "risk_k1_cluster_freeze",
+                "content_i3_write",
+                "content_i5_disclosure_publish");
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
         doReturn("event-j2-test").when(outboxService).publish(anyString(), anyString(), anyString(), any());
+        when(j4DomainActionGateway.validate(anyString(), anyString()))
+                .thenReturn(ApiResult.ok(Map.of("status", "VALIDATED")));
+        when(j4DomainActionGateway.execute(anyString(), anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(ApiResult.ok(Map.of("status", "DONE")));
         when(idempotencyService.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
         when(transactionManager.getTransaction(any()))
@@ -141,6 +152,11 @@ class OpsEmergencyControlServiceTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString()))
                 .thenReturn(ApiResult.ok(Map.of()));
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void clearReplayContext() {
+        ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
     }
 
     @Test
@@ -887,6 +903,20 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
+    void playbookExecutionRequiresA2ReplayEvenWithoutAnActiveObjectLock() {
+        ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+
+        var result = service.executePlaybook(
+                "SOP-NOT-RELEVANT",
+                "idem-j4-direct-bypass",
+                new SopPlaybookRunRequest(false, "direct API bypass attempt", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("J4_A2_CONFIRMATION_REQUIRED");
+        assertThat(emergencyRepository.executions).isEmpty();
+    }
+
+    @Test
     void sopOverviewReadsH1RhythmSnapshot() {
         configFacade.values.put("H1.rhythm.currentMonth", "9");
         configFacade.values.put("growth.phase.current", "P5");
@@ -907,10 +937,16 @@ class OpsEmergencyControlServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().get("playbooks").toString()).doesNotContain("SOP-01");
         assertThat(result.getData().get("executions").toString()).doesNotContain("SOP-06");
-        assertThat(result.getData().get("actionOptions").toString())
-                .contains("熔断提现通道")
-                .contains("发送通知模板")
-                .doesNotContain("I5", "D2", "B1", "C2", "K1", "J2");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> actionOptions =
+                (List<Map<String, Object>>) result.getData().get("actionOptions");
+        assertThat(actionOptions)
+                .extracting(option -> option.get("action"))
+                .contains("熔断提现通道", "发送通知模板");
+        assertThat(actionOptions)
+                .extracting(option -> option.get("domain"))
+                .contains("J2", "C2", "K1", "I5")
+                .doesNotContain("D2", "B1");
         assertThat(result.getData()).doesNotContainKey("sla");
         assertThat(result.getData().get("rollbackOptions").toString())
                 .contains("逐步恢复已关停入口")
@@ -1042,6 +1078,51 @@ class OpsEmergencyControlServiceTest {
         verify(killSwitchService).changeFromJ4Execution(
                 eq("withdraw"), eq("admin:superadmin"), eq("ledger gap containment"),
                 org.mockito.ArgumentMatchers.startsWith("SOP-CUSTOM-1-"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void executePlaybookRoutesC2K1AndI5ThroughTheirRealDomainGatewayInOrder() {
+        service.createPlaybook(
+                "idem-j4-create-cross-domain-actions",
+                new SopPlaybookCreateRequest(
+                        "监管跨域止血",
+                        "监管点名",
+                        "超管",
+                        "10 分钟",
+                        true,
+                        "C2·冻结指定用户·user-freeze:123\n"
+                                + "K1·冻结关联账户簇·cluster-freeze:cluster-001\n"
+                                + "I5·发布应急披露版本·disclosure-publish:vn:v1.2",
+                        "",
+                        "",
+                        "根因消除后由各目标域另行恢复",
+                        false,
+                        "wire C2 K1 I5 real target boundaries",
+                        "superadmin"));
+        markPlaybookReady("SOP-CUSTOM-1");
+
+        var result = service.executePlaybook(
+                "SOP-CUSTOM-1",
+                "idem-j4-cross-domain-actions",
+                confirmedJ4RunRequest(
+                        "SOP-CUSTOM-1", true, "regulator ordered cross domain containment", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        Map<String, Object> updated = (Map<String, Object>) result.getData().get("updated");
+        assertThat((List<Map<String, Object>>) updated.get("domainActions"))
+                .extracting("domain")
+                .containsExactly("C2", "K1", "I5");
+        var ordered = org.mockito.Mockito.inOrder(j4DomainActionGateway);
+        ordered.verify(j4DomainActionGateway).execute(
+                eq("C2"), eq("user-freeze:123"), anyString(),
+                eq("regulator ordered cross domain containment"), eq("admin:superadmin"));
+        ordered.verify(j4DomainActionGateway).execute(
+                eq("K1"), eq("cluster-freeze:cluster-001"), anyString(),
+                eq("regulator ordered cross domain containment"), eq("admin:superadmin"));
+        ordered.verify(j4DomainActionGateway).execute(
+                eq("I5"), eq("disclosure-publish:vn:v1.2"), anyString(),
+                eq("regulator ordered cross domain containment"), eq("admin:superadmin"));
     }
 
     @Test
@@ -2597,6 +2678,30 @@ class OpsEmergencyControlServiceTest {
         @Override
         public boolean claimExecutionRecovery(String executionId, LocalDateTime staleBefore) {
             return execution(executionId).isPresent();
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public synchronized boolean requestExecutionCancellation(
+                String executionId, String reason, String operator) {
+            Optional<Map<String, Object>> found = execution(executionId);
+            if (found.isEmpty()) {
+                return false;
+            }
+            List<String> steps = (List<String>) found.get().getOrDefault("steps", List.of());
+            if (!steps.contains("pending") && !steps.contains("running")) {
+                return false;
+            }
+            Map<String, Object> notification =
+                    (Map<String, Object>) found.get().get("notificationDispatch");
+            if (notification == null || Boolean.TRUE.equals(notification.get("cancelRequested"))) {
+                return false;
+            }
+            notification.put("cancelRequested", true);
+            notification.put("cancelReason", reason);
+            notification.put("cancelOperator", operator);
+            notification.put("cancelRequestedAt", LocalDateTime.now().toString());
+            return true;
         }
 
         @Override

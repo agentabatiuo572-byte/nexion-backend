@@ -105,7 +105,7 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void transferOpenConversationToIncomingPendingAndAudits() {
+    void transferOpenConversationToIncomingPendingWithoutDuplicatingTheTransferLedgerInA2() {
         conversationRepository.conversation = conversation("CV-1", "OPEN");
 
         var result = service.transfer(
@@ -117,10 +117,7 @@ class OpsConversationServiceTest {
         assertThat(result.getData().status()).isEqualTo("TRANSFERRED");
         assertThat(result.getData().transferToId()).isEqualTo("agent-2");
 
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("I9_CONVERSATION_TRANSFERRED");
-        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-i9");
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -210,7 +207,7 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void waitTransferKeepsConversationTransferredAndAudits() {
+    void waitTransferKeepsConversationTransferredWithoutDuplicatingTheTransferLedgerInA2() {
         conversationRepository.conversation = transferredConversation("CV-1");
 
         var result = service.waitTransfer(
@@ -222,10 +219,7 @@ class OpsConversationServiceTest {
         assertThat(result.getData().status()).isEqualTo("TRANSFERRED");
         assertThat(result.getData().lastMessage()).contains("continue waiting");
 
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("I9_CONVERSATION_TRANSFER_WAITED");
-        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-i9-wait");
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
@@ -250,7 +244,12 @@ class OpsConversationServiceTest {
         var result = service.reply(
                 "CV-1",
                 "idem-i9-reply",
-                new ConversationReplyRequest("We are checking the payment desk.", "agent reply", "Marina K."));
+                new ConversationReplyRequest(
+                        "We are checking the payment desk.",
+                        "RESOLVED",
+                        0L,
+                        "agent reply",
+                        "Marina K."));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("OPEN");
@@ -258,7 +257,7 @@ class OpsConversationServiceTest {
         assertThat(result.getData().lastMessage()).isEqualTo("We are checking the payment desk.");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I9_CONVERSATION_REPLIED");
     }
 
@@ -392,7 +391,7 @@ class OpsConversationServiceTest {
         assertThat(result.getData().ownerAgentName()).isEqualTo("Dedicated Advisor");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(detailMap(captor.getValue().getDetail()))
                 .containsEntry("routingReason", "M5_ASSIGNED_ADVISOR")
                 .containsEntry("dedicatedAdvisor", true);
@@ -477,7 +476,7 @@ class OpsConversationServiceTest {
         verify(customerProfileRepository).addCustomTag(eq(1001L), eq("高净值"), eq("agent-1"), any());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I9_CUSTOMER_TAG_ADDED");
     }
 
@@ -536,7 +535,7 @@ class OpsConversationServiceTest {
         assertThat(result.getData().text()).isEqualTo("测试备注");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I9_CUSTOMER_NOTE_ADDED");
     }
 
@@ -550,7 +549,7 @@ class OpsConversationServiceTest {
         verify(customerProfileRepository).removeNote(eq(5L), eq("agent-1"), any());
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I9_CUSTOMER_NOTE_REMOVED");
     }
 
@@ -647,7 +646,7 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void timeoutFallbackMovesOverdueTransfersToStandbyAndAudits() {
+    void timeoutFallbackMovesOverdueTransfersToStandbyWithoutDuplicatingTheTransferLedgerInA2() {
         configFacade.values.put("I.session.workbench.timeoutFallback", "on");
         ContentConversationView overdue = transferredConversation("CV-OVER");
         conversationRepository.conversation = overdue;
@@ -661,10 +660,7 @@ class OpsConversationServiceTest {
         assertThat(conversationRepository.lastLimit).isEqualTo(50);
         assertThat(conversationRepository.conversation.transferToId()).isEqualTo("standby-pool");
 
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("I9_CONVERSATION_TRANSFER_AUTO_FALLBACK");
-        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("timeoutMinutes", 30);
+        verifyNoInteractions(auditLogService);
     }
 
     @Test

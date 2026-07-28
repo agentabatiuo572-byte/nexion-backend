@@ -260,6 +260,23 @@ public class AppUserAuthService {
                 rawRefreshToken));
     }
 
+    /**
+     * Registration owns identity creation and sponsor attribution; session
+     * issuance remains centralized here so login and registration share the
+     * same token, refresh and device-session contract.
+     */
+    ApiResult<UserLoginResponse> issueRegisteredSession(
+            UserEntity user,
+            String clientAddress) {
+        if (user == null || user.getId() == null || !StringUtils.hasText(user.getPhone())) {
+            throw new BizException(422, "USER_REGISTRATION_SESSION_INVALID");
+        }
+        String countryCode = StringUtils.hasText(user.getCountryCode())
+                ? normalizeCountryCode(user.getCountryCode())
+                : "+1";
+        return issueSession(user, countryCode, user.getPhone(), clientAddress);
+    }
+
     @Transactional
     public ApiResult<UserLoginResponse> refresh(UserRefreshRequest request) {
         if (request == null || !StringUtils.hasText(request.refreshToken())

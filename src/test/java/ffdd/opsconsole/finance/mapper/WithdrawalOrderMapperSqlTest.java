@@ -102,6 +102,39 @@ class WithdrawalOrderMapperSqlTest {
     }
 
     @Test
+    void withdrawalQueriesExposeImmutableD5NetworkFeeSnapshotForD2() throws Exception {
+        String pageSql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod(
+                        "page",
+                        String.class,
+                        Long.class,
+                        String.class,
+                        BigDecimal.class,
+                        BigDecimal.class,
+                        Integer.class,
+                        String.class,
+                        String.class,
+                        String.class,
+                        int.class,
+                        int.class)
+                .getAnnotation(Select.class)
+                .value());
+        String detailSql = String.join("\n", WithdrawalOrderMapper.class
+                .getMethod("findByWithdrawalNo", String.class)
+                .getAnnotation(Select.class)
+                .value());
+
+        for (String field : java.util.List.of(
+                "d2_network_fee_rate AS networkFeeRate",
+                "d2_network_fee_min AS networkFeeMin",
+                "d2_network_fee_max AS networkFeeMax",
+                "d2_network_fee AS networkFee")) {
+            assertThat(pageSql).contains(field);
+            assertThat(detailSql).contains(field);
+        }
+    }
+
+    @Test
     void withdrawalQueriesUseOnlyFreshCurrentK4EffectiveRiskScore() throws Exception {
         String countSql = String.join("\n", WithdrawalOrderMapper.class
                 .getMethod(
