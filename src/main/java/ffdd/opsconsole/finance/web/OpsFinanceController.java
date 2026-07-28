@@ -78,6 +78,15 @@ public class OpsFinanceController {
         return financeService.updateTopupChannelMinAmount(channelCode, idempotencyKey, request);
     }
 
+    @PatchMapping("/topup/channels/{channelCode}/max-amount")
+    @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
+    public ApiResult<Map<String, Object>> updateTopupChannelMaxAmount(
+            @PathVariable String channelCode,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) TopupCommandRequest request) {
+        return financeService.updateTopupChannelMaxAmount(channelCode, idempotencyKey, request);
+    }
+
     @PatchMapping("/topup/psp/primary")
     @PreAuthorize("hasAuthority('finance_d1_psp_switch')")
     public ApiResult<Map<String, Object>> switchTopupPsp(

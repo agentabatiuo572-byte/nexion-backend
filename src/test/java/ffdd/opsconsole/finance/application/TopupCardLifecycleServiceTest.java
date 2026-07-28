@@ -51,7 +51,8 @@ class TopupCardLifecycleServiceTest {
         Map<String, String> defaults = Map.of(
                 "finance.topup.channel.card.enabled", "true",
                 "finance.topup.psp.primary", "Checkout.com",
-                "finance.topup.channel.card.min_amount", "10",
+                "finance.topup.channel.card.min_amount", "30",
+                "finance.topup.channel.card.max_amount", "5000",
                 "finance.topup.channel.card.fee", "3.5",
                 "finance.topup.card.threeDsThreshold", "50");
         when(config.activeValue(anyString())).thenAnswer(invocation ->
@@ -70,8 +71,10 @@ class TopupCardLifecycleServiceTest {
         verify(audit).recordRequired(any(AuditLogWriteRequest.class));
         verify(outbox).publish(eq("WALLET"), eq("ord-100"), eq("wallet.topup_initiated"), any());
 
-        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("9"), "AUTHENTICATED")))
+        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("29.99"), "AUTHENTICATED")))
                 .isInstanceOf(IllegalArgumentException.class).hasMessage("CARD_ADMISSION_BELOW_MIN_AMOUNT");
+        assertThatThrownBy(() -> service.admit(admission(new BigDecimal("5000.01"), "AUTHENTICATED")))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("CARD_ADMISSION_ABOVE_MAX_AMOUNT");
         assertThatThrownBy(() -> service.admit(admission(new BigDecimal("50"), "EXEMPTED")))
                 .isInstanceOf(IllegalStateException.class).hasMessage("CARD_3DS_AUTHENTICATION_REQUIRED");
     }
@@ -80,7 +83,7 @@ class TopupCardLifecycleServiceTest {
     void admissionAndSettlementBothFailClosedOnActiveRiskLock() {
         when(mapper.selectRiskLockForUpdate("BIN", "424242")).thenReturn(activeBinLock());
 
-        var denied = service.admit(admission(new BigDecimal("20"), "EXEMPTED"));
+        var denied = service.admit(admission(new BigDecimal("30"), "EXEMPTED"));
 
         assertThat(denied.decision()).isEqualTo("DENIED");
         assertThat(denied.reason()).contains("BIN");

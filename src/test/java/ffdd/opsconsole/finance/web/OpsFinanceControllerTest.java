@@ -66,6 +66,20 @@ class OpsFinanceControllerTest {
     }
 
     @Test
+    void topupChannelMaximumDelegatesWithIdempotencyHeader() {
+        TopupCommandRequest request = new TopupCommandRequest(
+                null, null, new BigDecimal("5000"), "USD", null, null, null,
+                "4500", "restore approved card cap", "superadmin");
+        when(financeService.updateTopupChannelMaxAmount("card", "idem-topup-max", request))
+                .thenReturn(ApiResult.ok(Map.of("ok", true)));
+
+        assertThat(controller.updateTopupChannelMaxAmount("card", "idem-topup-max", request).getData())
+                .containsEntry("ok", true);
+
+        verify(financeService).updateTopupChannelMaxAmount("card", "idem-topup-max", request);
+    }
+
+    @Test
     void binLockEndpointAuthorizesLockAndUnlockDirectionsSeparately() throws Exception {
         PreAuthorize guard = OpsFinanceController.class
                 .getMethod("setTopupBinLock", String.class, String.class, TopupCommandRequest.class)

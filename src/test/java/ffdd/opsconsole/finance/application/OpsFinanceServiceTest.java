@@ -999,10 +999,97 @@ class OpsFinanceServiceTest {
         assertThat(result.getData()).containsEntry("primaryPsp", "Checkout.com");
         assertThat(result.getData().get("channels").toString())
                 .contains("1 USDT 固定手续费")
-                .contains("$10");
+                .contains("$10")
+                .contains("国际卡")
+                .contains("$30")
+                .contains("$5000");
         assertThat(result.getData().get("cardParams").toString())
                 .contains("同卡 24 小时失败次数上限")
                 .contains("5");
+    }
+
+    @Test
+    void topupOverviewUsesTheFiveProductionRailsAndExposesOnlyRealCaps() {
+        ApiResult<Map<String, Object>> result = service.topupOverview();
+
+        @SuppressWarnings("unchecked")
+        List<ffdd.opsconsole.finance.domain.DepositChannelView> channels =
+                (List<ffdd.opsconsole.finance.domain.DepositChannelView>) result.getData().get("channels");
+
+        assertThat(channels).extracting(ffdd.opsconsole.finance.domain.DepositChannelView::code)
+                .containsExactly("trc20", "bep20", "erc20", "vietqr", "card");
+        assertThat(channels).filteredOn(channel -> "card".equals(channel.code())).singleElement().satisfies(channel -> {
+            assertThat(channel.minAmountValue()).isEqualByComparingTo("30");
+            assertThat(channel.maxAmountValue()).isEqualByComparingTo("5000");
+        });
+        assertThat(channels).filteredOn(channel -> "vietqr".equals(channel.code())).singleElement().satisfies(channel ->
+                assertThat(channel.maxAmountValue()).isNull());
+    }
+
+    @Test
+    void topupOverviewFailsClosedWhenCardCapValueOrUnitIsMalformed() {
+        configFacade.values.put("finance.topup.channel.card.max_amount", "five-thousand");
+
+        ApiResult<Map<String, Object>> invalidValue = service.topupOverview();
+
+        assertThat(invalidValue.getCode()).isEqualTo(503);
+        assertThat(invalidValue.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
+        assertThat(invalidValue.getData()).isNull();
+
+        configFacade.values.put("finance.topup.channel.card.max_amount", "5000");
+        configFacade.values.put("finance.topup.channel.card.max_amount_unit", "VND");
+
+        ApiResult<Map<String, Object>> invalidUnit = service.topupOverview();
+
+        assertThat(invalidUnit.getCode()).isEqualTo(503);
+        assertThat(invalidUnit.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
+        assertThat(invalidUnit.getData()).isNull();
+    }
+
+    @Test
+    void topupOverviewFailsClosedWhenStoredValuesExceedTheWritableBounds() {
+        configFacade.values.put("finance.topup.channel.card.fee", "999");
+        assertThat(service.topupOverview()).satisfies(result -> {
+            assertThat(result.getCode()).isEqualTo(503);
+            assertThat(result.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
+        });
+
+        configFacade.values.put("finance.topup.channel.card.fee", "3.5");
+        configFacade.values.put("finance.topup.channel.card.min_amount", "100001");
+        assertThat(service.topupOverview()).satisfies(result -> {
+            assertThat(result.getCode()).isEqualTo(503);
+            assertThat(result.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
+        });
+
+        configFacade.values.put("finance.topup.channel.card.min_amount", "30");
+        configFacade.values.put("finance.topup.channel.card.max_amount", "100001");
+        assertThat(service.topupOverview()).satisfies(result -> {
+            assertThat(result.getCode()).isEqualTo(503);
+            assertThat(result.getMessage()).isEqualTo("D1_TOPUP_CONFIG_INVALID");
+        });
+    }
+
+    @Test
+    void cardMaximumWriteUsesCompareAndSetAndCannotCrossTheMinimum() {
+        TopupCommandRequest valid = new TopupCommandRequest(
+                null, null, new BigDecimal("4500"), "USD", null, null, null,
+                "5000", "tighten card transaction cap", "superadmin");
+        ApiResult<Map<String, Object>> updated =
+                service.updateTopupChannelMaxAmount("card", "idem-d1-card-max", valid);
+
+        assertThat(updated.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("finance.topup.channel.card.max_amount", "4500")
+                .containsEntry("finance.topup.channel.card.max_amount_unit", "USD");
+
+        TopupCommandRequest belowMinimum = new TopupCommandRequest(
+                null, null, new BigDecimal("20"), "USD", null, null, null,
+                "4500", "invalid cap below minimum", "superadmin");
+        ApiResult<Map<String, Object>> rejected =
+                service.updateTopupChannelMaxAmount("card", "idem-d1-card-max-low", belowMinimum);
+        assertThat(rejected.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(rejected.getMessage()).isEqualTo("TOPUP_CHANNEL_AMOUNT_RANGE_INVALID");
+        assertThat(configFacade.values).containsEntry("finance.topup.channel.card.max_amount", "4500");
     }
 
     @Test
@@ -1010,14 +1097,21 @@ class OpsFinanceServiceTest {
         ApiResult<Map<String, Object>> freeTextFee = service.updateTopupChannelFee(
                 "card", "idem-d1-fee-text",
                 new TopupCommandRequest("cheap", null, "valid operational reason", "superadmin"));
+        ApiResult<Map<String, Object>> zeroMinimum = service.updateTopupChannelMinAmount(
+                "card", "idem-d1-min-zero",
+                new TopupCommandRequest(
+                        null, null, BigDecimal.ZERO, "USD", null, null, null,
+                        "30", "zero minimum must fail closed", "superadmin"));
         ApiResult<Map<String, Object>> invalidRetryLimit = service.updateTopupCardRiskParam(
                 "cardRetryLimit", "idem-d1-retry-range",
                 new TopupCommandRequest("999", null, "valid operational reason", "superadmin"));
 
         assertThat(freeTextFee.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(zeroMinimum.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(invalidRetryLimit.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(configFacade.values).doesNotContainKeys(
                 "finance.topup.channel.card.fee",
+                "finance.topup.channel.card.min_amount",
                 "finance.topup.card.cardRetryLimit");
     }
 

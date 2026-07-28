@@ -80,11 +80,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     "CHARGEBACK", "DISPUTED", "CHARGEBACK_REVIEW", "CHARGEBACK_REFUNDED",
                     "CHARGEBACK_RECOVERED", "CHARGEBACK_PARTIAL"));
     private static final List<TopupChannelDef> TOPUP_CHANNELS = List.of(
-            new TopupChannelDef("USDT-TRC20", "trc20", new BigDecimal("1"), "USDT_FIXED", new BigDecimal("10"), true),
-            new TopupChannelDef("USDT-ERC20", "erc20", new BigDecimal("5"), "USDT_FIXED", new BigDecimal("10"), true),
-            new TopupChannelDef("BTC", "btc", new BigDecimal("0.5"), "PERCENT", new BigDecimal("20"), true),
-            new TopupChannelDef("ETH", "eth", new BigDecimal("0.5"), "PERCENT", new BigDecimal("20"), true),
-            new TopupChannelDef("银行卡", "card", new BigDecimal("3.5"), "PERCENT", new BigDecimal("10"), true));
+            new TopupChannelDef("USDT-TRC20", "trc20", new BigDecimal("1"), "USDT_FIXED", new BigDecimal("10"), null, true),
+            new TopupChannelDef("USDT-BEP20", "bep20", new BigDecimal("1"), "USDT_FIXED", new BigDecimal("10"), null, true),
+            new TopupChannelDef("USDT-ERC20", "erc20", new BigDecimal("5"), "USDT_FIXED", new BigDecimal("10"), null, true),
+            new TopupChannelDef("银行转账 VietQR", "vietqr", BigDecimal.ZERO, "PERCENT", new BigDecimal("10"), null, true),
+            new TopupChannelDef("国际卡", "card", new BigDecimal("3.5"), "PERCENT", new BigDecimal("30"), new BigDecimal("5000"), true));
     private static final List<TopupCardParamDef> TOPUP_CARD_PARAMS = List.of(
             new TopupCardParamDef("threeDsThreshold", "3DS 强认证金额门槛", new BigDecimal("50"), "USD", BigDecimal.ZERO, new BigDecimal("500"), "达到门槛的银行卡支付必须通过发卡行验证"),
             new TopupCardParamDef("cardRetryLimit", "同卡 24 小时失败次数上限", new BigDecimal("5"), "COUNT", new BigDecimal("3"), new BigDecimal("10"), "达到上限后，系统自动锁定对应 BIN、IP 与设备"),
@@ -123,7 +123,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
-        List<DepositChannelView> channels = topupChannels();
+        List<DepositChannelView> channels;
+        try {
+            channels = topupChannels();
+        } catch (IllegalStateException ex) {
+            if ("D1_TOPUP_CONFIG_INVALID".equals(ex.getMessage())) {
+                return ApiResult.fail(503, "D1_TOPUP_CONFIG_INVALID");
+            }
+            throw ex;
+        }
         List<DepositReconciliationRowView> reconciliation = reconciliationRows();
         BigDecimal ledgerTotal = reconciliation.stream()
                 .map(DepositReconciliationRowView::ledgerAmount)
@@ -224,6 +232,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
 
     public ApiResult<Map<String, Object>> updateTopupChannelMinAmount(String channelCode, String idempotencyKey, TopupCommandRequest request) {
         return updateTopupChannelText(channelCode, "min_amount", "D1_TOPUP_CHANNEL_MIN_CHANGED", idempotencyKey, request);
+    }
+
+    public ApiResult<Map<String, Object>> updateTopupChannelMaxAmount(String channelCode, String idempotencyKey, TopupCommandRequest request) {
+        return updateTopupChannelText(channelCode, "max_amount", "D1_TOPUP_CHANNEL_MAX_CHANGED", idempotencyKey, request);
     }
 
     public ApiResult<Map<String, Object>> switchTopupPsp(String idempotencyKey, TopupCommandRequest request) {
@@ -1092,6 +1104,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (channel == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_NOT_FOUND");
         }
+        if ("max_amount".equals(field) && channel.defaultMaxAmountValue() == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_MAX_NOT_SUPPORTED");
+        }
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -1109,10 +1124,31 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         return executeD1(scope, idempotencyKey, request, () -> {
             String configKey = channelConfigKey(channel.code(), field);
-            BigDecimal fallback = "fee".equals(field) ? channel.defaultFeeValue() : channel.defaultMinAmountValue();
+            BigDecimal fallback = switch (field) {
+                case "fee" -> channel.defaultFeeValue();
+                case "max_amount" -> channel.defaultMaxAmountValue();
+                default -> channel.defaultMinAmountValue();
+            };
             String before = configValueForUpdate(configKey, fallback.toPlainString());
             if (!sameDecimal(before, request.expectedValue())) {
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONFIG_VERSION_CONFLICT");
+            }
+            BigDecimal next = new BigDecimal(value.value());
+            BigDecimal min;
+            BigDecimal max;
+            try {
+                min = "min_amount".equals(field)
+                        ? next
+                        : strictChannelDecimal(channelConfigKey(channel.code(), "min_amount"), channel.defaultMinAmountValue());
+                max = "max_amount".equals(field)
+                        ? next
+                        : channel.defaultMaxAmountValue() == null ? null
+                        : strictChannelDecimal(channelConfigKey(channel.code(), "max_amount"), channel.defaultMaxAmountValue());
+            } catch (IllegalStateException ex) {
+                return ApiResult.fail(503, "D1_TOPUP_CONFIG_INVALID");
+            }
+            if (max != null && min.compareTo(max) > 0) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TOPUP_CHANNEL_AMOUNT_RANGE_INVALID");
             }
             configFacade.upsertAdminValue(configKey, value.value(), "NUMBER", TOPUP_CONFIG_GROUP, "D1 topup channel " + field);
             configFacade.upsertAdminValue(configKey + "_unit", value.unit(), "STRING", TOPUP_CONFIG_GROUP, "D1 topup channel " + field + " unit");
@@ -1127,13 +1163,45 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         // 五条充值渠道是固定目录;不再按 DB 是否配置过滤,fee/min_amount/enabled 空时落回 seed 默认。
         return TOPUP_CHANNELS.stream()
                 .map(channel -> {
-                    BigDecimal feeValue = configNumericValue(channelConfigKey(channel.code(), "fee"), channel.defaultFeeValue());
-                    String feeUnit = configValue(channelConfigKey(channel.code(), "fee_unit"), channel.defaultFeeUnit());
-                    BigDecimal minValue = configNumericValue(channelConfigKey(channel.code(), "min_amount"), channel.defaultMinAmountValue());
+                    BigDecimal feeValue = strictChannelDecimal(channelConfigKey(channel.code(), "fee"), channel.defaultFeeValue());
+                    String feeUnit = strictChannelUnit(
+                            channelConfigKey(channel.code(), "fee_unit"),
+                            channel.defaultFeeUnit(),
+                            Set.of("PERCENT", "USDT_FIXED"));
+                    BigDecimal minValue = strictChannelDecimal(
+                            channelConfigKey(channel.code(), "min_amount"),
+                            channel.defaultMinAmountValue());
+                    strictChannelUnit(
+                            channelConfigKey(channel.code(), "min_amount_unit"),
+                            "USD",
+                            Set.of("USD"));
+                    BigDecimal maxValue = channel.defaultMaxAmountValue() == null
+                            ? null
+                            : strictChannelDecimal(
+                                    channelConfigKey(channel.code(), "max_amount"),
+                                    channel.defaultMaxAmountValue());
+                    if (maxValue != null) {
+                        strictChannelUnit(
+                                channelConfigKey(channel.code(), "max_amount_unit"),
+                                "USD",
+                                Set.of("USD"));
+                    }
+                    if (feeValue.compareTo(BigDecimal.ZERO) < 0
+                            || ("PERCENT".equals(feeUnit) && feeValue.compareTo(new BigDecimal("10")) > 0)
+                            || ("USDT_FIXED".equals(feeUnit) && feeValue.compareTo(new BigDecimal("100")) > 0)
+                            || minValue.compareTo(BigDecimal.ZERO) <= 0
+                            || minValue.compareTo(new BigDecimal("100000")) > 0
+                            || (maxValue != null && (maxValue.compareTo(minValue) < 0
+                            || maxValue.compareTo(BigDecimal.ZERO) <= 0
+                            || maxValue.compareTo(new BigDecimal("100000")) > 0))) {
+                        throw new IllegalStateException("D1_TOPUP_CONFIG_INVALID");
+                    }
                     return new DepositChannelView(
                             channel.id(), channel.code(), formatFee(feeValue, feeUnit), "$" + minValue.stripTrailingZeros().toPlainString(),
-                            configBoolean(channelConfigKey(channel.code(), "enabled"), channel.defaultEnabled()),
-                            feeValue, feeUnit, minValue, "USD");
+                            strictChannelBoolean(channelConfigKey(channel.code(), "enabled"), channel.defaultEnabled()),
+                            feeValue, feeUnit, minValue, "USD",
+                            maxValue == null ? null : "$" + maxValue.stripTrailingZeros().toPlainString(),
+                            maxValue, maxValue == null ? null : "USD");
                 })
                 .toList();
     }
@@ -1295,6 +1363,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (normalized.contains("erc20")) {
             return "erc20";
         }
+        if (normalized.contains("bep20")) {
+            return "bep20";
+        }
+        if (normalized.contains("vietqr") || normalized.contains("bank")) {
+            return "vietqr";
+        }
         if (normalized.contains("card") || normalized.contains("checkout") || normalized.contains("stripe")) {
             return "card";
         }
@@ -1378,6 +1452,31 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
     }
 
+    private BigDecimal strictChannelDecimal(String key, BigDecimal fallback) {
+        String raw = configValue(key, fallback.toPlainString()).trim();
+        try {
+            return new BigDecimal(raw);
+        } catch (NumberFormatException ex) {
+            throw new IllegalStateException("D1_TOPUP_CONFIG_INVALID", ex);
+        }
+    }
+
+    private String strictChannelUnit(String key, String fallback, Set<String> allowed) {
+        String unit = configValue(key, fallback).trim().toUpperCase(Locale.ROOT);
+        if (!allowed.contains(unit)) {
+            throw new IllegalStateException("D1_TOPUP_CONFIG_INVALID");
+        }
+        return unit;
+    }
+
+    private boolean strictChannelBoolean(String key, boolean fallback) {
+        String raw = configValue(key, String.valueOf(fallback)).trim();
+        if (!Set.of("true", "false", "1", "0").contains(raw.toLowerCase(Locale.ROOT))) {
+            throw new IllegalStateException("D1_TOPUP_CONFIG_INVALID");
+        }
+        return "true".equalsIgnoreCase(raw) || "1".equals(raw);
+    }
+
     private String formatFee(BigDecimal value, String unit) {
         String number = value.stripTrailingZeros().toPlainString();
         return "PERCENT".equalsIgnoreCase(unit) ? number + "%" : number + " USDT 固定手续费";
@@ -1440,12 +1539,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         BigDecimal amount = request.numericValue();
         String unit = request.unit().trim().toUpperCase(Locale.ROOT);
-        if ("min_amount".equals(field)) {
+        if ("min_amount".equals(field) || "max_amount".equals(field)) {
             if (!"USD".equals(unit)) {
-                throw new IllegalArgumentException("TOPUP_MIN_AMOUNT_UNIT_INVALID");
+                throw new IllegalArgumentException("TOPUP_AMOUNT_UNIT_INVALID");
             }
-            if (amount.compareTo(BigDecimal.ZERO) < 0 || amount.compareTo(new BigDecimal("100000")) > 0) {
-                throw new IllegalArgumentException("TOPUP_MIN_AMOUNT_OUT_OF_RANGE");
+            if (amount.compareTo(BigDecimal.ZERO) <= 0 || amount.compareTo(new BigDecimal("100000")) > 0) {
+                throw new IllegalArgumentException("TOPUP_AMOUNT_OUT_OF_RANGE");
             }
             return new CanonicalNumeric(amount.stripTrailingZeros().toPlainString(), unit);
         }
@@ -1511,7 +1610,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private record TopupChannelDef(String id, String code, BigDecimal defaultFeeValue, String defaultFeeUnit,
-                                   BigDecimal defaultMinAmountValue, boolean defaultEnabled) {
+                                   BigDecimal defaultMinAmountValue, BigDecimal defaultMaxAmountValue,
+                                   boolean defaultEnabled) {
     }
 
     private record TopupCardParamDef(String key, String name, BigDecimal defaultValue, String unit,

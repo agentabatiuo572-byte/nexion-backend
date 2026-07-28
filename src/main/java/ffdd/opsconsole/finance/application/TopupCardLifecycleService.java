@@ -513,9 +513,17 @@ public class TopupCardLifecycleService {
             throw new IllegalStateException("CARD_PROVIDER_ROUTE_CHANGED");
         }
         BigDecimal amount = positiveMoney(input.amountUsdt(), MAX_TOPUP, "CARD_ADMISSION_AMOUNT_INVALID");
-        BigDecimal minAmount = configDecimal("finance.topup.channel.card.min_amount", new BigDecimal("10"));
+        BigDecimal minAmount = configDecimal("finance.topup.channel.card.min_amount", new BigDecimal("30"));
+        BigDecimal maxAmount = configDecimal("finance.topup.channel.card.max_amount", new BigDecimal("5000"));
+        if (minAmount.compareTo(BigDecimal.ZERO) <= 0 || maxAmount.compareTo(minAmount) < 0
+                || maxAmount.compareTo(MAX_TOPUP) > 0) {
+            throw new IllegalStateException("CARD_AMOUNT_CONFIG_INVALID");
+        }
         if (amount.compareTo(minAmount) < 0) {
             throw new IllegalArgumentException("CARD_ADMISSION_BELOW_MIN_AMOUNT");
+        }
+        if (amount.compareTo(maxAmount) > 0) {
+            throw new IllegalArgumentException("CARD_ADMISSION_ABOVE_MAX_AMOUNT");
         }
         BigDecimal rate = configDecimal("finance.topup.channel.card.fee", new BigDecimal("3.5"));
         if (rate.compareTo(BigDecimal.ZERO) < 0 || rate.compareTo(MAX_FEE_RATE) > 0) {

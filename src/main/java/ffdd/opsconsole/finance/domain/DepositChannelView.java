@@ -11,5 +11,8 @@ public record DepositChannelView(
         BigDecimal feeValue,
         String feeUnit,
         BigDecimal minAmountValue,
-        String minAmountUnit) {
+        String minAmountUnit,
+        String maxAmount,
+        BigDecimal maxAmountValue,
+        String maxAmountUnit) {
 }
