@@ -97,12 +97,12 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                    COUNT(DISTINCT p.actor_hash) AS uv,
                    COALESCE(c.clicks,0) AS clicks,
                    ROUND(AVG(p.dwell_ms)) AS dwellMs,
-                   COUNT(DISTINCT p.route) AS pageCount,
                    ROUND(SUM(CASE WHEN NOT EXISTS (
                      SELECT 1 FROM nx_behavior_event_fact n
                       WHERE n.event_name='app.page_viewed' AND n.session_hash=p.session_hash
                         AND n.occurred_at&gt;p.occurred_at AND n.occurred_at&lt;=#{endAt}
-                   ) THEN 1 ELSE 0 END) / COUNT(*), 4) AS bounceRate
+                   ) THEN 1 ELSE 0 END) / COUNT(*), 4) AS bounceRate,
+                   COUNT(DISTINCT p.route) AS pageCount
               FROM nx_behavior_event_fact p
               JOIN nx_behavior_page_catalog pc ON pc.route=p.route AND pc.tracked=1 AND pc.is_deleted=0
               LEFT JOIN (

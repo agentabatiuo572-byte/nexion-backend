@@ -198,6 +198,22 @@ class OpsBiServiceTest {
                 .doesNotContain("D4_BILL_EXPORT")
                 .doesNotContain("I5_REGULATORY")
                 .contains("PII_DECRYPTION");
+        assertThat(result.getData())
+                .containsEntry("module", "L5")
+                .containsEntry("domain", "L5")
+                .containsEntry("serverCanonical", true);
+        assertThat(result.getData().get("statusEnum"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.LIST)
+                .containsExactlyInAnyOrder(
+                        "PENDING", "PENDING_CONFIRM", "PENDING_SPLIT_CONFIRM",
+                        "GENERATING", "READY", "EXPIRED", "FAILED");
+        assertThat(result.getData().get("sources").toString())
+                .contains(
+                        "nx_admin_fourth_batch_report",
+                        "nx_audit_log",
+                        "nx_wallet_ledger",
+                        "nx_admin_disclosure_jurisdiction",
+                        "nx_admin_disclosure_version");
     }
 
     @Test
@@ -911,6 +927,17 @@ class OpsBiServiceTest {
         verify(auditLogService, org.mockito.Mockito.atLeast(3)).recordRequired(audits.capture());
         assertThat(audits.getAllValues()).extracting(AuditLogWriteRequest::getAction)
                 .contains("admin.report_exported", "admin.sensitive_export_alerted", "L_BI_REPORT_DOWNLOAD_FILE");
+        assertThat(reportRepository.publishedExports).containsKey(reportId);
+        assertThat(reportRepository.publishedExports.get(reportId))
+                .containsEntry("reportId", reportId)
+                .containsEntry("exportType", "NETWORK_TREE")
+                .containsEntry("scope", "period=week;depth=3")
+                .containsEntry("rowCount", 1L)
+                .containsEntry("containsPii", true)
+                .containsEntry("maskingPolicy", "PARTIAL")
+                .containsEntry("reason", "导出团队结构用于周度运营复盘")
+                .containsEntry("format", "CSV")
+                .containsKey("operator");
     }
 
     @Test
@@ -1297,6 +1324,7 @@ class OpsBiServiceTest {
         private final Map<String, String> snapshots = new LinkedHashMap<>();
         private final Map<String, String> downloadTokenHashes = new LinkedHashMap<>();
         private final Map<String, LocalDateTime> downloadTokenExpiries = new LinkedHashMap<>();
+        private final Map<String, Map<String, Object>> publishedExports = new LinkedHashMap<>();
         private List<Map<String, Object>> networkTreeRows = List.of();
         private boolean forceActionConflict;
 
@@ -1409,6 +1437,12 @@ class OpsBiServiceTest {
                     report.reportId(), report.name(), report.type(), report.cycle(), report.format(), report.scope(), report.fields(),
                     report.rowCount(), report.containsPii(), report.maskingPolicy(), nextStatus, report.note(), action, LocalDateTime.now(), reason);
             return true;
+        }
+
+        @Override
+        public String publishReportExported(String reportId, Map<String, Object> payload) {
+            publishedExports.put(reportId, new LinkedHashMap<>(payload));
+            return "event-" + reportId;
         }
     }
 }

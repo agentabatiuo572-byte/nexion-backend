@@ -60,6 +60,7 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
@@ -1098,7 +1099,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         emergencyRepository.ensureTables();
         emergencyRepository.lockPlaybookCatalogMutations();
         List<Map<String, Object>> rows = new ArrayList<>(emergencyRepository.playbooksIndependent());
-        Map<String, Object> row = playbookDraftRow(nextDraftCode(rows), request);
+        Map<String, Object> row = playbookDraftRow(
+                nextDraftCode(emergencyRepository.maxAllocatedPlaybookSequence()), request);
         ApiResult<Map<String, Object>> definitionError = validatePlaybookDefinition(row, rows, null);
         if (definitionError != null) {
             return rejectJ4("PLAYBOOK_CREATE", stringValue(row.get("code"), ""), operator,
@@ -1842,7 +1844,9 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         }
         List<Map<String, Object>> rollbackWrites;
         try {
-            rollbackWrites = new TransactionTemplate(transactionManager).execute(status -> {
+            TransactionTemplate rollbackTransaction = new TransactionTemplate(transactionManager);
+            rollbackTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            rollbackWrites = rollbackTransaction.execute(status -> {
                 if (!emergencyRepository.claimExecutionRollback(execId)) {
                     throw new J4RollbackRejectedException(
                             ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "J4_ROLLBACK_IN_PROGRESS"),
@@ -3546,20 +3550,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 .orElse("");
     }
 
-    private String nextDraftCode(List<Map<String, Object>> rows) {
-        int max = 0;
-        for (Map<String, Object> row : rows) {
-            String code = stringValue(row.get("code"), "");
-            if (!code.startsWith("SOP-CUSTOM-")) {
-                continue;
-            }
-            try {
-                max = Math.max(max, Integer.parseInt(code.substring("SOP-CUSTOM-".length())));
-            } catch (NumberFormatException ignored) {
-                max = Math.max(max, 0);
-            }
-        }
-        return "SOP-CUSTOM-" + (max + 1);
+    private String nextDraftCode(int maxAllocatedSequence) {
+        return "SOP-CUSTOM-" + (Math.max(0, maxAllocatedSequence) + 1);
     }
 
     private List<Map<String, Object>> parseActionSequence(String raw) {

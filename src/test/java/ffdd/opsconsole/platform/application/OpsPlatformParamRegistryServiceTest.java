@@ -111,6 +111,22 @@ class OpsPlatformParamRegistryServiceTest {
                 .containsExactlyInAnyOrder("E2", "H3", "H1", "H8", "G4", "C4", "D3");
     }
 
+    @Test
+    void registryRoutesEveryG1StakingParameterToTheStakingOwner() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("G.staking.apy.usdt30d", "12", "market"),
+                item("G.staking.any.future_parameter", "enabled", "market")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).hasSize(2).allSatisfy(row -> {
+            assertThat(row.domain()).isEqualTo("G");
+            assertThat(row.ownerCode()).isEqualTo("G1");
+            assertThat(row.ownerRoute()).isEqualTo("/finance-products/staking");
+        });
+    }
+
     private PlatformConfigItem item(String key, String value, String group) {
         LocalDateTime now = LocalDateTime.of(2026, 7, 18, 10, 0);
         return new PlatformConfigItem(1L, key, value, "STRING", group, "ADMIN", "test", 1, now, now);

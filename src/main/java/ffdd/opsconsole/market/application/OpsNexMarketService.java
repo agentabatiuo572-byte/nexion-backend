@@ -904,7 +904,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!updateGenesisPolicy(def, newValue)) {
             return validation("G4_GENESIS_SERIES_NOT_FOUND");
         }
-        audit("G4_GENESIS_PARAM_CHANGED", "GENESIS_PARAM", def.key(), request.operator(), map(
+        auditRequired("G4_GENESIS_PARAM_CHANGED", "GENESIS_PARAM", def.key(), request.operator(), map(
                 "paramKey", def.key(),
                 "oldValue", oldValue,
                 "newValue", newValue,

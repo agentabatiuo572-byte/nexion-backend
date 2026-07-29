@@ -5,6 +5,7 @@ import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.infrastructure.SupportSlaRuleEntity;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -27,6 +28,22 @@ public interface SupportSlaRuleMapper extends BaseMapper<SupportSlaRuleEntity> {
 
     @Select("SELECT id FROM nx_support_sla_rule WHERE is_deleted=0 AND category=#{category} LIMIT 1")
     Long findIdByCategory(@Param("category") String category);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_support_sla_rule
+              (category, first_response_mins, resolution_hours, queue, escalation,
+               version, status, created_at, updated_at, is_deleted)
+            VALUES
+              (#{category}, #{firstResponseMins}, #{resolutionHours}, #{queue}, #{escalation},
+               1, 1, #{now}, #{now}, 0)
+            """)
+    int insertIgnoreRule(
+            @Param("category") String category,
+            @Param("firstResponseMins") Integer firstResponseMins,
+            @Param("resolutionHours") Integer resolutionHours,
+            @Param("queue") String queue,
+            @Param("escalation") String escalation,
+            @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_support_sla_rule

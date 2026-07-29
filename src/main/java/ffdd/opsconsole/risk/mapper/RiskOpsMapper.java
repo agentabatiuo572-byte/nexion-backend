@@ -1281,7 +1281,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        CASE WHEN COUNT(DISTINCT l.id) > 0
                             THEN CONCAT(COUNT(DISTINCT l.id), ' 笔礼金') END),
                    NULL,
-                   4,
+                   3,
                    'flag',
                    0
               FROM nx_tradein_application a

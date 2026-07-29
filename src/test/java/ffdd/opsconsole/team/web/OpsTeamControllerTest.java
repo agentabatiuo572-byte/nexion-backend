@@ -13,8 +13,10 @@ import ffdd.opsconsole.team.application.OpsTeamService;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
 import java.math.BigDecimal;
+import java.lang.reflect.Method;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsTeamControllerTest {
     private final OpsTeamService teamService = mock(OpsTeamService.class);
@@ -39,6 +41,16 @@ class OpsTeamControllerTest {
                 new TeamCommissionConfigUpdateRequest(null, "8", "tighten payout", "superadmin"));
 
         verify(teamService).updateConfig(eq("idem-f2"), any(TeamCommissionConfigUpdateRequest.class));
+    }
+
+    @Test
+    void sharedConfigEndpointLetsF1WriterReachServiceForKeyLevelAuthorization() throws Exception {
+        Method method = OpsTeamController.class.getMethod(
+                "updateConfig", String.class, String.class, TeamCommissionConfigUpdateRequest.class);
+        PreAuthorize preAuthorize = method.getAnnotation(PreAuthorize.class);
+
+        assertThat(preAuthorize).isNotNull();
+        assertThat(preAuthorize.value()).contains("network_f1_write");
     }
 
     @Test

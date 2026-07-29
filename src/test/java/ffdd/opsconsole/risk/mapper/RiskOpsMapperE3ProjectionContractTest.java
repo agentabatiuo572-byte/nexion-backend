@@ -12,7 +12,10 @@ class RiskOpsMapperE3ProjectionContractTest {
     @Test
     void projectsFrequentTradeinsWithCommissionOrGiftEvidenceIntoK2() throws Exception {
         Method method = RiskOpsMapper.class.getMethod("upsertE3TradeinArbitrageRows");
-        String sql = String.join(" ", method.getAnnotation(Insert.class).value()).toLowerCase();
+        String sql = String.join(" ", method.getAnnotation(Insert.class).value())
+                .toLowerCase()
+                .replaceAll("\\s+", " ")
+                .trim();
 
         assertThat(sql)
                 .contains("nx_tradein_application")
@@ -28,7 +31,9 @@ class RiskOpsMapperE3ProjectionContractTest {
                 .contains("'tradein'")
                 .contains("on duplicate key update")
                 .contains("actions_csv")
-                .contains("'flag'");
+                .contains("'flag'")
+                .contains("null, 3, 'flag', 0")
+                .doesNotContain("null, 4, 'flag', 0");
     }
 
     @Test

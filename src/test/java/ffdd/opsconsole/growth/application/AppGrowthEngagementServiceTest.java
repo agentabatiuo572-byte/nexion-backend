@@ -33,6 +33,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppGrowthEngagementServiceTest {
+    private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     private final AppGrowthEngagementMapper mapper = mock(AppGrowthEngagementMapper.class);
     private final VoucherGrantFacade voucher = mock(VoucherGrantFacade.class);
     private final GrowthRhythmFacade rhythm = mock(GrowthRhythmFacade.class);
@@ -143,15 +145,16 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void guaranteedLuckyCheckInPersistsServerDecisionAndPublishesLuckyEvent() {
+        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         when(mapper.dailyMissionId()).thenReturn(2L);
-        when(mapper.lockStreak(42L)).thenReturn(new StreakState(6, 6, 1, LocalDate.now().minusDays(1)));
+        when(mapper.lockStreak(42L)).thenReturn(new StreakState(6, 6, 1, today.minusDays(1)));
         when(mapper.checkInRule("baseline")).thenReturn("2");
         when(mapper.checkInRule("bonus7")).thenReturn("5");
         when(mapper.checkInRule("p2")).thenReturn("100");
         when(mapper.checkInRule("p15")).thenReturn("0");
-        when(mapper.insertCheckIn(eq(42L), eq(2L), eq(LocalDate.now()), eq(2),
+        when(mapper.insertCheckIn(eq(42L), eq(2L), eq(today), eq(2),
                 eq(new BigDecimal("2.0")), eq(2), eq(5), eq(9))).thenReturn(1);
-        when(mapper.updateStreak(42L, 7, LocalDate.now())).thenReturn(1);
+        when(mapper.updateStreak(42L, 7, today)).thenReturn(1);
         wallet(new BigDecimal("10"));
 
         var result = service.checkIn(42L, "daily-key");
@@ -160,7 +163,7 @@ class AppGrowthEngagementServiceTest {
         assertThat(result.getData()).containsEntry("rewardNex", new BigDecimal("9.000000"))
                 .containsEntry("multiplier", new BigDecimal("2.0")).containsEntry("streakDays", 7);
         verify(mapper).insertNexLedger(
-                42L, "DAILY:42:" + LocalDate.now(), "DAILY_CHECK_IN", new BigDecimal("9.000000"),
+                42L, "DAILY:42:" + today, "DAILY_CHECK_IN", new BigDecimal("9.000000"),
                 new BigDecimal("19.000000"), "H5 daily check-in");
         verify(outbox).publishUserEvent(
                 eq("DAILY_CHECK_IN"), anyString(), eq("daily.checkin"), eq(42L),
@@ -172,9 +175,10 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void streakSaverIsServerAuthoritativeIdempotentAndCannotBeUsedBeforeBreak() {
+        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         when(mapper.lockStreak(42L)).thenReturn(
-                new StreakState(0, 12, 1, LocalDate.now().minusDays(3)));
-        when(mapper.useStreakSaver(42L, 12, LocalDate.now().minusDays(1))).thenReturn(1);
+                new StreakState(0, 12, 1, today.minusDays(3)));
+        when(mapper.useStreakSaver(42L, 12, today.minusDays(1))).thenReturn(1);
 
         var result = service.useStreakSaver(42L, "saver-key");
 

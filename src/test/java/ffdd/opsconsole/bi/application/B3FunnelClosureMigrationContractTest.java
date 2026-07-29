@@ -17,4 +17,21 @@ class B3FunnelClosureMigrationContractTest {
                 .contains("overview_b3_export")
                 .contains("'SUPER_ADMIN','GROWTH','FINANCE','FINANCE_LEAD','AUDITOR'");
     }
+
+    @Test
+    void savedViewUsesDurableIdempotencyAndRejectsSameKeyDifferentPayload() throws Exception {
+        String controller = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/bi/web/OpsFunnelController.java"));
+        String service = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/bi/application/OpsFunnelService.java"));
+
+        assertThat(controller)
+                .contains("@RequestHeader(value = \"Idempotency-Key\", required = false)")
+                .contains("funnelService.saveView(idempotencyKey, request)");
+        assertThat(service)
+                .contains("VIEW_IDEMPOTENCY_SCOPE = \"B3_FUNNEL_VIEW\"")
+                .contains("idempotencyService.execute(")
+                .contains("requestHash(")
+                .contains("MessageDigest.getInstance(\"SHA-256\")");
+    }
 }

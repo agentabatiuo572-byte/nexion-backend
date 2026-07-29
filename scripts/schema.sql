@@ -3303,6 +3303,66 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+CREATE TABLE IF NOT EXISTS nx_commission_operation (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  operation_no VARCHAR(64) NOT NULL,
+  operation_type VARCHAR(32) NOT NULL,
+  source_commission_id BIGINT NULL,
+  result_commission_id BIGINT NULL,
+  user_id BIGINT NULL,
+  kinds VARCHAR(255) NULL,
+  amount DECIMAL(18,6) NULL,
+  currency VARCHAR(16) NULL,
+  evidence_ref VARCHAR(128) NULL,
+  reason VARCHAR(255) NOT NULL,
+  operator VARCHAR(64) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'SUCCESS',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_commission_operation_no (operation_no),
+  KEY idx_commission_operation_source (source_commission_id, operation_type),
+  KEY idx_commission_operation_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_commission_user_suspension (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'SUSPENDED',
+  reason VARCHAR(255) NOT NULL,
+  operator VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_commission_user_kind (user_id, kind),
+  KEY idx_commission_suspension_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+DROP TRIGGER IF EXISTS trg_nx_commission_event_suspension;
+DELIMITER $$
+CREATE TRIGGER trg_nx_commission_event_suspension
+BEFORE INSERT ON nx_commission_event
+FOR EACH ROW
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM nx_commission_user_suspension s
+     WHERE s.user_id = NEW.user_id
+       AND s.kind = LOWER(NEW.commission_type) COLLATE utf8mb4_0900_ai_ci
+       AND s.status = 'SUSPENDED'
+  ) THEN
+    SET NEW.status = 'FROZEN';
+    SET NEW.unlock_at = NULL;
+    SET NEW.remark = CONCAT(
+      COALESCE(NEW.remark, ''),
+      CASE WHEN COALESCE(NEW.remark, '') = '' THEN '' ELSE ' | ' END,
+      'F5 user-kind suspension'
+    );
+  END IF;
+END$$
+DELIMITER ;
+
 CREATE TABLE IF NOT EXISTS nx_binary_commission_settlement (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -4515,6 +4575,22 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'ALTER TABLE nx_support_sla_rule ADD COLUMN version BIGINT NOT NULL DEFAULT 1 AFTER escalation',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- M4 authoritative SLA baseline: add missing categories without overwriting
+-- values already configured by operations.
+INSERT IGNORE INTO nx_support_sla_rule
+  (category, first_response_mins, resolution_hours, queue, escalation,
+   version, status, created_at, updated_at, is_deleted)
+VALUES
+  ('account',    30, 24, '账户台',     'C5 security',                1, 1, NOW(), NOW(), 0),
+  ('withdrawal', 15, 12, '支付台',     'D2 withdrawal review',      1, 1, NOW(), NOW(), 0),
+  ('deposit',    15, 12, '支付台',     'D1 deposit reconciliation', 1, 1, NOW(), NOW(), 0),
+  ('kyc',        30, 24, '合规台',     'C4 KYC ledger',             1, 1, NOW(), NOW(), 0),
+  ('hardware',   45, 48, '设备运维台', 'E5 device ops',             1, 1, NOW(), NOW(), 0),
+  ('earnings',   30, 24, '收益台',     'F3/E6 earnings ledger',     1, 1, NOW(), NOW(), 0),
+  ('genesis',    20, 18, '创世节点台', 'G4 Genesis economy',        1, 1, NOW(), NOW(), 0),
+  ('technical',  60, 72, '技术支持台', 'A3 system config',          1, 1, NOW(), NOW(), 0),
+  ('other',      60, 72, '综合支持台', 'M2 manual triage',          1, 1, NOW(), NOW(), 0);
 
 CREATE TABLE IF NOT EXISTS nx_conversation (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

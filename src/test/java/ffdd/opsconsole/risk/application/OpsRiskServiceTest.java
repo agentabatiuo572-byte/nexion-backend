@@ -581,6 +581,15 @@ class OpsRiskServiceTest {
         ApiResult<Map<String, Object>> result = service.arbitrageOverview();
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("domain", "K2")
+                .containsKey("sources");
+        @SuppressWarnings("unchecked")
+        List<RiskArbitrageStatView> stats = (List<RiskArbitrageStatView>) result.getData().get("stats");
+        assertThat(stats)
+                .extracting(RiskArbitrageStatView::key)
+                .containsExactly("loopConfirmed", "loopWarn", "giftBlockedCnt", "boardSignals");
         assertThat(result.getData()).doesNotContainKey("minHoldingMonths");
         @SuppressWarnings("unchecked")
         List<RiskArbitrageParamView> params = (List<RiskArbitrageParamView>) result.getData().get("params");
@@ -1492,6 +1501,10 @@ class OpsRiskServiceTest {
         ApiResult<Map<String, Object>> result = service.multiAccountOverview(2, 1, "ip", 2, 1);
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("domain", "K1")
+                .containsKey("sources");
         @SuppressWarnings("unchecked")
         PageResult<Map<String, String>> clusters = (PageResult<Map<String, String>>) result.getData().get("clusters");
         @SuppressWarnings("unchecked")

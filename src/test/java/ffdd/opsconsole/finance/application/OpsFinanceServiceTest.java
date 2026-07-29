@@ -490,6 +490,30 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void delayWithdrawalPublishesExplicitUnavailableRiskStatusWhenK4ScoreIsMissing() {
+        withdrawalRepository.order = withdrawal(
+                "WD-DELAY-K4-MISSING", "REVIEW_PENDING", "VERIFIED", "ACTIVE", null, "", 1);
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
+                "WD-DELAY-K4-MISSING",
+                "idem-delay-k4-missing",
+                new WithdrawalReviewRequest("DELAY", "finance-admin", "delay pending risk review"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("EXTENDED_HOLD");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(eventOutboxService).publish(
+                org.mockito.ArgumentMatchers.eq("WITHDRAWAL"),
+                org.mockito.ArgumentMatchers.eq("WD-DELAY-K4-MISSING"),
+                org.mockito.ArgumentMatchers.eq("withdraw.delayed"),
+                payload.capture());
+        assertThat(payload.getValue())
+                .containsEntry("risk_score_status", "UNAVAILABLE")
+                .doesNotContainKey("risk_score");
+    }
+
+    @Test
     void missingJ1RowsKeepTheRealD2WithdrawalPathEnabledLikeTheJ1DisplayDefault() {
         emergencyRepository.settings.remove("killswitch.withdraw");
         emergencyRepository.settings.remove("emergency.killswitch.withdraw");

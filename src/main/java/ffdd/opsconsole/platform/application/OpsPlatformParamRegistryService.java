@@ -221,6 +221,9 @@ public class OpsPlatformParamRegistryService {
         if (key.startsWith("k.rewards.")) {
             return new Owner("H", "H8", "H8 新人礼与邀请奖励", "/growth/referral-rewards");
         }
+        if (key.startsWith("g.staking.")) {
+            return new Owner("G", "G1", "G1 Staking 池配置", "/finance-products/staking");
+        }
         if (key.startsWith("g.genesis.")) {
             return new Owner("G", "G4", "G4 Genesis 经济", "/finance-products/genesis");
         }

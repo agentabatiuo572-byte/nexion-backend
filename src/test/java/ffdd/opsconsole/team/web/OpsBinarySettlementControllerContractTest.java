@@ -16,8 +16,10 @@ class OpsBinarySettlementControllerContractTest {
         assertThat(source).contains("hasAuthority('network_f3_write')");
         assertThat(source).contains("@Valid @RequestBody BinaryLegAssignmentRequest");
         assertThat(source).contains("@Valid @RequestBody BinarySettlementRequest");
+        assertThat(source).contains(
+                "@RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey");
         assertThat(source).contains("Authentication authentication", "actor.id()", "actor.username()");
-        assertThat(source).contains("request.reason()");
+        assertThat(source).contains("request.reason()", "idempotencyKey");
         assertThat(source).doesNotContain("request.operator()");
     }
 
@@ -29,6 +31,10 @@ class OpsBinarySettlementControllerContractTest {
                 "src/main/java/ffdd/opsconsole/shared/exception/GlobalExceptionHandler.java"));
 
         assertThat(service).contains("new BizException(409, \"BINARY_LEG_ASSIGNMENT_IMMUTABLE\")");
+        assertThat(service).contains(
+                "idempotencyService.execute(",
+                "\"F3_BINARY_SETTLEMENT\"",
+                "requestHash(ownerUserId, settlementDate, normalizedReason)");
         assertThat(advice).contains("@ExceptionHandler(BizException.class)",
                 "ApiResult.fail(ex.getCode(), ex.getMessage())");
     }

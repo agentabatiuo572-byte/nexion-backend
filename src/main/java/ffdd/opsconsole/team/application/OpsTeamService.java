@@ -18,6 +18,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRow;
@@ -35,6 +36,9 @@ import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.util.ArrayList;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -45,6 +49,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -92,8 +97,12 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("pool-ratio", "network_f4_pool_fund"),
             Map.entry("binary-threshold", "network_f3_write"),
             // F1 V-Rank 不降级开关:HIGH 权限点 network_f1_permanent_protection(EF.sql:44 注册,02-role-permission-seed:7 全量授权 SUPER_ADMIN)。
-            // controller @PreAuthorize 兜底为 F2/F3/F4 任一,service 层按 key 精确校验 F1 专属权限,防越权。
+            // controller @PreAuthorize 仅负责允许 F1-F5 writer 进入共享端点,service 层按 key 精确校验 F1 专属权限,防越权。
             Map.entry("F.vrank.permanent", "network_f1_permanent_protection"),
+            Map.entry("F.vrank.leadership.unlockRank", "network_f1_write"),
+            Map.entry("F.vrank.leadership.topN", "network_f1_write"),
+            Map.entry("F.vrank.titles", "network_f1_write"),
+            Map.entry("F.prize.name", "network_f1_write"),
             // F 域 UI keys 精确权限映射(A1 批1a 修复4):静态 key 直查;F.unilevel.L{n}/F.commission.{id} 动态 key 走 resolvePermissionCode 前缀。
             // F2 版税费率类:promo 周倍率/peer 平级比例/unilevel 版税费率 → royalty_rate(HIGH)。
             Map.entry("F.promo.weekMultiplier", "network_f2_royalty_rate"),
@@ -102,20 +111,31 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.influence.clampMax", "network_f2_policy_amplify"),
             Map.entry("F.cooldown", "network_f2_policy_amplify"),
             Map.entry("F.partner.tiers", "network_f2_policy_amplify"),
+            Map.entry("F.royalty.minPayout", "network_f2_policy_amplify"),
+            Map.entry("F.unilevel.depthGate", "network_f2_policy_amplify"),
+            Map.entry("F.unilevel.nexCap", "network_f2_policy_amplify"),
+            Map.entry("F.unilevel.backfill", "network_f2_policy_amplify"),
+            Map.entry("F.unilevel.depth", "network_f2_policy_amplify"),
+            Map.entry("F.sunset.exclusions", "network_f2_policy_amplify"),
             // F3 双轨类:matchRate 阈值类放大 → match_rate(HIGH);threshold/spillover/settlePeriod 等走 write。
             Map.entry("F.binary.matchRate", "network_f3_match_rate"),
             Map.entry("F.binary.threshold", "network_f3_match_rate"),
+            Map.entry("F.binary.paused", "network_f3_engine_pause"),
             // F4 领导池资金类 → pool_fund(HIGH)。
             Map.entry("F.pool.ratio", "network_f4_pool_fund"),
             Map.entry("F.pool.top1MaxPct", "network_f4_pool_fund"),
             Map.entry("F.pool.top5MaxPct", "network_f4_pool_fund"),
             Map.entry("F.pool.periodPrize", "network_f4_pool_fund"),
+            Map.entry("F.pool.monthlyCap", "network_f4_write"),
+            Map.entry("F.pool.settleCron", "network_f4_write"),
+            Map.entry("F.pool.unlockVRank", "network_f4_write"),
             // F4 · A1 批2b 修复1:F4 主流程按钮 key 对齐白名单 + 权限码。
             // 票权/配额常规写 → f4_write;大使审批 → f4_ambassador_approve(HIGH);榜单控制 → f4_leaderboard_control(HIGH)。
             Map.entry("F.quota.proUnlock", "network_f4_write"),
             Map.entry("F.quota.rackUnlock", "network_f4_write"),
             Map.entry("F.quota.monthlyStock", "network_f4_write"),
-            Map.entry("F.leaderboard.poolUsd", "network_f4_leaderboard_control"),
+            Map.entry("F.leaderboard.poolUsd", "network_f4_pool_fund"),
+            Map.entry("F.leaderboard.minUsd", "network_f4_write"),
             Map.entry("F.leaderboard.period.status", "network_f4_leaderboard_control"),
             // F5 佣金事件 dispose 类默认权限;rejected 终态由 updateCommissionEventStatus 二次分流到 commission_reject。
             Map.entry("F.commission.status", "network_f5_commission_dispose"));
@@ -133,8 +153,14 @@ public class OpsTeamService implements AuditReplayable {
             return exact;
         }
         // F.unilevel.L{n} / F.unilevel.nex.L{n}(版税费率,放大佣金流出)→ royalty_rate
-        if (key.startsWith("F.unilevel.L") || key.startsWith("F.unilevel.nex.L")) {
+        if (key.matches("^F\\.unilevel\\.(?:nex\\.)?L[1-7]$")) {
             return "network_f2_royalty_rate";
+        }
+        if (key.matches("^F\\.unilevel\\.L[1-7]\\.paused$")) {
+            return "network_f2_policy_amplify";
+        }
+        if (key.matches("^F\\.fulfillment\\.V(?:[1-9]|1[0-2])\\.queue\\.status$")) {
+            return "network_f1_write";
         }
         // F.binary.*(默认 match_rate;threshold/matchRate 已在静态表精确映射,其余 binary 字段保守要求 match_rate 防越权)
         if (key.startsWith("F.binary.")) {
@@ -213,6 +239,7 @@ public class OpsTeamService implements AuditReplayable {
     private final VRankRewardDispatcher vRankRewardDispatcher;
     private final EventOutboxService eventOutboxService;
     private final LeadershipPoolService leadershipPoolService;
+    private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
@@ -413,6 +440,15 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        return executeIdempotent(
+                "F1_VRANK_THRESHOLD_UPDATE",
+                idempotencyKey,
+                requestHash("threshold", rank, field, request.value(), request.reason(), request.operator()),
+                () -> updateVRankThresholdInternal(rank, field, idempotencyKey, request));
+    }
+
+    private ApiResult<Map<String, Object>> updateVRankThresholdInternal(
+            String rank, String field, String idempotencyKey, TeamCommissionConfigUpdateRequest request) {
         VRankSeed seed = requireVRank(rank);
         String normalizedField = requireText(field, "TEAM_VRANK_FIELD_REQUIRED");
         if (!thresholdFields(seed).contains(normalizedField)) {
@@ -446,6 +482,17 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        return executeIdempotent(
+                "F1_VRANK_REWARD_ADD",
+                idempotencyKey,
+                requestHash(
+                        "add", rank, request.type(), request.amount(), request.voucherId(),
+                        request.skuId(), request.custom(), request.reason(), request.operator()),
+                () -> addVRankRewardInternal(rank, idempotencyKey, request));
+    }
+
+    private ApiResult<Map<String, Object>> addVRankRewardInternal(
+            String rank, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         Map<String, Object> item = normalizeReward(nextRewardId(seed.v()), request);
         // 资金类奖励(USDT/NEX,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
@@ -471,6 +518,17 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        return executeIdempotent(
+                "F1_VRANK_REWARD_UPDATE",
+                idempotencyKey,
+                requestHash(
+                        "update", rank, rewardId, request.type(), request.amount(), request.voucherId(),
+                        request.skuId(), request.custom(), request.reason(), request.operator()),
+                () -> updateVRankRewardInternal(rank, rewardId, idempotencyKey, request));
+    }
+
+    private ApiResult<Map<String, Object>> updateVRankRewardInternal(
+            String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
         boolean exists = activeRewards(seed.v()).stream()
@@ -502,6 +560,17 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        return executeIdempotent(
+                "F1_VRANK_REWARD_REMOVE",
+                idempotencyKey,
+                requestHash(
+                        "remove", rank, rewardId, request.type(), request.amount(), request.voucherId(),
+                        request.skuId(), request.custom(), request.reason(), request.operator()),
+                () -> removeVRankRewardInternal(rank, rewardId, idempotencyKey, request));
+    }
+
+    private ApiResult<Map<String, Object>> removeVRankRewardInternal(
+            String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
         boolean exists = activeRewards(seed.v()).stream()
@@ -528,6 +597,15 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
+        return executeIdempotent(
+                "F_TEAM_CONFIG_UPDATE",
+                idempotencyKey,
+                requestHash("config", request.key(), request.value(), request.reason(), request.operator()),
+                () -> updateConfigInternal(idempotencyKey, request));
+    }
+
+    private ApiResult<Map<String, Object>> updateConfigInternal(
+            String idempotencyKey, TeamCommissionConfigUpdateRequest request) {
         String key = requireText(request.key(), "TEAM_CONFIG_KEY_REQUIRED");
         // service 层二次精确校验(A1 批1a 修复4):ACTIVE_KEYS + UI keys 全覆盖,动态 key 前缀兜底,防跨域越权(如持 F2 改 F4)。
         String requiredCode = resolvePermissionCode(key);
@@ -1756,6 +1834,40 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         return null;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<Map<String, Object>> executeIdempotent(
+            String scope,
+            String idempotencyKey,
+            String hash,
+            Supplier<ApiResult<Map<String, Object>>> action) {
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+                scope,
+                idempotencyKey,
+                hash,
+                ApiResult.class,
+                (Supplier) action);
+    }
+
+    private String requestHash(Object... parts) {
+        StringBuilder canonical = new StringBuilder();
+        for (Object part : parts) {
+            String value;
+            if (part instanceof BigDecimal decimal) {
+                value = decimal.stripTrailingZeros().toPlainString();
+            } else {
+                value = part == null ? "<null>" : String.valueOf(part).trim();
+            }
+            canonical.append(value.length()).append(':').append(value).append('\u001f');
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA256_NOT_AVAILABLE", ex);
+        }
     }
 
     private void rejectSunsetKey(String key) {

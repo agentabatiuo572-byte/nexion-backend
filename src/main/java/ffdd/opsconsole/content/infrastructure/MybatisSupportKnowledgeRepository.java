@@ -122,6 +122,17 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
     }
 
     @Override
+    public void insertSlaIfMissing(String category, SupportSlaUpdateRequest request, LocalDateTime now) {
+        slaRuleMapper.insertIgnoreRule(
+                category.trim().toLowerCase(Locale.ROOT),
+                request.firstResponseMins(),
+                request.resolutionHours(),
+                request.queue().trim(),
+                request.escalation().trim(),
+                now);
+    }
+
+    @Override
     public void upsertSla(String category, SupportSlaUpdateRequest request, LocalDateTime now) {
         String normalized = category.trim().toLowerCase(Locale.ROOT);
         if (slaRuleMapper.findIdByCategory(normalized) == null) {

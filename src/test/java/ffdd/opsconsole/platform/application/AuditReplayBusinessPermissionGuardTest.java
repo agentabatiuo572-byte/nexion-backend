@@ -196,6 +196,118 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void delegatedFConfigProposalRequiresExactDomainPermissionAndCanonicalContext() {
+        AuditReplayCommand prize = new AuditReplayCommand(
+                "F", "f_ui_config", Map.of("key", "F.prize.name", "value", "Nexion V-Rank"));
+
+        authenticate("platform_a2_proposal_create", "finance_d2_withdrawal_approve");
+        var crossDomainDenied = guard.validateProposal(prize);
+        assertThat(crossDomainDenied.getCode()).isEqualTo(403);
+        assertThat(crossDomainDenied.getMessage()).endsWith("network_f1_write");
+
+        authenticate("platform_a2_proposal_create", "network_f1_write");
+        assertThat(guard.validateProposal(prize).getCode()).isZero();
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "client copy", "F.prize.name", "old", "Nexion V-Rank", "growth", "growth",
+                "param", false, false, "client gate", "update F1 display copy", "F1", prize,
+                new AuditLockTarget("F", "ui_config", "F.prize.name"), null);
+
+        var canonical = guard.validateProposalContext(request);
+
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData())
+                .extracting(
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::action,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::objectId,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::operationType,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies)
+                .containsExactly(
+                        "F 域配置调整 · F.prize.name",
+                        "F.prize.name",
+                        "F1",
+                        "param",
+                        false);
+    }
+
+    @Test
+    void allFConfigReplayFamiliesMapPermissionSourceDomainAndLockFailClosed() {
+        record Scenario(
+                AuditReplayCommand command,
+                String authority,
+                String sourceDomain,
+                String targetType,
+                String targetId) {
+        }
+        List<Scenario> scenarios = List.of(
+                new Scenario(
+                        new AuditReplayCommand("F", "f_config", Map.of(
+                                "key", "directRoyaltyPct", "value", "10")),
+                        "network_f2_royalty_rate", "F2", "team_config", "directRoyaltyPct"),
+                new Scenario(
+                        new AuditReplayCommand("F", "f_config", Map.of(
+                                "key", "binaryPairRatePct", "value", "10")),
+                        "network_f2_royalty_rate", "F3", "team_config", "binaryPairRatePct"),
+                new Scenario(
+                        new AuditReplayCommand("F", "f_unilevel_rule", Map.of(
+                                "key", "F.unilevel.nex.L3", "value", "0.4")),
+                        "network_f2_royalty_rate", "F2", "unilevel_rule", "L3"),
+                new Scenario(
+                        new AuditReplayCommand("F", "f_ui_config", Map.of(
+                                "key", "F.binary.matchRate", "value", "13")),
+                        "network_f3_match_rate", "F3", "ui_config", "F.binary.matchRate"),
+                new Scenario(
+                        new AuditReplayCommand("F", "f_ui_config", Map.of(
+                                "key", "F.binary.paused", "value", "on")),
+                        "network_f3_engine_pause", "F3", "ui_config", "F.binary.paused"),
+                new Scenario(
+                        new AuditReplayCommand("F", "f_ui_config", Map.of(
+                                "key", "F.pool.ratio", "value", "30")),
+                        "network_f4_pool_fund", "F4", "ui_config", "F.pool.ratio"),
+                new Scenario(
+                        new AuditReplayCommand("F", "f_ui_config", Map.of(
+                                "key", "F.pool.monthlyCap", "value", "10000")),
+                        "network_f4_write", "F4", "ui_config", "F.pool.monthlyCap"),
+                new Scenario(
+                        new AuditReplayCommand("F", "f_ui_config", Map.of(
+                                "key", "F.unilevel.L3.paused", "value", "on")),
+                        "network_f2_policy_amplify", "F2", "ui_config", "F.unilevel.L3.paused"));
+
+        for (Scenario scenario : scenarios) {
+            authenticate("platform_a2_proposal_create");
+            var denied = guard.validateProposal(scenario.command());
+            assertThat(denied.getCode()).isEqualTo(403);
+            assertThat(denied.getMessage()).endsWith(scenario.authority());
+
+            authenticate("platform_a2_proposal_create", scenario.authority());
+            assertThat(guard.validateProposal(scenario.command()).getCode()).isZero();
+            AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                    "client copy",
+                    String.valueOf(scenario.command().params().get("key")),
+                    "old",
+                    String.valueOf(scenario.command().params().get("value")),
+                    "maker",
+                    "growth",
+                    "param",
+                    false,
+                    false,
+                    "gate",
+                    "validate F command",
+                    scenario.sourceDomain(),
+                    scenario.command(),
+                    new AuditLockTarget("F", scenario.targetType(), scenario.targetId()),
+                    null);
+            assertThat(guard.validateProposalContext(request).getCode()).isZero();
+        }
+
+        authenticate("platform_a2_proposal_create", "network_f1_write");
+        var unknown = guard.validateProposal(new AuditReplayCommand(
+                "F", "f_ui_config", Map.of("key", "F.unknown.key", "value", "1")));
+        assertThat(unknown.getCode()).isEqualTo(403);
+        assertThat(unknown.getMessage()).isEqualTo("A2_BUSINESS_PERMISSION_UNMAPPED");
+    }
+
+    @Test
     void c5PasswordResetRequiresItsExactBusinessPermission() {
         authenticate("platform_a2_write", "user_c1hub_password_reset");
 
@@ -374,6 +486,96 @@ class AuditReplayBusinessPermissionGuardTest {
                         AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::afterValue,
                         AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain)
                 .containsExactly("关闭电脑共享算力入口", "E.compute.computeShareEnabled", "off", "E6");
+    }
+
+    @Test
+    void delegatedE6BatchUsesServerCanonicalSortedTargetsAndFailsClosedForMaliciousKeys() {
+        authenticate("platform_a2_proposal_create", "device_e6_write");
+        Map<String, Object> values = Map.of(
+                "E.compute.download.zhGuide", "新说明",
+                "E.compute.download.enTitle", "New title");
+        AuditReplayCommand command = new AuditReplayCommand(
+                "E", "e6_compute_config_batch", Map.of("values", values));
+        List<AuditLockTarget> canonicalTargets = List.of(
+                new AuditLockTarget("E", "e6_compute_config", "E.compute.download.enTitle"),
+                new AuditLockTarget("E", "e6_compute_config", "E.compute.download.zhGuide"));
+        AuditOperationProposalRequest valid = new AuditOperationProposalRequest(
+                "client copy",
+                "E.compute.download.enTitle,E.compute.download.zhGuide",
+                "client before",
+                "client after",
+                "e6-maker",
+                "custom",
+                "param",
+                false,
+                false,
+                "gate",
+                "update localized download copy",
+                "E6",
+                command,
+                null,
+                canonicalTargets);
+
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+        var canonical = guard.validateProposalContext(valid);
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData().target()).isNull();
+        assertThat(canonical.getData().objectId())
+                .isEqualTo("E.compute.download.enTitle,E.compute.download.zhGuide");
+
+        AuditOperationProposalRequest duplicateTarget = new AuditOperationProposalRequest(
+                valid.action(), valid.obj(), valid.beforeValue(), valid.afterValue(),
+                valid.operator(), valid.operatorRole(), valid.type(), valid.amplifies(), valid.sos(),
+                valid.roleGate(), valid.reason(), valid.sourceDomain(), command, null,
+                List.of(canonicalTargets.get(0), canonicalTargets.get(0), canonicalTargets.get(1)));
+        assertThat(guard.validateProposalContext(duplicateTarget).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
+
+        AuditOperationProposalRequest crossDomainTarget = new AuditOperationProposalRequest(
+                valid.action(), valid.obj(), valid.beforeValue(), valid.afterValue(),
+                valid.operator(), valid.operatorRole(), valid.type(), valid.amplifies(), valid.sos(),
+                valid.roleGate(), valid.reason(), valid.sourceDomain(), command, null,
+                List.of(
+                        new AuditLockTarget("D", "e6_compute_config", "E.compute.download.enTitle"),
+                        canonicalTargets.get(1)));
+        assertThat(guard.validateProposalContext(crossDomainTarget).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
+
+        AuditReplayCommand malicious = new AuditReplayCommand(
+                "E",
+                "e6_compute_config_batch",
+                Map.of("values", Map.of(
+                        "E.compute.download.zhGuide", "safe",
+                        "D.finance.dailyLimit", "999999")));
+        AuditOperationProposalRequest maliciousRequest = new AuditOperationProposalRequest(
+                valid.action(),
+                "D.finance.dailyLimit,E.compute.download.zhGuide",
+                valid.beforeValue(),
+                valid.afterValue(),
+                valid.operator(),
+                valid.operatorRole(),
+                valid.type(),
+                valid.amplifies(),
+                valid.sos(),
+                valid.roleGate(),
+                valid.reason(),
+                valid.sourceDomain(),
+                malicious,
+                null,
+                List.of(
+                        new AuditLockTarget("D", "finance_config", "D.finance.dailyLimit"),
+                        new AuditLockTarget("E", "e6_compute_config", "E.compute.download.zhGuide")));
+        assertThat(guard.validateProposalContext(maliciousRequest).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
+
+        AuditReplayCommand empty = new AuditReplayCommand(
+                "E", "e6_compute_config_batch", Map.of("values", Map.of()));
+        AuditOperationProposalRequest emptyRequest = new AuditOperationProposalRequest(
+                valid.action(), "", valid.beforeValue(), valid.afterValue(),
+                valid.operator(), valid.operatorRole(), valid.type(), valid.amplifies(), valid.sos(),
+                valid.roleGate(), valid.reason(), valid.sourceDomain(), empty, null, List.of());
+        assertThat(guard.validateProposalContext(emptyRequest).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
     }
 
     @Test

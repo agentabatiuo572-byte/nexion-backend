@@ -46,13 +46,6 @@ public class G4AdminCommandService {
         return once("PARAM:"+key,idem,request,()->{
             ApiResult<Map<String,Object>> result=marketService.updateGenesisParam(idem,key,request);
             requireSuccess(result);
-            audit.recordRequired(AuditLogWriteRequest.builder().action("G4_GENESIS_PARAM_CHANGED")
-                    .resourceType("GENESIS_PARAM").resourceId(key).bizNo("G4P-"+key)
-                    .actorType("ADMIN").actorUsername(AdminActorResolver.resolve(request.operator())).method("PATCH")
-                    .path("/api/admin/market/nex/genesis/params/"+key)
-                    .result("SUCCESS").riskLevel("HIGH").detail(linked(
-                            "idempotencyKey",idem,"reason",request.reason().trim(),"paramKey",key,
-                            "newValue",request.value(),"decisionRef",text(request.decisionRef(),"NOT_REQUIRED"))).build());
             outbox.publish("GENESIS_PARAM",key,"admin.genesis_param_changed",linked(
                     "paramKey",key,"newValue",request.value(),"decisionRef",text(request.decisionRef(),"NOT_REQUIRED")));
             return result;

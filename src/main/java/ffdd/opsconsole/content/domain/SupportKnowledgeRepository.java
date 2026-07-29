@@ -38,6 +38,12 @@ public interface SupportKnowledgeRepository {
 
     List<SupportSlaView> listSla();
 
+    default void insertSlaIfMissing(String category, SupportSlaUpdateRequest request, LocalDateTime now) {
+        if (listSla().stream().noneMatch(row -> category.equals(row.category()))) {
+            upsertSla(category, request, now);
+        }
+    }
+
     void upsertSla(String category, SupportSlaUpdateRequest request, LocalDateTime now);
 
     default boolean updateSlaCas(String category, SupportSlaUpdateRequest request, Long expectedVersion, LocalDateTime now) {

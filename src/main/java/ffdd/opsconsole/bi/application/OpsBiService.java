@@ -403,6 +403,16 @@ public class OpsBiService implements AuditReplayable {
                         "recipients", List.of("SUPER_ADMIN", "GROWTH_LEAD"),
                         "delivery", "REAL_TIME_A2_HIGH_RISK_LANE",
                         "reason", reason));
+        reportRepository.publishReportExported(created.reportId(), linked(
+                "reportId", created.reportId(),
+                "exportType", created.type(),
+                "scope", created.scope(),
+                "rowCount", created.rowCount(),
+                "containsPii", created.containsPii(),
+                "maskingPolicy", created.maskingPolicy(),
+                "operator", trimOrDefault(currentActorUsername(), "unknown"),
+                "reason", reason,
+                "format", created.format()));
         return ApiResult.ok(linked(
                 "reportId", created.reportId(),
                 "status", created.status(),
@@ -436,6 +446,8 @@ public class OpsBiService implements AuditReplayable {
     public ApiResult<Map<String, Object>> exportOverview() {
         Map<String, Object> response = new LinkedHashMap<>(reportRepository.dashboard("L5"));
         response.put("module", "L5");
+        response.put("domain", "L5");
+        response.put("serverCanonical", true);
         response.put("summary", reportRepository.overview());
         response.put("ledgerLive", ledgerLiveSummary());
         response.put("reports", reportRepository.reports(null, List.of(), 1, 20));
@@ -454,6 +466,9 @@ public class OpsBiService implements AuditReplayable {
         response.put("crossModuleBlockers", List.of(
                 linked("code", "PII_DECRYPTION", "label", "敏感字段解密导出", "status", "BLOCKED",
                         "reason", "当前管理端 API 明确禁止明文敏感字段导出")));
+        response.put("statusEnum", List.of(
+                "PENDING", "PENDING_CONFIRM", "PENDING_SPLIT_CONFIRM",
+                "GENERATING", "READY", "EXPIRED", "FAILED"));
         response.put("sources", List.of(
                 "nx_admin_fourth_batch_report", "nx_audit_log", "nx_wallet_ledger",
                 "nx_admin_disclosure_jurisdiction", "nx_admin_disclosure_version"));

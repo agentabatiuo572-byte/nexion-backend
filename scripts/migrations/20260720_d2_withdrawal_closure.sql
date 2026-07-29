@@ -213,12 +213,12 @@ INSERT INTO nx_event_schema_registry
 VALUES
   ('withdraw.approved','withdraw','money','server','D2/B1/B5/L',1,'100%',14,'ACTIVE','migration:d2','D2 review approved',0),
   ('withdraw.rejected','withdraw','money','server','D2/D4/L',1,'100%',14,'ACTIVE','migration:d2','D2 review rejected',0),
-  ('withdraw.delayed','withdraw','money','server','D2/K/L',1,'100%',14,'ACTIVE','migration:d2','D2 review delayed',0),
+  ('withdraw.delayed','withdraw','money','server','D2/K/L',1,'100%',15,'ACTIVE','migration:d2','D2 review delayed',0),
   ('withdraw.frozen','withdraw','money','server','D2/B5/K/L',1,'100%',14,'ACTIVE','migration:d2','D2 funds frozen',0),
   ('withdraw.unfrozen','withdraw','money','server','D2/K/L',1,'100%',14,'ACTIVE','migration:d2','D2 funds unfrozen',0),
   ('withdraw.refunded','withdraw','money','server','D2/D4/L',1,'100%',14,'ACTIVE','migration:d2','D2 funds refunded',0),
   ('withdraw.review_due','withdraw','money','server','D2/K/L',1,'100%',14,'ACTIVE','migration:d2','D2 scheduled review due',0)
-ON DUPLICATE KEY UPDATE family_key='money', current_revision=14, status='ACTIVE', is_deleted=0, updated_at=NOW();
+ON DUPLICATE KEY UPDATE family_key='money', current_revision=VALUES(current_revision), status='ACTIVE', is_deleted=0, updated_at=NOW();
 
 INSERT INTO nx_event_schema_property
   (schema_id, property_name, property_type, pii, required_field, registry_revision, created_at, updated_at, is_deleted)
@@ -230,10 +230,27 @@ JOIN (
   SELECT 'currency','string',1 UNION ALL
   SELECT 'state','string',1 UNION ALL
   SELECT 'reason','string',1 UNION ALL
-  SELECT 'address_hash','string',1 UNION ALL
-  SELECT 'risk_score','number',1
+  SELECT 'address_hash','string',1
 ) p
 WHERE s.event_name IN ('withdraw.approved','withdraw.rejected','withdraw.delayed','withdraw.frozen','withdraw.unfrozen','withdraw.refunded','withdraw.review_due')
+ON DUPLICATE KEY UPDATE property_type=VALUES(property_type), required_field=VALUES(required_field),
+  registry_revision=VALUES(registry_revision), is_deleted=0, updated_at=NOW();
+
+INSERT INTO nx_event_schema_property
+  (schema_id, property_name, property_type, pii, required_field, registry_revision, created_at, updated_at, is_deleted)
+SELECT s.id,'risk_score','number',0,
+       CASE WHEN s.event_name='withdraw.delayed' THEN 0 ELSE 1 END,
+       s.current_revision,NOW(),NOW(),0
+FROM nx_event_schema_registry s
+WHERE s.event_name IN ('withdraw.approved','withdraw.rejected','withdraw.delayed','withdraw.frozen','withdraw.unfrozen','withdraw.refunded','withdraw.review_due')
+ON DUPLICATE KEY UPDATE property_type=VALUES(property_type), required_field=VALUES(required_field),
+  registry_revision=VALUES(registry_revision), is_deleted=0, updated_at=NOW();
+
+INSERT INTO nx_event_schema_property
+  (schema_id, property_name, property_type, pii, required_field, registry_revision, created_at, updated_at, is_deleted)
+SELECT s.id,'risk_score_status','string',0,0,s.current_revision,NOW(),NOW(),0
+FROM nx_event_schema_registry s
+WHERE s.event_name='withdraw.delayed'
 ON DUPLICATE KEY UPDATE property_type=VALUES(property_type), required_field=VALUES(required_field),
   registry_revision=VALUES(registry_revision), is_deleted=0, updated_at=NOW();
 

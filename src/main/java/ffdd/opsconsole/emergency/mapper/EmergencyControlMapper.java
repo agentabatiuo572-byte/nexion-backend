@@ -1044,6 +1044,18 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
     String lockPlaybookCatalogMutations();
 
     @Select("""
+            SELECT COALESCE(MAX(
+                     CASE
+                       WHEN code REGEXP '^SOP-CUSTOM-[0-9]+$'
+                       THEN CAST(SUBSTRING(code, 12) AS UNSIGNED)
+                       ELSE 0
+                     END
+                   ), 0)
+              FROM nx_emergency_sop_playbook
+            """)
+    Integer maxAllocatedPlaybookSequence();
+
+    @Select("""
             SELECT code,
                    name,
                    scene,

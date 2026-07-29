@@ -141,6 +141,53 @@ class OpsI18nLearningServiceTest {
     }
 
     @Test
+    void saveLocalizedDraftMapsAtomicRetireRaceToVersionConflictWithoutAudit() {
+        I18nLearningRepository competingRepository = mock(I18nLearningRepository.class);
+        I18nMessagePairView current = new I18nMessagePairView(
+                "acceptance.i6.concurrent",
+                "acceptance",
+                "Old English",
+                "旧中文",
+                "Tiếng Việt cũ",
+                "draft",
+                "v1",
+                List.of());
+        when(competingRepository.findMessagePairForUpdate("acceptance.i6.concurrent"))
+                .thenReturn(Optional.of(current));
+        when(competingRepository.saveMessagePair(
+                eq("acceptance.i6.concurrent"),
+                eq("新中文"),
+                eq("New English"),
+                eq("Tiếng Việt mới"),
+                eq("draft"),
+                any(LocalDateTime.class)))
+                .thenThrow(new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT"));
+        OpsI18nLearningService competingService = new OpsI18nLearningService(
+                competingRepository,
+                auditLogService,
+                coverageFacade,
+                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                lockMapper,
+                eventOutboxService);
+
+        var result = competingService.saveLocalizedDraft(
+                "acceptance.i6.concurrent",
+                "idem-i6-competing-draft",
+                new I18nLocalizedCopyRequest(
+                        "新中文",
+                        "New English",
+                        "Tiếng Việt mới",
+                        "v1",
+                        "Marina K.",
+                        "验证数据库原子 CAS 竞争失败必须映射 409"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("I18N_MESSAGE_VERSION_CONFLICT");
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
     void publishLocalizedMessagePersistsAndAudits() {
         var saved = service.saveLocalizedDraft("milestones.earnCross", "idem-i6-draft-before-pub", copyRequest("完成 {amount} 并获得 {nex}", "Earn {nex} after {amount}"));
         var result = service.publishLocalizedMessage("milestones.earnCross", "idem-i6-pub",

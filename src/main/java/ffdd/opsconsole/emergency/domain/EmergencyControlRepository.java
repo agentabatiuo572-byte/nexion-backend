@@ -158,6 +158,26 @@ public interface EmergencyControlRepository {
     default void lockPlaybookCatalogMutations() {
     }
 
+    /**
+     * Highest numeric suffix ever allocated, including soft-deleted rows.
+     * Implementations backed by persistent storage must not reuse tombstoned codes.
+     */
+    default int maxAllocatedPlaybookSequence() {
+        int max = 0;
+        for (Map<String, Object> row : playbooks()) {
+            String code = String.valueOf(row.getOrDefault("code", ""));
+            if (!code.startsWith("SOP-CUSTOM-")) {
+                continue;
+            }
+            try {
+                max = Math.max(max, Integer.parseInt(code.substring("SOP-CUSTOM-".length())));
+            } catch (NumberFormatException ignored) {
+                // Non-canonical historical codes do not participate in numeric allocation.
+            }
+        }
+        return max;
+    }
+
     Optional<Map<String, Object>> playbook(String code);
 
     /** Locks and returns one complete current playbook definition, including its ordered steps. */

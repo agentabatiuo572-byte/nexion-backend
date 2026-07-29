@@ -82,14 +82,14 @@ class G4AdminCommandServiceTest {
     }
 
     @Test
-    void parameterChangeWritesRequiredAuditInsideCommandTransaction() {
+    void parameterChangeDelegatesSingleRequiredAuditToMarketService() {
         NexMarketValueUpdateRequest request = request("approved royalty update", null);
         when(market.updateGenesisParam("g4-param-1", "royalty", request))
                 .thenReturn(ApiResult.ok(new LinkedHashMap<>(Map.of("domain", "G4"))));
 
         assertThat(service.updateParam("royalty", "g4-param-1", request).getCode()).isZero();
 
-        verify(audit).recordRequired(any());
+        verify(audit, never()).recordRequired(any());
         verify(outbox).publish(anyString(), anyString(), eq("admin.genesis_param_changed"), any());
     }
 

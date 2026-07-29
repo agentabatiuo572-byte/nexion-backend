@@ -5,11 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -33,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -46,6 +49,7 @@ class OpsTeamServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final ffdd.opsconsole.shared.security.AdminPermissionCache permissionCache = mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class);
+    private final AdminIdempotencyService idempotencyService = passThroughIdempotency();
     private final VoucherGrantFacade voucherGrantFacade = command ->
             new VoucherGrantFacade.VoucherGrantResult("VGR-TEST-" + command.userId(), false);
     // Sprint5:F1 V-Rank 引擎 + 派发器(由 service 的 evaluate/override 端点驱动)
@@ -76,7 +80,8 @@ class OpsTeamServiceTest {
             vRankPromotionEngine,
             vRankRewardDispatcher,
             eventOutboxService,
-            leadershipPoolService);
+            leadershipPoolService,
+            idempotencyService);
 
     @BeforeEach
     void seedPermissionContext() {
@@ -90,7 +95,7 @@ class OpsTeamServiceTest {
                 "network_f4_read", "network_f4_write", "network_f4_pool_fund",
                 "network_f4_ambassador_approve", "network_f4_leaderboard_control",
                 "network_f5_read", "network_f5_write", "network_f5_commission_dispose", "network_f5_commission_reject",
-                "network_f1_permanent_protection"));
+                "network_f1_write", "network_f1_permanent_protection"));
     }
 
     @Test
@@ -191,7 +196,8 @@ class OpsTeamServiceTest {
                 soloEngine,
                 soloDispatcher,
                 mock(EventOutboxService.class),
-                mock(LeadershipPoolService.class));
+                mock(LeadershipPoolService.class),
+                idempotencyService);
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
         ApiResult<Map<String, Object>> pool = realOnlyService.leadershipPool();
@@ -800,6 +806,12 @@ class OpsTeamServiceTest {
                         "F.commission.CM-4203.status", "unlocked", "cooldown completed", "risk-ops")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("outbox unavailable");
+        verify(idempotencyService).execute(
+                org.mockito.ArgumentMatchers.eq("F_TEAM_CONFIG_UPDATE"),
+                org.mockito.ArgumentMatchers.eq("idem-f-commission-unlock-outbox-failure"),
+                org.mockito.ArgumentMatchers.any(String.class),
+                org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                org.mockito.ArgumentMatchers.any());
         assertThat(OpsTeamService.class.getMethod(
                         "updateConfig", String.class, TeamCommissionConfigUpdateRequest.class)
                 .isAnnotationPresent(org.springframework.transaction.annotation.Transactional.class))
@@ -1020,6 +1032,86 @@ class OpsTeamServiceTest {
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("PERMISSION_DENIED");
+    }
+
+    @Test
+    void f1UiConfigRequiresF1WriterAndRejectsF2ToF5Writers() {
+        for (String otherDomainAuthority : List.of(
+                "network_f2_policy_amplify",
+                "network_f3_match_rate",
+                "network_f4_write",
+                "network_f5_commission_dispose")) {
+            org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong()))
+                    .thenReturn(java.util.Set.of(otherDomainAuthority));
+
+            ApiResult<Map<String, Object>> denied = service.updateConfig(
+                    "idem-f1-prize-denied-" + otherDomainAuthority,
+                    new TeamCommissionConfigUpdateRequest(
+                            "F.prize.name", "Cross-domain write", "must be denied", "other-domain-ops"));
+
+            assertThat(denied.getCode()).isEqualTo(403);
+            assertThat(denied.getMessage()).isEqualTo("PERMISSION_DENIED");
+        }
+        assertThat(configFacade.values).doesNotContainKey("team.ui.F.prize.name");
+    }
+
+    @Test
+    void pureF1WriterCanUpdateF1UiConfigButCannotUpdateOtherDomainsOrUnknownKeys() {
+        org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(java.util.Set.of("network_f1_write"));
+
+        ApiResult<Map<String, Object>> allowed = service.updateConfig(
+                "idem-f1-prize-allowed",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.prize.name", "Nexion V-Rank", "legitimate F1 copy update", "f1-only-ops"));
+        ApiResult<Map<String, Object>> otherDomainDenied = service.updateConfig(
+                "idem-f1-f2-denied",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.cooldown", "30", "F1 writer must not update F2", "f1-only-ops"));
+
+        assertThat(allowed.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.prize.name", "Nexion V-Rank");
+        assertThat(otherDomainDenied.getCode()).isEqualTo(403);
+        assertThat(otherDomainDenied.getMessage()).isEqualTo("PERMISSION_DENIED");
+        assertThatThrownBy(() -> service.updateConfig(
+                "idem-f1-unknown-denied",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.vrank.unknown", "x", "unknown F1 key must fail closed", "f1-only-ops")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported F team UI config key");
+    }
+
+    @Test
+    void pureF1WriterCanUpdateAllRegisteredF1UiConfigFamilies() {
+        org.mockito.Mockito.when(permissionCache.getPermissionCodes(org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(java.util.Set.of("network_f1_write"));
+
+        assertThat(service.updateConfig(
+                "idem-f1-leadership-rank",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.vrank.leadership.unlockRank", "3", "F1 rank config", "f1-only-ops")).getCode()).isZero();
+        assertThat(service.updateConfig(
+                "idem-f1-titles",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.vrank.titles",
+                        "{\"V0\":\"Member\",\"V1\":\"Builder\",\"V2\":\"Leader\",\"V3\":\"Advocate\",\"V4\":\"Partner\",\"V5\":\"Senior Partner\",\"V6\":\"Director\",\"V7\":\"Senior Director\",\"V8\":\"Executive\",\"V9\":\"Ambassador\",\"V10\":\"Chair\",\"V11\":\"Global Chair\",\"V12\":\"Founder Circle\"}",
+                        "F1 titles config", "f1-only-ops")).getCode()).isZero();
+        assertThat(service.updateConfig(
+                "idem-f1-fulfillment",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.fulfillment.V3.queue.status", "opened", "F1 fulfillment config", "f1-only-ops")).getCode()).isZero();
+    }
+
+    private static AdminIdempotencyService passThroughIdempotency() {
+        AdminIdempotencyService service = mock(AdminIdempotencyService.class);
+        when(service.execute(
+                org.mockito.ArgumentMatchers.any(String.class),
+                org.mockito.ArgumentMatchers.any(String.class),
+                org.mockito.ArgumentMatchers.any(String.class),
+                org.mockito.ArgumentMatchers.any(Class.class),
+                org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+        return service;
     }
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
@@ -1677,7 +1769,8 @@ class OpsTeamServiceTest {
                 vRankPromotionEngine,
                 vRankRewardDispatcher,
                 eventOutboxService,
-                leadershipPoolService);
+                leadershipPoolService,
+                idempotencyService);
         commissionRepository.memberVRanks.put(7106L, "V1");
 
         ApiResult<Map<String, Object>> result = lockedService.overrideVRank(7106L, "idem-7106",

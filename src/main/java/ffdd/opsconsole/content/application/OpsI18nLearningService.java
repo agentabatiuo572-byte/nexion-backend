@@ -111,7 +111,21 @@ public class OpsI18nLearningService {
                 || !request.expectedVersion().trim().equals(current.version()))) {
             return ApiResult.fail(409, "I18N_MESSAGE_VERSION_CONFLICT");
         }
-        I18nMessagePairView saved = learningRepository.saveMessagePair(messageKey.trim(), request.zh().trim(), request.en().trim(), request.vi().trim(), "draft", now());
+        I18nMessagePairView saved;
+        try {
+            saved = learningRepository.saveMessagePair(
+                    messageKey.trim(),
+                    request.zh().trim(),
+                    request.en().trim(),
+                    request.vi().trim(),
+                    "draft",
+                    now());
+        } catch (IllegalStateException ex) {
+            if ("I18N_MESSAGE_VERSION_CONFLICT".equals(ex.getMessage())) {
+                return ApiResult.fail(409, ex.getMessage());
+            }
+            throw ex;
+        }
         audit("I6_I18N_DRAFT_SAVED", "I18N_MESSAGE", messageKey.trim(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "languages", "zh+en+vi",
                 "placeholders", String.join(",", saved.placeholders())));

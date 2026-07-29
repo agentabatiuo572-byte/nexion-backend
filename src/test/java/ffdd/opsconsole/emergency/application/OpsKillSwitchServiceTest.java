@@ -675,6 +675,15 @@ class OpsKillSwitchServiceTest {
 
         assertThat(rollback.getCode()).isZero();
         assertThat(emergencyRepository.settings).containsEntry("killswitch.withdraw", "enabled");
+        verify(outboxService, times(2)).publish(
+                org.mockito.ArgumentMatchers.eq("KILL_SWITCH"),
+                org.mockito.ArgumentMatchers.eq("withdraw"),
+                org.mockito.ArgumentMatchers.eq("J1_KILLSWITCH_CHANGED"),
+                any());
+        verify(auditLogService, times(2)).recordRequired(
+                org.mockito.ArgumentMatchers.argThat(audit ->
+                        "J1_LINKED_DOMAIN_GATE_CHANGED".equals(audit.getAction())
+                                && "withdraw".equals(audit.getResourceId())));
     }
 
     @Test

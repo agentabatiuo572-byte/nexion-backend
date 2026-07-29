@@ -120,7 +120,7 @@ public class OpsTeamController {
 
     @PatchMapping("/commissions/config/{key}")
     // key 多态承载多域资金放大 HIGH：F2 版税费率(royaltyPct→f2_royalty_rate)/Partner 杠杆(promo/peer/clamp→f2_policy_amplify)、F3 平衡匹配比例(binary-rate→f3_match_rate)、F4 领导池比例(pool-ratio→f4_pool_fund)/票权权重(F.pool.votes.V{n}→f4_write)/配额门槛(F.quota.*→f4_write)/大使审批(F.ambassador.{label}.status→f4_ambassador_approve)/榜单控制(F.leaderboard.*→f4_leaderboard_control)、F5 佣金事件状态处置(F.commission.{id}.status→f5_commission_dispose/reject)；OpsTeamService 需按 key 二次精确校验
-    @PreAuthorize("hasAnyAuthority('network_f2_royalty_rate','network_f2_policy_amplify','network_f3_match_rate','network_f4_pool_fund','network_f4_write','network_f4_ambassador_approve','network_f4_leaderboard_control','network_f5_commission_dispose','network_f5_commission_reject')")
+    @PreAuthorize("hasAnyAuthority('network_f1_write','network_f2_royalty_rate','network_f2_policy_amplify','network_f3_match_rate','network_f4_pool_fund','network_f4_write','network_f4_ambassador_approve','network_f4_leaderboard_control','network_f5_commission_dispose','network_f5_commission_reject')")
     public ApiResult<Map<String, Object>> updateConfig(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,

@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper;
@@ -22,6 +23,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -35,6 +37,7 @@ class BinaryCommissionSettlementServiceTest {
     private TreasuryLedgerPostingFacade ledgerFacade;
     private AuditLogService auditLogService;
     private EventOutboxService eventOutboxService;
+    private AdminIdempotencyService idempotencyService;
     private BinaryCommissionSettlementService service;
 
     @BeforeEach
@@ -44,9 +47,10 @@ class BinaryCommissionSettlementServiceTest {
         ledgerFacade = mock(TreasuryLedgerPostingFacade.class);
         auditLogService = mock(AuditLogService.class);
         eventOutboxService = mock(EventOutboxService.class);
+        idempotencyService = passThroughIdempotency();
         service = new BinaryCommissionSettlementService(
                 mapper, policyProvider, ledgerFacade, auditLogService,
-                mock(PlatformConfigFacade.class), eventOutboxService);
+                mock(PlatformConfigFacade.class), eventOutboxService, idempotencyService);
 
         when(mapper.lockActiveOwner(OWNER)).thenReturn(OWNER);
         when(mapper.ensureSettlementMutex(OWNER, DAY)).thenReturn(1);
@@ -435,7 +439,14 @@ class BinaryCommissionSettlementServiceTest {
                 .getMethod("settle", Long.class, LocalDate.class)
                 .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
         var admin = BinaryCommissionSettlementService.class
-                .getMethod("settleAsAdmin", Long.class, LocalDate.class, String.class, Long.class, String.class)
+                .getMethod(
+                        "settleAsAdmin",
+                        Long.class,
+                        LocalDate.class,
+                        String.class,
+                        Long.class,
+                        String.class,
+                        String.class)
                 .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
 
         assertThat(system).isNotNull();
@@ -444,6 +455,14 @@ class BinaryCommissionSettlementServiceTest {
         assertThat(admin.rollbackFor()).contains(Exception.class);
         assertThat(system.isolation()).isEqualTo(org.springframework.transaction.annotation.Isolation.READ_COMMITTED);
         assertThat(admin.isolation()).isEqualTo(org.springframework.transaction.annotation.Isolation.READ_COMMITTED);
+    }
+
+    private static AdminIdempotencyService passThroughIdempotency() {
+        AdminIdempotencyService service = mock(AdminIdempotencyService.class);
+        when(service.execute(any(String.class), any(String.class), any(String.class),
+                any(Class.class), any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+        return service;
     }
 
     private BinarySettlementPolicyProvider.BinarySettlementPolicy policy(

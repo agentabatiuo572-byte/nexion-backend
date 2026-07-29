@@ -471,6 +471,14 @@ public class OpsKillSwitchService {
         if (restored.getCode() != 0) {
             throw new BizException(restored.getCode(), restored.getMessage());
         }
+        recordLinkedGateChange(
+                normalizedKey,
+                false,
+                true,
+                actor,
+                reason,
+                "J4",
+                "J4_ROLLBACK:" + normalizedExecutionId + ":" + normalizedKey);
         writeLastChange(normalizedKey, actor, "J4 回滚 " + normalizedExecutionId);
         return restored;
     }
@@ -510,18 +518,8 @@ public class OpsKillSwitchService {
         String ownershipToken = "J4".equals(source) && idempotencyKey.startsWith("J4:")
                 ? writeOwnershipToken(normalizedKey, actor, idempotencyKey)
                 : writeLastChange(normalizedKey, actor, "下游联动 " + source + " " + idempotencyKey.trim());
-        Map<String, Object> linkedAudit = new LinkedHashMap<>();
-        linkedAudit.put("switchKey", normalizedKey);
-        linkedAudit.put("before", before);
-        linkedAudit.put("after", enable);
-        linkedAudit.put("reason", reason);
-        linkedAudit.put("sourceDomain", source);
-        linkedAudit.put("idempotencyKey", idempotencyKey.trim());
-        linkedAudit.put("trigger", "linked-domain");
-        linkedAudit.put("broadcast", true);
-        linkedAudit.put("broadcastEventId", broadcastGateChange(
-                normalizedKey, before, enable, "linked-domain", actor, reason));
-        audit("J1_LINKED_DOMAIN_GATE_CHANGED", normalizedKey, actor, linkedAudit);
+        recordLinkedGateChange(
+                normalizedKey, before, enable, actor, reason, source, idempotencyKey.trim());
         ApiResult<Map<String, Object>> response = matrix();
         response.getData().put("updated", Map.of(
                 "key", normalizedKey,
@@ -530,6 +528,28 @@ public class OpsKillSwitchService {
                 "sourceDomain", source,
                 "ownershipToken", ownershipToken));
         return response;
+    }
+
+    private void recordLinkedGateChange(
+            String key,
+            boolean before,
+            boolean after,
+            String actor,
+            String reason,
+            String source,
+            String idempotencyKey) {
+        Map<String, Object> linkedAudit = new LinkedHashMap<>();
+        linkedAudit.put("switchKey", key);
+        linkedAudit.put("before", before);
+        linkedAudit.put("after", after);
+        linkedAudit.put("reason", reason);
+        linkedAudit.put("sourceDomain", source);
+        linkedAudit.put("idempotencyKey", idempotencyKey);
+        linkedAudit.put("trigger", "linked-domain");
+        linkedAudit.put("broadcast", true);
+        linkedAudit.put("broadcastEventId", broadcastGateChange(
+                key, before, after, "linked-domain", actor, reason));
+        audit("J1_LINKED_DOMAIN_GATE_CHANGED", key, actor, linkedAudit);
     }
 
     private String writeOwnershipToken(String key, String operator, String idempotencyKey) {

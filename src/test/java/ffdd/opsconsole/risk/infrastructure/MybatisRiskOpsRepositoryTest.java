@@ -74,7 +74,8 @@ class MybatisRiskOpsRepositoryTest {
 
         assertThat(sql)
                 .contains("CONCAT_WS(' / '")
-                .contains("NULL, 4, 'flag'")
+                .contains("NULL, 3, 'flag'")
+                .doesNotContain("NULL, 4, 'flag'")
                 .doesNotContain("'E3 交易事实实时投影'");
     }
 

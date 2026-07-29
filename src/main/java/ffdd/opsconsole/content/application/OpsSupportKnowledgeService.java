@@ -5,6 +5,7 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeOverview;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
+import ffdd.opsconsole.content.domain.SupportSlaBaseline;
 import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.dto.SupportFaqStatusRequest;
 import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
@@ -32,7 +33,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsSupportKnowledgeService {
     private static final Set<String> FAQ_CATEGORIES = Set.of("general", "account", "withdrawal", "deposit", "kyc", "hardware", "earnings", "genesis", "technical", "other");
-    private static final Set<String> SLA_CATEGORIES = Set.of("account", "withdrawal", "deposit", "kyc", "hardware", "earnings", "genesis", "technical", "other");
+    private static final Set<String> SLA_CATEGORIES = SupportSlaBaseline.CATEGORIES;
     private static final Set<String> SURFACES = Set.of("Help Center", "Ticket Create", "Nova");
     private static final Set<String> STATUSES = Set.of("PUBLISHED", "DRAFT");
     private static final Set<String> LANGUAGES = Set.of("zh-CN", "en-US", "vi-VN");

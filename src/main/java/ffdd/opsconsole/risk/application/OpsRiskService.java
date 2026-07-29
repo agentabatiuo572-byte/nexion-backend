@@ -333,7 +333,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (!K1_CLUSTER_SORTS.contains(normalizedSort)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K1_CLUSTER_SORT_INVALID");
         }
-        return ApiResult.ok(riskRepository.multiAccountOverview(
+        Map<String, Object> response = new LinkedHashMap<>(riskRepository.multiAccountOverview(
                 normalizePageNum(clusterPageNum),
                 normalizeLimit(clusterPageSize, 5, 50),
                 normalizedLayer,
@@ -341,6 +341,19 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 normalizedSort,
                 normalizePageNum(whitelistPageNum),
                 normalizeLimit(whitelistPageSize, 5, 50)));
+        response.put("serverCanonical", true);
+        response.put("domain", "K1");
+        response.put("sources", List.of(
+                "nx_user_registration_otp:consumed_client_ip",
+                "nx_risk_decision:device_fingerprint",
+                "nx_wallet_bank_card:card_token",
+                "nx_referral_reward_settlement:welcome_gift",
+                "nx_user_wallet:cumulative_deposit_usdt",
+                "nx_wallet_ledger:deposit_fallback",
+                "nx_admin_risk_multi_account_cluster",
+                "nx_admin_risk_ip_whitelist",
+                "nx_admin_risk_param:k1"));
+        return ApiResult.ok(response);
     }
 
     @Transactional
@@ -967,11 +980,38 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .filter(param -> !RETIRED_K2_PARAM_KEYS.contains(param.key()))
                 .map(this::withCanonicalOtpValue)
                 .toList();
-        response.put("stats", riskRepository.arbitrageStats());
+        response.put("serverCanonical", true);
+        response.put("domain", "K2");
+        response.put("stats", canonicalK2Stats(rows));
         response.put("params", params);
         response.put("views", views);
+        response.put("sources", List.of(
+                "nx_tradein_application:E3",
+                "nx_event_outbox:H2",
+                "nx_admin_risk_multi_account_cluster:K1",
+                "nx_commission_event:F4/F5",
+                "nx_risk_k2_leaderboard_snapshot:F4",
+                "nx_admin_risk_arbitrage_stat",
+                "nx_admin_risk_arbitrage_param",
+                "nx_admin_risk_arbitrage_row"));
         response.put("redlines", List.of("K2 only marks and emits signals", "account freezing is linked to K1 action chain", "welcome gift blocking never touches settled assets"));
         return ApiResult.ok(response);
+    }
+
+    private List<RiskArbitrageStatView> canonicalK2Stats(List<RiskArbitrageRowView> rows) {
+        long loopConfirmed = rows.stream().filter(row -> row.level() != null && row.level() >= 3).count();
+        long loopWarn = rows.stream().filter(row -> row.level() != null && row.level() == 2).count();
+        long giftBlocked = rows.stream().filter(row -> "gift_blocked".equals(row.disposition())).count();
+        long boardSignals = rows.stream().filter(row -> "board".equals(row.viewKey())).count();
+        return List.of(
+                new RiskArbitrageStatView("loopConfirmed", "闭环判定(3 层全中)",
+                        String.valueOf(loopConfirmed), "当前服务端权威投影", "warn"),
+                new RiskArbitrageStatView("loopWarn", "预警转人工(2 层可疑)",
+                        String.valueOf(loopWarn), "当前服务端权威投影", ""),
+                new RiskArbitrageStatView("giftBlockedCnt", "新人礼拦截",
+                        String.valueOf(giftBlocked), "已确认停发的后续奖励", "ok"),
+                new RiskArbitrageStatView("boardSignals", "刷榜信号",
+                        String.valueOf(boardSignals), "当前榜单异常投影 · 处置归 F8", "danger"));
     }
 
     @Transactional

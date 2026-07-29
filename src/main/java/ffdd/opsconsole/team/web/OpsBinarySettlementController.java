@@ -16,6 +16,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -39,12 +40,13 @@ public class OpsBinarySettlementController {
     @PostMapping("/settlements")
     @PreAuthorize("hasAuthority('network_f3_write')")
     public ApiResult<SettlementResult> settle(
+            @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
             @Valid @RequestBody BinarySettlementRequest request,
             Authentication authentication) {
         AdminActor actor = authenticatedAdmin(authentication);
         return ApiResult.ok(service.settleAsAdmin(
                 request.ownerUserId(), request.settlementDate(), request.reason(),
-                actor.id(), actor.username()));
+                actor.id(), actor.username(), idempotencyKey));
     }
 
     private AdminActor authenticatedAdmin(Authentication authentication) {

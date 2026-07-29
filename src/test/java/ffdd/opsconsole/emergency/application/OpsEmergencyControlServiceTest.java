@@ -1504,6 +1504,12 @@ class OpsEmergencyControlServiceTest {
                 .containsEntry("result", "REJECTED")
                 .containsEntry("errorCode", "J1_RESTORE_REJECTED")
                 .containsEntry("businessDataChanged", false);
+        ArgumentCaptor<org.springframework.transaction.TransactionDefinition> transaction =
+                ArgumentCaptor.forClass(org.springframework.transaction.TransactionDefinition.class);
+        verify(transactionManager).getTransaction(transaction.capture());
+        assertThat(transaction.getValue().getPropagationBehavior())
+                .as("J4 rollback must isolate a rejected J1/B1 recovery from the outer idempotency transaction")
+                .isEqualTo(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         verify(auditLogService, never()).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
                 "J4_SOP_PLAYBOOK_ROLLED_BACK".equals(request.getAction())));
     }
@@ -2042,6 +2048,23 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
+    void createPlaybookDoesNotReuseASoftDeletedCustomCode() {
+        emergencyRepository.maxAllocatedPlaybookSequence = 9;
+
+        var result = service.createPlaybook(
+                "idem-j4-after-tombstone",
+                new SopPlaybookCreateRequest(
+                        "软删除后新剧本", "监管点名", "合规审计", "15 分钟", true,
+                        "J1·熔断 Genesis 交易", "", "", "根因消除后逐步恢复", false,
+                        "allocate above soft deleted codes", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(emergencyRepository.playbooks)
+                .extracting(row -> row.get("code"))
+                .containsExactly("SOP-CUSTOM-10");
+    }
+
+    @Test
     void executePlaybookRequiresACompletedDrillWhenTheDefinitionRequiresOne() {
         service.createPlaybook(
                 "idem-j4-needs-drill",
@@ -2380,6 +2403,7 @@ class OpsEmergencyControlServiceTest {
         private final List<Map<String, Object>> playbooks = new ArrayList<>();
         private final List<Map<String, Object>> executions = new ArrayList<>();
         private int playbookCatalogLockCount;
+        private int maxAllocatedPlaybookSequence = -1;
         private boolean completeRollbackOnNextClaim;
         private int executionIndependentReads;
 
@@ -2552,6 +2576,13 @@ class OpsEmergencyControlServiceTest {
         @Override
         public void lockPlaybookCatalogMutations() {
             playbookCatalogLockCount++;
+        }
+
+        @Override
+        public int maxAllocatedPlaybookSequence() {
+            return maxAllocatedPlaybookSequence >= 0
+                    ? maxAllocatedPlaybookSequence
+                    : EmergencyControlRepository.super.maxAllocatedPlaybookSequence();
         }
 
         @Override

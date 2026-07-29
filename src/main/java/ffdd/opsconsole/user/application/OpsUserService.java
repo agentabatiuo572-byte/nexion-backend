@@ -2545,9 +2545,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return c3Reject(409, "C3_ONLY_ORIGINAL_APPROVED_ADJUSTMENT_REVERSIBLE", normalizedNo,
                     original.userId(), actor, idempotencyKey);
         }
-        if (userRepository.assetAdjustmentHasReversal(normalizedNo)) {
-            return c3Reject(409, "C3_ALREADY_REVERSED", normalizedNo, original.userId(), actor, idempotencyKey);
-        }
         UserAssetAdjustmentRequest reversal = new UserAssetAdjustmentRequest(
                 original.asset(),
                 "CREDIT".equalsIgnoreCase(original.direction()) ? "DEBIT" : "CREDIT",
@@ -2562,7 +2559,18 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         Map<String, Object> fingerprint = c3Fingerprint(original.userId(), reversal, normalizedNo);
         try {
             return idempotentC3("C3_ASSET_ADJUSTMENT_REVERSE", idempotencyKey, fingerprint,
-                    () -> executeAssetAdjustment(original.userId(), idempotencyKey, reversal, true));
+                    () -> {
+                        /*
+                         * The replay lookup must happen before the mutable reversal-state guard.
+                         * Otherwise an already successful command cannot replay its cached result
+                         * because its own first execution has made assetAdjustmentHasReversal true.
+                         */
+                        if (userRepository.assetAdjustmentHasReversal(normalizedNo)) {
+                            return c3Reject(409, "C3_ALREADY_REVERSED", normalizedNo,
+                                    original.userId(), actor, idempotencyKey);
+                        }
+                        return executeAssetAdjustment(original.userId(), idempotencyKey, reversal, true);
+                    });
         } catch (DuplicateKeyException ex) {
             c3FailureAudit("C3_ASSET_ADJUSTMENT_REVERSAL_REJECTED", normalizedNo, original.userId(), actor,
                     "C3_ALREADY_REVERSED", idempotencyKey);

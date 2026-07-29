@@ -958,7 +958,7 @@ class OpsNexMarketServiceTest {
         assertThat(marketRepository.activeGenesisPolicy().orElseThrow().royaltyPct()).isEqualByComparingTo("3");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G4_GENESIS_PARAM_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-g4-royalty");
     }

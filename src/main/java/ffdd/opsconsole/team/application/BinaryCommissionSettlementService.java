@@ -3,6 +3,7 @@ package ffdd.opsconsole.team.application;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.application.BinarySettlementPolicyProvider.BinarySettlementPolicy;
@@ -16,6 +17,9 @@ import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper.PaidOrderVol
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -48,6 +52,7 @@ public class BinaryCommissionSettlementService {
     private final AuditLogService auditLogService;
     private final PlatformConfigFacade configFacade;
     private final EventOutboxService eventOutboxService;
+    private final AdminIdempotencyService idempotencyService;
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public AssignmentResult assignLeg(
@@ -93,11 +98,32 @@ public class BinaryCommissionSettlementService {
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public SettlementResult settleAsAdmin(
             Long ownerUserId, LocalDate settlementDate, String reason,
-            Long actorAdminId, String actorUsername) {
+            Long actorAdminId, String actorUsername, String idempotencyKey) {
+        requirePositive(ownerUserId, "BINARY_OWNER_REQUIRED");
+        if (settlementDate == null) throw new IllegalArgumentException("BINARY_SETTLEMENT_DATE_REQUIRED");
         requirePositive(actorAdminId, "BINARY_ADMIN_ACTOR_REQUIRED");
-        return settleTrusted(ownerUserId, settlementDate, actorAdminId,
-                text(actorUsername, "BINARY_ADMIN_ACTOR_REQUIRED"), "ADMIN",
-                reason(reason));
+        String operator = text(actorUsername, "BINARY_ADMIN_ACTOR_REQUIRED");
+        String normalizedReason = reason(reason);
+        String hash = requestHash(ownerUserId, settlementDate, normalizedReason);
+        return idempotencyService.execute(
+                "F3_BINARY_SETTLEMENT",
+                idempotencyKey,
+                hash,
+                SettlementResult.class,
+                () -> settleTrusted(
+                        ownerUserId, settlementDate, actorAdminId,
+                        operator, "ADMIN", normalizedReason));
+    }
+
+    private String requestHash(Long ownerUserId, LocalDate settlementDate, String reason) {
+        String canonical = ownerUserId + "\u001f" + settlementDate + "\u001f" + reason;
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA256_NOT_AVAILABLE", ex);
+        }
     }
 
     private SettlementResult settleTrusted(

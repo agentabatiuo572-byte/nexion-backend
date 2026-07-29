@@ -164,6 +164,29 @@ class D2WithdrawalClosureContractTest {
     }
 
     @Test
+    void delayedEventSchemaSupportsUnavailableK4ScoreWithoutWideningOtherEvents() throws Exception {
+        String baseline = Files.readString(Path.of("scripts/migrations/20260720_d2_withdrawal_closure.sql"));
+        String repair = Files.readString(Path.of(
+                "scripts/migrations/20260728_d2_delayed_unavailable_risk_event_schema.sql"));
+
+        assertThat(baseline)
+                .contains("'withdraw.delayed','withdraw','money','server','D2/K/L',1,'100%',15")
+                .contains("CASE WHEN s.event_name='withdraw.delayed' THEN 0 ELSE 1 END")
+                .contains("'risk_score_status','string',0,0")
+                .contains("WHERE s.event_name='withdraw.delayed'");
+        assertThat(repair)
+                .contains("event_name='withdraw.delayed'")
+                .contains("property_name='risk_score'")
+                .contains("'risk_score_status','string',0,0,15")
+                .doesNotContain("withdraw.approved")
+                .doesNotContain("withdraw.rejected")
+                .doesNotContain("withdraw.frozen")
+                .doesNotContain("withdraw.unfrozen")
+                .doesNotContain("withdraw.refunded")
+                .doesNotContain("withdraw.review_due");
+    }
+
+    @Test
     void d5CanonicalAggregateWriteIsTransactionalVersionedIdempotentAndUsesRequiredAudit() throws Exception {
         Method update = ffdd.opsconsole.finance.application.OpsFinanceService.class.getMethod(
                 "updateWithdrawalLimits", String.class,

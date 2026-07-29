@@ -13,6 +13,7 @@ import ffdd.opsconsole.bi.dto.B3FunnelViewRequest;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,12 +33,14 @@ class OpsFunnelServiceTest {
     private BiReportMapper mapper;
     @Mock
     private AuditLogService auditLogService;
+    @Mock
+    private AdminIdempotencyService idempotencyService;
 
     private OpsFunnelService service;
 
     @BeforeEach
     void setUp() {
-        service = new OpsFunnelService(mapper, auditLogService);
+        service = new OpsFunnelService(mapper, auditLogService, idempotencyService);
         TestingAuthenticationToken authentication = new TestingAuthenticationToken("9001", null);
         authentication.setAuthenticated(true);
         SecurityContextHolder.getContext().setAuthentication(authentication);
@@ -77,6 +80,9 @@ class OpsFunnelServiceTest {
 
     @Test
     void returnsConflictInsteadOfOverwritingAnotherSavedView() {
+        when(idempotencyService.execute(
+                anyString(), anyString(), anyString(), any(), any()))
+                .thenAnswer(invocation -> invocation.<java.util.function.Supplier<?>>getArgument(4).get());
         when(mapper.findB3View(9001L, "周报")).thenReturn(Map.of(
                 "name", "周报",
                 "cohort", "2026-W20",
@@ -85,7 +91,7 @@ class OpsFunnelServiceTest {
                 "granularity", "WEEK",
                 "comparison", "PREVIOUS"));
 
-        assertThatThrownBy(() -> service.saveView(new B3FunnelViewRequest(
+        assertThatThrownBy(() -> service.saveView("b3-test-conflict", new B3FunnelViewRequest(
                 "周报", "2026-W21", "P2", "direct", "WEEK", "PREVIOUS")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("B3_VIEW_NAME_CONFLICT");

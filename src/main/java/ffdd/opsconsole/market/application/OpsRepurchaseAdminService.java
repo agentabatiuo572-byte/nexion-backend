@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -44,6 +45,7 @@ public class OpsRepurchaseAdminService {
     private final AdminIdempotencyService idempotency;
     private final EventOutboxService outbox;
     private final AuditLogService audit;
+    private final OpsNexMarketService marketOverview;
 
     public ApiResult<Map<String, Object>> orders(String status, Long cursor, Integer requestedLimit) {
         String normalizedStatus = StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : null;
@@ -114,9 +116,15 @@ public class OpsRepurchaseAdminService {
                 "operator", operator(request.operator()), "idempotencyKey", idempotencyKey.trim());
         String receiptId = outbox.publish("REPURCHASE_CONFIG", key, event, detail);
         recordAudit(event.toUpperCase(Locale.ROOT).replace('.', '_'), key, request, detail);
-        return ApiResult.ok(linked("updated", true, "paramKey", key, "before", before, "after", after,
+        ApiResult<Map<String, Object>> overviewResult = marketOverview.repurchaseOverview();
+        if (overviewResult == null || overviewResult.getCode() != 0 || overviewResult.getData() == null) {
+            throw new BizException(500, "G7_CANONICAL_OVERVIEW_UNAVAILABLE");
+        }
+        Map<String, Object> response = new LinkedHashMap<>(overviewResult.getData());
+        response.put("updated", linked("key", key, "oldValue", before, "newValue", after,
                 "coverageAtSubmit", snapshot.coverageRatio(), "g4Capacity", g4Capacity,
-                "g4TicketsIssued", issued, "receiptId", receiptId, "serverCanonical", true));
+                "g4TicketsIssued", issued, "receiptId", receiptId));
+        return ApiResult.ok(response);
     }
 
     private String before(AppRepurchaseMapper.ProductRow p, String key) {
@@ -202,8 +210,8 @@ public class OpsRepurchaseAdminService {
     }
 
     private String operator(String supplied) {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        return auth != null && StringUtils.hasText(auth.getName()) ? auth.getName()
+        String authenticated = AdminActorResolver.resolve(null);
+        return StringUtils.hasText(authenticated) ? authenticated
                 : StringUtils.hasText(supplied) ? supplied.trim() : "admin";
     }
 

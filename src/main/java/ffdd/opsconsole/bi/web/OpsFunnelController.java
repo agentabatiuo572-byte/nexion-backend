@@ -16,6 +16,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -71,7 +72,9 @@ public class OpsFunnelController {
 
     @PostMapping("/view")
     @PreAuthorize("hasAuthority('overview_b3_view_write')")
-    public ApiResult<Map<String, Object>> saveView(@RequestBody B3FunnelViewRequest request) {
-        return funnelService.saveView(request);
+    public ApiResult<Map<String, Object>> saveView(
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestBody B3FunnelViewRequest request) {
+        return funnelService.saveView(idempotencyKey, request);
     }
 }

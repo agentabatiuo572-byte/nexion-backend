@@ -1250,6 +1250,55 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void reversingApprovedAdjustmentReplaysSameIdempotencyKeyAfterStateChanged() {
+        String originalNo = "ADJ-REVERSE-REPLAY";
+        String idempotencyKey = "idem-c3-reverse-replay";
+        UserAssetAdjustmentReviewRequest request =
+                new UserAssetAdjustmentReviewRequest("restore the approved debit exactly once", "superadmin");
+        userRepository.adjustments.put(originalNo, userRepository.adjustment(
+                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                "original debit for replay verification", "finance_maker", "APPROVED",
+                "finance_checker", "original review completed", 8124L));
+
+        ApiResult<Map<String, Object>> first =
+                service.reverseAssetAdjustment(originalNo, idempotencyKey, request);
+        when(idempotencyService.execute(
+                eq("C3_ASSET_ADJUSTMENT_REVERSE"),
+                eq(idempotencyKey),
+                anyString(),
+                eq(ApiResult.class),
+                any())).thenReturn(first);
+
+        ApiResult<Map<String, Object>> replay =
+                service.reverseAssetAdjustment(originalNo, idempotencyKey, request);
+
+        assertThat(first.getCode()).isZero();
+        assertThat(replay).isSameAs(first);
+        assertThat(userRepository.postedLedgerBills).hasSize(1);
+    }
+
+    @Test
+    void reversingApprovedAdjustmentWithNewKeyAfterSuccessRemainsRejected() {
+        String originalNo = "ADJ-REVERSE-NEW-KEY";
+        UserAssetAdjustmentReviewRequest request =
+                new UserAssetAdjustmentReviewRequest("restore the approved debit exactly once", "superadmin");
+        userRepository.adjustments.put(originalNo, userRepository.adjustment(
+                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                "original debit for new key verification", "finance_maker", "APPROVED",
+                "finance_checker", "original review completed", 8125L));
+
+        ApiResult<Map<String, Object>> first =
+                service.reverseAssetAdjustment(originalNo, "idem-c3-reverse-first", request);
+        ApiResult<Map<String, Object>> second =
+                service.reverseAssetAdjustment(originalNo, "idem-c3-reverse-distinct", request);
+
+        assertThat(first.getCode()).isZero();
+        assertThat(second.getCode()).isEqualTo(409);
+        assertThat(second.getMessage()).isEqualTo("C3_ALREADY_REVERSED");
+        assertThat(userRepository.postedLedgerBills).hasSize(1);
+    }
+
+    @Test
     void regularFinanceCannotApproveSupportLargeAdjustment() {
         String adjustmentNo = userRepository.seedPendingAdjustment("USDT", "CREDIT", "600");
         when(roleResolver.resolveCode()).thenReturn("FINANCE");

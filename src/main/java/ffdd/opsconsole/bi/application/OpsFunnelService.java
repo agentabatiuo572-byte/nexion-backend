@@ -8,8 +8,10 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -17,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.HexFormat;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
@@ -33,9 +36,11 @@ public class OpsFunnelService {
     private static final Set<String> STAGES = Set.of("register", "kyc", "purchase", "repurchase", "withdraw");
     private static final Set<String> GRANULARITIES = Set.of("WEEK", "MONTH");
     private static final Set<String> COMPARISONS = Set.of("PREVIOUS", "YEAR_OVER_YEAR", "CUSTOM");
+    private static final String VIEW_IDEMPOTENCY_SCOPE = "B3_FUNNEL_VIEW";
 
     private final BiReportMapper mapper;
     private final AuditLogService auditLogService;
+    private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<Map<String, Object>> overview(String cohort, String phase, String ref) {
         return overview(cohort, phase, ref, "purchase");
@@ -85,13 +90,28 @@ public class OpsFunnelService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> saveView(B3FunnelViewRequest request) {
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ApiResult<Map<String, Object>> saveView(String idempotencyKey, B3FunnelViewRequest request) {
         if (request == null) throw new BizException(422, "B3_VIEW_REQUIRED");
         String name = normalizeName(request.name());
         Filter filter = filter(request.cohort(), request.phase(), request.ref());
         String granularity = enumValue(request.granularity(), GRANULARITIES, "WEEK", "B3_GRANULARITY_INVALID");
         String comparison = enumValue(request.comparison(), COMPARISONS, "PREVIOUS", "B3_COMPARISON_INVALID");
         long adminId = currentAdminId();
+        String requestHash = requestHash(
+                adminId, name, persist(filter.cohort()), persist(filter.phase()), persist(filter.ref()),
+                granularity, comparison);
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+                VIEW_IDEMPOTENCY_SCOPE, idempotencyKey, requestHash, ApiResult.class,
+                () -> saveViewNew(adminId, name, filter, granularity, comparison));
+    }
+
+    private ApiResult<Map<String, Object>> saveViewNew(
+            long adminId,
+            String name,
+            Filter filter,
+            String granularity,
+            String comparison) {
         Map<String, Object> existing = mapper.findB3View(adminId, name);
         if (existing != null && !existing.isEmpty()) {
             boolean same = same(existing.get("cohort"), persist(filter.cohort()))
@@ -264,6 +284,20 @@ public class OpsFunnelService {
 
     private static boolean same(Object left, Object right) {
         return String.valueOf(left).equals(String.valueOf(right));
+    }
+
+    private static String requestHash(Object... values) {
+        StringBuilder canonical = new StringBuilder();
+        for (Object value : values) {
+            String text = String.valueOf(value);
+            canonical.append(text.length()).append(':').append(text).append('|');
+        }
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception ex) {
+            throw new IllegalStateException("B3_VIEW_REQUEST_HASH_FAILED", ex);
+        }
     }
 
     private static String csv(Object value) {

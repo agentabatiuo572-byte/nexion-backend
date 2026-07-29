@@ -352,6 +352,13 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public int maxAllocatedPlaybookSequence() {
+        ensureTables();
+        Integer value = mapper.maxAllocatedPlaybookSequence();
+        return value == null ? 0 : Math.max(0, value);
+    }
+
+    @Override
     public Optional<Map<String, Object>> playbook(String code) {
         return playbooks().stream()
                 .filter(row -> String.valueOf(row.get("code")).equalsIgnoreCase(code))

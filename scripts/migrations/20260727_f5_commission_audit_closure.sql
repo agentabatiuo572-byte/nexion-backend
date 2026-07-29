@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS nx_commission_operation (
   UNIQUE KEY uk_commission_operation_no (operation_no),
   KEY idx_commission_operation_source (source_commission_id, operation_type),
   KEY idx_commission_operation_user (user_id, created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS nx_commission_user_suspension (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS nx_commission_user_suspension (
   PRIMARY KEY (id),
   UNIQUE KEY uk_commission_user_kind (user_id, kind),
   KEY idx_commission_suspension_status (status, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 DROP TRIGGER IF EXISTS trg_nx_commission_event_suspension;
 
@@ -46,9 +46,9 @@ FOR EACH ROW
 BEGIN
   IF EXISTS (
     SELECT 1
-      FROM nx_commission_user_suspension s
+     FROM nx_commission_user_suspension s
      WHERE s.user_id = NEW.user_id
-       AND s.kind = LOWER(NEW.commission_type)
+       AND s.kind = LOWER(NEW.commission_type) COLLATE utf8mb4_0900_ai_ci
        AND s.status = 'SUSPENDED'
   ) THEN
     SET NEW.status = 'FROZEN';

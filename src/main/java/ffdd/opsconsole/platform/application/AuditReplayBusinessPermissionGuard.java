@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
+import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
@@ -14,9 +15,11 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -100,13 +103,21 @@ public class AuditReplayBusinessPermissionGuard {
                     : ApiResult.ok(null);
         }
         AuditLockTarget suppliedTarget = request.target();
-        boolean targetMatches = suppliedTarget != null
-                && descriptor.target().domain().equalsIgnoreCase(text(suppliedTarget.domain()))
-                && descriptor.target().type().equalsIgnoreCase(text(suppliedTarget.type()))
-                && descriptor.target().id().equals(text(suppliedTarget.id()));
+        List<AuditLockTarget> canonicalTargets = delegatedTargets(command);
+        boolean targetMatches;
+        if (canonicalTargets != null) {
+            targetMatches = suppliedTarget == null
+                    && canonicalTargets.equals(request.targets());
+        } else {
+            targetMatches = suppliedTarget != null
+                    && descriptor.target() != null
+                    && descriptor.target().domain().equalsIgnoreCase(text(suppliedTarget.domain()))
+                    && descriptor.target().type().equalsIgnoreCase(text(suppliedTarget.type()))
+                    && descriptor.target().id().equals(text(suppliedTarget.id()))
+                    && (request.targets() == null || request.targets().isEmpty());
+        }
         boolean contextMatches = descriptor.sourceDomain().equalsIgnoreCase(text(request.sourceDomain()))
-                && descriptor.objectId().equals(text(request.obj()))
-                && (request.targets() == null || request.targets().isEmpty());
+                && descriptor.objectId().equals(text(request.obj()));
         if (!targetMatches || !contextMatches) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_CONTEXT_MISMATCH");
         }
@@ -132,7 +143,43 @@ public class AuditReplayBusinessPermissionGuard {
         if ("E".equals(domain)) {
             return delegatedEDescriptor(operation, params);
         }
+        if ("F".equals(domain)) {
+            return delegatedFDescriptor(operation, params);
+        }
         return null;
+    }
+
+    private DelegatedProposalDescriptor delegatedFDescriptor(
+            String operation, Map<String, Object> params) {
+        if (!Set.of("f_config", "f_ui_config", "f_unilevel_rule").contains(operation)) {
+            return null;
+        }
+        String key = value(params, "key");
+        String nextValue = value(params, "value");
+        if (key.isBlank() || nextValue.isBlank() || fConfigAuthority(operation, params) == null) {
+            return null;
+        }
+        String targetType = switch (operation) {
+            case "f_config" -> "team_config";
+            case "f_unilevel_rule" -> "unilevel_rule";
+            default -> "ui_config";
+        };
+        String targetId = "f_unilevel_rule".equals(operation)
+                ? fUnilevelTargetId(key)
+                : key;
+        if (targetId.isBlank()) {
+            return null;
+        }
+        boolean amplifies = !"f_ui_config".equals(operation) || fUiConfigAmplifies(key);
+        return new DelegatedProposalDescriptor(
+                "F 域配置调整 · " + key,
+                key,
+                "以服务器执行时状态为准",
+                nextValue,
+                fSourceDomain(operation, key),
+                amplifies ? "fund" : "param",
+                amplifies,
+                new AuditLockTarget("F", targetType, targetId));
     }
 
     private DelegatedProposalDescriptor delegatedJDescriptor(
@@ -161,6 +208,7 @@ public class AuditReplayBusinessPermissionGuard {
             case "e5_device_unbind" -> deviceDescriptor(
                     "解绑设备资产", deviceId, "UNBOUND");
             case "e6_compute_config" -> computeConfigDescriptor(params);
+            case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
             default -> null;
         };
     }
@@ -181,6 +229,58 @@ public class AuditReplayBusinessPermissionGuard {
                 "param",
                 false,
                 new AuditLockTarget("E", "e6_compute_config", paramKey));
+    }
+
+    private DelegatedProposalDescriptor computeConfigBatchDescriptor(Map<String, Object> params) {
+        TreeMap<String, Object> values = canonicalComputeBatchValues(params);
+        if (values == null) {
+            return null;
+        }
+        String objectId = String.join(",", values.keySet());
+        return new DelegatedProposalDescriptor(
+                "批量更新算力配置参数 · " + values.size() + " 项",
+                objectId,
+                "以服务器执行时状态为准",
+                values.size() + " 项配置待执行",
+                "E6",
+                "param",
+                false,
+                null);
+    }
+
+    private List<AuditLockTarget> delegatedTargets(AuditReplayCommand command) {
+        if (command == null
+                || !"E".equalsIgnoreCase(text(command.domain()))
+                || !"e6_compute_config_batch".equalsIgnoreCase(text(command.op()))) {
+            return null;
+        }
+        TreeMap<String, Object> values = canonicalComputeBatchValues(command.params());
+        if (values == null) {
+            return List.of();
+        }
+        return values.keySet().stream()
+                .map(key -> new AuditLockTarget("E", "e6_compute_config", key))
+                .toList();
+    }
+
+    private TreeMap<String, Object> canonicalComputeBatchValues(Map<String, Object> params) {
+        Object raw = params == null ? null : params.get("values");
+        if (!(raw instanceof Map<?, ?> input) || input.isEmpty()) {
+            return null;
+        }
+        TreeMap<String, Object> values = new TreeMap<>();
+        for (Map.Entry<?, ?> entry : input.entrySet()) {
+            if (!(entry.getKey() instanceof String rawKey)) {
+                return null;
+            }
+            String key = rawKey.trim();
+            if (!key.equals(rawKey)
+                    || !ComputeConfigRegistry.isComputeParamKey(key)
+                    || values.putIfAbsent(key, entry.getValue()) != null) {
+                return null;
+            }
+        }
+        return values;
     }
 
     private DelegatedProposalDescriptor deviceDescriptor(
@@ -406,6 +506,8 @@ public class AuditReplayBusinessPermissionGuard {
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
             // 按 params.value 目标状态分流 dispose/reject;细分由 OpsTeamService.updateCommissionEventStatus 二次校验兜底。
             case "F" -> switch (operation) {
+                case "f_config", "f_ui_config", "f_unilevel_rule" ->
+                        fConfigAuthority(operation, command.params());
                 case "f_commission_status" -> f5CommissionAuthority(command.params());
                 case "f_vrank_override" -> "network_f1_promote_user";
                 case "f_reward_payout_action" -> f1RewardPayoutAuthority(command.params());
@@ -414,6 +516,121 @@ public class AuditReplayBusinessPermissionGuard {
             };
             default -> null;
         };
+    }
+
+    private String fConfigAuthority(String operation, Map<String, Object> params) {
+        String key = value(params, "key");
+        if ("f_unilevel_rule".equals(operation)) {
+            return key.matches("^F\\.unilevel\\.(?:nex\\.)?L[1-7]$")
+                    ? "network_f2_royalty_rate"
+                    : null;
+        }
+        if ("f_config".equals(operation)) {
+            if (Set.of(
+                    "directRoyaltyPct", "networkRoyaltyPct", "binaryPairRatePct",
+                    "maxCombinedOutflowPct", "minPayoutUsdt").contains(key)) {
+                return "network_f2_royalty_rate";
+            }
+            return Set.of("rankWindowDays", "hardwareQuotaPerRank").contains(key)
+                    ? "network_f2_write"
+                    : null;
+        }
+        if (!"f_ui_config".equals(operation)) {
+            return null;
+        }
+        if (Set.of("F.prize.name", "F.vrank.titles").contains(key)) {
+            return "network_f1_write";
+        }
+        if ("F.vrank.permanent".equals(key)) {
+            return "network_f1_permanent_protection";
+        }
+        if (key.matches("^F\\.unilevel\\.(?:nex\\.)?L[1-7]$")
+                || Set.of("F.promo.weekMultiplier", "F.peer.rate").contains(key)) {
+            return "network_f2_royalty_rate";
+        }
+        if (Set.of(
+                "F.influence.clampMin", "F.influence.clampMax",
+                "F.cooldown", "F.partner.tiers", "F.royalty.minPayout",
+                "F.unilevel.depthGate", "F.unilevel.nexCap", "F.unilevel.backfill",
+                "F.unilevel.depth", "F.sunset.exclusions").contains(key)
+                || key.matches("^F\\.unilevel\\.L[1-7]\\.paused$")) {
+            return "network_f2_policy_amplify";
+        }
+        if ("F.binary.paused".equals(key)) {
+            return "network_f3_engine_pause";
+        }
+        if (key.startsWith("F.binary.")) {
+            return "network_f3_match_rate";
+        }
+        if (key.startsWith("F3.dailyCap.")) {
+            return "network_f3_write";
+        }
+        if (key.startsWith("F.pool.votes.") || key.startsWith("F.quota.")) {
+            return "network_f4_write";
+        }
+        if (key.startsWith("F.ambassador.") && key.endsWith(".status")) {
+            return "network_f4_ambassador_approve";
+        }
+        if (Set.of(
+                "F.pool.monthlyCap", "F.pool.settleCron", "F.pool.unlockVRank",
+                "F.leaderboard.minUsd").contains(key)) {
+            return "network_f4_write";
+        }
+        if ("F.leaderboard.poolUsd".equals(key)) {
+            return "network_f4_pool_fund";
+        }
+        if (key.startsWith("F.leaderboard.")) {
+            return "network_f4_leaderboard_control";
+        }
+        if (key.startsWith("F.pool.")) {
+            return "network_f4_pool_fund";
+        }
+        return null;
+    }
+
+    private String fUnilevelTargetId(String key) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("^F\\.unilevel\\.(?:nex\\.)?L([1-7])$")
+                .matcher(key);
+        return matcher.matches() ? "L" + matcher.group(1) : "";
+    }
+
+    private String fSourceDomain(String operation, String key) {
+        if ("f_unilevel_rule".equals(operation)
+                || Set.of(
+                "directRoyaltyPct", "networkRoyaltyPct", "maxCombinedOutflowPct",
+                "minPayoutUsdt", "rankWindowDays", "hardwareQuotaPerRank").contains(key)
+                || key.startsWith("F.unilevel.")
+                || key.startsWith("F.promo.")
+                || key.startsWith("F.peer.")
+                || key.startsWith("F.influence.")
+                || key.startsWith("F.royalty.")
+                || key.startsWith("F.partner.")
+                || "F.cooldown".equals(key)
+                || "F.sunset.exclusions".equals(key)) {
+            return "F2";
+        }
+        if ("binaryPairRatePct".equals(key)
+                || key.startsWith("F.binary.")
+                || key.startsWith("F3.dailyCap.")) {
+            return "F3";
+        }
+        if (key.startsWith("F.pool.")
+                || key.startsWith("F.quota.")
+                || key.startsWith("F.ambassador.")
+                || key.startsWith("F.leaderboard.")) {
+            return "F4";
+        }
+        return "F1";
+    }
+
+    private boolean fUiConfigAmplifies(String key) {
+        return Set.of(
+                "F.binary.matchRate", "F.binary.threshold",
+                "F.pool.ratio", "F.pool.top1MaxPct", "F.pool.top5MaxPct",
+                "F.pool.periodPrize", "F.promo.weekMultiplier", "F.peer.rate")
+                .contains(key)
+                || key.matches("^F\\.unilevel\\.(?:nex\\.)?L[1-7]$");
     }
 
     /**

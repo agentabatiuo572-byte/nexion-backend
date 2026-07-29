@@ -211,14 +211,33 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     public I18nMessagePairView saveMessagePair(String messageKey, String zh, String en, String vi, String status, LocalDateTime now) {
         String key = messageKey.trim();
         boolean publish = "published".equalsIgnoreCase(status);
-        I18nMessageVersionEntity version = latestVersion(key, "DRAFT");
-        if (version == null) {
+        I18nMessageVersionEntity version;
+        if (!publish) {
+            I18nMessageVersionEntity latest = latestVersion(key, null);
+            I18nMessageVersionEntity previousDraft = latestVersion(key, "DRAFT");
+            int nextVersionNo = latest == null ? 1 : value(latest.getVersionNo()) + 1;
+            if (previousDraft != null) {
+                if (messageVersionMapper.retireDraftCas(previousDraft.getId(), now) != 1) {
+                    throw new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT");
+                }
+                previousDraft.setIsDeleted(1);
+                previousDraft.setUpdatedAt(now);
+            }
             version = new I18nMessageVersionEntity();
             version.setMessageKey(key);
-            I18nMessageVersionEntity latest = latestVersion(key, null);
-            version.setVersionNo(latest == null ? 1 : value(latest.getVersionNo()) + 1);
+            version.setVersionNo(nextVersionNo);
             version.setCreatedAt(now);
             version.setIsDeleted(0);
+        } else {
+            version = latestVersion(key, "DRAFT");
+            if (version == null) {
+                I18nMessageVersionEntity latest = latestVersion(key, null);
+                version = new I18nMessageVersionEntity();
+                version.setMessageKey(key);
+                version.setVersionNo(latest == null ? 1 : value(latest.getVersionNo()) + 1);
+                version.setCreatedAt(now);
+                version.setIsDeleted(0);
+            }
         }
         version.setZhValue(zh.trim()); version.setEnValue(en.trim()); version.setViValue(vi.trim());
         version.setStatus(publish ? "PUBLISHED" : "DRAFT"); version.setUpdatedAt(now);
